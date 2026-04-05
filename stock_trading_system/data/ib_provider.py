@@ -66,8 +66,8 @@ class IBProvider:
 
     def get_stock_price(self, ticker: str) -> dict | None:
         """Get real-time price snapshot for a US stock."""
-        self._ensure_connected()
         try:
+            self._ensure_connected()
             contract = self._make_stock_contract(ticker)
             self._ib.qualifyContracts(contract)
             ticker_data = self._ib.reqMktData(contract, "", False, False)
@@ -106,8 +106,8 @@ class IBProvider:
             bar_size: e.g. "1 day", "1 hour", "5 mins"
             what_to_show: "TRADES", "MIDPOINT", "BID", "ASK"
         """
-        self._ensure_connected()
         try:
+            self._ensure_connected()
             contract = self._make_stock_contract(ticker)
             self._ib.qualifyContracts(contract)
 
@@ -142,8 +142,8 @@ class IBProvider:
 
     def get_fundamentals(self, ticker: str) -> str | None:
         """Get fundamental data XML from IB."""
-        self._ensure_connected()
         try:
+            self._ensure_connected()
             contract = self._make_stock_contract(ticker)
             self._ib.qualifyContracts(contract)
             data = self._ib.reqFundamentalData(contract, "ReportSnapshot")
@@ -176,8 +176,8 @@ class IBProvider:
                 - HIGH_VS_13W_HL, HIGH_VS_52W_HL
                 - TOP_TRADE_RATE
         """
-        self._ensure_connected()
         try:
+            self._ensure_connected()
             from ib_insync import ScannerSubscription
 
             sub = ScannerSubscription(
@@ -212,8 +212,8 @@ class IBProvider:
 
     def search_symbols(self, pattern: str) -> list[dict]:
         """Search for matching symbols."""
-        self._ensure_connected()
         try:
+            self._ensure_connected()
             results = self._ib.reqMatchingSymbols(pattern)
             return [
                 {
