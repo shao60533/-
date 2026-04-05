@@ -1,0 +1,164 @@
+"""SQLite database operations for portfolio management."""
+
+import json
+import sqlite3
+from datetime import datetime
+from pathlib import Path
+
+from stock_trading_system.portfolio.models import Position, Transaction, DailySnapshot
+from stock_trading_system.utils import get_logger
+
+logger = get_logger("portfolio.db")
+
+
+class PortfolioDatabase:
+    """SQLite database for portfolio data."""
+
+    def __init__(self, db_path: str):
+        self._db_path = db_path
+        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+        self._init_tables()
+
+    def _get_conn(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self._db_path)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _init_tables(self):
+        with self._get_conn() as conn:
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS positions (
+                    ticker TEXT PRIMARY KEY,
+                    market TEXT NOT NULL,
+                    shares REAL NOT NULL,
+                    avg_cost REAL NOT NULL,
+                    added_date TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS transactions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ticker TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    shares REAL NOT NULL,
+                    price REAL NOT NULL,
+                    timestamp TEXT NOT NULL,
+                    notes TEXT DEFAULT ''
+                );
+
+                CREATE TABLE IF NOT EXISTS daily_snapshots (
+                    date TEXT PRIMARY KEY,
+                    total_value REAL NOT NULL,
+                    total_cost REAL NOT NULL,
+                    pnl REAL NOT NULL,
+                    pnl_pct REAL NOT NULL,
+                    positions_json TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS alerts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ticker TEXT NOT NULL,
+                    condition TEXT NOT NULL,
+                    threshold REAL NOT NULL,
+                    created TEXT NOT NULL,
+                    triggered INTEGER DEFAULT 0
+                );
+            """)
+
+    # ── Positions ────────────────────────────────────────────────────────
+
+    def get_position(self, ticker: str) -> Position | None:
+        with self._get_conn() as conn:
+            row = conn.execute("SELECT * FROM positions WHERE ticker = ?", (ticker,)).fetchone()
+            if row:
+                return Position(**dict(row))
+        return None
+
+    def get_all_positions(self) -> list[Position]:
+        with self._get_conn() as conn:
+            rows = conn.execute("SELECT * FROM positions ORDER BY ticker").fetchall()
+            return [Position(**dict(r)) for r in rows]
+
+    def upsert_position(self, position: Position):
+        with self._get_conn() as conn:
+            conn.execute(
+                """INSERT INTO positions (ticker, market, shares, avg_cost, added_date)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(ticker) DO UPDATE SET
+                     shares = excluded.shares,
+                     avg_cost = excluded.avg_cost""",
+                (position.ticker, position.market, position.shares, position.avg_cost, position.added_date),
+            )
+
+    def delete_position(self, ticker: str):
+        with self._get_conn() as conn:
+            conn.execute("DELETE FROM positions WHERE ticker = ?", (ticker,))
+
+    # ── Transactions ─────────────────────────────────────────────────────
+
+    def add_transaction(self, txn: Transaction):
+        with self._get_conn() as conn:
+            conn.execute(
+                """INSERT INTO transactions (ticker, action, shares, price, timestamp, notes)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (txn.ticker, txn.action, txn.shares, txn.price, txn.timestamp, txn.notes),
+            )
+
+    def get_transactions(self, ticker: str | None = None) -> list[Transaction]:
+        with self._get_conn() as conn:
+            if ticker:
+                rows = conn.execute(
+                    "SELECT * FROM transactions WHERE ticker = ? ORDER BY timestamp DESC", (ticker,)
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM transactions ORDER BY timestamp DESC"
+                ).fetchall()
+            return [Transaction(**dict(r)) for r in rows]
+
+    # ── Snapshots ────────────────────────────────────────────────────────
+
+    def save_snapshot(self, snapshot: DailySnapshot):
+        with self._get_conn() as conn:
+            conn.execute(
+                """INSERT INTO daily_snapshots (date, total_value, total_cost, pnl, pnl_pct, positions_json)
+                   VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(date) DO UPDATE SET
+                     total_value = excluded.total_value,
+                     total_cost = excluded.total_cost,
+                     pnl = excluded.pnl,
+                     pnl_pct = excluded.pnl_pct,
+                     positions_json = excluded.positions_json""",
+                (snapshot.date, snapshot.total_value, snapshot.total_cost,
+                 snapshot.pnl, snapshot.pnl_pct, snapshot.positions_json),
+            )
+
+    def get_snapshots(self, days: int = 30) -> list[DailySnapshot]:
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM daily_snapshots ORDER BY date DESC LIMIT ?", (days,)
+            ).fetchall()
+            return [DailySnapshot(**dict(r)) for r in rows]
+
+    # ── Alerts ───────────────────────────────────────────────────────────
+
+    def add_alert(self, ticker: str, condition: str, threshold: float):
+        with self._get_conn() as conn:
+            conn.execute(
+                "INSERT INTO alerts (ticker, condition, threshold, created) VALUES (?, ?, ?, ?)",
+                (ticker, condition, threshold, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+            )
+
+    def get_active_alerts(self) -> list[dict]:
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM alerts WHERE triggered = 0 ORDER BY created DESC"
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def trigger_alert(self, alert_id: int):
+        with self._get_conn() as conn:
+            conn.execute("UPDATE alerts SET triggered = 1 WHERE id = ?", (alert_id,))
+
+    def remove_alert(self, alert_id: int):
+        with self._get_conn() as conn:
+            conn.execute("DELETE FROM alerts WHERE id = ?", (alert_id,))

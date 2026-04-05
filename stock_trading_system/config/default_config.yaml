@@ -1,0 +1,49 @@
+gemini:
+  api_key: ""
+  model: "gemini-2.0-flash"
+  deep_think_model: "gemini-2.0-pro"
+  thinking_level: "high"
+
+polygon:
+  api_key: ""
+
+akshare: {}
+
+ib:
+  host: "127.0.0.1"
+  port: 7496
+  client_id: 1
+  enabled: true
+
+screener:
+  us_market:
+    min_market_cap: 1000000000
+    min_volume: 500000
+    max_pe: 50
+    top_n: 10
+  cn_market:
+    min_market_cap: 5000000000
+    min_volume: 1000000
+    max_pe: 50
+    top_n: 10
+
+alerts:
+  check_interval: 60
+  telegram:
+    bot_token: ""
+    chat_id: ""
+    enabled: false
+  email:
+    smtp_host: ""
+    smtp_port: 587
+    username: ""
+    password: ""
+    to_address: ""
+    enabled: false
+
+reports:
+  output_dir: "reports_output"
+  schedule: "daily"
+
+portfolio:
+  db_path: "data/portfolio.db"
