@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+*.pyo
+data/portfolio.db
+reports_output/
+.env
+*.egg-info/
+dist/
+build/
