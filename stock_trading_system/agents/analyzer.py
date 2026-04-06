@@ -51,14 +51,15 @@ class StockAnalyzer:
 
         gemini_config = self._config.get("gemini", {})
 
-        # Set API key in environment
+        # Set API key in environment BEFORE creating the graph
         api_key = gemini_config.get("api_key", "")
         if api_key:
             os.environ["GOOGLE_API_KEY"] = api_key
+            os.environ["GEMINI_API_KEY"] = api_key
 
         ta_config = DEFAULT_CONFIG.copy()
         ta_config["llm_provider"] = "google"
-        ta_config["deep_think_llm"] = gemini_config.get("deep_think_model", "gemini-2.0-pro")
+        ta_config["deep_think_llm"] = gemini_config.get("deep_think_model", "gemini-2.5-flash")
         ta_config["quick_think_llm"] = gemini_config.get("model", "gemini-2.0-flash")
         ta_config["google_thinking_level"] = gemini_config.get("thinking_level", "high")
         ta_config["output_language"] = "Chinese"
