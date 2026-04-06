@@ -26,6 +26,11 @@
                 </a>
             </li>
             <li class="nav-item">
+                <a class="nav-link" href="#" data-page="history">
+                    <i class="fas fa-history"></i> 分析记录
+                </a>
+            </li>
+            <li class="nav-item">
                 <a class="nav-link" href="#" data-page="screener">
                     <i class="fas fa-filter"></i> 智能选股
                 </a>
@@ -207,6 +212,32 @@
                             <div class="card-header"><i class="fas fa-gavel"></i> 最终决策</div>
                             <div class="card-body report-content" id="report-decision"></div>
                         </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Page: Analysis History -->
+        <div class="page" id="page-history">
+            <h3 class="page-title">分析记录</h3>
+            <div class="row g-3 mb-3">
+                <div class="col-md-4">
+                    <input type="text" class="form-control form-control-sm" id="history-filter" placeholder="搜索股票代码..." oninput="filterHistory()">
+                </div>
+                <div class="col-md-2">
+                    <button class="btn btn-outline-secondary btn-sm" onclick="loadHistory()"><i class="fas fa-sync"></i> 刷新</button>
+                </div>
+            </div>
+            <div id="history-list"></div>
+            <!-- Detail modal -->
+            <div class="modal fade" id="historyModal" tabindex="-1">
+                <div class="modal-dialog modal-xl modal-dialog-scrollable">
+                    <div class="modal-content" style="background:var(--bg-card);color:var(--text-primary);border-color:var(--border);">
+                        <div class="modal-header" style="border-color:var(--border);">
+                            <h5 class="modal-title" id="historyModalTitle">分析详情</h5>
+                            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body" id="historyModalBody" style="color:#c9d1d9;"></div>
                     </div>
                 </div>
             </div>

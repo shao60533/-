@@ -62,6 +62,22 @@ class PortfolioDatabase:
                     created TEXT NOT NULL,
                     triggered INTEGER DEFAULT 0
                 );
+
+                CREATE TABLE IF NOT EXISTS analysis_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ticker TEXT NOT NULL,
+                    date TEXT NOT NULL,
+                    signal TEXT NOT NULL,
+                    market_report TEXT,
+                    sentiment_report TEXT,
+                    news_report TEXT,
+                    fundamentals_report TEXT,
+                    investment_debate TEXT,
+                    risk_assessment TEXT,
+                    trade_decision TEXT,
+                    advice_json TEXT,
+                    created_at TEXT NOT NULL
+                );
             """)
 
     # ── Positions ────────────────────────────────────────────────────────
@@ -162,3 +178,48 @@ class PortfolioDatabase:
     def remove_alert(self, alert_id: int):
         with self._get_conn() as conn:
             conn.execute("DELETE FROM alerts WHERE id = ?", (alert_id,))
+
+    # ── Analysis History ────────────────────────────────────────────────
+
+    def save_analysis(self, data: dict):
+        with self._get_conn() as conn:
+            conn.execute(
+                """INSERT INTO analysis_history
+                   (ticker, date, signal, market_report, sentiment_report,
+                    news_report, fundamentals_report, investment_debate,
+                    risk_assessment, trade_decision, advice_json, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    data["ticker"], data["date"], data["signal"],
+                    data.get("market_report", ""),
+                    data.get("sentiment_report", ""),
+                    data.get("news_report", ""),
+                    data.get("fundamentals_report", ""),
+                    data.get("investment_debate", ""),
+                    data.get("risk_assessment", ""),
+                    data.get("trade_decision", ""),
+                    data.get("advice_json", ""),
+                    data.get("created_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+                ),
+            )
+
+    def get_analysis_history(self, ticker: str | None = None, limit: int = 50) -> list[dict]:
+        with self._get_conn() as conn:
+            if ticker:
+                rows = conn.execute(
+                    "SELECT * FROM analysis_history WHERE ticker = ? ORDER BY created_at DESC LIMIT ?",
+                    (ticker, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM analysis_history ORDER BY created_at DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_analysis_by_id(self, analysis_id: int) -> dict | None:
+        with self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM analysis_history WHERE id = ?", (analysis_id,)
+            ).fetchone()
+            return dict(row) if row else None

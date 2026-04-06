@@ -18,6 +18,7 @@ document.querySelectorAll('[data-page]').forEach(link => {
         if (page === 'dashboard') loadDashboard();
         if (page === 'portfolio') loadPortfolio();
         if (page === 'alerts') loadAlerts();
+        if (page === 'history') loadHistory();
     });
 });
 
@@ -62,6 +63,29 @@ function pnlClass(v) {
     if (v > 0) return 'text-green';
     if (v < 0) return 'text-red';
     return '';
+}
+
+function getSignalClass(signal) {
+    if (!signal) return '';
+    const s = signal.toUpperCase().replace(/\s+/g, '');
+    if (['BUY', 'STRONGBUY', 'STRONG_BUY', 'OVERWEIGHT'].includes(s)) return s.toLowerCase().replace(/_/g, '');
+    if (['SELL', 'STRONGSELL', 'STRONG_SELL', 'UNDERWEIGHT'].includes(s)) return s.toLowerCase().replace(/_/g, '');
+    if (s === 'HOLD') return 'hold';
+    // Fallback: bullish → green, bearish → red
+    if (s.includes('BUY') || s.includes('OVER') || s.includes('BULL')) return 'buy';
+    if (s.includes('SELL') || s.includes('UNDER') || s.includes('BEAR')) return 'sell';
+    return 'hold';
+}
+
+function getSignalBadgeClass(signal) {
+    if (!signal) return 'sig-default';
+    const s = signal.toUpperCase();
+    if (['BUY', 'STRONG BUY', 'STRONGBUY', 'OVERWEIGHT'].includes(s)) return 'sig-buy';
+    if (['SELL', 'STRONG SELL', 'STRONGSELL', 'UNDERWEIGHT'].includes(s)) return 'sig-sell';
+    if (s === 'HOLD') return 'sig-hold';
+    if (s.includes('BUY') || s.includes('OVER') || s.includes('BULL')) return 'sig-buy';
+    if (s.includes('SELL') || s.includes('UNDER') || s.includes('BEAR')) return 'sig-sell';
+    return 'sig-default';
 }
 
 function showToast(message, type = 'info') {
@@ -197,7 +221,7 @@ socket.on('analysis_result', data => {
     // Signal
     const signalEl = document.getElementById('signal-value');
     signalEl.textContent = data.signal;
-    signalEl.className = 'signal-value ' + (data.signal || '').toLowerCase();
+    signalEl.className = 'signal-value ' + getSignalClass(data.signal);
     document.getElementById('signal-ticker').textContent = data.ticker;
 
     // Reports
@@ -457,6 +481,108 @@ async function generateReport() {
     } else {
         document.getElementById('report-content').innerHTML = '<p class="text-red">报告生成失败</p>';
     }
+}
+
+// ── Analysis History ───────────────────────────────────────────────────────
+
+let _historyData = [];
+
+async function loadHistory() {
+    const data = await api('/api/history');
+    if (!data) return;
+    _historyData = data;
+    renderHistory(data);
+}
+
+function filterHistory() {
+    const q = document.getElementById('history-filter').value.trim().toUpperCase();
+    if (!q) { renderHistory(_historyData); return; }
+    renderHistory(_historyData.filter(h => h.ticker.includes(q)));
+}
+
+function renderHistory(records) {
+    const container = document.getElementById('history-list');
+    if (!records || records.length === 0) {
+        container.innerHTML = '<p class="text-muted">暂无分析记录</p>';
+        return;
+    }
+    container.innerHTML = records.map(r => `
+        <div class="history-item" onclick="showHistoryDetail(${r.id})">
+            <div class="d-flex justify-content-between align-items-center">
+                <div>
+                    <span class="h-ticker">${r.ticker}</span>
+                    <span class="h-signal ${getSignalBadgeClass(r.signal)}" style="margin-left:12px;">${r.signal}</span>
+                </div>
+                <div class="h-date">${r.created_at || r.date}</div>
+            </div>
+            <div class="mt-1" style="font-size:12px;color:var(--text-secondary);">
+                分析日期: ${r.date}
+            </div>
+        </div>
+    `).join('');
+}
+
+async function showHistoryDetail(id) {
+    const r = await api('/api/history/' + id);
+    if (!r) return;
+
+    const sigCls = getSignalBadgeClass(r.signal);
+    let adviceHtml = '';
+    if (r.advice_json) {
+        try {
+            const a = JSON.parse(r.advice_json);
+            adviceHtml = `
+                <h6 style="color:#e6edf3;">策略建议</h6>
+                <div class="row g-2 mb-3" style="font-size:13px;">
+                    <div class="col-4"><strong>操作:</strong> ${a.action || '--'}</div>
+                    <div class="col-4"><strong>信心:</strong> ${a.confidence || '--'}</div>
+                    <div class="col-4"><strong>仓位:</strong> ${fmt(a.suggested_position_pct)}%</div>
+                    ${a.stop_loss ? `<div class="col-4"><strong>止损:</strong> ${fmt(a.stop_loss)}</div>` : ''}
+                    ${a.take_profit ? `<div class="col-4"><strong>止盈:</strong> ${fmt(a.take_profit)}</div>` : ''}
+                    ${a.reasoning ? `<div class="col-12"><strong>分析:</strong> ${a.reasoning}</div>` : ''}
+                    ${a.risk_warning ? `<div class="col-12" style="color:var(--accent-yellow);"><strong>风险:</strong> ${a.risk_warning}</div>` : ''}
+                </div>
+                <hr style="border-color:var(--border);">`;
+        } catch(e) {}
+    }
+
+    document.getElementById('historyModalTitle').innerHTML =
+        `${r.ticker} <span class="h-signal ${sigCls}" style="font-size:14px;">${r.signal}</span> <small class="text-muted" style="font-size:13px;">${r.date}</small>`;
+
+    document.getElementById('historyModalBody').innerHTML = `
+        ${adviceHtml}
+        <div class="row g-3">
+            <div class="col-md-6">
+                <h6 style="color:#e6edf3;">技术面分析</h6>
+                <div class="report-content">${r.market_report || 'N/A'}</div>
+            </div>
+            <div class="col-md-6">
+                <h6 style="color:#e6edf3;">基本面分析</h6>
+                <div class="report-content">${r.fundamentals_report || 'N/A'}</div>
+            </div>
+            <div class="col-md-6">
+                <h6 style="color:#e6edf3;">情绪分析</h6>
+                <div class="report-content">${r.sentiment_report || 'N/A'}</div>
+            </div>
+            <div class="col-md-6">
+                <h6 style="color:#e6edf3;">新闻分析</h6>
+                <div class="report-content">${r.news_report || 'N/A'}</div>
+            </div>
+            <div class="col-md-6">
+                <h6 style="color:#e6edf3;">多空辩论</h6>
+                <div class="report-content">${r.investment_debate || 'N/A'}</div>
+            </div>
+            <div class="col-md-6">
+                <h6 style="color:#e6edf3;">风险评估</h6>
+                <div class="report-content">${r.risk_assessment || 'N/A'}</div>
+            </div>
+            <div class="col-12">
+                <h6 style="color:#e6edf3;">最终决策</h6>
+                <div class="report-content">${r.trade_decision || 'N/A'}</div>
+            </div>
+        </div>`;
+
+    new bootstrap.Modal(document.getElementById('historyModal')).show();
 }
 
 // ── WebSocket alert notifications ──────────────────────────────────────────

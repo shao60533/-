@@ -199,8 +199,9 @@ def create_app(config_path=None):
                 except Exception as e:
                     logger.warning("Strategy advice failed: %s", e)
 
-                socketio.emit("analysis_result", {
+                result_data = {
                     "ticker": ticker,
+                    "date": date,
                     "signal": result.signal,
                     "market_report": result.market_report,
                     "sentiment_report": result.sentiment_report,
@@ -210,7 +211,23 @@ def create_app(config_path=None):
                     "risk_assessment": str(result.risk_assessment),
                     "trade_decision": str(result.trade_decision),
                     "advice": advice,
-                })
+                }
+                socketio.emit("analysis_result", result_data)
+
+                # Save to history
+                try:
+                    import json as _json
+                    from stock_trading_system.portfolio.database import PortfolioDatabase
+                    db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
+                    db = PortfolioDatabase(db_path)
+                    db.save_analysis({
+                        **result_data,
+                        "advice_json": _json.dumps(advice, ensure_ascii=False) if advice else "",
+                        "created_at": __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    })
+                    logger.info("Analysis saved to history: %s", ticker)
+                except Exception as save_err:
+                    logger.warning("Failed to save analysis history: %s", save_err)
             except Exception as e:
                 logger.error("Analysis failed for %s: %s", ticker, e)
                 socketio.emit("analysis_error", {"ticker": ticker, "error": str(e)})
@@ -265,6 +282,27 @@ def create_app(config_path=None):
         triggered = _get_alert_monitor().check_alerts()
         return jsonify({"triggered": triggered})
 
+    # ── Analysis History API ──────────────────────────────────────────────
+
+    @app.route("/api/history")
+    def api_analysis_history():
+        from stock_trading_system.portfolio.database import PortfolioDatabase
+        db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
+        db = PortfolioDatabase(db_path)
+        ticker = request.args.get("ticker")
+        records = db.get_analysis_history(ticker=ticker)
+        return jsonify(records)
+
+    @app.route("/api/history/<int:analysis_id>")
+    def api_analysis_detail(analysis_id):
+        from stock_trading_system.portfolio.database import PortfolioDatabase
+        db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
+        db = PortfolioDatabase(db_path)
+        record = db.get_analysis_by_id(analysis_id)
+        if record:
+            return jsonify(record)
+        return jsonify({"error": "Not found"}), 404
+
     # ── Reports API ─────────────────────────────────────────────────────
 
     @app.route("/api/report", methods=["POST"])
@@ -296,6 +334,14 @@ def create_app(config_path=None):
         if price:
             return jsonify(price)
         return jsonify({"error": "Price not available"}), 404
+
+    # ── Seed Data ───────────────────────────────────────────────────────
+
+    @app.route("/api/seed", methods=["POST"])
+    def api_seed():
+        from stock_trading_system.web.seed_data import seed_msft_analysis
+        seed_msft_analysis()
+        return jsonify({"ok": True, "message": "MSFT mock data seeded"})
 
     # ── WebSocket Events ────────────────────────────────────────────────
 
