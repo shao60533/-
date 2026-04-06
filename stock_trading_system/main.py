@@ -351,6 +351,33 @@ def monitor():
         console.print("\n[yellow]Monitor stopped.[/yellow]")
 
 
+# ── web ─────────────────────────────────────────────────────────────────────
+
+
+@cli.command()
+@click.option("--host", default="0.0.0.0", help="Bind host")
+@click.option("--port", default=5000, type=int, help="Bind port")
+@click.option("--debug", is_flag=True, help="Enable debug mode")
+def web(host, port, debug):
+    """Start web dashboard server."""
+    from stock_trading_system.web.app import run_app
+
+    console.print(f"[bold cyan]Starting web dashboard at http://{host}:{port}[/bold cyan]")
+    run_app(host=host, port=port, debug=debug)
+
+
+# ── bot ─────────────────────────────────────────────────────────────────────
+
+
+@cli.command()
+def bot():
+    """Start Telegram bot for remote control."""
+    from stock_trading_system.alerts.telegram_bot import run_bot
+
+    console.print("[bold cyan]Starting Telegram bot...[/bold cyan]")
+    run_bot()
+
+
 def main():
     cli()
 
