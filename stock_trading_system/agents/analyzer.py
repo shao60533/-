@@ -63,6 +63,8 @@ class StockAnalyzer:
         ta_config["quick_think_llm"] = gemini_config.get("model", "gemini-2.5-flash")
         ta_config["google_thinking_level"] = gemini_config.get("thinking_level", "high")
         ta_config["output_language"] = "Chinese"
+        # Remove OpenAI backend_url default — let Google client use its own default endpoint
+        ta_config["backend_url"] = None
 
         self._graph = TradingAgentsGraph(
             selected_analysts=["market", "social", "news", "fundamentals"],
