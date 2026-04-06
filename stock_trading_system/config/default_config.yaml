@@ -1,7 +1,7 @@
 gemini:
   api_key: ""
-  model: "gemini-3.1-flash"
-  deep_think_model: "gemini-3.1-pro"
+  model: "gemini-2.5-flash"
+  deep_think_model: "gemini-3.1-pro-preview"
   thinking_level: "high"
 
 polygon:

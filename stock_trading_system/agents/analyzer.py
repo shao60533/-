@@ -59,8 +59,8 @@ class StockAnalyzer:
 
         ta_config = DEFAULT_CONFIG.copy()
         ta_config["llm_provider"] = "google"
-        ta_config["deep_think_llm"] = gemini_config.get("deep_think_model", "gemini-3.1-pro")
-        ta_config["quick_think_llm"] = gemini_config.get("model", "gemini-3.1-flash")
+        ta_config["deep_think_llm"] = gemini_config.get("deep_think_model", "gemini-3.1-pro-preview")
+        ta_config["quick_think_llm"] = gemini_config.get("model", "gemini-2.5-flash")
         ta_config["google_thinking_level"] = gemini_config.get("thinking_level", "high")
         ta_config["output_language"] = "Chinese"
 
