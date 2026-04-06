@@ -65,7 +65,7 @@ class StockAnalyzer:
         ta_config["output_language"] = "Chinese"
 
         self._graph = TradingAgentsGraph(
-            selected_analysts=["market", "sentiment", "news", "fundamentals"],
+            selected_analysts=["market", "social", "news", "fundamentals"],
             debug=True,
             config=ta_config,
         )
