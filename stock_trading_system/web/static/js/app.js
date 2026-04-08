@@ -981,10 +981,13 @@ function renderDataSourceStatus(settings) {
     if (!box || !settings) return;
     const ds = settings.data_sources || {};
     const ib = settings.ib || {};
+    const qwen = settings.qwen || {};
     const items = [
         { name: 'IB TWS (美股主)', ok: !!ds.ib_enabled, sub: ib.host ? `${ib.host}:${ib.port || ''}` : '未配置' },
         { name: 'Polygon.io (美股备用)', ok: !!ds.polygon_configured, sub: ds.polygon_configured ? '已配置' : '未配置 API Key' },
+        { name: 'yfinance (美股兜底)', ok: true, sub: '无需 Key' },
         { name: 'AkShare (A股)', ok: !!ds.akshare, sub: '无需 Key' },
+        { name: 'Qwen (LLM 最末兜底)', ok: !!ds.qwen_enabled, sub: ds.qwen_enabled ? (qwen.model || 'enabled') : '未启用' },
     ];
     box.innerHTML = items.map(it => `
         <div class="settings-row">
@@ -998,6 +1001,7 @@ function renderSettingsConfig(s) {
     const box = document.getElementById('settings-config');
     if (!box || !s) return;
     const gemini = s.gemini || {};
+    const qwen = s.qwen || {};
     const telegram = s.telegram || {};
     const email = s.email || {};
     const portfolio = s.portfolio || {};
@@ -1006,6 +1010,9 @@ function renderSettingsConfig(s) {
         ['Gemini 深度模型', gemini.deep_think_model || '--'],
         ['Gemini API Key', gemini.api_key_masked || '未配置'],
         ['Polygon API Key', (s.polygon && s.polygon.api_key_masked) || '未配置'],
+        ['Qwen 状态', qwen.enabled ? '<span class="text-green">已启用</span>' : '<span class="text-muted">未启用</span>'],
+        ['Qwen 模型', qwen.model || '--'],
+        ['Qwen API Key', qwen.api_key_masked || '未配置'],
         ['Telegram Bot Token', telegram.bot_token_masked || '未配置'],
         ['Telegram Chat ID', telegram.chat_id || '未配置'],
         ['Email SMTP', email.smtp_host ? `${email.smtp_host}:${email.smtp_port}` : '未配置'],

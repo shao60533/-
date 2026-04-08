@@ -9,6 +9,17 @@ polygon:
 
 akshare: {}
 
+# Qwen (通义千问) - last-resort data source via DashScope.
+# Uses LLM + built-in web search to fetch quotes and rank screening candidates
+# when primary providers (IB/Polygon/yfinance/AkShare) are unavailable.
+# Enable only if you have a DashScope API key — each call costs LLM tokens.
+qwen:
+  enabled: false
+  api_key: ""
+  model: "qwen-plus"
+  base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  timeout: 30
+
 ib:
   host: "127.0.0.1"
   port: 7496

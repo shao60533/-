@@ -1,7 +1,7 @@
 """Unified data interface with automatic routing and failover.
 
-- US stocks: IB TWS (primary) -> Polygon.io (backup) -> yfinance (fallback)
-- A-shares: AkShare
+- US stocks: IB TWS (primary) -> Polygon.io (backup) -> yfinance -> Qwen (last resort)
+- A-shares: AkShare -> Qwen (last resort)
 """
 
 import pandas as pd
@@ -10,6 +10,7 @@ from stock_trading_system.data.ib_provider import IBProvider
 from stock_trading_system.data.polygon_provider import PolygonProvider
 from stock_trading_system.data.akshare_provider import AkShareProvider
 from stock_trading_system.data.yfinance_provider import YFinanceProvider
+from stock_trading_system.data.qwen_provider import QwenProvider
 from stock_trading_system.utils import get_logger
 from stock_trading_system.utils.helpers import detect_market
 
@@ -25,16 +26,25 @@ class DataManager:
         self._polygon = PolygonProvider(config)
         self._akshare = AkShareProvider()
         self._yfinance = YFinanceProvider()
+        self._qwen = QwenProvider(config)
 
     def get_price(self, ticker: str, market: str | None = None) -> dict | None:
         """Get current price for a stock.
 
-        Routing: US -> IB -> Polygon -> yfinance | CN -> AkShare
+        Routing:
+          US -> IB -> Polygon -> yfinance -> Qwen
+          CN -> AkShare -> Qwen
         """
         market = market or detect_market(ticker)
 
         if market == "cn":
-            return self._akshare.get_stock_price(ticker)
+            result = self._akshare.get_stock_price(ticker)
+            if result:
+                return result
+            if self._qwen.enabled:
+                logger.info("AkShare failed for %s, trying Qwen (last resort)", ticker)
+                return self._qwen.get_stock_price(ticker)
+            return None
 
         # US market fallback chain
         if self._config.get("ib", {}).get("enabled"):
@@ -48,7 +58,15 @@ class DataManager:
             return result
         logger.info("Polygon failed for %s, trying yfinance", ticker)
 
-        return self._yfinance.get_stock_price(ticker)
+        result = self._yfinance.get_stock_price(ticker)
+        if result:
+            return result
+
+        if self._qwen.enabled:
+            logger.info("yfinance failed for %s, trying Qwen (last resort)", ticker)
+            return self._qwen.get_stock_price(ticker)
+
+        return None
 
     def get_history(
         self,
@@ -120,6 +138,10 @@ class DataManager:
     def get_ib_provider(self) -> IBProvider:
         """Get IB provider directly (for scanner, subscriptions, etc.)."""
         return self._ib
+
+    def get_qwen_provider(self) -> QwenProvider:
+        """Get Qwen provider directly (for AI-powered screening)."""
+        return self._qwen
 
     def disconnect(self):
         """Disconnect all providers."""

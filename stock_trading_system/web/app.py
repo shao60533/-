@@ -508,9 +508,12 @@ def create_app(config_path=None):
         gemini = cfg.get("gemini", {}) or {}
         polygon = cfg.get("polygon", {}) or {}
         ib = cfg.get("ib", {}) or {}
+        qwen = cfg.get("qwen", {}) or {}
         telegram = (cfg.get("alerts", {}) or {}).get("telegram", {}) or {}
         email = (cfg.get("alerts", {}) or {}).get("email", {}) or {}
         portfolio_cfg = cfg.get("portfolio", {}) or {}
+
+        qwen_active = bool(qwen.get("enabled") and qwen.get("api_key"))
 
         # Data source liveness (best-effort, non-blocking checks)
         dm_status = {}
@@ -518,6 +521,7 @@ def create_app(config_path=None):
             dm_status["ib_enabled"] = bool(ib.get("enabled"))
             dm_status["polygon_configured"] = bool(polygon.get("api_key"))
             dm_status["akshare"] = True  # no-key provider, always usable
+            dm_status["qwen_enabled"] = qwen_active
         except Exception:
             pass
 
@@ -530,6 +534,12 @@ def create_app(config_path=None):
             },
             "polygon": {
                 "api_key_masked": _mask_secret(polygon.get("api_key", "")),
+            },
+            "qwen": {
+                "enabled": qwen_active,
+                "model": qwen.get("model", ""),
+                "base_url": qwen.get("base_url", ""),
+                "api_key_masked": _mask_secret(qwen.get("api_key", "")),
             },
             "ib": {
                 "host": ib.get("host", ""),

@@ -43,6 +43,9 @@ def _apply_env_overrides(config: dict) -> dict:
         "GEMINI_API_KEY": ("gemini", "api_key"),
         "GEMINI_MODEL": ("gemini", "model"),
         "POLYGON_API_KEY": ("polygon", "api_key"),
+        "DASHSCOPE_API_KEY": ("qwen", "api_key"),
+        "QWEN_API_KEY": ("qwen", "api_key"),
+        "QWEN_MODEL": ("qwen", "model"),
         "IB_HOST": ("ib", "host"),
         "IB_PORT": ("ib", "port"),
         "TELEGRAM_BOT_TOKEN": ("alerts", "telegram", "bot_token"),
@@ -63,6 +66,13 @@ def _apply_env_overrides(config: dict) -> dict:
             if path[-1] == "port":
                 value = int(value)
             node[path[-1]] = value
+
+    # Auto-enable Qwen when its API key is provided via env var — setting the
+    # env variable is a strong signal of intent, avoids the config.yaml trap.
+    if os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("QWEN_API_KEY"):
+        config.setdefault("qwen", {})
+        if config["qwen"].get("enabled") is not True:
+            config["qwen"]["enabled"] = True
 
     return config
 
