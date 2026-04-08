@@ -19,6 +19,8 @@ _analyzer = None
 _screener = None
 _report_gen = None
 _strategy_engine = None
+_scheduler = None
+_scheduler_thread = None
 
 
 def _get_portfolio_mgr():
@@ -75,6 +77,24 @@ def _get_strategy_engine():
         from stock_trading_system.strategy.strategy_engine import StrategyEngine
         _strategy_engine = StrategyEngine(get_config())
     return _strategy_engine
+
+
+def _get_scheduler():
+    global _scheduler
+    if _scheduler is None:
+        from stock_trading_system.scheduler.task_scheduler import TaskScheduler
+        _scheduler = TaskScheduler(get_config())
+    return _scheduler
+
+
+def _mask_secret(value: str, keep: int = 4) -> str:
+    """Mask a sensitive string, keeping only the last `keep` characters."""
+    if not value:
+        return ""
+    s = str(value)
+    if len(s) <= keep:
+        return "*" * len(s)
+    return "*" * (len(s) - keep) + s[-keep:]
 
 
 def create_app(config_path=None):
@@ -334,6 +354,205 @@ def create_app(config_path=None):
         if price:
             return jsonify(price)
         return jsonify({"error": "Price not available"}), 404
+
+    @app.route("/api/quote/<ticker>")
+    def api_quote(ticker):
+        """Real-time quote with basic metadata."""
+        from stock_trading_system.utils.helpers import detect_market
+        t = ticker.upper()
+        dm = _get_data_manager()
+        price = dm.get_price(t)
+        if not price:
+            return jsonify({"error": "Quote not available"}), 404
+        return jsonify({
+            "ticker": t,
+            "market": detect_market(t),
+            "price": price,
+        })
+
+    # ── Chart / Fundamentals / News ─────────────────────────────────────
+
+    @app.route("/api/chart/<ticker>")
+    def api_chart(ticker):
+        """Return OHLCV data for K-line rendering.
+
+        Query params:
+            period: 1d, 5d, 1mo, 3mo, 6mo, 1y (default 1mo)
+            interval: 1d, 1h, 5m (default 1d)
+        """
+        period = request.args.get("period", "1mo")
+        interval = request.args.get("interval", "1d")
+        t = ticker.upper()
+
+        try:
+            df = _get_data_manager().get_history(t, period=period, interval=interval)
+        except Exception as e:
+            logger.warning("Chart data failed for %s: %s", t, e)
+            return jsonify({"error": str(e)}), 500
+
+        if df is None or len(df) == 0:
+            return jsonify({"error": "No chart data"}), 404
+
+        # Normalize column names to lowercase for lookup
+        df = df.copy()
+        df.columns = [str(c).lower() for c in df.columns]
+
+        rows = []
+        for idx, row in df.iterrows():
+            try:
+                date_str = idx.strftime("%Y-%m-%d") if hasattr(idx, "strftime") else str(idx)
+            except Exception:
+                date_str = str(idx)
+            rows.append({
+                "date": date_str,
+                "open": float(row.get("open", 0) or 0),
+                "high": float(row.get("high", 0) or 0),
+                "low": float(row.get("low", 0) or 0),
+                "close": float(row.get("close", 0) or 0),
+                "volume": float(row.get("volume", 0) or 0),
+            })
+        return jsonify({
+            "ticker": t,
+            "period": period,
+            "interval": interval,
+            "data": rows,
+        })
+
+    @app.route("/api/fundamentals/<ticker>")
+    def api_fundamentals(ticker):
+        """Return fundamental indicators for a stock."""
+        t = ticker.upper()
+        try:
+            data = _get_data_manager().get_fundamentals(t)
+        except Exception as e:
+            logger.warning("Fundamentals failed for %s: %s", t, e)
+            return jsonify({"error": str(e)}), 500
+        if not data:
+            return jsonify({"error": "Fundamentals not available"}), 404
+        return jsonify(data)
+
+    @app.route("/api/news/<ticker>")
+    def api_news(ticker):
+        """Return recent news for a stock."""
+        t = ticker.upper()
+        try:
+            news = _get_data_manager().get_news(t)
+        except Exception as e:
+            logger.warning("News failed for %s: %s", t, e)
+            return jsonify({"error": str(e)}), 500
+        return jsonify(news or [])
+
+    # ── Portfolio Extras ────────────────────────────────────────────────
+
+    @app.route("/api/portfolio/update_cost", methods=["POST"])
+    def api_portfolio_update_cost():
+        data = request.json or {}
+        ticker = data.get("ticker", "").upper()
+        try:
+            avg_cost = float(data.get("avg_cost"))
+        except (TypeError, ValueError):
+            return jsonify({"error": "Invalid avg_cost"}), 400
+        if not ticker:
+            return jsonify({"error": "Missing ticker"}), 400
+        pm = _get_portfolio_mgr()
+        pm.update_cost(ticker, avg_cost)
+        return jsonify({"ok": True, "message": f"Updated {ticker} avg cost to {avg_cost}"})
+
+    @app.route("/api/portfolio/snapshot", methods=["POST"])
+    def api_portfolio_snapshot():
+        pm = _get_portfolio_mgr()
+        pm.take_snapshot()
+        return jsonify({"ok": True, "message": "Snapshot saved"})
+
+    # ── Scheduler Control ───────────────────────────────────────────────
+
+    @app.route("/api/scheduler/status")
+    def api_scheduler_status():
+        global _scheduler_thread
+        sched = _get_scheduler()
+        alive = _scheduler_thread is not None and _scheduler_thread.is_alive()
+        return jsonify({
+            "running": bool(alive and sched.is_running),
+            "thread_alive": bool(alive),
+            "alert_interval": sched._alert_interval,
+        })
+
+    @app.route("/api/scheduler/start", methods=["POST"])
+    def api_scheduler_start():
+        global _scheduler_thread
+        sched = _get_scheduler()
+        if _scheduler_thread is not None and _scheduler_thread.is_alive():
+            return jsonify({"ok": True, "message": "Scheduler already running"})
+        _scheduler_thread = threading.Thread(target=sched.start, daemon=True)
+        _scheduler_thread.start()
+        logger.info("Scheduler started via web API")
+        return jsonify({"ok": True, "message": "Scheduler started"})
+
+    @app.route("/api/scheduler/stop", methods=["POST"])
+    def api_scheduler_stop():
+        global _scheduler_thread
+        if _scheduler is None or _scheduler_thread is None or not _scheduler_thread.is_alive():
+            return jsonify({"ok": True, "message": "Scheduler not running"})
+        _scheduler.stop()
+        _scheduler_thread.join(timeout=3)
+        _scheduler_thread = None
+        logger.info("Scheduler stopped via web API")
+        return jsonify({"ok": True, "message": "Scheduler stopped"})
+
+    # ── Settings (read-only) ────────────────────────────────────────────
+
+    @app.route("/api/settings")
+    def api_settings():
+        """Return a masked view of the current config + runtime status."""
+        cfg = get_config()
+        gemini = cfg.get("gemini", {}) or {}
+        polygon = cfg.get("polygon", {}) or {}
+        ib = cfg.get("ib", {}) or {}
+        telegram = (cfg.get("alerts", {}) or {}).get("telegram", {}) or {}
+        email = (cfg.get("alerts", {}) or {}).get("email", {}) or {}
+        portfolio_cfg = cfg.get("portfolio", {}) or {}
+
+        # Data source liveness (best-effort, non-blocking checks)
+        dm_status = {}
+        try:
+            dm_status["ib_enabled"] = bool(ib.get("enabled"))
+            dm_status["polygon_configured"] = bool(polygon.get("api_key"))
+            dm_status["akshare"] = True  # no-key provider, always usable
+        except Exception:
+            pass
+
+        return jsonify({
+            "gemini": {
+                "model": gemini.get("model", ""),
+                "deep_think_model": gemini.get("deep_think_model", ""),
+                "thinking_level": gemini.get("thinking_level", ""),
+                "api_key_masked": _mask_secret(gemini.get("api_key", "")),
+            },
+            "polygon": {
+                "api_key_masked": _mask_secret(polygon.get("api_key", "")),
+            },
+            "ib": {
+                "host": ib.get("host", ""),
+                "port": ib.get("port", ""),
+                "client_id": ib.get("client_id", ""),
+                "enabled": bool(ib.get("enabled")),
+            },
+            "telegram": {
+                "bot_token_masked": _mask_secret(telegram.get("bot_token", "")),
+                "chat_id": telegram.get("chat_id", ""),
+            },
+            "email": {
+                "smtp_host": email.get("smtp_host", ""),
+                "smtp_port": email.get("smtp_port", ""),
+                "username": email.get("username", ""),
+                "password_masked": _mask_secret(email.get("password", "")),
+                "to_address": email.get("to_address", ""),
+            },
+            "portfolio": {
+                "db_path": portfolio_cfg.get("db_path", ""),
+            },
+            "data_sources": dm_status,
+        })
 
     # ── Seed Data ───────────────────────────────────────────────────────
 

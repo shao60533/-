@@ -3,30 +3,77 @@
 const socket = io();
 let chartPnl = null;
 let chartAllocation = null;
+let chartKline = null;
+let currentKlineTicker = null;
+let currentKlineRange = '1mo';
 
 // ── Navigation ─────────────────────────────────────────────────────────────
+
+function switchTab(page) {
+    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+    const target = document.getElementById('page-' + page);
+    if (!target) return;
+    target.classList.add('active');
+
+    // Highlight sidebar entries
+    document.querySelectorAll('#sidebar .nav-link').forEach(l => {
+        l.classList.toggle('active', l.dataset.page === page);
+    });
+    // Highlight mobile tabbar entries (5 primary items only)
+    document.querySelectorAll('#mobile-tabbar .tabbar-item[data-page]').forEach(l => {
+        l.classList.toggle('active', l.dataset.page === page);
+    });
+    // For secondary pages, activate the "More" tab
+    const primaryPages = ['dashboard', 'analysis', 'screener', 'portfolio'];
+    const moreBtn = document.getElementById('tabbar-more');
+    if (moreBtn) moreBtn.classList.toggle('active', !primaryPages.includes(page));
+
+    // Load page data
+    if (page === 'dashboard') loadDashboard();
+    if (page === 'portfolio') loadPortfolio();
+    if (page === 'alerts') loadAlerts();
+    if (page === 'history') loadHistory();
+    if (page === 'settings') loadSettings();
+
+    window.scrollTo({ top: 0, behavior: 'instant' in window ? 'instant' : 'auto' });
+}
 
 document.querySelectorAll('[data-page]').forEach(link => {
     link.addEventListener('click', e => {
         e.preventDefault();
         const page = link.dataset.page;
-        document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-        document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
-        document.getElementById('page-' + page).classList.add('active');
-        link.classList.add('active');
-        // Load page data
-        if (page === 'dashboard') loadDashboard();
-        if (page === 'portfolio') loadPortfolio();
-        if (page === 'alerts') loadAlerts();
-        if (page === 'history') loadHistory();
+        if (page) switchTab(page);
     });
 });
 
-document.getElementById('sidebar-toggle').addEventListener('click', () => {
-    document.getElementById('sidebar').classList.toggle('collapsed');
-    document.getElementById('main-content').classList.toggle('expanded');
-    setTimeout(() => { if (chartPnl) chartPnl.resize(); if (chartAllocation) chartAllocation.resize(); }, 350);
-});
+const sidebarToggleBtn = document.getElementById('sidebar-toggle');
+if (sidebarToggleBtn) {
+    sidebarToggleBtn.addEventListener('click', () => {
+        document.getElementById('sidebar').classList.toggle('collapsed');
+        document.getElementById('main-content').classList.toggle('expanded');
+        setTimeout(() => {
+            if (chartPnl) chartPnl.resize();
+            if (chartAllocation) chartAllocation.resize();
+            if (chartKline) chartKline.resize();
+        }, 350);
+    });
+}
+
+// ── Mobile "More" Sheet ────────────────────────────────────────────────────
+
+function toggleMoreSheet() {
+    const sheet = document.getElementById('more-sheet');
+    const backdrop = document.getElementById('more-sheet-backdrop');
+    if (!sheet || !backdrop) return;
+    const open = !sheet.classList.contains('show');
+    sheet.classList.toggle('show', open);
+    backdrop.classList.toggle('show', open);
+}
+
+function closeMoreSheet() {
+    document.getElementById('more-sheet').classList.remove('show');
+    document.getElementById('more-sheet-backdrop').classList.remove('show');
+}
 
 // ── Clock ──────────────────────────────────────────────────────────────────
 
@@ -127,14 +174,14 @@ async function loadDashboard() {
     document.getElementById('dash-pnl-pct').className = 'stat-value ' + pnlClass(pnl.total_pnl_pct);
     document.getElementById('dash-alerts-count').textContent = data.alerts_count;
 
-    // Holdings table
+    // Holdings - desktop table
     const tbody = document.querySelector('#dash-holdings-table tbody');
     tbody.innerHTML = '';
-    data.holdings.forEach(h => {
+    (data.holdings || []).forEach(h => {
         const cls = pnlClass(h.pnl);
         tbody.innerHTML += `<tr>
             <td><strong>${h.ticker}</strong></td>
-            <td>${h.market.toUpperCase()}</td>
+            <td>${(h.market || '').toUpperCase()}</td>
             <td>${fmt(h.shares, 0)}</td>
             <td>${fmtCurrency(h.avg_cost, h.market)}</td>
             <td>${fmtCurrency(h.current_price, h.market)}</td>
@@ -143,12 +190,46 @@ async function loadDashboard() {
         </tr>`;
     });
 
+    // Holdings - mobile cards
+    renderHoldingsCards('dash-holdings-cards', data.holdings || []);
+
     // P&L Chart
     renderPnlChart(data.history);
 
     // Allocation Chart
     const alloc = await api('/api/portfolio/allocation');
     if (alloc) renderAllocationChart(alloc);
+}
+
+function renderHoldingsCards(containerId, holdings, withActions = false) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    if (!holdings || holdings.length === 0) {
+        container.innerHTML = '<p class="text-muted" style="font-size:13px;">暂无持仓</p>';
+        return;
+    }
+    container.innerHTML = holdings.map(h => {
+        const cls = pnlClass(h.pnl);
+        const actions = withActions ? `
+            <div class="m-card-actions">
+                <button class="btn btn-sm btn-outline-primary" onclick="analyzeFromScreen('${h.ticker}')"><i class="fas fa-brain"></i> 分析</button>
+                <button class="btn btn-sm btn-outline-info" onclick="openUpdateCostModal('${h.ticker}', ${h.avg_cost})"><i class="fas fa-edit"></i> 修成本</button>
+            </div>` : '';
+        return `<div class="m-card">
+            <div class="m-card-head">
+                <div>
+                    <span class="m-card-ticker">${h.ticker}</span>
+                    <span class="m-card-sub" style="margin-left:6px;">${(h.market || '').toUpperCase()} · ${fmt(h.shares, 0)} 股</span>
+                </div>
+                <div class="${cls}" style="font-weight:600;">${fmtPct(h.pnl_pct)}</div>
+            </div>
+            <div class="m-card-row"><span>现价</span><span>${fmtCurrency(h.current_price, h.market)}</span></div>
+            <div class="m-card-row"><span>成本</span><span>${fmtCurrency(h.avg_cost, h.market)}</span></div>
+            <div class="m-card-row"><span>市值</span><span>${fmtCurrency(h.market_value, h.market)}</span></div>
+            <div class="m-card-row"><span>盈亏</span><span class="${cls}">${fmtCurrency(h.pnl, h.market)}</span></div>
+            ${actions}
+        </div>`;
+    }).join('');
 }
 
 function renderPnlChart(history) {
@@ -193,9 +274,12 @@ function renderAllocationChart(alloc) {
 // ── Analysis ───────────────────────────────────────────────────────────────
 
 function runAnalysis() {
-    const ticker = document.getElementById('analyze-ticker').value.trim();
+    const ticker = document.getElementById('analyze-ticker').value.trim().toUpperCase();
     const date = document.getElementById('analyze-date').value;
     if (!ticker) { showToast('请输入股票代码', 'warning'); return; }
+
+    // Load price chart + fundamentals + news immediately (fast preview)
+    loadQuickData(ticker);
 
     document.getElementById('analysis-loading').style.display = 'block';
     document.getElementById('analysis-result').style.display = 'none';
@@ -208,6 +292,167 @@ function runAnalysis() {
         if (data && data.ok) showToast('分析已启动: ' + ticker, 'info');
     });
 }
+
+// ── Quick data (chart / fundamentals / news) ───────────────────────────────
+
+function loadQuickData(ticker) {
+    currentKlineTicker = ticker;
+    document.getElementById('quick-chart-card').style.display = 'block';
+    document.getElementById('side-data-row').style.display = 'flex';
+    document.getElementById('quick-chart-ticker').textContent = ticker;
+    loadQuote(ticker);
+    loadChart(ticker, currentKlineRange);
+    loadFundamentals(ticker);
+    loadNews(ticker);
+}
+
+async function loadQuote(ticker) {
+    const data = await api('/api/quote/' + encodeURIComponent(ticker));
+    const box = document.getElementById('quick-quote');
+    if (!data || data.error) { box.innerHTML = ''; return; }
+    const p = data.price || {};
+    const last = p.last || p.close || 0;
+    const change = p.change != null ? p.change : (p.pct_change || 0);
+    const changeCls = change >= 0 ? 'text-green' : 'text-red';
+    const sign = change >= 0 ? '+' : '';
+    box.innerHTML = `
+        <div class="quote-row">
+            <span class="quote-price">${fmtCurrency(last, data.market)}</span>
+            ${change !== 0 ? `<span class="${changeCls}">${sign}${fmt(change)}</span>` : ''}
+            ${p.volume ? `<span class="text-muted">成交量: ${fmt(p.volume, 0)}</span>` : ''}
+            ${p.high ? `<span class="text-muted">高: ${fmt(p.high)}</span>` : ''}
+            ${p.low ? `<span class="text-muted">低: ${fmt(p.low)}</span>` : ''}
+        </div>`;
+}
+
+async function loadChart(ticker, period) {
+    const data = await api(`/api/chart/${encodeURIComponent(ticker)}?period=${period}&interval=1d`);
+    const el = document.getElementById('chart-kline');
+    if (!data || data.error || !data.data || data.data.length === 0) {
+        el.innerHTML = '<p class="text-muted text-center" style="padding-top:120px;">暂无K线数据</p>';
+        if (chartKline) { chartKline.dispose(); chartKline = null; }
+        return;
+    }
+    renderKlineChart(data.data);
+}
+
+function renderKlineChart(rows) {
+    const el = document.getElementById('chart-kline');
+    el.innerHTML = '';
+    if (!chartKline) chartKline = echarts.init(el, 'dark');
+
+    const dates = rows.map(r => r.date);
+    const kdata = rows.map(r => [r.open, r.close, r.low, r.high]);
+    const volumes = rows.map((r, i) => ({
+        value: r.volume,
+        itemStyle: { color: r.close >= r.open ? '#3fb950' : '#f85149' },
+    }));
+
+    chartKline.setOption({
+        backgroundColor: 'transparent',
+        animation: false,
+        legend: { data: ['K线'], textStyle: { color: '#e6edf3' }, top: 0 },
+        tooltip: {
+            trigger: 'axis',
+            axisPointer: { type: 'cross' },
+            backgroundColor: '#1c2128',
+            borderColor: '#30363d',
+            textStyle: { color: '#e6edf3' },
+        },
+        axisPointer: { link: [{ xAxisIndex: 'all' }] },
+        grid: [
+            { left: 50, right: 20, top: 30, height: '62%' },
+            { left: 50, right: 20, top: '76%', height: '18%' },
+        ],
+        xAxis: [
+            { type: 'category', data: dates, axisLine: { lineStyle: { color: '#30363d' } }, axisLabel: { color: '#8b949e' } },
+            { type: 'category', gridIndex: 1, data: dates, axisLine: { lineStyle: { color: '#30363d' } }, axisLabel: { show: false } },
+        ],
+        yAxis: [
+            { scale: true, axisLine: { lineStyle: { color: '#30363d' } }, axisLabel: { color: '#8b949e' }, splitLine: { lineStyle: { color: '#21262d' } } },
+            { gridIndex: 1, axisLine: { lineStyle: { color: '#30363d' } }, axisLabel: { color: '#8b949e' }, splitLine: { show: false } },
+        ],
+        series: [
+            {
+                name: 'K线', type: 'candlestick', data: kdata,
+                itemStyle: {
+                    color: '#3fb950', color0: '#f85149',
+                    borderColor: '#3fb950', borderColor0: '#f85149',
+                },
+            },
+            { name: '成交量', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, data: volumes },
+        ],
+    });
+}
+
+async function loadFundamentals(ticker) {
+    const box = document.getElementById('fundamentals-box');
+    box.innerHTML = '<div class="text-muted" style="font-size:12px;">加载中...</div>';
+    const data = await api('/api/fundamentals/' + encodeURIComponent(ticker));
+    if (!data || data.error) {
+        box.innerHTML = '<p class="text-muted" style="font-size:12px;">暂无基本面数据</p>';
+        return;
+    }
+    // Render common metrics with fallback to empty
+    const metrics = [
+        ['市值', data.market_cap || data.marketCap],
+        ['市盈率', data.pe_ratio || data.pe || data.trailingPE],
+        ['市净率', data.pb_ratio || data.pb || data.priceToBook],
+        ['ROE', data.roe || data.returnOnEquity],
+        ['毛利率', data.gross_margin || data.grossMargins],
+        ['净利率', data.net_margin || data.profitMargins],
+        ['营收增长', data.revenue_growth || data.revenueGrowth],
+        ['股息率', data.dividend_yield || data.dividendYield],
+        ['Beta', data.beta],
+        ['52周高', data.week_52_high || data.fiftyTwoWeekHigh],
+        ['52周低', data.week_52_low || data.fiftyTwoWeekLow],
+        ['EPS', data.eps || data.trailingEps],
+    ];
+    const html = metrics
+        .filter(([_, v]) => v != null && v !== '')
+        .map(([k, v]) => {
+            let display = v;
+            if (typeof v === 'number') {
+                if (Math.abs(v) > 1e9) display = (v / 1e9).toFixed(2) + 'B';
+                else if (Math.abs(v) > 1e6) display = (v / 1e6).toFixed(2) + 'M';
+                else if (Math.abs(v) < 1 && v !== 0) display = (v * 100).toFixed(2) + '%';
+                else display = fmt(v);
+            }
+            return `<div class="fund-item"><span class="label">${k}</span><span class="value">${display}</span></div>`;
+        }).join('');
+    box.innerHTML = html ? `<div class="fund-grid">${html}</div>` : '<p class="text-muted" style="font-size:12px;">暂无基本面数据</p>';
+}
+
+async function loadNews(ticker) {
+    const box = document.getElementById('news-box');
+    box.innerHTML = '<div class="text-muted" style="font-size:12px;">加载中...</div>';
+    const data = await api('/api/news/' + encodeURIComponent(ticker));
+    if (!data || !Array.isArray(data) || data.length === 0) {
+        box.innerHTML = '<p class="text-muted" style="font-size:12px;">暂无新闻</p>';
+        return;
+    }
+    box.innerHTML = data.slice(0, 8).map(n => {
+        const title = n.title || n.headline || '(无标题)';
+        const url = n.url || n.link || '#';
+        const date = n.date || n.published || n.time || '';
+        const src = n.source || n.publisher || '';
+        return `<div class="news-item">
+            <a class="news-title" href="${url}" target="_blank" rel="noopener">${title}</a>
+            <div class="news-meta">${src} · ${date}</div>
+        </div>`;
+    }).join('');
+}
+
+// Range switcher for K-line
+document.addEventListener('click', e => {
+    const btn = e.target.closest('.range-switcher .btn');
+    if (!btn) return;
+    const parent = btn.closest('.range-switcher');
+    parent.querySelectorAll('.btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    currentKlineRange = btn.dataset.range;
+    if (currentKlineTicker) loadChart(currentKlineTicker, currentKlineRange);
+});
 
 socket.on('analysis_status', data => {
     showToast(`${data.ticker} 分析中...`, 'info');
@@ -286,9 +531,10 @@ socket.on('screen_result', data => {
     document.getElementById('screen-results').style.display = 'block';
     document.getElementById('btn-screen').disabled = false;
 
+    const results = data.results || [];
     const tbody = document.querySelector('#screen-table tbody');
     tbody.innerHTML = '';
-    (data.results || []).forEach((s, i) => {
+    results.forEach((s, i) => {
         const sigCls = s.signal === 'BUY' ? 'text-green' : s.signal === 'SELL' ? 'text-red' : 'text-yellow';
         tbody.innerHTML += `<tr>
             <td>${i + 1}</td>
@@ -300,7 +546,34 @@ socket.on('screen_result', data => {
             <td><button class="btn btn-sm btn-outline-primary" onclick="analyzeFromScreen('${s.ticker}')"><i class="fas fa-brain"></i></button></td>
         </tr>`;
     });
-    showToast(`筛选完成，共 ${(data.results || []).length} 只`, 'success');
+
+    // Mobile cards
+    const mobileContainer = document.getElementById('screen-cards');
+    if (mobileContainer) {
+        if (results.length === 0) {
+            mobileContainer.innerHTML = '<p class="text-muted" style="font-size:13px;">无结果</p>';
+        } else {
+            mobileContainer.innerHTML = results.map((s, i) => {
+                const sigCls = s.signal === 'BUY' ? 'text-green' : s.signal === 'SELL' ? 'text-red' : 'text-yellow';
+                return `<div class="m-card">
+                    <div class="m-card-head">
+                        <div>
+                            <span class="m-card-sub">#${i + 1}</span>
+                            <span class="m-card-ticker" style="margin-left:6px;">${s.ticker || ''}</span>
+                        </div>
+                        <span class="${sigCls}" style="font-weight:600;">${s.signal || ''}</span>
+                    </div>
+                    ${s.name ? `<div class="m-card-row"><span>名称</span><span>${s.name}</span></div>` : ''}
+                    ${s.price ? `<div class="m-card-row"><span>价格</span><span>${s.price}</span></div>` : ''}
+                    ${s.summary ? `<div class="m-card-row"><span>摘要</span><span style="max-width:60%;text-align:right;">${s.summary}</span></div>` : ''}
+                    <div class="m-card-actions">
+                        <button class="btn btn-sm btn-outline-primary" onclick="analyzeFromScreen('${s.ticker}')"><i class="fas fa-brain"></i> 分析</button>
+                    </div>
+                </div>`;
+            }).join('');
+        }
+    }
+    showToast(`筛选完成，共 ${results.length} 只`, 'success');
 });
 
 socket.on('screen_error', data => {
@@ -323,25 +596,31 @@ async function loadPortfolio() {
         api('/api/portfolio/transactions'),
     ]);
 
-    // Holdings table
+    // Holdings - desktop table
     const tbody = document.querySelector('#portfolio-table tbody');
     tbody.innerHTML = '';
     (holdings || []).forEach(h => {
         const cls = pnlClass(h.pnl);
         tbody.innerHTML += `<tr>
             <td><strong>${h.ticker}</strong></td>
-            <td>${h.market.toUpperCase()}</td>
+            <td>${(h.market || '').toUpperCase()}</td>
             <td>${fmt(h.shares, 0)}</td>
             <td>${fmtCurrency(h.avg_cost, h.market)}</td>
             <td>${fmtCurrency(h.current_price, h.market)}</td>
             <td>${fmtCurrency(h.market_value, h.market)}</td>
             <td class="${cls}">${fmtCurrency(h.pnl, h.market)}</td>
             <td class="${cls}">${fmtPct(h.pnl_pct)}</td>
-            <td><button class="btn btn-sm btn-outline-primary" onclick="analyzeFromScreen('${h.ticker}')"><i class="fas fa-brain"></i></button></td>
+            <td>
+                <button class="btn btn-sm btn-outline-primary" onclick="analyzeFromScreen('${h.ticker}')" title="分析"><i class="fas fa-brain"></i></button>
+                <button class="btn btn-sm btn-outline-info" onclick="openUpdateCostModal('${h.ticker}', ${h.avg_cost})" title="修正成本"><i class="fas fa-edit"></i></button>
+            </td>
         </tr>`;
     });
 
-    // Transactions table
+    // Holdings - mobile cards (with actions)
+    renderHoldingsCards('portfolio-cards', holdings || [], true);
+
+    // Transactions - desktop table
     const txBody = document.querySelector('#txn-table tbody');
     txBody.innerHTML = '';
     (transactions || []).slice(0, 50).forEach(t => {
@@ -355,6 +634,65 @@ async function loadPortfolio() {
             <td>${t.notes || ''}</td>
         </tr>`;
     });
+
+    // Transactions - mobile cards
+    renderTxnCards('txn-cards', transactions || []);
+}
+
+function renderTxnCards(containerId, txns) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    if (!txns || txns.length === 0) {
+        container.innerHTML = '<p class="text-muted" style="font-size:13px;">暂无交易记录</p>';
+        return;
+    }
+    container.innerHTML = txns.slice(0, 50).map(t => {
+        const cls = t.action === 'buy' ? 'text-green' : 'text-yellow';
+        return `<div class="m-card">
+            <div class="m-card-head">
+                <div>
+                    <span class="m-card-ticker">${t.ticker}</span>
+                    <span class="${cls}" style="font-weight:600;margin-left:8px;">${t.action.toUpperCase()}</span>
+                </div>
+                <div class="m-card-sub">${t.date}</div>
+            </div>
+            <div class="m-card-row"><span>数量</span><span>${fmt(t.shares, 0)}</span></div>
+            <div class="m-card-row"><span>价格</span><span>${fmt(t.price)}</span></div>
+            ${t.notes ? `<div class="m-card-row"><span>备注</span><span>${t.notes}</span></div>` : ''}
+        </div>`;
+    }).join('');
+}
+
+// ── Update Cost Modal ──────────────────────────────────────────────────────
+
+let _updateCostTicker = null;
+
+function openUpdateCostModal(ticker, currentCost) {
+    _updateCostTicker = ticker;
+    document.getElementById('updateCostTicker').textContent = ticker;
+    document.getElementById('updateCostInput').value = currentCost || '';
+    new bootstrap.Modal(document.getElementById('updateCostModal')).show();
+}
+
+async function submitUpdateCost() {
+    const avgCost = document.getElementById('updateCostInput').value;
+    if (!avgCost || !_updateCostTicker) {
+        showToast('请输入有效的成本价', 'warning'); return;
+    }
+    const data = await api('/api/portfolio/update_cost', {
+        method: 'POST',
+        body: JSON.stringify({ ticker: _updateCostTicker, avg_cost: avgCost }),
+    });
+    if (data && data.ok) {
+        showToast(data.message || '已更新', 'success');
+        bootstrap.Modal.getInstance(document.getElementById('updateCostModal')).hide();
+        loadPortfolio();
+    }
+}
+
+async function takeSnapshot() {
+    const data = await api('/api/portfolio/snapshot', { method: 'POST' });
+    if (data && data.ok) showToast(data.message || '快照已保存', 'success');
 }
 
 async function addPosition() {
@@ -397,27 +735,50 @@ async function sellPosition() {
 
 // ── Alerts ─────────────────────────────────────────────────────────────────
 
+const ALERT_COND_LABELS = {
+    price_above: '价格高于', price_below: '价格低于',
+    pct_change_above: '涨幅超过', pct_change_below: '跌幅超过',
+    volume_spike: '成交量超过', stop_loss: '止损价', take_profit: '止盈价',
+};
+
 async function loadAlerts() {
     const alerts = await api('/api/alerts');
     const tbody = document.querySelector('#alerts-table tbody');
     tbody.innerHTML = '';
 
-    const condLabels = {
-        price_above: '价格高于', price_below: '价格低于',
-        pct_change_above: '涨幅超过', pct_change_below: '跌幅超过',
-        volume_spike: '成交量超过', stop_loss: '止损价', take_profit: '止盈价',
-    };
-
     (alerts || []).forEach(a => {
         tbody.innerHTML += `<tr>
             <td>${a.id}</td>
             <td><strong>${a.ticker}</strong></td>
-            <td>${condLabels[a.condition] || a.condition}</td>
+            <td>${ALERT_COND_LABELS[a.condition] || a.condition}</td>
             <td>${a.threshold}</td>
             <td>${a.created}</td>
             <td><button class="btn btn-sm btn-outline-danger" onclick="removeAlert(${a.id})"><i class="fas fa-trash"></i></button></td>
         </tr>`;
     });
+
+    // Mobile cards
+    const mobileContainer = document.getElementById('alerts-cards');
+    if (mobileContainer) {
+        if (!alerts || alerts.length === 0) {
+            mobileContainer.innerHTML = '<p class="text-muted" style="font-size:13px;">暂无活跃预警</p>';
+        } else {
+            mobileContainer.innerHTML = alerts.map(a => `
+                <div class="m-card">
+                    <div class="m-card-head">
+                        <div>
+                            <span class="m-card-ticker">${a.ticker}</span>
+                            <span class="m-card-sub" style="margin-left:6px;">#${a.id}</span>
+                        </div>
+                        <button class="btn btn-sm btn-outline-danger" onclick="removeAlert(${a.id})"><i class="fas fa-trash"></i></button>
+                    </div>
+                    <div class="m-card-row"><span>条件</span><span>${ALERT_COND_LABELS[a.condition] || a.condition}</span></div>
+                    <div class="m-card-row"><span>阈值</span><span>${a.threshold}</span></div>
+                    <div class="m-card-row"><span>创建时间</span><span>${a.created}</span></div>
+                </div>
+            `).join('');
+        }
+    }
 }
 
 async function addAlert() {
@@ -585,6 +946,89 @@ async function showHistoryDetail(id) {
     new bootstrap.Modal(document.getElementById('historyModal')).show();
 }
 
+// ── Settings ───────────────────────────────────────────────────────────────
+
+async function loadSettings() {
+    const [settings, schedStatus] = await Promise.all([
+        api('/api/settings'),
+        api('/api/scheduler/status'),
+    ]);
+    renderSchedulerStatus(schedStatus);
+    renderDataSourceStatus(settings);
+    renderSettingsConfig(settings);
+}
+
+function renderSchedulerStatus(s) {
+    const box = document.getElementById('scheduler-status');
+    if (!box) return;
+    if (!s) { box.innerHTML = '<span class="text-muted">无法获取状态</span>'; return; }
+    const running = s.running;
+    const dot = running ? '<span class="status-dot ok"></span>' : '<span class="status-dot idle"></span>';
+    const label = running ? '<span class="text-green">运行中</span>' : '<span class="text-muted">已停止</span>';
+    box.innerHTML = `
+        <div class="settings-row">
+            <span class="label">${dot}运行状态</span>
+            <span class="value">${label}</span>
+        </div>
+        <div class="settings-row">
+            <span class="label">预警检查间隔</span>
+            <span class="value">${s.alert_interval || '--'} 秒</span>
+        </div>`;
+}
+
+function renderDataSourceStatus(settings) {
+    const box = document.getElementById('datasource-status');
+    if (!box || !settings) return;
+    const ds = settings.data_sources || {};
+    const ib = settings.ib || {};
+    const items = [
+        { name: 'IB TWS (美股主)', ok: !!ds.ib_enabled, sub: ib.host ? `${ib.host}:${ib.port || ''}` : '未配置' },
+        { name: 'Polygon.io (美股备用)', ok: !!ds.polygon_configured, sub: ds.polygon_configured ? '已配置' : '未配置 API Key' },
+        { name: 'AkShare (A股)', ok: !!ds.akshare, sub: '无需 Key' },
+    ];
+    box.innerHTML = items.map(it => `
+        <div class="settings-row">
+            <span class="label"><span class="status-dot ${it.ok ? 'ok' : 'fail'}"></span>${it.name}</span>
+            <span class="value">${it.sub}</span>
+        </div>
+    `).join('');
+}
+
+function renderSettingsConfig(s) {
+    const box = document.getElementById('settings-config');
+    if (!box || !s) return;
+    const gemini = s.gemini || {};
+    const telegram = s.telegram || {};
+    const email = s.email || {};
+    const portfolio = s.portfolio || {};
+    const rows = [
+        ['Gemini 模型', gemini.model || '--'],
+        ['Gemini 深度模型', gemini.deep_think_model || '--'],
+        ['Gemini API Key', gemini.api_key_masked || '未配置'],
+        ['Polygon API Key', (s.polygon && s.polygon.api_key_masked) || '未配置'],
+        ['Telegram Bot Token', telegram.bot_token_masked || '未配置'],
+        ['Telegram Chat ID', telegram.chat_id || '未配置'],
+        ['Email SMTP', email.smtp_host ? `${email.smtp_host}:${email.smtp_port}` : '未配置'],
+        ['Email 用户', email.username || '未配置'],
+        ['Email 收件人', email.to_address || '未配置'],
+        ['持仓数据库', portfolio.db_path || '--'],
+    ];
+    box.innerHTML = rows.map(([k, v]) => `
+        <div class="settings-row">
+            <span class="label">${k}</span>
+            <span class="value">${v}</span>
+        </div>
+    `).join('');
+}
+
+async function toggleScheduler(action) {
+    const data = await api('/api/scheduler/' + action, { method: 'POST' });
+    if (data && data.ok) {
+        showToast(data.message || 'OK', 'success');
+        setTimeout(loadSettings, 400);
+    }
+}
+
 // ── WebSocket alert notifications ──────────────────────────────────────────
 
 socket.on('alert_triggered', data => {
@@ -596,6 +1040,7 @@ socket.on('alert_triggered', data => {
 window.addEventListener('resize', () => {
     if (chartPnl) chartPnl.resize();
     if (chartAllocation) chartAllocation.resize();
+    if (chartKline) chartKline.resize();
 });
 
 // ── Init ───────────────────────────────────────────────────────────────────

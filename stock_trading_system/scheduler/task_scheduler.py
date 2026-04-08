@@ -3,6 +3,7 @@
 Handles timezone-aware scheduling for US and A-share markets.
 """
 
+import threading
 import time
 from datetime import datetime
 
@@ -25,32 +26,55 @@ class TaskScheduler:
         self._portfolio_manager = PortfolioManager(config)
         self._report_generator = ReportGenerator(config)
         self._alert_interval = config.get("alerts", {}).get("check_interval", 60)
+        self._stop_event = threading.Event()
+        self._jobs: list = []
+
+    @property
+    def is_running(self) -> bool:
+        """Whether the scheduler loop is currently active."""
+        return not self._stop_event.is_set() and bool(self._jobs)
 
     def setup(self):
         """Configure scheduled tasks."""
+        # Clear any previous jobs so setup() is idempotent
+        for job in self._jobs:
+            schedule.cancel_job(job)
+        self._jobs = []
+
         # Alert checking - every N seconds (configured interval)
-        schedule.every(self._alert_interval).seconds.do(self._check_alerts)
+        self._jobs.append(schedule.every(self._alert_interval).seconds.do(self._check_alerts))
 
         # Daily tasks
-        schedule.every().day.at("09:00").do(self._pre_market_scan)    # Pre-market
-        schedule.every().day.at("16:30").do(self._post_market_close)  # Post-market
+        self._jobs.append(schedule.every().day.at("09:00").do(self._pre_market_scan))    # Pre-market
+        self._jobs.append(schedule.every().day.at("16:30").do(self._post_market_close))  # Post-market
 
         # Weekly report - Sunday
-        schedule.every().sunday.at("18:00").do(self._weekly_report)
+        self._jobs.append(schedule.every().sunday.at("18:00").do(self._weekly_report))
 
         # Monthly report - 1st of month
-        schedule.every().day.at("19:00").do(self._monthly_report_if_needed)
+        self._jobs.append(schedule.every().day.at("19:00").do(self._monthly_report_if_needed))
 
         logger.info("Scheduler configured: alerts every %ds, daily/weekly/monthly tasks set", self._alert_interval)
 
     def start(self):
-        """Start the scheduler loop."""
+        """Start the scheduler loop (blocking)."""
         self.setup()
+        self._stop_event.clear()
         logger.info("Scheduler started. Press Ctrl+C to stop.")
 
-        while True:
+        while not self._stop_event.is_set():
             schedule.run_pending()
             time.sleep(1)
+
+        logger.info("Scheduler stopped.")
+
+    def stop(self):
+        """Signal the scheduler loop to exit and cancel registered jobs."""
+        self._stop_event.set()
+        for job in self._jobs:
+            schedule.cancel_job(job)
+        self._jobs = []
+        logger.info("Scheduler stop requested.")
 
     def _check_alerts(self):
         """Check all active alerts."""
