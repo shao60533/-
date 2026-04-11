@@ -99,7 +99,8 @@ class PortfolioDatabase:
                     entry_high REAL,
                     stop_loss REAL,
                     take_profit REAL,
-                    model TEXT
+                    model TEXT,
+                    steps_json TEXT
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_analysis_ticker_time
@@ -119,6 +120,7 @@ class PortfolioDatabase:
             ("stop_loss", "REAL"),
             ("take_profit", "REAL"),
             ("model", "TEXT"),
+            ("steps_json", "TEXT"),
         ]
         for name, typ in additions:
             if name not in cols:
@@ -272,6 +274,7 @@ class PortfolioDatabase:
                 adv = json.loads(advice_raw) or {}
             except Exception:
                 adv = {}
+        steps_raw = data.get("steps_json") or ""
         with self._get_conn() as conn:
             cur = conn.execute(
                 """INSERT INTO analysis_history
@@ -279,8 +282,8 @@ class PortfolioDatabase:
                     news_report, fundamentals_report, investment_debate,
                     risk_assessment, trade_decision, advice_json, created_at,
                     action, confidence, position_pct,
-                    entry_low, entry_high, stop_loss, take_profit, model)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    entry_low, entry_high, stop_loss, take_profit, model, steps_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     data["ticker"], data["date"], data["signal"],
                     data.get("market_report", ""),
@@ -300,6 +303,7 @@ class PortfolioDatabase:
                     _coerce_float(adv.get("stop_loss")),
                     _coerce_float(adv.get("take_profit")),
                     data.get("model"),
+                    steps_raw,
                 ),
             )
             return cur.lastrowid

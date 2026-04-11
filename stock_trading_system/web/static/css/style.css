@@ -690,3 +690,105 @@ body {
     .fund-grid { grid-template-columns: 1fr; }
     .more-sheet-grid { grid-template-columns: repeat(3, 1fr); }
 }
+
+/* ── Pipeline visualization (live Agent chain) ────────────────────────── */
+.pipeline-progress-bar {
+    height: 6px;
+    background: var(--border);
+    border-radius: 3px;
+    overflow: hidden;
+}
+.pipeline-progress-fill {
+    height: 100%;
+    width: 0;
+    background: linear-gradient(90deg, #1f6feb, #3fb950);
+    transition: width 0.4s ease;
+}
+.pipeline-dag {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: stretch;
+    gap: 8px;
+}
+.pipeline-step {
+    flex: 1 1 130px;
+    min-width: 130px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--bg-input, #0d1117);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    position: relative;
+    transition: all 0.2s ease;
+}
+.pipeline-step-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--text-primary);
+}
+.pipeline-step-head i { color: var(--text-muted); }
+.pipeline-step-label { white-space: nowrap; }
+.pipeline-step-meta {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 11px;
+}
+.pipeline-step-badge {
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: #21262d;
+    color: var(--text-muted);
+    font-weight: 500;
+}
+.pipeline-step-dur {
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+}
+.pipeline-arrow {
+    display: flex;
+    align-items: center;
+    color: var(--text-muted);
+    font-size: 12px;
+    flex: 0 0 auto;
+    padding: 0 2px;
+}
+
+/* Status-specific styles */
+.pipeline-step-pending { opacity: 0.6; }
+.pipeline-step-running {
+    border-color: #1f6feb;
+    box-shadow: 0 0 0 2px rgba(31, 111, 235, 0.18);
+    animation: pipelinePulse 1.6s ease-in-out infinite;
+}
+.pipeline-step-running .pipeline-step-head i { color: #58a6ff; }
+.pipeline-step-running .pipeline-step-badge { background: #1f6feb; color: #fff; }
+.pipeline-step-done {
+    border-color: #3fb950;
+    background: rgba(63, 185, 80, 0.08);
+}
+.pipeline-step-done .pipeline-step-head i { color: #3fb950; }
+.pipeline-step-done .pipeline-step-badge { background: #3fb950; color: #0d1117; }
+.pipeline-step-failed {
+    border-color: #f85149;
+    background: rgba(248, 81, 73, 0.08);
+}
+.pipeline-step-failed .pipeline-step-head i { color: #f85149; }
+.pipeline-step-failed .pipeline-step-badge { background: #f85149; color: #fff; }
+
+@keyframes pipelinePulse {
+    0%, 100% { box-shadow: 0 0 0 2px rgba(31, 111, 235, 0.18); }
+    50%      { box-shadow: 0 0 0 4px rgba(31, 111, 235, 0.35); }
+}
+
+/* Mobile: stack pipeline vertically, hide horizontal arrows */
+@media (max-width: 767.98px) {
+    .pipeline-dag { flex-direction: column; gap: 6px; }
+    .pipeline-arrow { display: none; }
+    .pipeline-step { min-width: 0; width: 100%; }
+}

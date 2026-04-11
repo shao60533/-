@@ -190,8 +190,15 @@ def create_app(config_path=None):
         def run_analysis():
             try:
                 socketio.emit("analysis_status", {"ticker": ticker, "status": "running"})
+
+                def _progress(event: dict):
+                    # Forward pipeline events verbatim, adding ticker for the UI
+                    # to filter out stale updates if multiple runs overlap.
+                    payload = {"ticker": ticker, **event}
+                    socketio.emit("analysis_pipeline", payload)
+
                 analyzer = _get_analyzer()
-                result = analyzer.analyze(ticker, date)
+                result = analyzer.analyze(ticker, date, progress_cb=_progress)
 
                 # Also generate strategy advice
                 advice = None
@@ -231,6 +238,7 @@ def create_app(config_path=None):
                     "risk_assessment": str(result.risk_assessment),
                     "trade_decision": str(result.trade_decision),
                     "advice": advice,
+                    "steps": result.steps,
                 }
                 socketio.emit("analysis_result", result_data)
 
@@ -240,9 +248,15 @@ def create_app(config_path=None):
                     from stock_trading_system.portfolio.database import PortfolioDatabase
                     db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
                     db = PortfolioDatabase(db_path)
+                    # Record which LLM actually produced this run so the history
+                    # page can show provenance for cross-model comparisons.
+                    gemini_cfg = get_config().get("gemini", {}) or {}
+                    model_name = gemini_cfg.get("deep_think_model") or gemini_cfg.get("model", "")
                     db.save_analysis({
                         **result_data,
                         "advice_json": _json.dumps(advice, ensure_ascii=False) if advice else "",
+                        "steps_json": _json.dumps(result.steps, ensure_ascii=False),
+                        "model": model_name,
                         "created_at": __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     })
                     logger.info("Analysis saved to history: %s", ticker)

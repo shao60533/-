@@ -273,6 +273,77 @@ function renderAllocationChart(alloc) {
 
 // ── Analysis ───────────────────────────────────────────────────────────────
 
+// Pipeline steps mirror PIPELINE_STEPS in agents/analyzer.py so the UI can
+// render all step cards up-front (before any WebSocket events arrive).
+const PIPELINE_STEPS = [
+    { id: 'market',       label: '技术面分析', icon: 'fa-chart-bar' },
+    { id: 'social',       label: '情绪分析',   icon: 'fa-comments' },
+    { id: 'news',         label: '新闻分析',   icon: 'fa-newspaper' },
+    { id: 'fundamentals', label: '基本面分析', icon: 'fa-building' },
+    { id: 'debate',       label: '多空辩论',   icon: 'fa-balance-scale' },
+    { id: 'risk',         label: '风险评估',   icon: 'fa-shield-alt' },
+    { id: 'decision',     label: '最终决策',   icon: 'fa-gavel' },
+];
+// Track live per-step state; keyed by step id.
+let _pipelineState = {};
+let _pipelineRunTicker = null;
+
+function _pipelineStatusLabel(status) {
+    if (status === 'done') return '完成';
+    if (status === 'running') return '进行中';
+    if (status === 'failed') return '失败';
+    return '等待';
+}
+
+function _pipelineRender() {
+    const host = document.getElementById('pipeline-dag');
+    if (!host) return;
+    const steps = PIPELINE_STEPS;
+    const html = steps.map((s, idx) => {
+        const st = _pipelineState[s.id] || { status: 'pending', duration_ms: 0 };
+        const cls = `pipeline-step pipeline-step-${st.status}`;
+        const dur = st.duration_ms ? `${(st.duration_ms / 1000).toFixed(1)}s` : '';
+        const badge = _pipelineStatusLabel(st.status);
+        const arrow = idx < steps.length - 1 ? '<div class="pipeline-arrow"><i class="fas fa-chevron-right"></i></div>' : '';
+        return `
+            <div class="${cls}" data-step="${s.id}">
+                <div class="pipeline-step-head">
+                    <i class="fas ${s.icon}"></i>
+                    <span class="pipeline-step-label">${s.label}</span>
+                </div>
+                <div class="pipeline-step-meta">
+                    <span class="pipeline-step-badge">${badge}</span>
+                    ${dur ? `<span class="pipeline-step-dur">${dur}</span>` : ''}
+                </div>
+            </div>${arrow}`;
+    }).join('');
+    host.innerHTML = html;
+
+    // Progress bar = done / total
+    const done = steps.filter(s => (_pipelineState[s.id] || {}).status === 'done').length;
+    const pct = Math.round((done / steps.length) * 100);
+    const fill = document.getElementById('pipeline-progress-fill');
+    if (fill) fill.style.width = pct + '%';
+
+    const summary = document.getElementById('pipeline-summary');
+    if (summary) {
+        const running = steps.find(s => (_pipelineState[s.id] || {}).status === 'running');
+        const failed = steps.find(s => (_pipelineState[s.id] || {}).status === 'failed');
+        if (failed) summary.textContent = `失败于: ${failed.label}`;
+        else if (done === steps.length) summary.textContent = `全部完成 (${done}/${steps.length})`;
+        else if (running) summary.textContent = `${running.label} · ${done}/${steps.length}`;
+        else summary.textContent = `${done}/${steps.length}`;
+    }
+}
+
+function _pipelineReset() {
+    _pipelineState = {};
+    PIPELINE_STEPS.forEach(s => { _pipelineState[s.id] = { status: 'pending', duration_ms: 0 }; });
+    document.getElementById('pipeline-card').style.display = 'block';
+    document.getElementById('btn-rerun').style.display = 'none';
+    _pipelineRender();
+}
+
 function runAnalysis() {
     const ticker = document.getElementById('analyze-ticker').value.trim().toUpperCase();
     const date = document.getElementById('analyze-date').value;
@@ -281,6 +352,8 @@ function runAnalysis() {
     // Load price chart + fundamentals + news immediately (fast preview)
     loadQuickData(ticker);
 
+    _pipelineRunTicker = ticker;
+    _pipelineReset();
     document.getElementById('analysis-loading').style.display = 'block';
     document.getElementById('analysis-result').style.display = 'none';
     document.getElementById('btn-analyze').disabled = true;
@@ -291,6 +364,13 @@ function runAnalysis() {
     }).then(data => {
         if (data && data.ok) showToast('分析已启动: ' + ticker, 'info');
     });
+}
+
+function rerunAnalysis() {
+    // Re-submit the last ticker+date combination. We don't yet support
+    // re-running a single failed step (that needs TradingAgents refactor);
+    // for now "重跑" triggers a full fresh run.
+    runAnalysis();
 }
 
 // ── Quick data (chart / fundamentals / news) ───────────────────────────────
@@ -458,6 +538,38 @@ socket.on('analysis_status', data => {
     showToast(`${data.ticker} 分析中...`, 'info');
 });
 
+// Live pipeline progress stream from StockAnalyzer.analyze() via the
+// `progress_cb` callback in /api/analyze. Events:
+//   pipeline_start / step_start / step_done / pipeline_done / pipeline_error
+socket.on('analysis_pipeline', event => {
+    // Ignore events that belong to a different (older) run.
+    if (_pipelineRunTicker && event.ticker && event.ticker !== _pipelineRunTicker) return;
+    const type = event.type;
+    if (type === 'pipeline_start') {
+        if (Array.isArray(event.steps)) {
+            event.steps.forEach(s => { _pipelineState[s.id] = { status: s.status, duration_ms: s.duration_ms || 0 }; });
+        }
+        _pipelineRender();
+    } else if (type === 'step_start') {
+        if (event.step) _pipelineState[event.step] = { status: 'running', duration_ms: 0 };
+        _pipelineRender();
+    } else if (type === 'step_done') {
+        if (event.step) _pipelineState[event.step] = { status: 'done', duration_ms: event.duration_ms || 0 };
+        _pipelineRender();
+    } else if (type === 'pipeline_done') {
+        if (Array.isArray(event.steps)) {
+            event.steps.forEach(s => { _pipelineState[s.id] = { status: s.status, duration_ms: s.duration_ms || 0 }; });
+        }
+        _pipelineRender();
+    } else if (type === 'pipeline_error') {
+        if (Array.isArray(event.steps)) {
+            event.steps.forEach(s => { _pipelineState[s.id] = { status: s.status, duration_ms: s.duration_ms || 0 }; });
+        }
+        document.getElementById('btn-rerun').style.display = 'inline-block';
+        _pipelineRender();
+    }
+});
+
 socket.on('analysis_result', data => {
     document.getElementById('analysis-loading').style.display = 'none';
     document.getElementById('analysis-result').style.display = 'block';
@@ -503,6 +615,9 @@ socket.on('analysis_result', data => {
 socket.on('analysis_error', data => {
     document.getElementById('analysis-loading').style.display = 'none';
     document.getElementById('btn-analyze').disabled = false;
+    // Surface the rerun button so the user doesn't have to retype everything.
+    const rerunBtn = document.getElementById('btn-rerun');
+    if (rerunBtn) rerunBtn.style.display = 'inline-block';
     showToast(`分析失败: ${data.error}`, 'error');
 });
 
