@@ -1757,35 +1757,167 @@ function renderDataSourceStatus(settings) {
     `).join('');
 }
 
+// Settings editor state — the last full /api/settings response + edit mode.
+let _settingsData = null;
+let _settingsEditMode = false;
+let _settingsWritable = new Set();
+
+// Definition of every editable row — label, dotted-path, input type,
+// current-value accessor (reads from the /api/settings response), and
+// optional hint. Rendered in both read and edit modes so the layout stays
+// identical on toggle.
+function _settingsFields(s) {
+    const mask = v => v || '未配置';
+    return [
+        { group: 'Gemini (LLM)', rows: [
+            { label: '快速模型', path: 'gemini.model', type: 'text',
+              display: s.gemini?.model || '--' },
+            { label: '深度模型', path: 'gemini.deep_think_model', type: 'text',
+              display: s.gemini?.deep_think_model || '--' },
+            { label: '思考等级', path: 'gemini.thinking_level', type: 'text',
+              display: s.gemini?.thinking_level || '--' },
+            { label: 'API Key', path: 'gemini.api_key', type: 'password',
+              display: mask(s.gemini?.api_key_masked),
+              placeholder: '粘贴新 Gemini API Key 以覆盖' },
+        ]},
+        { group: 'Polygon', rows: [
+            { label: 'API Key', path: 'polygon.api_key', type: 'password',
+              display: mask(s.polygon?.api_key_masked) },
+        ]},
+        { group: 'Qwen (DashScope 兜底)', rows: [
+            { label: '启用', path: 'qwen.enabled', type: 'bool',
+              display: s.qwen?.enabled ? '<span class="text-green">已启用</span>' : '<span class="text-muted">未启用</span>',
+              valueBool: !!s.qwen?.enabled },
+            { label: '模型', path: 'qwen.model', type: 'text',
+              display: s.qwen?.model || '--' },
+            { label: 'API Key', path: 'qwen.api_key', type: 'password',
+              display: mask(s.qwen?.api_key_masked) },
+        ]},
+        { group: 'Interactive Brokers', rows: [
+            { label: '启用', path: 'ib.enabled', type: 'bool',
+              display: s.ib?.enabled ? '<span class="text-green">已启用</span>' : '<span class="text-muted">未启用</span>',
+              valueBool: !!s.ib?.enabled },
+            { label: 'Host', path: 'ib.host', type: 'text',
+              display: s.ib?.host || '--' },
+            { label: 'Port', path: 'ib.port', type: 'number',
+              display: s.ib?.port || '--' },
+            { label: 'Client ID', path: 'ib.client_id', type: 'number',
+              display: s.ib?.client_id || '--' },
+        ]},
+        { group: 'Telegram Bot', rows: [
+            { label: '启用', path: 'alerts.telegram.enabled', type: 'bool',
+              display: s.telegram?.bot_token_masked ? '<span class="text-green">已配置</span>' : '<span class="text-muted">未配置</span>',
+              valueBool: !!s.telegram?.bot_token_masked },
+            { label: 'Bot Token', path: 'alerts.telegram.bot_token', type: 'password',
+              display: mask(s.telegram?.bot_token_masked) },
+            { label: 'Chat ID', path: 'alerts.telegram.chat_id', type: 'text',
+              display: s.telegram?.chat_id || '--' },
+        ]},
+        { group: 'Email', rows: [
+            { label: '启用', path: 'alerts.email.enabled', type: 'bool',
+              display: s.email?.smtp_host ? '<span class="text-green">已配置</span>' : '<span class="text-muted">未配置</span>',
+              valueBool: !!s.email?.smtp_host },
+            { label: 'SMTP Host', path: 'alerts.email.smtp_host', type: 'text',
+              display: s.email?.smtp_host || '--' },
+            { label: 'SMTP Port', path: 'alerts.email.smtp_port', type: 'number',
+              display: s.email?.smtp_port || '--' },
+            { label: '用户名', path: 'alerts.email.username', type: 'text',
+              display: s.email?.username || '--' },
+            { label: '密码', path: 'alerts.email.password', type: 'password',
+              display: mask(s.email?.password_masked) },
+            { label: '收件人', path: 'alerts.email.to_address', type: 'text',
+              display: s.email?.to_address || '--' },
+        ]},
+        { group: '运行时', rows: [
+            { label: '预警检查间隔 (秒)', path: 'alerts.check_interval', type: 'number',
+              display: (s.data_sources && s.alert_interval) || s.alert_interval || '--',
+              valueFallback: s.alert_interval },
+            { label: '持仓数据库', path: null, type: 'readonly',
+              display: s.portfolio?.db_path || '--' },
+        ]},
+    ];
+}
+
 function renderSettingsConfig(s) {
     const box = document.getElementById('settings-config');
     if (!box || !s) return;
-    const gemini = s.gemini || {};
-    const qwen = s.qwen || {};
-    const telegram = s.telegram || {};
-    const email = s.email || {};
-    const portfolio = s.portfolio || {};
-    const rows = [
-        ['Gemini 模型', gemini.model || '--'],
-        ['Gemini 深度模型', gemini.deep_think_model || '--'],
-        ['Gemini API Key', gemini.api_key_masked || '未配置'],
-        ['Polygon API Key', (s.polygon && s.polygon.api_key_masked) || '未配置'],
-        ['Qwen 状态', qwen.enabled ? '<span class="text-green">已启用</span>' : '<span class="text-muted">未启用</span>'],
-        ['Qwen 模型', qwen.model || '--'],
-        ['Qwen API Key', qwen.api_key_masked || '未配置'],
-        ['Telegram Bot Token', telegram.bot_token_masked || '未配置'],
-        ['Telegram Chat ID', telegram.chat_id || '未配置'],
-        ['Email SMTP', email.smtp_host ? `${email.smtp_host}:${email.smtp_port}` : '未配置'],
-        ['Email 用户', email.username || '未配置'],
-        ['Email 收件人', email.to_address || '未配置'],
-        ['持仓数据库', portfolio.db_path || '--'],
-    ];
-    box.innerHTML = rows.map(([k, v]) => `
-        <div class="settings-row">
-            <span class="label">${k}</span>
-            <span class="value">${v}</span>
-        </div>
-    `).join('');
+    _settingsData = s;
+    _settingsWritable = new Set(s.writable_paths || []);
+    const groups = _settingsFields(s);
+
+    const html = groups.map(g => {
+        const rowsHtml = g.rows.map(r => {
+            // Hide rows that aren't writable in edit mode unless they're readonly-display.
+            const writable = r.path && _settingsWritable.has(r.path);
+            const editable = _settingsEditMode && writable;
+            let valueHtml;
+            if (editable) {
+                if (r.type === 'bool') {
+                    valueHtml = `<label class="form-check form-switch m-0">
+                        <input class="form-check-input settings-input" type="checkbox"
+                            data-path="${r.path}" ${r.valueBool ? 'checked' : ''}>
+                    </label>`;
+                } else {
+                    const inputType = r.type === 'password' ? 'password' : (r.type === 'number' ? 'number' : 'text');
+                    const placeholder = r.placeholder || '输入以覆盖当前值';
+                    valueHtml = `<input type="${inputType}" class="form-control form-control-sm settings-input"
+                        data-path="${r.path}" placeholder="${placeholder}" autocomplete="off">`;
+                }
+            } else {
+                valueHtml = `<span class="value">${r.display}</span>`;
+            }
+            return `<div class="settings-row">
+                <span class="label">${r.label}${writable && !_settingsEditMode ? '' : ''}</span>
+                ${valueHtml}
+            </div>`;
+        }).join('');
+        return `<div class="settings-group">
+            <div class="settings-group-head">${g.group}</div>
+            ${rowsHtml}
+        </div>`;
+    }).join('');
+    box.innerHTML = html;
+}
+
+function toggleSettingsEdit(on) {
+    _settingsEditMode = !!on;
+    document.getElementById('btn-settings-edit').classList.toggle('d-none', _settingsEditMode);
+    document.getElementById('btn-settings-save').classList.toggle('d-none', !_settingsEditMode);
+    document.getElementById('btn-settings-cancel').classList.toggle('d-none', !_settingsEditMode);
+    if (_settingsData) renderSettingsConfig(_settingsData);
+}
+
+async function saveSettings() {
+    // Collect non-empty inputs. Password fields that are left blank on
+    // purpose don't get sent (so the existing key survives an accidental
+    // edit-without-typing-anything save).
+    const payload = {};
+    document.querySelectorAll('.settings-input').forEach(el => {
+        const path = el.dataset.path;
+        if (!path) return;
+        if (el.type === 'checkbox') {
+            payload[path] = el.checked;
+        } else {
+            const v = el.value.trim();
+            if (v !== '') payload[path] = v;
+        }
+    });
+    if (Object.keys(payload).length === 0) {
+        showToast('没有需要保存的改动', 'info');
+        toggleSettingsEdit(false);
+        return;
+    }
+    const data = await api('/api/settings', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+    });
+    if (data && data.ok) {
+        showToast(`已保存 ${data.count} 项设置`, 'success');
+        toggleSettingsEdit(false);
+        loadSettings();
+    } else if (data && data.error) {
+        showToast('保存失败: ' + data.error, 'error');
+    }
 }
 
 async function toggleScheduler(action) {

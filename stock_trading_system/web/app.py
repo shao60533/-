@@ -5,6 +5,7 @@ from flask import Flask, render_template, jsonify, request
 from flask_socketio import SocketIO
 
 from stock_trading_system.config import load_config, get_config
+from stock_trading_system.config.settings import update_user_config, WRITABLE_SETTING_PATHS
 from stock_trading_system.utils import get_logger
 
 logger = get_logger("web")
@@ -95,6 +96,35 @@ def _mask_secret(value: str, keep: int = 4) -> str:
     if len(s) <= keep:
         return "*" * len(s)
     return "*" * (len(s) - keep) + s[-keep:]
+
+
+def _reset_config_dependent_singletons(paths: list[str]):
+    """Clear lazy singletons whose config might have changed.
+
+    Called after a successful /api/settings POST so the next request picks
+    up the new config. We only reset the ones we know about — the scheduler
+    thread is left alone (user can restart it from the UI if needed).
+    """
+    global _analyzer, _alert_monitor, _data_manager, _screener, _strategy_engine, _report_gen
+    paths = paths or []
+    touched_gemini = any(p.startswith("gemini.") for p in paths)
+    touched_qwen = any(p.startswith("qwen.") for p in paths)
+    touched_polygon = any(p.startswith("polygon.") for p in paths)
+    touched_ib = any(p.startswith("ib.") for p in paths)
+    touched_alerts = any(p.startswith("alerts.") for p in paths)
+    # Analyzer uses gemini config.
+    if touched_gemini:
+        _analyzer = None
+    # Data manager fans out to IB/Polygon/Qwen.
+    if touched_ib or touched_polygon or touched_qwen:
+        _data_manager = None
+        _screener = None
+    # Alert monitor owns notifier handles + its own DataManager.
+    if touched_alerts or touched_ib or touched_polygon or touched_qwen:
+        _alert_monitor = None
+    # Reports depend on config defaults for output dir.
+    _report_gen = None
+    _strategy_engine = None
 
 
 def create_app(config_path=None):
@@ -614,7 +644,34 @@ def create_app(config_path=None):
                 "db_path": portfolio_cfg.get("db_path", ""),
             },
             "data_sources": dm_status,
+            "writable_paths": sorted(WRITABLE_SETTING_PATHS),
         })
+
+    @app.route("/api/settings", methods=["POST"])
+    def api_settings_update():
+        """Write whitelisted settings to ~/.stock_trading/config.yaml.
+
+        Body: { "gemini.api_key": "sk-...", "qwen.enabled": true, ... }
+        Only keys listed in WRITABLE_SETTING_PATHS are accepted; unknown
+        keys are silently ignored. Empty strings DO get persisted so the
+        user can clear a bad credential.
+        """
+        data = request.json or {}
+        if not isinstance(data, dict):
+            return jsonify({"error": "Expected JSON object"}), 400
+        # Reject empty writes outright — no point rewriting the file.
+        valid_updates = {k: v for k, v in data.items() if k in WRITABLE_SETTING_PATHS}
+        if not valid_updates:
+            return jsonify({"error": "No writable fields provided"}), 400
+        try:
+            new_cfg = update_user_config(valid_updates)
+        except Exception as e:
+            logger.error("Failed to write user config: %s", e)
+            return jsonify({"error": str(e)}), 500
+        applied = new_cfg.get("_applied_paths", []) or []
+        _reset_config_dependent_singletons(applied)
+        logger.info("Settings updated: %s", applied)
+        return jsonify({"ok": True, "applied": applied, "count": len(applied)})
 
     # ── Global Search ───────────────────────────────────────────────────
 

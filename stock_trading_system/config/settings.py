@@ -108,3 +108,101 @@ def get_config() -> dict:
     if _config is None:
         _config = load_config()
     return _config
+
+
+# Whitelist of dotted-path keys that the web settings editor is allowed to
+# modify. Everything else is rejected to avoid accidental writes to internal
+# structures (screener thresholds, report schedules, db paths, etc.).
+WRITABLE_SETTING_PATHS: set[str] = {
+    "gemini.api_key",
+    "gemini.model",
+    "gemini.deep_think_model",
+    "gemini.thinking_level",
+    "polygon.api_key",
+    "qwen.enabled",
+    "qwen.api_key",
+    "qwen.model",
+    "qwen.base_url",
+    "ib.host",
+    "ib.port",
+    "ib.client_id",
+    "ib.enabled",
+    "alerts.check_interval",
+    "alerts.telegram.bot_token",
+    "alerts.telegram.chat_id",
+    "alerts.telegram.enabled",
+    "alerts.email.smtp_host",
+    "alerts.email.smtp_port",
+    "alerts.email.username",
+    "alerts.email.password",
+    "alerts.email.to_address",
+    "alerts.email.enabled",
+}
+
+
+def _coerce_value(path: str, value):
+    """Coerce a web-submitted value to the right Python type based on key hints."""
+    if value is None:
+        return value
+    # Booleans
+    if path.endswith(".enabled"):
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in ("1", "true", "yes", "on")
+    # Integers
+    if path.endswith(".port") or path.endswith(".client_id") or path == "alerts.check_interval":
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+    # Everything else → string
+    return "" if value is None else str(value)
+
+
+def update_user_config(updates: dict) -> dict:
+    """Write a sub-tree of settings to the user config file.
+
+    `updates` is a flat dict mapping dotted paths (e.g. "gemini.api_key") to
+    values. Paths not in WRITABLE_SETTING_PATHS are ignored. Empty-string
+    values ARE written (they unset the key, useful for clearing a bad API
+    key). The user-config YAML is loaded, merged, written back, and then
+    `load_config()` is re-run so the in-memory config reflects the change.
+
+    Returns the newly loaded merged config.
+    """
+    global _config
+    # Read existing user config (not the merged view — we only want to write
+    # the values the user has customized, not dump the full defaults).
+    user_cfg: dict = {}
+    if _USER_CONFIG.exists():
+        with open(_USER_CONFIG) as f:
+            loaded = yaml.safe_load(f) or {}
+            if isinstance(loaded, dict):
+                user_cfg = loaded
+
+    applied: list[str] = []
+    for raw_path, raw_val in (updates or {}).items():
+        if raw_path not in WRITABLE_SETTING_PATHS:
+            continue
+        val = _coerce_value(raw_path, raw_val)
+        if val is None and not raw_path.endswith(".enabled"):
+            continue  # Invalid coercion (e.g. port="abc")
+        parts = raw_path.split(".")
+        node = user_cfg
+        for p in parts[:-1]:
+            if not isinstance(node.get(p), dict):
+                node[p] = {}
+            node = node[p]
+        node[parts[-1]] = val
+        applied.append(raw_path)
+
+    # Ensure parent dir exists, then write.
+    _USER_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+    with open(_USER_CONFIG, "w") as f:
+        yaml.safe_dump(user_cfg, f, sort_keys=False, allow_unicode=True)
+
+    # Reload so the in-memory config reflects the edit immediately.
+    _config = None
+    new_cfg = load_config()
+    new_cfg["_applied_paths"] = applied  # non-persisted metadata for the caller
+    return new_cfg
