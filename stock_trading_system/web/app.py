@@ -673,6 +673,61 @@ def create_app(config_path=None):
         logger.info("Settings updated: %s", applied)
         return jsonify({"ok": True, "applied": applied, "count": len(applied)})
 
+    # ── Backtesting ─────────────────────────────────────────────────────
+
+    @app.route("/api/backtest/strategies")
+    def api_backtest_strategies():
+        """List available backtest strategies with their parameter schemas."""
+        from stock_trading_system.strategy.backtest import Backtester
+        bt = Backtester(get_config())
+        return jsonify({"strategies": bt.list_strategies()})
+
+    @app.route("/api/backtest/run", methods=["POST"])
+    def api_backtest_run():
+        """Run a backtest and return the equity curve + trades + stats.
+
+        Body: {
+            "ticker": "AAPL",
+            "strategy": "sma_crossover",
+            "period": "1y",
+            "initial_capital": 100000,
+            "params": { "short_window": 20, "long_window": 50 }
+        }
+        """
+        from dataclasses import asdict
+        from stock_trading_system.strategy.backtest import Backtester
+        data = request.json or {}
+        ticker = (data.get("ticker") or "").upper().strip()
+        strategy = data.get("strategy") or "buy_and_hold"
+        period = data.get("period") or "1y"
+        try:
+            initial_capital = float(data.get("initial_capital") or 100_000)
+        except (TypeError, ValueError):
+            return jsonify({"error": "Invalid initial_capital"}), 400
+        params = data.get("params") or {}
+        if not ticker:
+            return jsonify({"error": "Missing ticker"}), 400
+
+        try:
+            bt = Backtester(get_config())
+            result = bt.run(
+                ticker=ticker,
+                strategy_id=strategy,
+                initial_capital=initial_capital,
+                period=period,
+                params=params,
+            )
+        except ValueError as ve:
+            return jsonify({"error": str(ve)}), 400
+        except Exception as e:
+            logger.error("Backtest failed: %s", e)
+            return jsonify({"error": str(e)}), 500
+
+        # Convert dataclasses to dicts for JSON serialisation.
+        payload = asdict(result)
+        payload["trades"] = [asdict(t) if not isinstance(t, dict) else t for t in result.trades]
+        return jsonify(payload)
+
     # ── Global Search ───────────────────────────────────────────────────
 
     @app.route("/api/search")

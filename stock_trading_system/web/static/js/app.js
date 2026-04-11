@@ -6,6 +6,8 @@ let chartAllocation = null;
 let chartKline = null;
 let currentKlineTicker = null;
 let currentKlineRange = '1mo';
+let chartBacktest = null;
+let _backtestStrategies = null;
 
 // ── Navigation ─────────────────────────────────────────────────────────────
 
@@ -34,6 +36,7 @@ function switchTab(page) {
     if (page === 'alerts') loadAlerts();
     if (page === 'history') loadHistory();
     if (page === 'settings') loadSettings();
+    if (page === 'backtest') loadBacktestStrategies();
 
     window.scrollTo({ top: 0, behavior: 'instant' in window ? 'instant' : 'auto' });
 }
@@ -1934,12 +1937,230 @@ socket.on('alert_triggered', data => {
     showToast(`🚨 预警触发: ${data.ticker} ${data.condition} ${data.threshold}`, 'warning');
 });
 
+// ── Backtest ───────────────────────────────────────────────────────────────
+
+async function loadBacktestStrategies() {
+    // Cache: only fetch once per session unless the dropdown is empty.
+    const sel = document.getElementById('bt-strategy');
+    if (!sel) return;
+    if (_backtestStrategies) {
+        _renderBacktestStrategyOptions();
+        return;
+    }
+    const data = await api('/api/backtest/strategies');
+    if (!data || !data.strategies) {
+        sel.innerHTML = '<option value="">加载失败</option>';
+        return;
+    }
+    _backtestStrategies = data.strategies;
+    _renderBacktestStrategyOptions();
+}
+
+function _renderBacktestStrategyOptions() {
+    const sel = document.getElementById('bt-strategy');
+    if (!sel || !_backtestStrategies) return;
+    sel.innerHTML = _backtestStrategies
+        .map(s => `<option value="${s.id}">${s.label}</option>`)
+        .join('');
+    onBacktestStrategyChange();
+}
+
+function onBacktestStrategyChange() {
+    const sel = document.getElementById('bt-strategy');
+    const descEl = document.getElementById('bt-strategy-desc');
+    const zone = document.getElementById('bt-params-zone');
+    if (!sel || !_backtestStrategies) return;
+    const strat = _backtestStrategies.find(s => s.id === sel.value);
+    if (!strat) { zone.innerHTML = ''; descEl.textContent = ''; return; }
+    descEl.textContent = strat.description || '';
+    if (!strat.params || strat.params.length === 0) {
+        zone.innerHTML = '<div class="col-12 text-muted" style="font-size:12px;">该策略无需额外参数</div>';
+        return;
+    }
+    zone.innerHTML = strat.params.map(p => {
+        const step = p.type === 'float' ? '0.1' : '1';
+        return `<div class="col-6 col-md-3">
+            <label class="form-label">${p.label}</label>
+            <input type="number" class="form-control bt-param" data-name="${p.name}"
+                value="${p.default}" min="${p.min ?? ''}" max="${p.max ?? ''}" step="${step}">
+        </div>`;
+    }).join('');
+}
+
+async function runBacktest() {
+    const btn = document.getElementById('btn-run-backtest');
+    const ticker = (document.getElementById('bt-ticker').value || '').trim().toUpperCase();
+    const strategy = document.getElementById('bt-strategy').value;
+    const period = document.getElementById('bt-period').value;
+    const capital = parseFloat(document.getElementById('bt-capital').value || '100000');
+    if (!ticker) { showToast('请输入股票代码', 'warning'); return; }
+    if (!strategy) { showToast('请选择策略', 'warning'); return; }
+
+    const params = {};
+    document.querySelectorAll('#bt-params-zone .bt-param').forEach(inp => {
+        const v = inp.value;
+        if (v !== '' && !isNaN(Number(v))) params[inp.dataset.name] = Number(v);
+    });
+
+    btn.disabled = true;
+    const originalHtml = btn.innerHTML;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 运行中...';
+    try {
+        const data = await api('/api/backtest/run', {
+            method: 'POST',
+            body: JSON.stringify({
+                ticker, strategy, period,
+                initial_capital: capital,
+                params,
+            }),
+        });
+        if (!data || data.error) {
+            showToast('回测失败: ' + (data && data.error ? data.error : '未知错误'), 'error');
+            return;
+        }
+        renderBacktestResults(data);
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = originalHtml;
+    }
+}
+
+function renderBacktestResults(r) {
+    document.getElementById('bt-empty').classList.add('d-none');
+    document.getElementById('bt-results').classList.remove('d-none');
+    renderBacktestStats(r);
+    renderBacktestEquity(r.equity_curve);
+    renderBacktestTrades(r.trades);
+}
+
+function renderBacktestStats(r) {
+    const row = document.getElementById('bt-stats-row');
+    const totalCls = r.total_return_pct > 0 ? 'text-green' : (r.total_return_pct < 0 ? 'text-red' : '');
+    const annCls = r.annualized_return_pct > 0 ? 'text-green' : (r.annualized_return_pct < 0 ? 'text-red' : '');
+    const stats = [
+        { label: '总收益率', value: fmtPct(r.total_return_pct), cls: totalCls },
+        { label: '年化收益', value: fmtPct(r.annualized_return_pct), cls: annCls },
+        { label: '最大回撤', value: '-' + fmt(r.max_drawdown_pct) + '%', cls: r.max_drawdown_pct > 0 ? 'text-red' : '' },
+        { label: '胜率', value: fmt(r.win_rate * 100) + '%', cls: '' },
+        { label: '交易次数', value: r.trade_count, cls: '' },
+        { label: '最终净值', value: '$' + fmt(r.final_equity), cls: '' },
+    ];
+    row.innerHTML = stats.map(s => `
+        <div class="col-6 col-md-2">
+            <div class="stat-card">
+                <div class="stat-label">${s.label}</div>
+                <div class="stat-value ${s.cls}" style="font-size:20px;">${s.value}</div>
+            </div>
+        </div>
+    `).join('');
+    // Small caption below — initial capital / date range / strategy.
+    const caption = `${r.ticker} · ${r.strategy} · ${r.start_date} ~ ${r.end_date} · 初始资金 $${fmt(r.initial_capital)}`;
+    row.innerHTML += `<div class="col-12"><div class="text-muted" style="font-size:12px;">${caption}</div></div>`;
+}
+
+function renderBacktestEquity(curve) {
+    const el = document.getElementById('bt-equity-chart');
+    if (!el) return;
+    if (!curve || curve.length === 0) {
+        el.innerHTML = '<p class="text-muted text-center" style="padding-top:120px;">暂无数据</p>';
+        return;
+    }
+    el.innerHTML = '';
+    if (chartBacktest) { chartBacktest.dispose(); chartBacktest = null; }
+    chartBacktest = echarts.init(el, 'dark');
+
+    const dates = curve.map(p => p.date);
+    const equity = curve.map(p => p.equity);
+    const prices = curve.map(p => p.price);
+    // Normalize price to a "buy-and-hold benchmark" starting at the same initial equity
+    // so the two series share a comparable scale.
+    const initEquity = equity[0] || 1;
+    const firstPrice = prices[0] || 1;
+    const benchmark = prices.map(p => initEquity * (p / firstPrice));
+
+    chartBacktest.setOption({
+        backgroundColor: 'transparent',
+        animation: false,
+        tooltip: {
+            trigger: 'axis',
+            backgroundColor: '#1c2128',
+            borderColor: '#30363d',
+            textStyle: { color: '#e6edf3' },
+            valueFormatter: v => '$' + Number(v).toLocaleString('en-US', { maximumFractionDigits: 0 }),
+        },
+        legend: {
+            data: ['策略净值', '买入并持有'],
+            textStyle: { color: '#e6edf3' },
+            top: 0,
+        },
+        grid: { left: 60, right: 20, top: 35, bottom: 40 },
+        xAxis: {
+            type: 'category', data: dates,
+            axisLine: { lineStyle: { color: '#30363d' } },
+            axisLabel: { color: '#8b949e' },
+        },
+        yAxis: {
+            scale: true,
+            axisLine: { lineStyle: { color: '#30363d' } },
+            axisLabel: { color: '#8b949e', formatter: v => '$' + Math.round(v / 1000) + 'k' },
+            splitLine: { lineStyle: { color: '#21262d' } },
+        },
+        series: [
+            {
+                name: '策略净值', type: 'line', data: equity, smooth: true, showSymbol: false,
+                lineStyle: { color: '#58a6ff', width: 2 },
+                areaStyle: { color: 'rgba(88, 166, 255, 0.15)' },
+            },
+            {
+                name: '买入并持有', type: 'line', data: benchmark, smooth: true, showSymbol: false,
+                lineStyle: { color: '#8b949e', width: 1, type: 'dashed' },
+            },
+        ],
+    });
+}
+
+function renderBacktestTrades(trades) {
+    const box = document.getElementById('bt-trades-body');
+    if (!trades || trades.length === 0) {
+        box.innerHTML = '<p class="text-muted text-center py-3 mb-0">该策略未产生交易</p>';
+        return;
+    }
+    const rows = trades.map((t, i) => {
+        const pnlCls = t.pnl > 0 ? 'text-green' : (t.pnl < 0 ? 'text-red' : '');
+        return `<tr>
+            <td>${i + 1}</td>
+            <td>${t.entry_date}</td>
+            <td>$${fmt(t.entry_price, 2)}</td>
+            <td>${t.exit_date}</td>
+            <td>$${fmt(t.exit_price, 2)}</td>
+            <td>${fmt(t.shares, 2)}</td>
+            <td class="${pnlCls}">$${fmt(t.pnl, 2)}</td>
+            <td class="${pnlCls}">${fmtPct(t.pnl_pct)}</td>
+            <td class="text-muted" style="font-size:11px;">${t.reason || ''}</td>
+        </tr>`;
+    }).join('');
+    box.innerHTML = `
+        <div class="table-responsive">
+            <table class="table table-sm mb-0 bt-trades-table">
+                <thead>
+                    <tr>
+                        <th>#</th><th>买入日期</th><th>买入价</th>
+                        <th>卖出日期</th><th>卖出价</th><th>股数</th>
+                        <th>盈亏</th><th>收益率</th><th>说明</th>
+                    </tr>
+                </thead>
+                <tbody>${rows}</tbody>
+            </table>
+        </div>`;
+}
+
 // ── Window resize ──────────────────────────────────────────────────────────
 
 window.addEventListener('resize', () => {
     if (chartPnl) chartPnl.resize();
     if (chartAllocation) chartAllocation.resize();
     if (chartKline) chartKline.resize();
+    if (chartBacktest) chartBacktest.resize();
 });
 
 // ── Init ───────────────────────────────────────────────────────────────────

@@ -1085,3 +1085,33 @@ body {
     .rule-preview { font-size: 13px; }
     .rule-preview-distance { display: block; margin-left: 0; margin-top: 4px; }
 }
+
+/* ── Backtest page ─────────────────────────────────────────────────────── */
+.bt-trades-table {
+    font-size: 12px;
+    color: var(--text-primary);
+}
+.bt-trades-table thead th {
+    color: var(--text-secondary);
+    font-weight: 500;
+    border-bottom-color: var(--border);
+    background: var(--bg-card);
+    position: sticky;
+    top: 0;
+}
+.bt-trades-table td, .bt-trades-table th {
+    border-color: var(--border);
+    padding: 8px 10px;
+    white-space: nowrap;
+}
+.bt-trades-table tbody tr:hover { background: rgba(88, 166, 255, 0.05); }
+
+#bt-params-zone:empty { display: none; }
+
+#page-backtest .form-text { font-size: 12px; color: var(--text-secondary); min-height: 16px; }
+
+@media (max-width: 767.98px) {
+    #bt-stats-row .stat-value { font-size: 16px !important; }
+    .bt-trades-table { font-size: 11px; }
+    .bt-trades-table td, .bt-trades-table th { padding: 6px 8px; }
+}
