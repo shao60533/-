@@ -323,6 +323,44 @@ def create_app(config_path=None):
             return jsonify(record)
         return jsonify({"error": "Not found"}), 404
 
+    @app.route("/api/history/compare")
+    def api_analysis_compare():
+        """Compare multiple analyses side-by-side. Query: ?ids=1,2,3 (up to 5)."""
+        from stock_trading_system.portfolio.database import PortfolioDatabase
+        ids_raw = request.args.get("ids", "").strip()
+        if not ids_raw:
+            return jsonify({"error": "Missing ids"}), 400
+        try:
+            ids = [int(x) for x in ids_raw.split(",") if x.strip()]
+        except ValueError:
+            return jsonify({"error": "Invalid ids"}), 400
+        if not ids:
+            return jsonify({"error": "Missing ids"}), 400
+        if len(ids) > 5:
+            return jsonify({"error": "At most 5 records can be compared"}), 400
+        db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
+        db = PortfolioDatabase(db_path)
+        records = db.get_analyses_by_ids(ids)
+        return jsonify({"count": len(records), "records": records})
+
+    @app.route("/api/history/timeline/<ticker>")
+    def api_analysis_timeline(ticker):
+        """Structured chronological history for one ticker (drift view)."""
+        from stock_trading_system.portfolio.database import PortfolioDatabase
+        limit = int(request.args.get("limit", 20))
+        db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
+        db = PortfolioDatabase(db_path)
+        records = db.get_analysis_timeline(ticker.upper(), limit=limit)
+        return jsonify({"ticker": ticker.upper(), "count": len(records), "records": records})
+
+    @app.route("/api/history/<int:analysis_id>", methods=["DELETE"])
+    def api_analysis_delete(analysis_id):
+        from stock_trading_system.portfolio.database import PortfolioDatabase
+        db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
+        db = PortfolioDatabase(db_path)
+        ok = db.delete_analysis(analysis_id)
+        return jsonify({"ok": ok})
+
     # ── Reports API ─────────────────────────────────────────────────────
 
     @app.route("/api/report", methods=["POST"])

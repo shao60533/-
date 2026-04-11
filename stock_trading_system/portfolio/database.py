@@ -11,6 +11,21 @@ from stock_trading_system.utils import get_logger
 logger = get_logger("portfolio.db")
 
 
+def _coerce_float(v):
+    """Best-effort float conversion that tolerates None / strings / percent suffix."""
+    if v is None or v == "":
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    if isinstance(v, str):
+        s = v.strip().rstrip("%").replace(",", "")
+        try:
+            return float(s)
+        except ValueError:
+            return None
+    return None
+
+
 class PortfolioDatabase:
     """SQLite database for portfolio data."""
 
@@ -76,9 +91,71 @@ class PortfolioDatabase:
                     risk_assessment TEXT,
                     trade_decision TEXT,
                     advice_json TEXT,
-                    created_at TEXT NOT NULL
+                    created_at TEXT NOT NULL,
+                    action TEXT,
+                    confidence TEXT,
+                    position_pct REAL,
+                    entry_low REAL,
+                    entry_high REAL,
+                    stop_loss REAL,
+                    take_profit REAL,
+                    model TEXT
                 );
+
+                CREATE INDEX IF NOT EXISTS idx_analysis_ticker_time
+                    ON analysis_history(ticker, created_at DESC);
             """)
+            self._migrate_analysis_history(conn)
+
+    def _migrate_analysis_history(self, conn: sqlite3.Connection):
+        """Idempotently add structured columns to pre-existing analysis_history."""
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(analysis_history)").fetchall()}
+        additions = [
+            ("action", "TEXT"),
+            ("confidence", "TEXT"),
+            ("position_pct", "REAL"),
+            ("entry_low", "REAL"),
+            ("entry_high", "REAL"),
+            ("stop_loss", "REAL"),
+            ("take_profit", "REAL"),
+            ("model", "TEXT"),
+        ]
+        for name, typ in additions:
+            if name not in cols:
+                try:
+                    conn.execute(f"ALTER TABLE analysis_history ADD COLUMN {name} {typ}")
+                except sqlite3.OperationalError as e:
+                    logger.warning("Migration for column %s failed: %s", name, e)
+        # Backfill structured columns from any existing rows' advice_json.
+        try:
+            rows = conn.execute(
+                "SELECT id, advice_json FROM analysis_history WHERE action IS NULL AND advice_json IS NOT NULL AND advice_json != ''"
+            ).fetchall()
+            for r in rows:
+                try:
+                    adv = json.loads(r["advice_json"])
+                except Exception:
+                    continue
+                if not isinstance(adv, dict):
+                    continue
+                conn.execute(
+                    """UPDATE analysis_history SET
+                         action = ?, confidence = ?, position_pct = ?,
+                         entry_low = ?, entry_high = ?, stop_loss = ?, take_profit = ?
+                       WHERE id = ?""",
+                    (
+                        adv.get("action"),
+                        adv.get("confidence"),
+                        _coerce_float(adv.get("suggested_position_pct")),
+                        _coerce_float(adv.get("entry_price_low")),
+                        _coerce_float(adv.get("entry_price_high")),
+                        _coerce_float(adv.get("stop_loss")),
+                        _coerce_float(adv.get("take_profit")),
+                        r["id"],
+                    ),
+                )
+        except sqlite3.OperationalError as e:
+            logger.warning("Backfill of analysis_history failed: %s", e)
 
     # ── Positions ────────────────────────────────────────────────────────
 
@@ -181,14 +258,29 @@ class PortfolioDatabase:
 
     # ── Analysis History ────────────────────────────────────────────────
 
-    def save_analysis(self, data: dict):
+    def save_analysis(self, data: dict) -> int:
+        """Insert an analysis record. Returns the new row id.
+
+        Structured fields (action/confidence/entry_low/high/stop_loss/take_profit/
+        position_pct) are extracted from `advice_json` automatically so downstream
+        history comparison queries don't need to re-parse JSON.
+        """
+        adv = {}
+        advice_raw = data.get("advice_json") or ""
+        if advice_raw:
+            try:
+                adv = json.loads(advice_raw) or {}
+            except Exception:
+                adv = {}
         with self._get_conn() as conn:
-            conn.execute(
+            cur = conn.execute(
                 """INSERT INTO analysis_history
                    (ticker, date, signal, market_report, sentiment_report,
                     news_report, fundamentals_report, investment_debate,
-                    risk_assessment, trade_decision, advice_json, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    risk_assessment, trade_decision, advice_json, created_at,
+                    action, confidence, position_pct,
+                    entry_low, entry_high, stop_loss, take_profit, model)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     data["ticker"], data["date"], data["signal"],
                     data.get("market_report", ""),
@@ -198,10 +290,19 @@ class PortfolioDatabase:
                     data.get("investment_debate", ""),
                     data.get("risk_assessment", ""),
                     data.get("trade_decision", ""),
-                    data.get("advice_json", ""),
+                    advice_raw,
                     data.get("created_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+                    adv.get("action"),
+                    adv.get("confidence"),
+                    _coerce_float(adv.get("suggested_position_pct")),
+                    _coerce_float(adv.get("entry_price_low")),
+                    _coerce_float(adv.get("entry_price_high")),
+                    _coerce_float(adv.get("stop_loss")),
+                    _coerce_float(adv.get("take_profit")),
+                    data.get("model"),
                 ),
             )
+            return cur.lastrowid
 
     def get_analysis_history(self, ticker: str | None = None, limit: int = 50) -> list[dict]:
         with self._get_conn() as conn:
@@ -223,3 +324,45 @@ class PortfolioDatabase:
                 "SELECT * FROM analysis_history WHERE id = ?", (analysis_id,)
             ).fetchone()
             return dict(row) if row else None
+
+    # Columns returned by compare/timeline queries — keep heavy report text out
+    # so the comparison payload stays small and mobile-friendly.
+    _STRUCTURED_COLS = (
+        "id, ticker, date, signal, created_at, action, confidence, position_pct, "
+        "entry_low, entry_high, stop_loss, take_profit, model"
+    )
+
+    def get_analyses_by_ids(self, analysis_ids: list[int]) -> list[dict]:
+        """Return structured (no report bodies) rows for the given ids, ordered
+        by created_at ascending so UI can render left-to-right chronologically."""
+        if not analysis_ids:
+            return []
+        # Sanitize to ints to build a safe IN-clause.
+        safe_ids = [int(i) for i in analysis_ids]
+        placeholders = ",".join("?" * len(safe_ids))
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                f"SELECT {self._STRUCTURED_COLS} FROM analysis_history "
+                f"WHERE id IN ({placeholders}) ORDER BY created_at ASC",
+                safe_ids,
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_analysis_timeline(self, ticker: str, limit: int = 20) -> list[dict]:
+        """Return up to `limit` most-recent records for one ticker, ordered
+        chronologically (oldest → newest) so the UI can draw time on the x-axis.
+        """
+        with self._get_conn() as conn:
+            # Pull the newest N first (DESC + id DESC as stable tie-breaker)...
+            rows = conn.execute(
+                f"SELECT {self._STRUCTURED_COLS} FROM analysis_history "
+                f"WHERE ticker = ? ORDER BY created_at DESC, id DESC LIMIT ?",
+                (ticker.upper(), limit),
+            ).fetchall()
+            # ...then flip to ascending for display.
+            return [dict(r) for r in rows[::-1]]
+
+    def delete_analysis(self, analysis_id: int) -> bool:
+        with self._get_conn() as conn:
+            cur = conn.execute("DELETE FROM analysis_history WHERE id = ?", (analysis_id,))
+            return cur.rowcount > 0

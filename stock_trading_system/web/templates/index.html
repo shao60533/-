@@ -305,11 +305,21 @@
         <div class="page" id="page-history">
             <h3 class="page-title">分析记录</h3>
             <div class="row g-2 mb-3">
-                <div class="col-8 col-md-4">
+                <div class="col-12 col-md-4">
                     <input type="text" class="form-control" id="history-filter" placeholder="搜索股票代码..." oninput="filterHistory()">
                 </div>
-                <div class="col-4 col-md-2">
+                <div class="col-6 col-md-3">
                     <button class="btn btn-outline-secondary w-100" onclick="loadHistory()"><i class="fas fa-sync"></i> 刷新</button>
+                </div>
+                <div class="col-6 col-md-3">
+                    <button class="btn btn-outline-primary w-100" id="btn-compare-toggle" onclick="toggleCompareMode()">
+                        <i class="fas fa-check-double"></i> <span id="compare-toggle-label">对比模式</span>
+                    </button>
+                </div>
+                <div class="col-12 col-md-2 d-none" id="compare-action-wrap">
+                    <button class="btn btn-primary w-100" id="btn-run-compare" onclick="runCompare()" disabled>
+                        <i class="fas fa-layer-group"></i> 对比 (<span id="compare-count">0</span>)
+                    </button>
                 </div>
             </div>
             <div id="history-list"></div>
@@ -322,6 +332,30 @@
                             <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                         </div>
                         <div class="modal-body" id="historyModalBody" style="color:#c9d1d9;"></div>
+                    </div>
+                </div>
+            </div>
+            <!-- Compare modal -->
+            <div class="modal fade" id="compareModal" tabindex="-1">
+                <div class="modal-dialog modal-xl modal-dialog-scrollable modal-fullscreen-md-down">
+                    <div class="modal-content" style="background:var(--bg-card);color:var(--text-primary);border-color:var(--border);">
+                        <div class="modal-header" style="border-color:var(--border);">
+                            <h5 class="modal-title"><i class="fas fa-layer-group"></i> 分析对比</h5>
+                            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body" id="compareModalBody" style="color:#c9d1d9;"></div>
+                    </div>
+                </div>
+            </div>
+            <!-- Timeline modal -->
+            <div class="modal fade" id="timelineModal" tabindex="-1">
+                <div class="modal-dialog modal-xl modal-dialog-scrollable modal-fullscreen-md-down">
+                    <div class="modal-content" style="background:var(--bg-card);color:var(--text-primary);border-color:var(--border);">
+                        <div class="modal-header" style="border-color:var(--border);">
+                            <h5 class="modal-title" id="timelineModalTitle"><i class="fas fa-stream"></i> 观点演变</h5>
+                            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body" id="timelineModalBody" style="color:#c9d1d9;"></div>
                     </div>
                 </div>
             </div>

@@ -847,6 +847,8 @@ async function generateReport() {
 // ── Analysis History ───────────────────────────────────────────────────────
 
 let _historyData = [];
+let _compareMode = false;
+let _compareSelected = new Set();
 
 async function loadHistory() {
     const data = await api('/api/history');
@@ -861,26 +863,198 @@ function filterHistory() {
     renderHistory(_historyData.filter(h => h.ticker.includes(q)));
 }
 
+function toggleCompareMode() {
+    _compareMode = !_compareMode;
+    _compareSelected.clear();
+    document.getElementById('compare-toggle-label').textContent = _compareMode ? '退出对比' : '对比模式';
+    document.getElementById('btn-compare-toggle').classList.toggle('active', _compareMode);
+    document.getElementById('compare-action-wrap').classList.toggle('d-none', !_compareMode);
+    _syncCompareButton();
+    renderHistory(_historyData);
+}
+
+function _syncCompareButton() {
+    const btn = document.getElementById('btn-run-compare');
+    const cnt = document.getElementById('compare-count');
+    if (cnt) cnt.textContent = String(_compareSelected.size);
+    if (btn) btn.disabled = _compareSelected.size < 2;
+}
+
+function toggleHistorySelect(id, event) {
+    if (event) { event.stopPropagation(); }
+    id = Number(id);
+    if (_compareSelected.has(id)) {
+        _compareSelected.delete(id);
+    } else {
+        if (_compareSelected.size >= 5) {
+            showToast('最多只能选择 5 条记录对比', 'warning');
+            return;
+        }
+        _compareSelected.add(id);
+    }
+    // Update only the affected item visually instead of full re-render
+    const el = document.querySelector(`.history-item[data-id="${id}"]`);
+    if (el) el.classList.toggle('selected', _compareSelected.has(id));
+    const chk = document.querySelector(`.history-item[data-id="${id}"] .h-check i`);
+    if (chk) chk.className = _compareSelected.has(id) ? 'fas fa-check-square' : 'far fa-square';
+    _syncCompareButton();
+}
+
 function renderHistory(records) {
     const container = document.getElementById('history-list');
     if (!records || records.length === 0) {
         container.innerHTML = '<p class="text-muted">暂无分析记录</p>';
         return;
     }
-    container.innerHTML = records.map(r => `
-        <div class="history-item" onclick="showHistoryDetail(${r.id})">
+    container.innerHTML = records.map(r => {
+        const sel = _compareSelected.has(r.id);
+        const checkBox = _compareMode
+            ? `<span class="h-check me-2" style="cursor:pointer;"><i class="${sel ? 'fas fa-check-square text-info' : 'far fa-square text-muted'}"></i></span>`
+            : '';
+        const clickAttr = _compareMode
+            ? `onclick="toggleHistorySelect(${r.id}, event)"`
+            : `onclick="showHistoryDetail(${r.id})"`;
+        const actionInfo = r.action ? `<span class="text-muted ms-2" style="font-size:12px;">${r.action}${r.confidence ? ' · ' + r.confidence : ''}</span>` : '';
+        return `
+        <div class="history-item ${sel ? 'selected' : ''}" data-id="${r.id}" ${clickAttr}>
             <div class="d-flex justify-content-between align-items-center">
                 <div>
-                    <span class="h-ticker">${r.ticker}</span>
+                    ${checkBox}<span class="h-ticker">${r.ticker}</span>
                     <span class="h-signal ${getSignalBadgeClass(r.signal)}" style="margin-left:12px;">${r.signal}</span>
+                    ${actionInfo}
                 </div>
-                <div class="h-date">${r.created_at || r.date}</div>
+                <div class="d-flex align-items-center gap-2">
+                    <button class="btn btn-sm btn-outline-secondary" onclick="showTimeline('${r.ticker}', event)" title="查看该股票历史演变">
+                        <i class="fas fa-stream"></i>
+                    </button>
+                    <div class="h-date">${r.created_at || r.date}</div>
+                </div>
             </div>
             <div class="mt-1" style="font-size:12px;color:var(--text-secondary);">
                 分析日期: ${r.date}
             </div>
         </div>
-    `).join('');
+        `;
+    }).join('');
+}
+
+async function runCompare() {
+    if (_compareSelected.size < 2) return;
+    const ids = Array.from(_compareSelected).join(',');
+    const data = await api('/api/history/compare?ids=' + encodeURIComponent(ids));
+    if (!data || !data.records) return;
+    renderCompareModal(data.records);
+    const modal = new bootstrap.Modal(document.getElementById('compareModal'));
+    modal.show();
+}
+
+function renderCompareModal(records) {
+    const body = document.getElementById('compareModalBody');
+    if (!records || records.length === 0) {
+        body.innerHTML = '<p class="text-muted">没有可对比的记录</p>';
+        return;
+    }
+    const headers = records.map(r => `
+        <th class="text-center">
+            <div><strong>${r.ticker}</strong></div>
+            <div style="font-size:11px;color:var(--text-secondary);">${(r.created_at || r.date || '').split(' ')[0]}</div>
+        </th>`).join('');
+    const valueRow = (label, getter, options={}) => {
+        const vals = records.map(getter);
+        const changed = options.driftHighlight && _hasDrift(vals);
+        const cells = vals.map(v => `<td class="text-center">${v == null || v === '' ? '<span class="text-muted">--</span>' : v}</td>`).join('');
+        return `<tr${changed ? ' class="drift-row"' : ''}><th scope="row" class="text-muted" style="font-weight:normal;">${label}</th>${cells}</tr>`;
+    };
+    const sigCell = r => `<span class="h-signal ${getSignalBadgeClass(r.signal)}">${r.signal || '--'}</span>`;
+    body.innerHTML = `
+        <div class="table-responsive">
+            <table class="table table-sm compare-table">
+                <thead><tr><th style="width:140px;">字段</th>${headers}</tr></thead>
+                <tbody>
+                    ${valueRow('信号', sigCell, {driftHighlight: true})}
+                    ${valueRow('策略建议', r => r.action || '', {driftHighlight: true})}
+                    ${valueRow('信心', r => r.confidence || '')}
+                    ${valueRow('建议仓位', r => r.position_pct != null ? fmt(r.position_pct) + '%' : '')}
+                    ${valueRow('入场低位', r => r.entry_low != null ? fmt(r.entry_low) : '')}
+                    ${valueRow('入场高位', r => r.entry_high != null ? fmt(r.entry_high) : '')}
+                    ${valueRow('止损', r => r.stop_loss != null ? fmt(r.stop_loss) : '')}
+                    ${valueRow('止盈', r => r.take_profit != null ? fmt(r.take_profit) : '')}
+                    ${valueRow('模型', r => r.model || '')}
+                </tbody>
+            </table>
+        </div>
+        <p class="text-muted mb-0" style="font-size:12px;">
+            <i class="fas fa-info-circle"></i> 标黄行表示不同记录间信号/策略建议存在漂移。
+        </p>
+    `;
+}
+
+function _hasDrift(values) {
+    const norm = values.map(v => {
+        if (v == null || v === '') return '';
+        // Strip HTML from signal cell to compare raw signal text
+        if (typeof v === 'string' && v.includes('<')) {
+            return v.replace(/<[^>]+>/g, '').trim();
+        }
+        return String(v).trim();
+    });
+    const nonEmpty = norm.filter(v => v !== '');
+    if (nonEmpty.length < 2) return false;
+    return !nonEmpty.every(v => v === nonEmpty[0]);
+}
+
+async function showTimeline(ticker, event) {
+    if (event) { event.stopPropagation(); }
+    const data = await api('/api/history/timeline/' + encodeURIComponent(ticker));
+    if (!data) return;
+    renderTimelineModal(ticker, data.records || []);
+    const modal = new bootstrap.Modal(document.getElementById('timelineModal'));
+    modal.show();
+}
+
+function renderTimelineModal(ticker, records) {
+    document.getElementById('timelineModalTitle').innerHTML =
+        `<i class="fas fa-stream"></i> ${ticker} 观点演变 <small class="text-muted">(${records.length} 条)</small>`;
+    const body = document.getElementById('timelineModalBody');
+    if (records.length === 0) {
+        body.innerHTML = '<p class="text-muted">该股票暂无历史分析</p>';
+        return;
+    }
+    // Render timeline cards + a small confidence / signal strip
+    let prevSignal = null;
+    const items = records.map(r => {
+        const drift = prevSignal && r.signal && prevSignal !== r.signal;
+        prevSignal = r.signal || prevSignal;
+        const dt = (r.created_at || r.date || '').split(' ')[0] || r.date;
+        const pos = r.position_pct != null ? fmt(r.position_pct) + '%' : '--';
+        const sl = r.stop_loss != null ? fmt(r.stop_loss) : '--';
+        const tp = r.take_profit != null ? fmt(r.take_profit) : '--';
+        return `
+        <div class="timeline-item ${drift ? 'drift' : ''}">
+            <div class="timeline-dot ${getSignalBadgeClass(r.signal)}"></div>
+            <div class="timeline-body">
+                <div class="d-flex justify-content-between flex-wrap gap-2">
+                    <div>
+                        <span class="h-signal ${getSignalBadgeClass(r.signal)}">${r.signal || '--'}</span>
+                        ${r.action ? `<span class="ms-2">${r.action}</span>` : ''}
+                        ${r.confidence ? `<span class="text-muted ms-1" style="font-size:12px;">· ${r.confidence}</span>` : ''}
+                        ${drift ? '<span class="badge bg-warning text-dark ms-2">观点漂移</span>' : ''}
+                    </div>
+                    <div class="text-muted" style="font-size:12px;">${dt}</div>
+                </div>
+                <div class="row g-2 mt-1" style="font-size:12px;color:var(--text-secondary);">
+                    <div class="col-4">仓位: ${pos}</div>
+                    <div class="col-4">止损: ${sl}</div>
+                    <div class="col-4">止盈: ${tp}</div>
+                </div>
+                <div class="mt-1">
+                    <a href="#" onclick="event.preventDefault();event.stopPropagation();showHistoryDetail(${r.id});" style="font-size:12px;">查看完整报告 →</a>
+                </div>
+            </div>
+        </div>
+        `;
+    }).join('');
+    body.innerHTML = `<div class="timeline-list">${items}</div>`;
 }
 
 async function showHistoryDetail(id) {
