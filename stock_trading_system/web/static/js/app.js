@@ -1109,6 +1109,212 @@ async function loadAlerts() {
     }
 }
 
+// ── Alert Rule Editor ──────────────────────────────────────────────────────
+
+// Live cache of the current price for the ticker typed in the rule editor.
+// Used by threshold suggestion chips, rule preview, and test-rule.
+let _rulePrice = null;    // numeric last price, or null
+let _ruleMarket = null;   // "us" / "cn"
+let _rulePriceTimer = null;
+
+const CONDITION_LABELS = {
+    price_above:      { verb: '达到或超过', unit: '价格',   desc: '当最新价 ≥ 阈值时触发' },
+    price_below:      { verb: '跌至或低于', unit: '价格',   desc: '当最新价 ≤ 阈值时触发' },
+    pct_change_above: { verb: '当日涨幅达到', unit: '%',    desc: '今收相对昨收涨幅 ≥ 阈值时触发' },
+    pct_change_below: { verb: '当日跌幅达到', unit: '%',    desc: '今收相对昨收跌幅 ≥ 阈值时触发' },
+    volume_spike:     { verb: '成交量达到', unit: '股',     desc: '当日成交量 ≥ 阈值时触发' },
+    stop_loss:        { verb: '跌至止损位', unit: '价格',   desc: '当最新价 ≤ 阈值时触发（止损语义）' },
+    take_profit:      { verb: '涨至止盈位', unit: '价格',   desc: '当最新价 ≥ 阈值时触发（止盈语义）' },
+};
+
+function _ruleThresholdKind(cond) {
+    // Returns 'price' / 'pct' / 'volume' — drives suggestion chips.
+    if (cond === 'pct_change_above' || cond === 'pct_change_below') return 'pct';
+    if (cond === 'volume_spike') return 'volume';
+    return 'price';
+}
+
+function _ruleCurrency(n) {
+    if (n == null) return '--';
+    if (_ruleMarket === 'cn') return '¥' + fmt(n);
+    return '$' + fmt(n);
+}
+
+function _updateRuleConditionDesc() {
+    const cond = document.getElementById('alert-condition').value;
+    const info = CONDITION_LABELS[cond] || {};
+    const el = document.getElementById('rule-condition-desc');
+    if (el) el.textContent = info.desc || '';
+}
+
+function _updateRuleThresholdSuggestions() {
+    const host = document.getElementById('rule-threshold-suggestions');
+    if (!host) return;
+    const cond = document.getElementById('alert-condition').value;
+    const kind = _ruleThresholdKind(cond);
+    let chips = [];
+    if (kind === 'price' && _rulePrice != null) {
+        // Offer common offsets from current price. Negative for downside
+        // conditions, positive for upside.
+        const neg = (cond === 'price_below' || cond === 'stop_loss');
+        const offsets = neg ? [-3, -5, -10, -15] : [3, 5, 10, 15];
+        chips = offsets.map(pct => {
+            const v = +(_rulePrice * (1 + pct / 100)).toFixed(2);
+            const sign = pct > 0 ? '+' : '';
+            return { label: `${sign}${pct}% → ${_ruleCurrency(v)}`, value: v };
+        });
+    } else if (kind === 'pct') {
+        chips = [3, 5, 8, 10].map(v => ({ label: `${v}%`, value: v }));
+    } else if (kind === 'volume') {
+        chips = [1e6, 5e6, 1e7, 5e7].map(v => ({
+            label: (v / 1e6).toFixed(0) + 'M',
+            value: v,
+        }));
+    }
+    host.innerHTML = chips.map(c =>
+        `<button type="button" class="rule-suggest-chip" data-val="${c.value}">${c.label}</button>`
+    ).join('');
+}
+
+function _updateRulePreview() {
+    const ticker = (document.getElementById('alert-ticker').value || '').trim().toUpperCase();
+    const cond = document.getElementById('alert-condition').value;
+    const thresholdRaw = document.getElementById('alert-threshold').value;
+    const threshold = parseFloat(thresholdRaw);
+    const preview = document.getElementById('rule-preview');
+    const btn = document.getElementById('btn-add-alert');
+
+    const valid = ticker && !isNaN(threshold) && threshold > 0;
+    if (btn) btn.disabled = !valid;
+
+    if (!preview) return;
+    if (!ticker) {
+        preview.className = 'rule-preview rule-preview-muted';
+        preview.innerHTML = '<i class="fas fa-circle-info"></i> <span>请输入股票代码...</span>';
+        return;
+    }
+    if (isNaN(threshold)) {
+        preview.className = 'rule-preview rule-preview-muted';
+        preview.innerHTML = '<i class="fas fa-circle-info"></i> <span>请输入阈值...</span>';
+        return;
+    }
+    const info = CONDITION_LABELS[cond] || {};
+    const kind = _ruleThresholdKind(cond);
+    let displayThreshold;
+    if (kind === 'price') displayThreshold = _ruleCurrency(threshold);
+    else if (kind === 'pct') displayThreshold = fmt(threshold) + '%';
+    else displayThreshold = fmt(threshold, 0) + ' 股';
+
+    let distance = '';
+    if (kind === 'price' && _rulePrice != null) {
+        const pct = ((threshold / _rulePrice) - 1) * 100;
+        const sign = pct >= 0 ? '+' : '';
+        const cls = pct >= 0 ? 'text-green' : 'text-red';
+        distance = `<span class="rule-preview-distance ${cls}">距现价 ${sign}${fmt(pct)}%</span>`;
+    }
+
+    preview.className = 'rule-preview rule-preview-ready';
+    preview.innerHTML = `
+        <i class="fas fa-bell"></i>
+        <span>
+            当 <strong>${ticker}</strong> ${info.verb || ''}
+            <strong>${displayThreshold}</strong> 时触发预警
+            ${distance}
+        </span>`;
+}
+
+async function _fetchRulePrice(ticker) {
+    if (!ticker) {
+        _rulePrice = null;
+        _ruleMarket = null;
+        document.getElementById('rule-current-price').textContent = '';
+        _updateRuleThresholdSuggestions();
+        _updateRulePreview();
+        return;
+    }
+    try {
+        const data = await api('/api/quote/' + encodeURIComponent(ticker));
+        if (data && data.price) {
+            _rulePrice = data.price.last || data.price.close || null;
+            _ruleMarket = data.market || null;
+        } else {
+            _rulePrice = null;
+            _ruleMarket = null;
+        }
+    } catch (e) {
+        _rulePrice = null;
+        _ruleMarket = null;
+    }
+    const label = document.getElementById('rule-current-price');
+    if (label) {
+        label.textContent = _rulePrice != null
+            ? `${ticker} 现价 ${_ruleCurrency(_rulePrice)}`
+            : (ticker ? `${ticker} 暂无行情` : '');
+    }
+    _updateRuleThresholdSuggestions();
+    _updateRulePreview();
+}
+
+function _applyPreset(preset) {
+    const condSel = document.getElementById('alert-condition');
+    const thrInput = document.getElementById('alert-threshold');
+    // Presets map to (condition, threshold-generator). Price-based presets
+    // need _rulePrice; percent-based don't.
+    if (preset === 'breakout_up') {
+        condSel.value = 'price_above';
+        if (_rulePrice != null) thrInput.value = (_rulePrice * 1.05).toFixed(2);
+    } else if (preset === 'breakout_down') {
+        condSel.value = 'price_below';
+        if (_rulePrice != null) thrInput.value = (_rulePrice * 0.95).toFixed(2);
+    } else if (preset === 'stop_loss_10') {
+        condSel.value = 'stop_loss';
+        if (_rulePrice != null) thrInput.value = (_rulePrice * 0.90).toFixed(2);
+    } else if (preset === 'take_profit_20') {
+        condSel.value = 'take_profit';
+        if (_rulePrice != null) thrInput.value = (_rulePrice * 1.20).toFixed(2);
+    } else if (preset === 'pct_change_3') {
+        condSel.value = 'pct_change_above';
+        thrInput.value = 3;
+    }
+    if (_rulePrice == null && preset !== 'pct_change_3') {
+        showToast('请先输入股票代码以加载行情', 'warning');
+    }
+    _updateRuleConditionDesc();
+    _updateRuleThresholdSuggestions();
+    _updateRulePreview();
+}
+
+function testRule() {
+    const ticker = (document.getElementById('alert-ticker').value || '').trim().toUpperCase();
+    const cond = document.getElementById('alert-condition').value;
+    const threshold = parseFloat(document.getElementById('alert-threshold').value);
+    if (!ticker || isNaN(threshold)) {
+        showToast('请先填写完整的规则', 'warning');
+        return;
+    }
+    if (_rulePrice == null) {
+        showToast(`无法获取 ${ticker} 现价，无法测试`, 'warning');
+        return;
+    }
+    // Reuse the same logic as AlertMonitor._evaluate_condition. We don't have
+    // prev-close/volume client-side, so percent/volume conditions are reported
+    // as "cannot evaluate without historical data".
+    let triggered = null;
+    if (cond === 'price_above' || cond === 'take_profit') {
+        triggered = _rulePrice >= threshold;
+    } else if (cond === 'price_below' || cond === 'stop_loss') {
+        triggered = _rulePrice <= threshold;
+    }
+    if (triggered === null) {
+        showToast('此条件需服务端数据，无法客户端模拟', 'info');
+        return;
+    }
+    const msg = triggered
+        ? `✅ 规则已触发 (${ticker} = ${_ruleCurrency(_rulePrice)})`
+        : `⏸ 规则未触发 (${ticker} = ${_ruleCurrency(_rulePrice)})`;
+    showToast(msg, triggered ? 'success' : 'info');
+}
+
 async function addAlert() {
     const ticker = document.getElementById('alert-ticker').value.trim();
     const condition = document.getElementById('alert-condition').value;
@@ -1123,9 +1329,61 @@ async function addAlert() {
         showToast(data.message, 'success');
         document.getElementById('alert-ticker').value = '';
         document.getElementById('alert-threshold').value = '';
+        _rulePrice = null;
+        _ruleMarket = null;
+        document.getElementById('rule-current-price').textContent = '';
+        _updateRuleThresholdSuggestions();
+        _updateRulePreview();
         loadAlerts();
     }
 }
+
+// Wire up the rule editor once on page load.
+(function initRuleEditor() {
+    const tickerInput = document.getElementById('alert-ticker');
+    const thresholdInput = document.getElementById('alert-threshold');
+    const condSel = document.getElementById('alert-condition');
+    if (!tickerInput || !condSel) return;
+
+    tickerInput.addEventListener('input', () => {
+        clearTimeout(_rulePriceTimer);
+        const t = tickerInput.value.trim().toUpperCase();
+        if (!t) {
+            _fetchRulePrice('');
+            return;
+        }
+        // Debounce network calls.
+        _rulePriceTimer = setTimeout(() => _fetchRulePrice(t), 400);
+        _updateRulePreview();
+    });
+
+    condSel.addEventListener('change', () => {
+        _updateRuleConditionDesc();
+        _updateRuleThresholdSuggestions();
+        _updateRulePreview();
+    });
+
+    thresholdInput.addEventListener('input', _updateRulePreview);
+
+    document.getElementById('rule-presets').addEventListener('click', e => {
+        const chip = e.target.closest('[data-preset]');
+        if (!chip) return;
+        document.querySelectorAll('.rule-preset-chip').forEach(c => c.classList.remove('active'));
+        chip.classList.add('active');
+        _applyPreset(chip.dataset.preset);
+    });
+
+    document.getElementById('rule-threshold-suggestions').addEventListener('click', e => {
+        const chip = e.target.closest('[data-val]');
+        if (!chip) return;
+        thresholdInput.value = chip.dataset.val;
+        _updateRulePreview();
+    });
+
+    _updateRuleConditionDesc();
+    _updateRuleThresholdSuggestions();
+    _updateRulePreview();
+})();
 
 async function removeAlert(id) {
     const data = await api('/api/alerts/remove', {

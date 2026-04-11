@@ -552,40 +552,100 @@
             <h3 class="page-title">预警中心</h3>
             <div class="row g-3 mb-3">
                 <div class="col-12 col-lg-8">
-                    <div class="card">
-                        <div class="card-header"><i class="fas fa-plus"></i> 添加预警</div>
+                    <div class="card rule-editor">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <span><i class="fas fa-wand-magic-sparkles"></i> 预警规则编辑器</span>
+                            <span class="small text-muted" id="rule-current-price"></span>
+                        </div>
                         <div class="card-body">
-                            <div class="row g-2">
-                                <div class="col-6 col-md-3">
-                                    <input type="text" class="form-control" id="alert-ticker" placeholder="股票代码">
+                            <!-- Step 1: ticker -->
+                            <div class="rule-step">
+                                <label class="rule-step-label"><span class="rule-step-num">1</span> 选择标的</label>
+                                <input type="text" class="form-control rule-ticker-input" id="alert-ticker"
+                                    placeholder="股票代码 (如 AAPL, 600519)" autocomplete="off">
+                            </div>
+
+                            <!-- Step 2: preset chips -->
+                            <div class="rule-step">
+                                <label class="rule-step-label"><span class="rule-step-num">2</span> 快速模板（可选）</label>
+                                <div class="rule-presets" id="rule-presets">
+                                    <button type="button" class="rule-preset-chip" data-preset="breakout_up">
+                                        <i class="fas fa-arrow-trend-up"></i> 向上突破 +5%
+                                    </button>
+                                    <button type="button" class="rule-preset-chip" data-preset="breakout_down">
+                                        <i class="fas fa-arrow-trend-down"></i> 向下跌破 -5%
+                                    </button>
+                                    <button type="button" class="rule-preset-chip" data-preset="stop_loss_10">
+                                        <i class="fas fa-shield-halved"></i> 止损 -10%
+                                    </button>
+                                    <button type="button" class="rule-preset-chip" data-preset="take_profit_20">
+                                        <i class="fas fa-trophy"></i> 止盈 +20%
+                                    </button>
+                                    <button type="button" class="rule-preset-chip" data-preset="pct_change_3">
+                                        <i class="fas fa-bolt"></i> 日内涨跌 ±3%
+                                    </button>
                                 </div>
-                                <div class="col-6 col-md-4">
-                                    <select class="form-select" id="alert-condition">
-                                        <option value="price_above">价格高于</option>
-                                        <option value="price_below">价格低于</option>
-                                        <option value="pct_change_above">涨幅超过(%)</option>
-                                        <option value="pct_change_below">跌幅超过(%)</option>
-                                        <option value="volume_spike">成交量超过</option>
-                                        <option value="stop_loss">止损价</option>
-                                        <option value="take_profit">止盈价</option>
-                                    </select>
+                            </div>
+
+                            <!-- Step 3: condition + threshold -->
+                            <div class="rule-step">
+                                <label class="rule-step-label"><span class="rule-step-num">3</span> 条件 &amp; 阈值</label>
+                                <div class="row g-2 align-items-start">
+                                    <div class="col-12 col-md-5">
+                                        <select class="form-select" id="alert-condition">
+                                            <option value="price_above">价格 ≥ 阈值</option>
+                                            <option value="price_below">价格 ≤ 阈值</option>
+                                            <option value="pct_change_above">涨幅 ≥ 阈值 %</option>
+                                            <option value="pct_change_below">跌幅 ≥ 阈值 %</option>
+                                            <option value="volume_spike">成交量 ≥ 阈值</option>
+                                            <option value="stop_loss">止损 (价格 ≤ 阈值)</option>
+                                            <option value="take_profit">止盈 (价格 ≥ 阈值)</option>
+                                        </select>
+                                        <div class="small text-muted mt-1" id="rule-condition-desc">
+                                            达到阈值时触发预警
+                                        </div>
+                                    </div>
+                                    <div class="col-12 col-md-7">
+                                        <input type="number" class="form-control" id="alert-threshold" placeholder="阈值" step="0.01">
+                                        <div class="rule-threshold-suggestions mt-2" id="rule-threshold-suggestions"></div>
+                                    </div>
                                 </div>
-                                <div class="col-8 col-md-3">
-                                    <input type="number" class="form-control" id="alert-threshold" placeholder="阈值" step="0.01">
+                            </div>
+
+                            <!-- Step 4: preview + actions -->
+                            <div class="rule-step">
+                                <label class="rule-step-label"><span class="rule-step-num">4</span> 规则预览</label>
+                                <div class="rule-preview" id="rule-preview">
+                                    <i class="fas fa-circle-info"></i>
+                                    <span>请输入股票代码和阈值...</span>
                                 </div>
-                                <div class="col-4 col-md-2">
-                                    <button class="btn btn-primary w-100" onclick="addAlert()">添加</button>
+                                <div class="d-flex gap-2 flex-wrap mt-2">
+                                    <button class="btn btn-outline-info btn-sm" onclick="testRule()">
+                                        <i class="fas fa-vial"></i> 测试规则
+                                    </button>
+                                    <button class="btn btn-primary btn-sm flex-grow-1" id="btn-add-alert" onclick="addAlert()" disabled>
+                                        <i class="fas fa-bell"></i> 保存预警
+                                    </button>
                                 </div>
                             </div>
                         </div>
                     </div>
                 </div>
                 <div class="col-12 col-lg-4">
-                    <div class="card">
-                        <div class="card-body text-center">
-                            <button class="btn btn-outline-warning" onclick="checkAlerts()">
-                                <i class="fas fa-sync"></i> 手动检查预警
-                            </button>
+                    <div class="card h-100">
+                        <div class="card-header"><i class="fas fa-info-circle"></i> 规则帮助</div>
+                        <div class="card-body small">
+                            <ul class="rule-help-list">
+                                <li><strong>价格类</strong>：使用标的当前最新成交价判断</li>
+                                <li><strong>涨跌幅</strong>：基于今日收盘价比上一日收盘计算百分比</li>
+                                <li><strong>成交量</strong>：当日累计成交量（股数）</li>
+                                <li><strong>止损/止盈</strong>：语义等同于 ≤ / ≥，但单独归类便于管理</li>
+                            </ul>
+                            <div class="text-center mt-2">
+                                <button class="btn btn-outline-warning btn-sm" onclick="checkAlerts()">
+                                    <i class="fas fa-sync"></i> 立即检查所有预警
+                                </button>
+                            </div>
                         </div>
                     </div>
                 </div>
