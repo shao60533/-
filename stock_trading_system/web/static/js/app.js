@@ -75,6 +75,219 @@ function closeMoreSheet() {
     document.getElementById('more-sheet-backdrop').classList.remove('show');
 }
 
+// ── Global Search ──────────────────────────────────────────────────────────
+
+let _searchTimer = null;
+let _searchHighlight = -1;  // index in the flat result list for arrow-key nav
+let _searchFlatResults = [];  // flat list of {type,id,ticker,action}
+
+function _escapeHtml(s) {
+    if (s == null) return '';
+    return String(s).replace(/[&<>"']/g, c => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+    }[c]));
+}
+
+function _highlightMatch(text, q) {
+    if (!text || !q) return _escapeHtml(text);
+    const i = text.toLowerCase().indexOf(q.toLowerCase());
+    if (i < 0) return _escapeHtml(text);
+    return _escapeHtml(text.slice(0, i))
+        + '<mark>' + _escapeHtml(text.slice(i, i + q.length)) + '</mark>'
+        + _escapeHtml(text.slice(i + q.length));
+}
+
+function _closeSearchPanel() {
+    const panel = document.getElementById('global-search-panel');
+    if (panel) panel.classList.remove('show');
+    _searchHighlight = -1;
+}
+
+function _showSearchPanel() {
+    const panel = document.getElementById('global-search-panel');
+    if (panel) panel.classList.add('show');
+}
+
+function _renderSearchResults(data) {
+    const panel = document.getElementById('global-search-panel');
+    if (!panel) return;
+    const q = data.q || '';
+    const groups = [
+        { key: 'positions',    label: '持仓',    icon: 'fa-briefcase' },
+        { key: 'analyses',     label: '分析记录', icon: 'fa-brain' },
+        { key: 'transactions', label: '交易',    icon: 'fa-exchange-alt' },
+        { key: 'alerts',       label: '预警',    icon: 'fa-bell' },
+    ];
+    const total = groups.reduce((n, g) => n + (data[g.key] || []).length, 0);
+    if (total === 0) {
+        panel.innerHTML = `<div class="global-search-empty">没有找到 "${_escapeHtml(q)}" 的结果</div>`;
+        _searchFlatResults = [];
+        _showSearchPanel();
+        return;
+    }
+    _searchFlatResults = [];
+    let flatIdx = 0;
+    const html = groups.map(g => {
+        const items = data[g.key] || [];
+        if (items.length === 0) return '';
+        const rows = items.map(it => {
+            const myIdx = flatIdx++;
+            let subtitle = '';
+            let payload = { type: g.key };
+            if (g.key === 'positions') {
+                subtitle = `${it.market || ''} · ${fmt(it.shares)} 股 @ ${fmt(it.avg_cost)}`;
+                payload = { type: 'positions', ticker: it.ticker };
+                _searchFlatResults.push(payload);
+                return `<div class="gs-result" data-idx="${myIdx}" onclick="_onSearchResultClick(${myIdx})">
+                    <div class="gs-result-main">
+                        <span class="gs-result-ticker">${_highlightMatch(it.ticker, q)}</span>
+                        <span class="gs-result-sub">${_escapeHtml(subtitle)}</span>
+                    </div>
+                </div>`;
+            }
+            if (g.key === 'analyses') {
+                const sig = it.signal || '';
+                const sigCls = getSignalClass(sig);
+                subtitle = `${it.date || ''} · ${it.action || '--'} · ${it.model || ''}`;
+                payload = { type: 'analyses', id: it.id, ticker: it.ticker };
+                _searchFlatResults.push(payload);
+                return `<div class="gs-result" data-idx="${myIdx}" onclick="_onSearchResultClick(${myIdx})">
+                    <div class="gs-result-main">
+                        <span class="gs-result-ticker">${_highlightMatch(it.ticker || '', q)}</span>
+                        <span class="gs-result-sub">${_escapeHtml(subtitle)}</span>
+                    </div>
+                    <span class="gs-result-badge ${sigCls}">${_escapeHtml(sig)}</span>
+                </div>`;
+            }
+            if (g.key === 'transactions') {
+                const cls = it.action === 'buy' ? 'text-green' : 'text-red';
+                subtitle = `${it.timestamp || ''} · ${fmt(it.shares)} @ ${fmt(it.price)}`;
+                payload = { type: 'transactions', ticker: it.ticker };
+                _searchFlatResults.push(payload);
+                return `<div class="gs-result" data-idx="${myIdx}" onclick="_onSearchResultClick(${myIdx})">
+                    <div class="gs-result-main">
+                        <span class="gs-result-ticker">${_highlightMatch(it.ticker, q)}</span>
+                        <span class="gs-result-sub">${_escapeHtml(subtitle)}</span>
+                    </div>
+                    <span class="gs-result-badge ${cls}">${(it.action || '').toUpperCase()}</span>
+                </div>`;
+            }
+            if (g.key === 'alerts') {
+                subtitle = `${it.condition || ''} · ${fmt(it.threshold)}`;
+                payload = { type: 'alerts', id: it.id, ticker: it.ticker };
+                _searchFlatResults.push(payload);
+                return `<div class="gs-result" data-idx="${myIdx}" onclick="_onSearchResultClick(${myIdx})">
+                    <div class="gs-result-main">
+                        <span class="gs-result-ticker">${_highlightMatch(it.ticker, q)}</span>
+                        <span class="gs-result-sub">${_escapeHtml(subtitle)}</span>
+                    </div>
+                </div>`;
+            }
+            return '';
+        }).join('');
+        return `<div class="gs-group">
+            <div class="gs-group-head"><i class="fas ${g.icon}"></i> ${g.label} <span class="gs-group-count">${items.length}</span></div>
+            ${rows}
+        </div>`;
+    }).join('');
+    panel.innerHTML = html;
+    _showSearchPanel();
+}
+
+function _onSearchResultClick(idx) {
+    const r = _searchFlatResults[idx];
+    if (!r) return;
+    _closeSearchPanel();
+    document.getElementById('global-search-input').blur();
+    if (r.type === 'positions' || r.type === 'transactions') {
+        switchTab('portfolio');
+    } else if (r.type === 'analyses') {
+        switchTab('history');
+        // Open detail modal shortly after the page swap so the modal host exists.
+        if (r.id) setTimeout(() => showHistoryDetail(r.id), 100);
+    } else if (r.type === 'alerts') {
+        switchTab('alerts');
+    }
+}
+
+async function _runGlobalSearch(q) {
+    if (!q) {
+        _closeSearchPanel();
+        return;
+    }
+    try {
+        const data = await api('/api/search?q=' + encodeURIComponent(q));
+        if (data) _renderSearchResults(data);
+    } catch (e) { /* ignore */ }
+}
+
+(function initGlobalSearch() {
+    const input = document.getElementById('global-search-input');
+    const panel = document.getElementById('global-search-panel');
+    if (!input || !panel) return;
+
+    input.addEventListener('input', () => {
+        const q = input.value.trim();
+        clearTimeout(_searchTimer);
+        if (!q) { _closeSearchPanel(); return; }
+        // Debounce so we don't hammer the endpoint on every keystroke.
+        _searchTimer = setTimeout(() => _runGlobalSearch(q), 200);
+    });
+
+    input.addEventListener('focus', () => {
+        if (input.value.trim()) _showSearchPanel();
+    });
+
+    input.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            _closeSearchPanel();
+            input.blur();
+            return;
+        }
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+            if (_searchFlatResults.length === 0) return;
+            e.preventDefault();
+            _searchHighlight += (e.key === 'ArrowDown' ? 1 : -1);
+            if (_searchHighlight < 0) _searchHighlight = _searchFlatResults.length - 1;
+            if (_searchHighlight >= _searchFlatResults.length) _searchHighlight = 0;
+            panel.querySelectorAll('.gs-result').forEach((el, i) => {
+                el.classList.toggle('highlighted', i === _searchHighlight);
+                if (i === _searchHighlight) el.scrollIntoView({ block: 'nearest' });
+            });
+            return;
+        }
+        if (e.key === 'Enter') {
+            if (_searchHighlight >= 0) {
+                _onSearchResultClick(_searchHighlight);
+                return;
+            }
+            // Enter with no selection → jump to analysis page with the ticker
+            const q = input.value.trim().toUpperCase();
+            if (q) {
+                document.getElementById('analyze-ticker').value = q;
+                switchTab('analysis');
+                _closeSearchPanel();
+                input.blur();
+            }
+        }
+    });
+
+    // Click outside panel closes it.
+    document.addEventListener('click', (e) => {
+        if (!e.target.closest('#global-search')) _closeSearchPanel();
+    });
+
+    // "/" keyboard shortcut to focus (skip if already typing in an input).
+    document.addEventListener('keydown', (e) => {
+        if (e.key !== '/') return;
+        const tag = (e.target.tagName || '').toLowerCase();
+        if (tag === 'input' || tag === 'textarea' || e.target.isContentEditable) return;
+        e.preventDefault();
+        input.focus();
+        input.select();
+    });
+})();
+
 // ── Clock ──────────────────────────────────────────────────────────────────
 
 function updateClock() {

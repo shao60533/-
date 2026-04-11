@@ -792,3 +792,148 @@ body {
     .pipeline-arrow { display: none; }
     .pipeline-step { min-width: 0; width: 100%; }
 }
+
+/* ── Global Search (top-bar) ─────────────────────────────────────────── */
+.global-search {
+    position: relative;
+    flex: 1 1 auto;
+    max-width: 520px;
+    margin: 0 16px;
+}
+.global-search-icon {
+    position: absolute;
+    left: 12px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--text-secondary);
+    font-size: 13px;
+    pointer-events: none;
+}
+#global-search-input {
+    width: 100%;
+    height: 36px;
+    padding: 0 36px 0 32px;
+    font-size: 14px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-primary);
+    outline: none;
+    transition: border-color 0.15s, box-shadow 0.15s;
+}
+#global-search-input::placeholder { color: var(--text-secondary); }
+#global-search-input:focus {
+    border-color: var(--accent-blue);
+    box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.15);
+}
+.global-search-kbd {
+    position: absolute;
+    right: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    background: var(--border);
+    color: var(--text-secondary);
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 11px;
+    pointer-events: none;
+}
+.global-search-panel {
+    display: none;
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    right: 0;
+    max-height: 60vh;
+    overflow-y: auto;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+    z-index: 1050;
+}
+.global-search-panel.show { display: block; }
+.global-search-empty {
+    padding: 18px 16px;
+    text-align: center;
+    color: var(--text-secondary);
+    font-size: 13px;
+}
+.gs-group { border-bottom: 1px solid var(--border); }
+.gs-group:last-child { border-bottom: none; }
+.gs-group-head {
+    padding: 8px 14px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-secondary);
+    background: var(--bg-secondary);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.gs-group-count {
+    margin-left: auto;
+    background: var(--border);
+    color: var(--text-secondary);
+    padding: 1px 7px;
+    border-radius: 10px;
+    font-size: 10px;
+    text-transform: none;
+}
+.gs-result {
+    padding: 10px 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    border-bottom: 1px solid rgba(48, 54, 61, 0.4);
+    transition: background 0.1s;
+}
+.gs-result:last-child { border-bottom: none; }
+.gs-result:hover,
+.gs-result.highlighted {
+    background: rgba(88, 166, 255, 0.08);
+}
+.gs-result-main {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+.gs-result-ticker {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+.gs-result-ticker mark {
+    background: rgba(210, 153, 34, 0.3);
+    color: #f0d674;
+    padding: 0;
+}
+.gs-result-sub {
+    font-size: 11px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.gs-result-badge {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-weight: 600;
+    flex: 0 0 auto;
+}
+
+/* Mobile: search panel becomes full-width popover. Kbd hint hidden via d-md-inline. */
+@media (max-width: 767.98px) {
+    .global-search { margin: 0 8px; max-width: none; }
+    #global-search-input { height: 40px; font-size: 16px; }
+    .global-search-panel {
+        left: -12px;
+        right: -12px;
+        max-height: 70vh;
+    }
+}

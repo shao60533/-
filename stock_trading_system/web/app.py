@@ -616,6 +616,111 @@ def create_app(config_path=None):
             "data_sources": dm_status,
         })
 
+    # ── Global Search ───────────────────────────────────────────────────
+
+    @app.route("/api/search")
+    def api_search():
+        """Unified search across positions, transactions, alerts, analysis history.
+
+        Query: ?q=<substring>&limit=<per-group>
+        Returns: { q, positions, transactions, analyses, alerts } — each a list.
+        Matching is case-insensitive substring against ticker plus
+        category-specific fields (action/signal/condition/notes).
+        """
+        raw = (request.args.get("q") or "").strip()
+        if not raw:
+            return jsonify({
+                "q": "", "positions": [], "transactions": [],
+                "analyses": [], "alerts": [],
+            })
+        limit = max(1, min(int(request.args.get("limit", 10)), 50))
+        q = raw.lower()
+
+        from stock_trading_system.portfolio.database import PortfolioDatabase
+        db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
+        db = PortfolioDatabase(db_path)
+
+        # Positions — read rows directly so we don't trigger live price fetches.
+        positions_out = []
+        try:
+            for p in db.get_all_positions():
+                if q in p.ticker.lower():
+                    positions_out.append({
+                        "ticker": p.ticker,
+                        "market": p.market,
+                        "shares": p.shares,
+                        "avg_cost": p.avg_cost,
+                        "added_date": p.added_date,
+                    })
+        except Exception as e:
+            logger.warning("search positions failed: %s", e)
+        positions_out = positions_out[:limit]
+
+        # Transactions — ticker, action, notes.
+        transactions_out = []
+        try:
+            for t in db.get_transactions():
+                hay = f"{t.ticker} {t.action} {t.notes or ''}".lower()
+                if q in hay:
+                    transactions_out.append({
+                        "id": t.id, "ticker": t.ticker, "action": t.action,
+                        "shares": t.shares, "price": t.price,
+                        "timestamp": t.timestamp, "notes": t.notes,
+                    })
+                if len(transactions_out) >= limit:
+                    break
+        except Exception as e:
+            logger.warning("search transactions failed: %s", e)
+
+        # Analysis history — ticker, signal, action. Keep payload small.
+        analyses_out = []
+        try:
+            # Pull a reasonable window and filter in Python; avoids full-table scans
+            # while still matching against the structured columns already stored.
+            for r in db.get_analysis_history(limit=500):
+                hay = " ".join(str(r.get(k) or "") for k in ("ticker", "signal", "action", "confidence", "model")).lower()
+                if q in hay:
+                    analyses_out.append({
+                        "id": r.get("id"),
+                        "ticker": r.get("ticker"),
+                        "date": r.get("date"),
+                        "signal": r.get("signal"),
+                        "action": r.get("action"),
+                        "confidence": r.get("confidence"),
+                        "model": r.get("model"),
+                        "created_at": r.get("created_at"),
+                    })
+                if len(analyses_out) >= limit:
+                    break
+        except Exception as e:
+            logger.warning("search analyses failed: %s", e)
+
+        # Alerts — match ticker or condition (e.g. "price_above").
+        alerts_out = []
+        try:
+            for a in db.get_active_alerts():
+                hay = f"{a.get('ticker','')} {a.get('condition','')}".lower()
+                if q in hay:
+                    alerts_out.append({
+                        "id": a.get("id"),
+                        "ticker": a.get("ticker"),
+                        "condition": a.get("condition"),
+                        "threshold": a.get("threshold"),
+                        "created": a.get("created"),
+                    })
+                if len(alerts_out) >= limit:
+                    break
+        except Exception as e:
+            logger.warning("search alerts failed: %s", e)
+
+        return jsonify({
+            "q": raw,
+            "positions": positions_out,
+            "transactions": transactions_out,
+            "analyses": analyses_out,
+            "alerts": alerts_out,
+        })
+
     # ── Seed Data ───────────────────────────────────────────────────────
 
     @app.route("/api/seed", methods=["POST"])
