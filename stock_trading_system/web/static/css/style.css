@@ -1110,8 +1110,102 @@ body {
 
 #page-backtest .form-text { font-size: 12px; color: var(--text-secondary); min-height: 16px; }
 
+/* Backtest trades: desktop shows table, mobile shows card list */
+.bt-trades-cards { display: none; }
+.bt-trade-card {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 14px;
+    margin-bottom: 10px;
+    background: var(--bg-secondary);
+}
+.bt-trade-card:last-child { margin-bottom: 0; }
+.bt-trade-card-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--text-primary);
+}
+.bt-trade-card-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 6px 12px;
+    font-size: 12px;
+    color: var(--text-primary);
+}
+.bt-trade-card-grid .label {
+    color: var(--text-secondary);
+    margin-right: 4px;
+}
+
 @media (max-width: 767.98px) {
     #bt-stats-row .stat-value { font-size: 16px !important; }
-    .bt-trades-table { font-size: 11px; }
-    .bt-trades-table td, .bt-trades-table th { padding: 6px 8px; }
+    .bt-trades-table-wrap { display: none; }
+    .bt-trades-cards { display: block; }
+}
+
+/* ── Mobile polish for P1/P2 features ────────────────────────────────── */
+@media (max-width: 767.98px) {
+    /* Top bar: hide clock on narrow screens so search gets full width */
+    .top-bar-right #clock { display: none; }
+
+    /* Settings edit rows: stack key label above the input */
+    .settings-row {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 6px;
+        padding: 10px 0;
+    }
+    .settings-row .label {
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.3px;
+    }
+    .settings-row .value {
+        text-align: left;
+        font-size: 13px;
+    }
+    .settings-row .settings-input {
+        max-width: 100%;
+        font-size: 16px; /* prevent iOS auto-zoom */
+        min-height: 40px;
+    }
+    .settings-row .form-check {
+        padding-left: 0;
+    }
+
+    /* Alert rule editor: larger touch targets */
+    .rule-presets { gap: 8px; }
+    .rule-preset-chip {
+        padding: 10px 14px;
+        font-size: 13px;
+        min-height: 40px;
+        display: inline-flex;
+        align-items: center;
+    }
+    .rule-threshold-suggestions { gap: 8px; }
+    .rule-suggest-chip {
+        padding: 6px 12px;
+        font-size: 12px;
+        min-height: 30px;
+    }
+    .rule-step { padding: 10px 0; }
+    .rule-step-label { font-size: 11px; }
+
+    /* History compare table: keep cells from wrapping into a jumble */
+    .compare-table th,
+    .compare-table td {
+        white-space: nowrap;
+        font-size: 12px;
+        padding: 6px 8px;
+    }
+
+    /* Global search: tighter padding so the long placeholder fits */
+    #global-search-input {
+        padding-left: 30px;
+        padding-right: 12px;
+    }
 }

@@ -2125,6 +2125,7 @@ function renderBacktestTrades(trades) {
         box.innerHTML = '<p class="text-muted text-center py-3 mb-0">该策略未产生交易</p>';
         return;
     }
+    // Desktop: table layout
     const rows = trades.map((t, i) => {
         const pnlCls = t.pnl > 0 ? 'text-green' : (t.pnl < 0 ? 'text-red' : '');
         return `<tr>
@@ -2139,19 +2140,43 @@ function renderBacktestTrades(trades) {
             <td class="text-muted" style="font-size:11px;">${t.reason || ''}</td>
         </tr>`;
     }).join('');
-    box.innerHTML = `
-        <div class="table-responsive">
-            <table class="table table-sm mb-0 bt-trades-table">
-                <thead>
-                    <tr>
-                        <th>#</th><th>买入日期</th><th>买入价</th>
-                        <th>卖出日期</th><th>卖出价</th><th>股数</th>
-                        <th>盈亏</th><th>收益率</th><th>说明</th>
-                    </tr>
-                </thead>
-                <tbody>${rows}</tbody>
-            </table>
+    // Mobile: card list layout
+    const cards = trades.map((t, i) => {
+        const pnlCls = t.pnl > 0 ? 'text-green' : (t.pnl < 0 ? 'text-red' : '');
+        return `
+        <div class="bt-trade-card">
+            <div class="bt-trade-card-head">
+                <span>#${i + 1} · ${fmt(t.shares, 2)} 股</span>
+                <span class="${pnlCls}">${fmtPct(t.pnl_pct)}</span>
+            </div>
+            <div class="bt-trade-card-grid">
+                <div><span class="label">买入</span> ${t.entry_date}</div>
+                <div><span class="label">@</span> $${fmt(t.entry_price, 2)}</div>
+                <div><span class="label">卖出</span> ${t.exit_date}</div>
+                <div><span class="label">@</span> $${fmt(t.exit_price, 2)}</div>
+                <div class="${pnlCls}" style="grid-column:1/-1;">
+                    <span class="label">盈亏</span> $${fmt(t.pnl, 2)}
+                </div>
+                ${t.reason ? `<div class="text-muted" style="grid-column:1/-1;font-size:11px;">${t.reason}</div>` : ''}
+            </div>
         </div>`;
+    }).join('');
+    box.innerHTML = `
+        <div class="bt-trades-table-wrap">
+            <div class="table-responsive">
+                <table class="table table-sm mb-0 bt-trades-table">
+                    <thead>
+                        <tr>
+                            <th>#</th><th>买入日期</th><th>买入价</th>
+                            <th>卖出日期</th><th>卖出价</th><th>股数</th>
+                            <th>盈亏</th><th>收益率</th><th>说明</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            </div>
+        </div>
+        <div class="bt-trades-cards p-2">${cards}</div>`;
 }
 
 // ── Window resize ──────────────────────────────────────────────────────────
