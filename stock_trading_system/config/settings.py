@@ -9,7 +9,14 @@ import yaml
 _config = None
 _CONFIG_DIR = Path(__file__).parent
 _DEFAULT_CONFIG = _CONFIG_DIR / "default_config.yaml"
-_USER_CONFIG = Path.home() / ".stock_trading" / "config.yaml"
+
+# User-config location. Overridable via STOCK_CONFIG_DIR so that hosted
+# deployments (e.g. Railway with a mounted volume at /data/stock_config) can
+# persist API keys / writable settings on a filesystem that survives restarts.
+_USER_CONFIG_DIR = Path(
+    os.environ.get("STOCK_CONFIG_DIR") or (Path.home() / ".stock_trading")
+)
+_USER_CONFIG = _USER_CONFIG_DIR / "config.yaml"
 
 
 def _deep_merge(base: dict, override: dict) -> dict:
@@ -54,6 +61,9 @@ def _apply_env_overrides(config: dict) -> dict:
         "EMAIL_USERNAME": ("alerts", "email", "username"),
         "EMAIL_PASSWORD": ("alerts", "email", "password"),
         "EMAIL_TO": ("alerts", "email", "to_address"),
+        # Overridable SQLite path — used for PaaS deployments where only a
+        # specific mounted volume is writable (e.g. Railway Volume at /data).
+        "STOCK_DB_PATH": ("portfolio", "db_path"),
     }
 
     for env_var, path in env_map.items():

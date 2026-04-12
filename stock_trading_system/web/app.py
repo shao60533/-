@@ -141,6 +141,15 @@ def create_app(config_path=None):
     def index():
         return render_template("index.html")
 
+    # ── Health Check ────────────────────────────────────────────────────
+    # Lightweight probe used by Railway / Render / k8s liveness checks.
+    # Intentionally avoids touching the DB, data sources, or any lazily
+    # initialized singleton so it stays fast and never triggers network I/O.
+
+    @app.route("/api/health")
+    def api_health():
+        return jsonify({"status": "ok", "service": "stock-trading-system"})
+
     # ── Dashboard API ───────────────────────────────────────────────────
 
     @app.route("/api/dashboard")
