@@ -1,0 +1,17 @@
+tradingagents>=0.2.3
+polygon-api-client>=1.14.0
+akshare>=1.14.0
+ib_insync>=0.9.86
+finvizfinance>=0.14.0
+pandas>=2.0.0
+numpy>=1.24.0
+pyyaml>=6.0
+click>=8.0
+schedule>=1.2.0
+python-telegram-bot>=21.0
+aiosmtplib>=3.0
+rich>=13.0
+ta>=0.11.0
+yfinance>=0.2.0
+flask>=3.0.0
+flask-socketio>=5.3.0

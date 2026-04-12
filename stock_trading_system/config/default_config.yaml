@@ -1,0 +1,60 @@
+gemini:
+  api_key: ""
+  model: "gemini-2.5-flash"
+  deep_think_model: "gemini-3.1-pro-preview"
+  thinking_level: "high"
+
+polygon:
+  api_key: ""
+
+akshare: {}
+
+# Qwen (通义千问) - last-resort data source via DashScope.
+# Uses LLM + built-in web search to fetch quotes and rank screening candidates
+# when primary providers (IB/Polygon/yfinance/AkShare) are unavailable.
+# Enable only if you have a DashScope API key — each call costs LLM tokens.
+qwen:
+  enabled: false
+  api_key: ""
+  model: "qwen-plus"
+  base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  timeout: 30
+
+ib:
+  host: "127.0.0.1"
+  port: 7496
+  client_id: 1
+  enabled: true
+
+screener:
+  us_market:
+    min_market_cap: 1000000000
+    min_volume: 500000
+    max_pe: 50
+    top_n: 10
+  cn_market:
+    min_market_cap: 5000000000
+    min_volume: 1000000
+    max_pe: 50
+    top_n: 10
+
+alerts:
+  check_interval: 60
+  telegram:
+    bot_token: ""
+    chat_id: ""
+    enabled: false
+  email:
+    smtp_host: ""
+    smtp_port: 587
+    username: ""
+    password: ""
+    to_address: ""
+    enabled: false
+
+reports:
+  output_dir: "reports_output"
+  schedule: "daily"
+
+portfolio:
+  db_path: "data/portfolio.db"
