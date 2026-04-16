@@ -81,16 +81,35 @@ class YFinanceProvider:
             import yfinance as yf
 
             stock = yf.Ticker(ticker)
-            news = stock.news or []
-            return [
-                {
-                    "title": n.get("title", ""),
-                    "url": n.get("link", ""),
-                    "published": str(n.get("providerPublishTime", "")),
-                    "source": n.get("publisher", ""),
-                }
-                for n in news[:20]
-            ]
+            raw = stock.news or []
+            results = []
+            for n in raw[:20]:
+                # yfinance >= 0.2.36 uses {id, content: {title, ...}}
+                if "content" in n and isinstance(n["content"], dict):
+                    c = n["content"]
+                    url = ""
+                    if "canonicalUrl" in c:
+                        url = c["canonicalUrl"].get("url", "") if isinstance(c["canonicalUrl"], dict) else str(c["canonicalUrl"])
+                    elif "clickThroughUrl" in c:
+                        url = c["clickThroughUrl"].get("url", "") if isinstance(c["clickThroughUrl"], dict) else str(c["clickThroughUrl"])
+                    pub_date = c.get("pubDate", "")
+                    provider = c.get("provider", {})
+                    source = provider.get("displayName", "") if isinstance(provider, dict) else str(provider)
+                    results.append({
+                        "title": c.get("title", ""),
+                        "url": url,
+                        "published": str(pub_date),
+                        "source": source,
+                    })
+                else:
+                    # Legacy format
+                    results.append({
+                        "title": n.get("title", ""),
+                        "url": n.get("link", ""),
+                        "published": str(n.get("providerPublishTime", "")),
+                        "source": n.get("publisher", ""),
+                    })
+            return results
         except Exception as e:
             logger.error("yfinance get_news(%s) failed: %s", ticker, e)
             return []

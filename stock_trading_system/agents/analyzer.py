@@ -35,7 +35,7 @@ class AnalysisResult:
 
 
 class StockAnalyzer:
-    """Wraps TradingAgents for multi-agent stock analysis using Gemini."""
+    """Wraps TradingAgents for multi-agent stock analysis (Gemini or Qwen)."""
 
     def __init__(self, config: dict):
         self._config = config
@@ -49,36 +49,79 @@ class StockAnalyzer:
         from tradingagents.graph.trading_graph import TradingAgentsGraph
         from tradingagents.default_config import DEFAULT_CONFIG
 
+        ta_config = DEFAULT_CONFIG.copy()
+        ta_config["output_language"] = "Chinese"
+        ta_config["llm_timeout"] = 120
+
+        qwen_config = self._config.get("qwen", {})
         gemini_config = self._config.get("gemini", {})
 
-        # Set API key in environment BEFORE creating the graph
-        api_key = gemini_config.get("api_key", "")
-        if api_key:
-            os.environ["GOOGLE_API_KEY"] = api_key
-            os.environ["GEMINI_API_KEY"] = api_key
+        qwen_key = qwen_config.get("api_key", "")
+        gemini_key = gemini_config.get("api_key", "")
 
-        ta_config = DEFAULT_CONFIG.copy()
-        ta_config["llm_provider"] = "google"
-        ta_config["deep_think_llm"] = gemini_config.get("deep_think_model", "gemini-3.1-pro-preview")
-        ta_config["quick_think_llm"] = gemini_config.get("model", "gemini-2.5-flash")
-        ta_config["google_thinking_level"] = gemini_config.get("thinking_level", "high")
-        ta_config["output_language"] = "Chinese"
-        # Remove OpenAI backend_url default — let Google client use its own default endpoint
-        ta_config["backend_url"] = None
+        if qwen_key:
+            # ── Qwen / DashScope (OpenAI-compatible) ──────────────────────────
+            os.environ["DASHSCOPE_API_KEY"] = qwen_key
+            model = qwen_config.get("model", "qwen-plus")
+            ta_config["llm_provider"] = "qwen"
+            ta_config["deep_think_llm"] = qwen_config.get("deep_think_model", model)
+            ta_config["quick_think_llm"] = model
+            ta_config["backend_url"] = qwen_config.get(
+                "base_url", "https://dashscope.aliyuncs.com/compatible-mode/v1"
+            )
+            # Deep thinker (Judge / Trader / Risk Manager): enable Qwen3 thinking
+            # for high-quality reasoning on final investment decisions.
+            # Quick thinker (Market / News / Fundamentals data collectors): disable
+            # thinking for fast data retrieval — no reasoning depth needed.
+            ta_config["llm_deep_kwargs"] = {
+                "extra_body": {"enable_thinking": True},
+                "timeout": 600,   # 10 min — thinking on long context can be slow
+            }
+            ta_config["llm_quick_kwargs"] = {
+                "extra_body": {"enable_thinking": False},
+                "timeout": 120,
+            }
+            logger.info("Using Qwen LLM provider (model=%s, deep_thinking=ON)", model)
+        else:
+            # ── Google Gemini ─────────────────────────────────────────────────
+            if gemini_key:
+                os.environ["GOOGLE_API_KEY"] = gemini_key
+                os.environ["GEMINI_API_KEY"] = gemini_key
+
+            import httpx as _httpx
+
+            # Disable HTTP/2 and add transport-level retries.
+            # TUN-mode proxy (Clash/Surge) cold-starts the first TCP connection,
+            # causing "Server disconnected" on the first call; retries fix this.
+            ta_config["llm_client_args"] = {
+                "http2": False,
+                "transport": _httpx.HTTPTransport(retries=3),
+            }
+            # Clear proxy env vars — Gemini blocks HK exit IPs.
+            for _var in ("https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY",
+                         "all_proxy", "ALL_PROXY"):
+                os.environ.pop(_var, None)
+
+            ta_config["llm_provider"] = "google"
+            ta_config["deep_think_llm"] = gemini_config.get("deep_think_model", "gemini-2.5-flash")
+            ta_config["quick_think_llm"] = gemini_config.get("model", "gemini-2.5-flash")
+            ta_config["google_thinking_level"] = gemini_config.get("thinking_level", "low")
+            ta_config["backend_url"] = None
+            logger.info("Using Gemini LLM provider (model=%s)", ta_config["quick_think_llm"])
 
         self._graph = TradingAgentsGraph(
             selected_analysts=["market", "social", "news", "fundamentals"],
             debug=True,
             config=ta_config,
         )
-        logger.info("TradingAgents graph initialized with Gemini")
 
-    def analyze(self, ticker: str, date: str) -> AnalysisResult:
+    def analyze(self, ticker: str, date: str, progress_callback=None) -> AnalysisResult:
         """Run full multi-agent analysis on a stock.
 
         Args:
             ticker: Stock symbol (e.g. "AAPL")
             date: Analysis date "YYYY-MM-DD"
+            progress_callback: Optional callable(step, status) for real-time progress
 
         Returns:
             AnalysisResult with signal, reports, and decision details
@@ -86,7 +129,7 @@ class StockAnalyzer:
         self._init_graph()
 
         logger.info("Starting analysis for %s on %s", ticker, date)
-        final_state, signal = self._graph.propagate(ticker, date)
+        final_state, signal = self._graph.propagate(ticker, date, progress_callback=progress_callback)
 
         result = AnalysisResult(
             ticker=ticker,

@@ -49,6 +49,37 @@ _SCREEN_SYSTEM = (
 )
 
 
+_FUNDAMENTALS_SYSTEM = (
+    "You are a financial fundamentals service. Given a ticker, use web "
+    "search to find the latest fundamental indicators from Yahoo Finance, "
+    "East Money (东方财富), or exchange filings. Respond with ONLY a JSON "
+    "object, no prose, no markdown fences. Schema: "
+    '{"ticker":"<upper>","market_cap":<number|null>,'
+    '"pe_ratio":<number|null>,"pb_ratio":<number|null>,'
+    '"roe":<number|null>,"gross_margin":<number|null>,'
+    '"net_margin":<number|null>,"revenue_growth":<number|null>,'
+    '"dividend_yield":<number|null>,"beta":<number|null>,'
+    '"week_52_high":<number|null>,"week_52_low":<number|null>,'
+    '"eps":<number|null>,"confidence":"high|medium|low",'
+    '"as_of":"<ISO date>","source":"<url or site name>"}. '
+    "Percentage fields (roe, gross_margin, net_margin, revenue_growth, "
+    "dividend_yield) should be expressed as percentages (e.g. 25.3 for "
+    "25.3%, NOT 0.253). "
+    'If you cannot find reliable data, respond with {"error":"<short reason>"}.'
+)
+
+
+_NEWS_SYSTEM = (
+    "You are a financial news service. Given a ticker, use web search to "
+    "find the most recent news (last 7 days) from Reuters, Bloomberg, CNBC, "
+    "Sina Finance, or East Money. Respond with ONLY a JSON object. Schema: "
+    '{"news":[{"title":"<string>","url":"<http(s) url>","date":"<ISO>",'
+    '"source":"<site>","summary":"<one-sentence summary>"}]}. '
+    "Return at most the requested number of items, sorted by most recent "
+    "first. Skip items without a verifiable URL."
+)
+
+
 class QwenProvider:
     """Qwen LLM-backed fallback provider using DashScope OpenAI-compatible API."""
 
@@ -149,6 +180,91 @@ class QwenProvider:
             "source": "qwen:" + (data.get("source") or ""),
             "as_of": data.get("as_of") or "",
         }
+
+    def get_fundamentals(self, ticker: str) -> dict | None:
+        """Best-effort fundamentals via Qwen + web search.
+
+        Returns a normalized dict (see validators in data.validators)
+        or None on any failure. Raw numeric fields are converted via
+        _to_float so callers get real numbers, not strings.
+        """
+        if not self._enabled:
+            return None
+        ticker = (ticker or "").upper().strip()
+        if not ticker:
+            return None
+
+        data = self._call(
+            _FUNDAMENTALS_SYSTEM,
+            f"Give me the latest fundamental indicators for ticker {ticker}.",
+        )
+        if not data or "error" in data:
+            if data and data.get("error"):
+                logger.info("Qwen fundamentals for %s: %s", ticker, data["error"])
+            return None
+
+        result = {
+            "ticker": ticker,
+            "market_cap": _to_float(data.get("market_cap")),
+            "pe_ratio": _to_float(data.get("pe_ratio")),
+            "pb_ratio": _to_float(data.get("pb_ratio")),
+            "roe": _to_float(data.get("roe")),
+            "gross_margin": _to_float(data.get("gross_margin")),
+            "net_margin": _to_float(data.get("net_margin")),
+            "revenue_growth": _to_float(data.get("revenue_growth")),
+            "dividend_yield": _to_float(data.get("dividend_yield")),
+            "beta": _to_float(data.get("beta")),
+            "week_52_high": _to_float(data.get("week_52_high")),
+            "week_52_low": _to_float(data.get("week_52_low")),
+            "eps": _to_float(data.get("eps")),
+            "confidence": (data.get("confidence") or "medium").lower(),
+            "as_of": data.get("as_of") or "",
+            "source": "qwen:" + (data.get("source") or ""),
+        }
+        return result
+
+    def get_news(self, ticker: str, limit: int = 10) -> list[dict]:
+        """Recent news via Qwen + web search.
+
+        Returns a list of dicts with keys: title, url, date, source, summary.
+        Empty list on failure. Items without a plausible http(s) URL are
+        filtered out to avoid garbage links.
+        """
+        if not self._enabled:
+            return []
+        ticker = (ticker or "").upper().strip()
+        if not ticker:
+            return []
+
+        user_prompt = (
+            f"Find the {max(1, int(limit))} most recent news articles about "
+            f"ticker {ticker} from the last 7 days."
+        )
+        data = self._call(_NEWS_SYSTEM, user_prompt)
+        if not data:
+            return []
+        raw = data.get("news") or []
+        if not isinstance(raw, list):
+            return []
+
+        results: list[dict] = []
+        for item in raw[: max(1, int(limit))]:
+            if not isinstance(item, dict):
+                continue
+            url = (item.get("url") or "").strip()
+            if not url.startswith(("http://", "https://")):
+                continue  # drop unverifiable links
+            title = (item.get("title") or "").strip()
+            if not title:
+                continue
+            results.append({
+                "title": title,
+                "url": url,
+                "date": (item.get("date") or "").strip(),
+                "source": (item.get("source") or "").strip(),
+                "summary": (item.get("summary") or "").strip(),
+            })
+        return results
 
     def screen_stocks(
         self,

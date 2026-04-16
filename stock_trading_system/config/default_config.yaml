@@ -4,15 +4,15 @@ gemini:
   deep_think_model: "gemini-3.1-pro-preview"
   thinking_level: "high"
 
+# Polygon.io — disabled by default (free tier is rate-limited; not cloud-friendly).
+# Enable explicitly via providers.polygon_enabled when you have a paid key.
 polygon:
   api_key: ""
 
 akshare: {}
 
-# Qwen (通义千问) - last-resort data source via DashScope.
-# Uses LLM + built-in web search to fetch quotes and rank screening candidates
-# when primary providers (IB/Polygon/yfinance/AkShare) are unavailable.
-# Enable only if you have a DashScope API key — each call costs LLM tokens.
+# Qwen (通义千问) — primary data source for cloud deployment.
+# Set DASHSCOPE_API_KEY env var to auto-enable in cloud (Railway, etc.).
 qwen:
   enabled: false
   api_key: ""
@@ -20,11 +20,40 @@ qwen:
   base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
   timeout: 30
 
+# Interactive Brokers — disabled by default (requires local TWS process).
+# Useful only when running the system on the same machine as IB Gateway/TWS.
 ib:
   host: "127.0.0.1"
   port: 7496
   client_id: 1
-  enabled: true
+  enabled: false
+
+# Provider-level master switches (preferred over per-provider .enabled flags).
+# DataRouter consults these first to skip even initialization in cloud envs.
+providers:
+  ib_enabled: false
+  polygon_enabled: false
+  yfinance_enabled: true
+  akshare_enabled: true
+
+# DataRouter routing & caching policy (see ARCHITECTURE_UPGRADE_PROPOSAL §4).
+data_routing:
+  primary: "qwen"          # "qwen" or "local"; first source to try
+  enable_cache: true
+  cache_ttl:
+    price_quote: 60        # 1 min
+    daily_bars: 43200      # 12 h
+    minute_bars: 300       # 5 min
+    fundamentals: 86400    # 24 h
+    news: 3600             # 1 h
+    screen_results: 3600   # 1 h
+
+# Async task system (see ARCHITECTURE_UPGRADE_PROPOSAL §4.2).
+tasks:
+  max_workers: 3              # Concurrent worker threads
+  idempotency_window: 60      # Reuse identical task within N seconds
+  retention_days: 30          # Auto-purge task records older than N days
+  cleanup_interval: 21600     # Run cleanup every N seconds (6h)
 
 screener:
   us_market:
@@ -56,5 +85,7 @@ reports:
   output_dir: "reports_output"
   schedule: "daily"
 
+# Portfolio storage. On Railway the working directory is ephemeral — point this
+# at a Persistent Volume mount (e.g. /data/portfolio.db) for durability.
 portfolio:
   db_path: "data/portfolio.db"

@@ -4,6 +4,7 @@ Connects to TWS Desktop via ib_insync. Provides real-time quotes,
 historical data, fundamentals, and market scanning.
 """
 
+import asyncio
 import time
 from datetime import datetime, timedelta
 
@@ -12,6 +13,71 @@ import pandas as pd
 from stock_trading_system.utils import get_logger
 
 logger = get_logger("data.ib")
+
+
+def _make_patched_ib():
+    """Return an IB subclass that tolerates reqExecutionsAsync timeouts.
+
+    ib_insync 0.9.x sometimes hangs indefinitely on reqExecutionsAsync when
+    the broker sends no execDetailsEnd message.  This subclass catches that
+    timeout gracefully so the rest of the connection sequence can proceed.
+    """
+    from ib_insync import IB
+
+    class _PatchedIB(IB):
+        async def connectAsync(
+            self,
+            host="127.0.0.1",
+            port=7497,
+            clientId=1,
+            timeout=4,
+            readonly=False,
+            account="",
+        ):
+            clientId = int(clientId)
+            self.wrapper.clientId = clientId
+            timeout = timeout or None
+            try:
+                await self.client.connectAsync(host, port, clientId, timeout)
+                if clientId == 0:
+                    self.reqAutoOpenOrders(True)
+                accounts = self.client.getAccounts()
+                if not account and len(accounts) == 1:
+                    account = accounts[0]
+                reqs = {}
+                reqs["positions"] = self.reqPositionsAsync()
+                if not readonly:
+                    reqs["open orders"] = self.reqOpenOrdersAsync()
+                if not readonly and self.client.serverVersion() >= 150:
+                    reqs["completed orders"] = self.reqCompletedOrdersAsync(False)
+                if account:
+                    reqs["account updates"] = self.reqAccountUpdatesAsync(account)
+                if len(accounts) <= self.MaxSyncedSubAccounts:
+                    for acc in accounts:
+                        reqs[f"account updates for {acc}"] = (
+                            self.reqAccountUpdatesMultiAsync(acc)
+                        )
+                tasks = [asyncio.wait_for(req, timeout) for req in reqs.values()]
+                resps = await asyncio.gather(*tasks, return_exceptions=True)
+                for name, resp in zip(reqs, resps):
+                    if isinstance(resp, (asyncio.TimeoutError, TimeoutError)):
+                        logger.warning("%s request timed out", name)
+                # reqExecutionsAsync can hang if TWS never sends execDetailsEnd;
+                # treat a timeout here as non-fatal.
+                try:
+                    await asyncio.wait_for(self.reqExecutionsAsync(), 5)
+                except Exception:
+                    logger.warning("reqExecutionsAsync timed out — continuing anyway")
+                if not self.client.isReady():
+                    raise ConnectionError("Socket connection broken while connecting")
+                self._logger.info("Synchronization complete")
+                self.connectedEvent.emit()
+            except BaseException:
+                self.disconnect()
+                raise
+            return self
+
+    return _PatchedIB()
 
 
 class IBProvider:
@@ -28,16 +94,21 @@ class IBProvider:
             return True
 
         try:
-            from ib_insync import IB
-
-            self._ib = IB()
+            self._ib = _make_patched_ib()
+            # Use ib_insync's own sync connect() path so the event loop stays
+            # consistent with subsequent sync calls (qualifyContracts, etc.)
             self._ib.connect(
                 host=self._config.get("host", "127.0.0.1"),
                 port=self._config.get("port", 7496),
                 clientId=self._config.get("client_id", 1),
+                timeout=15,
             )
             self._connected = True
-            logger.info("Connected to IB TWS at %s:%s", self._config.get("host"), self._config.get("port"))
+            logger.info(
+                "Connected to IB TWS at %s:%s",
+                self._config.get("host"),
+                self._config.get("port"),
+            )
             return True
         except Exception as e:
             logger.warning("Failed to connect to IB TWS: %s", e)
@@ -65,28 +136,54 @@ class IBProvider:
         return Stock(ticker, "SMART", "USD")
 
     def get_stock_price(self, ticker: str) -> dict | None:
-        """Get real-time price snapshot for a US stock."""
+        """Get price for a US stock.
+
+        Tries real-time market data first; if unavailable (no subscription),
+        falls back to the most recent historical close.
+        """
         try:
             self._ensure_connected()
             contract = self._make_stock_contract(ticker)
             self._ib.qualifyContracts(contract)
+
+            # Try real-time data
             ticker_data = self._ib.reqMktData(contract, "", False, False)
-            # Wait briefly for data
             self._ib.sleep(2)
 
-            result = {
-                "ticker": ticker,
-                "last": ticker_data.last if ticker_data.last == ticker_data.last else None,
-                "bid": ticker_data.bid if ticker_data.bid == ticker_data.bid else None,
-                "ask": ticker_data.ask if ticker_data.ask == ticker_data.ask else None,
-                "high": ticker_data.high if ticker_data.high == ticker_data.high else None,
-                "low": ticker_data.low if ticker_data.low == ticker_data.low else None,
-                "close": ticker_data.close if ticker_data.close == ticker_data.close else None,
-                "volume": ticker_data.volume if ticker_data.volume == ticker_data.volume else None,
-            }
-
+            last = ticker_data.last if ticker_data.last == ticker_data.last else None
+            close = ticker_data.close if ticker_data.close == ticker_data.close else None
             self._ib.cancelMktData(contract)
-            return result
+
+            if last or close:
+                return {
+                    "ticker": ticker,
+                    "last": last,
+                    "close": close,
+                    "bid": ticker_data.bid if ticker_data.bid == ticker_data.bid else None,
+                    "ask": ticker_data.ask if ticker_data.ask == ticker_data.ask else None,
+                    "high": ticker_data.high if ticker_data.high == ticker_data.high else None,
+                    "low": ticker_data.low if ticker_data.low == ticker_data.low else None,
+                    "volume": ticker_data.volume if ticker_data.volume == ticker_data.volume else None,
+                }
+
+            # No real-time data (no subscription) — use last historical close
+            logger.info("IB no realtime for %s, using historical close", ticker)
+            bars = self._ib.reqHistoricalData(
+                contract, endDateTime="", durationStr="2 D",
+                barSizeSetting="1 day", whatToShow="TRADES", useRTH=True,
+            )
+            if bars:
+                b = bars[-1]
+                return {
+                    "ticker": ticker,
+                    "last": b.close,
+                    "close": b.close,
+                    "high": b.high,
+                    "low": b.low,
+                    "volume": int(b.volume),
+                }
+
+            return None
         except Exception as e:
             logger.error("IB get_stock_price(%s) failed: %s", ticker, e)
             return None

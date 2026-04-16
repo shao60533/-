@@ -110,16 +110,34 @@ class PortfolioManager:
     # ── Queries ──────────────────────────────────────────────────────────
 
     def get_holdings(self) -> list[dict]:
-        """Get all positions with real-time price and P&L."""
+        """Get all positions with real-time price and P&L.
+
+        Fetches prices concurrently to avoid serial network delays.
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         positions = self._db.get_all_positions()
+        if not positions:
+            return []
+
+        # Fetch all prices in parallel
+        def _fetch_price(pos):
+            try:
+                data = self._data_manager.get_price(pos.ticker, market=pos.market)
+                return pos.ticker, (data.get("last") or data.get("close") or 0) if data else 0
+            except Exception:
+                return pos.ticker, 0
+
+        prices = {}
+        with ThreadPoolExecutor(max_workers=min(len(positions), 8)) as pool:
+            futures = {pool.submit(_fetch_price, p): p for p in positions}
+            for f in as_completed(futures):
+                ticker, price = f.result()
+                prices[ticker] = price
+
         holdings = []
-
         for pos in positions:
-            price_data = self._data_manager.get_price(pos.ticker, market=pos.market)
-            current_price = 0
-            if price_data:
-                current_price = price_data.get("last") or price_data.get("close") or 0
-
+            current_price = prices.get(pos.ticker, 0)
             pnl = (current_price - pos.avg_cost) * pos.shares
             pnl_pct = ((current_price / pos.avg_cost) - 1) * 100 if pos.avg_cost > 0 else 0
 

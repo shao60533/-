@@ -75,6 +75,9 @@ class AlertMonitor:
                     alert["current_price"] = current_price
                     triggered.append(alert)
                     self._db.trigger_alert(alert["id"])
+                    self._db.save_alert_trigger(
+                        alert["id"], ticker, condition, threshold, current_price
+                    )
                     logger.info(
                         "Alert triggered: %s %s %s (current: %s)",
                         ticker, condition, threshold, current_price,

@@ -108,3 +108,38 @@ def get_config() -> dict:
     if _config is None:
         _config = load_config()
     return _config
+
+
+def save_config(updates: dict) -> dict:
+    """Merge *updates* into the user config YAML and reload.
+
+    Only keys present in *updates* are changed; the rest of the file is
+    preserved.  Writes to a temp file first for atomicity.
+
+    Returns the reloaded (full) config.
+    """
+    import tempfile, shutil
+
+    _USER_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+
+    # Read existing user config (or empty dict)
+    if _USER_CONFIG.exists():
+        with open(_USER_CONFIG) as f:
+            user_cfg = yaml.safe_load(f) or {}
+    else:
+        user_cfg = {}
+
+    merged = _deep_merge(user_cfg, updates)
+
+    # Atomic write: temp file → rename
+    fd, tmp = tempfile.mkstemp(dir=_USER_CONFIG.parent, suffix=".yaml")
+    try:
+        with os.fdopen(fd, "w") as f:
+            yaml.dump(merged, f, default_flow_style=False, allow_unicode=True)
+        shutil.move(tmp, _USER_CONFIG)
+    except Exception:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+
+    return load_config()  # reload global _config

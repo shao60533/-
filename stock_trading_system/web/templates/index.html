@@ -3,8 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <meta name="theme-color" content="#0d1117">
-    <title>股票辅助决策系统</title>
+    <meta name="theme-color" content="#05080f">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <link rel="manifest" href="/static/manifest.json">
+    <title>StockAI — 智能投资终端</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Noto+Sans+SC:wght@300;400;500;700&display=swap" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" rel="stylesheet">
     <link href="/static/css/style.css" rel="stylesheet">
@@ -13,14 +17,16 @@
     <!-- Sidebar -->
     <nav id="sidebar">
         <div class="sidebar-header">
-            <h4><i class="fas fa-chart-line"></i> 股票决策系统</h4>
+            <h4><i class="fas fa-bolt"></i> StockAI Terminal</h4>
         </div>
-        <ul class="nav flex-column">
+        <ul class="nav flex-column" style="padding:12px 10px;flex:1;">
+            <li style="font-size:10px;text-transform:uppercase;letter-spacing:1.5px;color:var(--text-secondary);padding:10px 16px 4px;font-weight:600;opacity:0.6;">Overview</li>
             <li class="nav-item">
                 <a class="nav-link active" href="#" data-page="dashboard">
-                    <i class="fas fa-tachometer-alt"></i> 仪表盘
+                    <i class="fas fa-th-large"></i> 仪表盘
                 </a>
             </li>
+            <li style="font-size:10px;text-transform:uppercase;letter-spacing:1.5px;color:var(--text-secondary);padding:10px 16px 4px;font-weight:600;opacity:0.6;">Analysis</li>
             <li class="nav-item">
                 <a class="nav-link" href="#" data-page="analysis">
                     <i class="fas fa-brain"></i> AI 分析
@@ -28,53 +34,72 @@
             </li>
             <li class="nav-item">
                 <a class="nav-link" href="#" data-page="history">
-                    <i class="fas fa-history"></i> 分析记录
+                    <i class="fas fa-clock-rotate-left"></i> 分析记录
                 </a>
             </li>
             <li class="nav-item">
                 <a class="nav-link" href="#" data-page="screener">
-                    <i class="fas fa-filter"></i> 智能选股
+                    <i class="fas fa-crosshairs"></i> 智能选股
                 </a>
             </li>
+            <li style="font-size:10px;text-transform:uppercase;letter-spacing:1.5px;color:var(--text-secondary);padding:10px 16px 4px;font-weight:600;opacity:0.6;">Portfolio</li>
             <li class="nav-item">
                 <a class="nav-link" href="#" data-page="portfolio">
-                    <i class="fas fa-briefcase"></i> 持仓管理
+                    <i class="fas fa-wallet"></i> 持仓管理
                 </a>
             </li>
             <li class="nav-item">
-                <a class="nav-link" href="#" data-page="alerts">
+                <a class="nav-link" href="#" data-page="backtest">
+                    <i class="fas fa-flask"></i> 策略回测
+                </a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link" href="#" data-page="paper">
+                    <i class="fas fa-vial"></i> 纸面交易
+                </a>
+            </li>
+            <li style="font-size:10px;text-transform:uppercase;letter-spacing:1.5px;color:var(--text-secondary);padding:10px 16px 4px;font-weight:600;opacity:0.6;">System</li>
+            <li class="nav-item">
+                <a class="nav-link" href="#" data-page="alerts" style="position:relative;">
                     <i class="fas fa-bell"></i> 预警中心
+                    <span class="alert-badge" id="sidebar-alert-badge" style="display:none;">0</span>
                 </a>
             </li>
             <li class="nav-item">
                 <a class="nav-link" href="#" data-page="reports">
-                    <i class="fas fa-file-alt"></i> 报告中心
+                    <i class="fas fa-file-lines"></i> 报告中心
                 </a>
             </li>
             <li class="nav-item">
                 <a class="nav-link" href="#" data-page="settings">
-                    <i class="fas fa-cog"></i> 设置
+                    <i class="fas fa-gear"></i> 设置
+                </a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link" href="#" data-page="tasks" style="position:relative;">
+                    <i class="fas fa-list-check"></i> 任务中心
+                    <span class="alert-badge" id="sidebar-tasks-badge" style="display:none;">0</span>
                 </a>
             </li>
         </ul>
         <div class="sidebar-footer">
-            <small class="text-muted">Telegram Bot: <span id="bot-status" class="text-danger">离线</span></small>
+            <span class="status-dot ok"></span> <span id="bot-status">Qwen 在线</span>
         </div>
     </nav>
 
     <!-- Mobile Bottom Tab Bar -->
     <nav id="mobile-tabbar">
         <a href="#" class="tabbar-item active" data-page="dashboard">
-            <i class="fas fa-tachometer-alt"></i><span>仪表盘</span>
+            <i class="fas fa-th-large"></i><span>仪表盘</span>
         </a>
         <a href="#" class="tabbar-item" data-page="analysis">
             <i class="fas fa-brain"></i><span>分析</span>
         </a>
         <a href="#" class="tabbar-item" data-page="screener">
-            <i class="fas fa-filter"></i><span>选股</span>
+            <i class="fas fa-crosshairs"></i><span>选股</span>
         </a>
         <a href="#" class="tabbar-item" data-page="portfolio">
-            <i class="fas fa-briefcase"></i><span>持仓</span>
+            <i class="fas fa-wallet"></i><span>持仓</span>
         </a>
         <a href="#" class="tabbar-item" id="tabbar-more" onclick="toggleMoreSheet();return false;">
             <i class="fas fa-ellipsis-h"></i><span>更多</span>
@@ -88,16 +113,27 @@
         <div class="more-sheet-title">更多功能</div>
         <div class="more-sheet-grid">
             <a href="#" class="more-sheet-item" data-page="history" onclick="closeMoreSheet()">
-                <i class="fas fa-history"></i><span>分析记录</span>
+                <i class="fas fa-clock-rotate-left"></i><span>分析记录</span>
             </a>
-            <a href="#" class="more-sheet-item" data-page="alerts" onclick="closeMoreSheet()">
+            <a href="#" class="more-sheet-item" data-page="alerts" onclick="closeMoreSheet()" style="position:relative;">
                 <i class="fas fa-bell"></i><span>预警中心</span>
+                <span class="alert-badge" id="mobile-alert-badge" style="display:none;">0</span>
             </a>
             <a href="#" class="more-sheet-item" data-page="reports" onclick="closeMoreSheet()">
-                <i class="fas fa-file-alt"></i><span>报告中心</span>
+                <i class="fas fa-file-lines"></i><span>报告中心</span>
+            </a>
+            <a href="#" class="more-sheet-item" data-page="backtest" onclick="closeMoreSheet()">
+                <i class="fas fa-flask"></i><span>策略回测</span>
+            </a>
+            <a href="#" class="more-sheet-item" data-page="paper" onclick="closeMoreSheet()">
+                <i class="fas fa-vial"></i><span>纸面交易</span>
             </a>
             <a href="#" class="more-sheet-item" data-page="settings" onclick="closeMoreSheet()">
-                <i class="fas fa-cog"></i><span>设置</span>
+                <i class="fas fa-gear"></i><span>设置</span>
+            </a>
+            <a href="#" class="more-sheet-item" data-page="tasks" onclick="closeMoreSheet()" style="position:relative;">
+                <i class="fas fa-list-check"></i><span>任务中心</span>
+                <span class="alert-badge" id="mobile-tasks-badge" style="display:none;">0</span>
             </a>
         </div>
     </div>
@@ -109,6 +145,10 @@
             <button id="sidebar-toggle" class="btn btn-sm btn-outline-secondary">
                 <i class="fas fa-bars"></i>
             </button>
+            <div class="global-search-box" style="flex:1;max-width:400px;margin:0 16px;position:relative;">
+                <input type="text" class="form-control form-control-sm" id="global-search" placeholder="搜索股票/持仓/分析/预警..." autocomplete="off">
+                <div class="search-dropdown" id="search-dropdown" style="display:none;"></div>
+            </div>
             <div class="top-bar-right">
                 <span id="clock" class="text-muted"></span>
             </div>
@@ -146,7 +186,15 @@
             <div class="row g-3">
                 <div class="col-12 col-lg-8">
                     <div class="card">
-                        <div class="card-header">净值曲线</div>
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <span>净值曲线</span>
+                            <div class="btn-group btn-group-sm range-switcher" id="dash-range-switcher">
+                                <button class="btn btn-outline-secondary" data-days="7">7D</button>
+                                <button class="btn btn-outline-secondary active" data-days="30">1M</button>
+                                <button class="btn btn-outline-secondary" data-days="90">3M</button>
+                                <button class="btn btn-outline-secondary" data-days="365">1Y</button>
+                            </div>
+                        </div>
                         <div class="card-body">
                             <div id="chart-pnl" class="chart-box"></div>
                         </div>
@@ -182,6 +230,22 @@
                     </div>
                 </div>
             </div>
+            <div class="row g-3 mt-2">
+                <div class="col-12">
+                    <div class="card">
+                        <div class="card-header"><i class="fas fa-bolt"></i> 快捷操作</div>
+                        <div class="card-body">
+                            <div class="d-flex flex-wrap gap-2">
+                                <button class="btn btn-primary" onclick="switchTab('analysis')"><i class="fas fa-brain"></i> AI 分析</button>
+                                <button class="btn btn-info" onclick="switchTab('screener')"><i class="fas fa-crosshairs"></i> 智能选股</button>
+                                <button class="btn btn-success" onclick="switchTab('reports')"><i class="fas fa-file-lines"></i> 生成报告</button>
+                                <button class="btn btn-warning" onclick="switchTab('alerts')"><i class="fas fa-bell"></i> 预警中心</button>
+                                <button class="btn btn-secondary" onclick="switchTab('backtest')"><i class="fas fa-flask"></i> 策略回测</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
 
         <!-- Page: Analysis -->
@@ -204,8 +268,13 @@
             <!-- Quick price + K-line preview (loads when ticker entered) -->
             <div class="card mb-3" id="quick-chart-card" style="display:none;">
                 <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
-                    <span><i class="fas fa-chart-area"></i> <span id="quick-chart-ticker"></span> 价格走势</span>
-                    <div class="btn-group btn-group-sm range-switcher" role="group">
+                    <span>
+                        <i class="fas fa-chart-area"></i>
+                        <span id="quick-chart-ticker"></span> 价格走势
+                        <span id="chart-source-badge" class="badge ms-2" style="font-size:10px;background:rgba(88,166,255,0.15);color:var(--accent-blue);">TradingView</span>
+                    </span>
+                    <!-- Range switcher only shown when ECharts fallback is active -->
+                    <div class="btn-group btn-group-sm range-switcher" role="group" id="echarts-range-switcher" style="display:none;">
                         <button type="button" class="btn btn-outline-secondary active" data-range="1mo">1M</button>
                         <button type="button" class="btn btn-outline-secondary" data-range="3mo">3M</button>
                         <button type="button" class="btn btn-outline-secondary" data-range="6mo">6M</button>
@@ -214,7 +283,10 @@
                 </div>
                 <div class="card-body">
                     <div id="quick-quote" class="mb-2"></div>
-                    <div id="chart-kline" class="chart-box chart-box-lg"></div>
+                    <!-- Primary: TradingView Widget container (auto-filled by tv.js) -->
+                    <div id="tv-chart-container" class="chart-box chart-box-lg" style="min-height:420px;"></div>
+                    <!-- Fallback: legacy ECharts candlestick (hidden by default) -->
+                    <div id="chart-kline" class="chart-box chart-box-lg" style="display:none;"></div>
                 </div>
             </div>
 
@@ -233,18 +305,76 @@
                 </div>
             </div>
 
-            <div id="analysis-loading" class="text-center py-5" style="display:none;">
-                <div class="spinner-border text-primary" role="status"></div>
-                <p class="mt-3">AI Agent 分析中，请稍候（约2-5分钟）...</p>
-                <p class="text-muted small">Market Analyst → Sentiment Analyst → News Analyst → Fundamentals → 多空辩论 → 风险评估 → 最终决策</p>
+            <div id="analysis-loading" style="display:none;">
+                <div class="card mb-3">
+                    <div class="card-header"><i class="fas fa-diagram-project"></i> AI 多Agent 分析管线</div>
+                    <div class="card-body">
+                        <div class="pipeline-progress" id="pipeline-steps">
+                            <div class="pipeline-step" data-step="market">
+                                <div class="pipeline-icon"><i class="fas fa-chart-line"></i></div>
+                                <div class="pipeline-label">技术面</div>
+                                <div class="pipeline-status">⏳</div>
+                            </div>
+                            <div class="pipeline-connector"></div>
+                            <div class="pipeline-step" data-step="fundamentals">
+                                <div class="pipeline-icon"><i class="fas fa-building"></i></div>
+                                <div class="pipeline-label">基本面</div>
+                                <div class="pipeline-status">⏳</div>
+                            </div>
+                            <div class="pipeline-connector"></div>
+                            <div class="pipeline-step" data-step="sentiment">
+                                <div class="pipeline-icon"><i class="fas fa-comments"></i></div>
+                                <div class="pipeline-label">情绪</div>
+                                <div class="pipeline-status">⏳</div>
+                            </div>
+                            <div class="pipeline-connector"></div>
+                            <div class="pipeline-step" data-step="news">
+                                <div class="pipeline-icon"><i class="fas fa-newspaper"></i></div>
+                                <div class="pipeline-label">新闻</div>
+                                <div class="pipeline-status">⏳</div>
+                            </div>
+                            <div class="pipeline-connector"></div>
+                            <div class="pipeline-step" data-step="debate">
+                                <div class="pipeline-icon"><i class="fas fa-scale-balanced"></i></div>
+                                <div class="pipeline-label">多空辩论</div>
+                                <div class="pipeline-status">⏳</div>
+                            </div>
+                            <div class="pipeline-connector"></div>
+                            <div class="pipeline-step" data-step="risk">
+                                <div class="pipeline-icon"><i class="fas fa-shield-halved"></i></div>
+                                <div class="pipeline-label">风险评估</div>
+                                <div class="pipeline-status">⏳</div>
+                            </div>
+                            <div class="pipeline-connector"></div>
+                            <div class="pipeline-step" data-step="decision">
+                                <div class="pipeline-icon"><i class="fas fa-gavel"></i></div>
+                                <div class="pipeline-label">最终决策</div>
+                                <div class="pipeline-status">⏳</div>
+                            </div>
+                        </div>
+                        <p class="text-muted text-center mt-3 mb-0 small">分析中，预计需要 5-10 分钟...</p>
+                    </div>
+                </div>
             </div>
             <div id="analysis-result" style="display:none;">
+                <div class="mb-2">
+                    <span class="badge bg-primary" id="analysis-tracked-badge" style="display:none;">
+                        <i class="fas fa-vial"></i> 已自动追踪
+                    </span>
+                </div>
                 <div class="row g-3 mb-3">
-                    <div class="col-12 col-lg-4">
+                    <div class="col-6 col-lg-2">
                         <div class="signal-card" id="signal-card">
                             <div class="signal-label">AI 信号</div>
                             <div class="signal-value" id="signal-value">--</div>
                             <div class="signal-ticker" id="signal-ticker"></div>
+                        </div>
+                    </div>
+                    <div class="col-6 col-lg-2">
+                        <div class="signal-card" id="confidence-card" style="display:none;">
+                            <div class="signal-label">置信度</div>
+                            <div class="signal-value" id="confidence-value" style="font-size:2rem;">--</div>
+                            <div class="signal-ticker" id="confidence-action"></div>
                         </div>
                     </div>
                     <div class="col-12 col-lg-8" id="advice-card-container" style="display:none;">
@@ -254,47 +384,39 @@
                         </div>
                     </div>
                 </div>
-                <div class="row g-3">
-                    <div class="col-12 col-lg-6">
-                        <div class="card">
-                            <div class="card-header"><i class="fas fa-chart-bar"></i> 技术面分析</div>
-                            <div class="card-body report-content" id="report-market"></div>
+                <div class="card">
+                    <div class="card-header" style="padding:0;border-bottom:none;">
+                        <div class="report-tabs" style="display:flex;overflow-x:auto;gap:0;border-bottom:1px solid var(--border);">
+                            <button class="report-tab active" onclick="switchReportTab(this,'rpt-market')"><i class="fas fa-chart-bar"></i> 技术面</button>
+                            <button class="report-tab" onclick="switchReportTab(this,'rpt-fundamentals')"><i class="fas fa-building-columns"></i> 基本面</button>
+                            <button class="report-tab" onclick="switchReportTab(this,'rpt-sentiment')"><i class="fas fa-face-smile"></i> 情绪</button>
+                            <button class="report-tab" onclick="switchReportTab(this,'rpt-news')"><i class="fas fa-newspaper"></i> 新闻</button>
+                            <button class="report-tab" onclick="switchReportTab(this,'rpt-debate')"><i class="fas fa-scale-balanced"></i> 多空辩论</button>
+                            <button class="report-tab" onclick="switchReportTab(this,'rpt-risk')"><i class="fas fa-shield-halved"></i> 风险</button>
+                            <button class="report-tab" onclick="switchReportTab(this,'rpt-decision')"><i class="fas fa-gavel"></i> 最终决策</button>
                         </div>
                     </div>
-                    <div class="col-12 col-lg-6">
-                        <div class="card">
-                            <div class="card-header"><i class="fas fa-building"></i> 基本面分析</div>
-                            <div class="card-body report-content" id="report-fundamentals"></div>
+                    <div class="card-body" style="padding:0;">
+                        <div class="report-panel active" id="rpt-market">
+                            <div class="report-content" id="report-market" style="padding:20px 24px;max-height:600px;"></div>
                         </div>
-                    </div>
-                    <div class="col-12 col-lg-6">
-                        <div class="card">
-                            <div class="card-header"><i class="fas fa-comments"></i> 情绪分析</div>
-                            <div class="card-body report-content" id="report-sentiment"></div>
+                        <div class="report-panel" id="rpt-fundamentals">
+                            <div class="report-content" id="report-fundamentals" style="padding:20px 24px;max-height:600px;"></div>
                         </div>
-                    </div>
-                    <div class="col-12 col-lg-6">
-                        <div class="card">
-                            <div class="card-header"><i class="fas fa-newspaper"></i> 新闻分析</div>
-                            <div class="card-body report-content" id="report-news"></div>
+                        <div class="report-panel" id="rpt-sentiment">
+                            <div class="report-content" id="report-sentiment" style="padding:20px 24px;max-height:600px;"></div>
                         </div>
-                    </div>
-                    <div class="col-12 col-lg-6">
-                        <div class="card">
-                            <div class="card-header"><i class="fas fa-balance-scale"></i> 多空辩论</div>
-                            <div class="card-body report-content" id="report-debate"></div>
+                        <div class="report-panel" id="rpt-news">
+                            <div class="report-content" id="report-news" style="padding:20px 24px;max-height:600px;"></div>
                         </div>
-                    </div>
-                    <div class="col-12 col-lg-6">
-                        <div class="card">
-                            <div class="card-header"><i class="fas fa-shield-alt"></i> 风险评估</div>
-                            <div class="card-body report-content" id="report-risk"></div>
+                        <div class="report-panel" id="rpt-debate">
+                            <div class="report-content" id="report-debate" style="padding:20px 24px;max-height:600px;"></div>
                         </div>
-                    </div>
-                    <div class="col-12">
-                        <div class="card">
-                            <div class="card-header"><i class="fas fa-gavel"></i> 最终决策</div>
-                            <div class="card-body report-content" id="report-decision"></div>
+                        <div class="report-panel" id="rpt-risk">
+                            <div class="report-content" id="report-risk" style="padding:20px 24px;max-height:600px;"></div>
+                        </div>
+                        <div class="report-panel" id="rpt-decision">
+                            <div class="report-content" id="report-decision" style="padding:20px 24px;max-height:600px;"></div>
                         </div>
                     </div>
                 </div>
@@ -313,66 +435,114 @@
                 </div>
             </div>
             <div id="history-list"></div>
-            <!-- Detail modal -->
-            <div class="modal fade" id="historyModal" tabindex="-1">
-                <div class="modal-dialog modal-xl modal-dialog-scrollable modal-fullscreen-md-down">
-                    <div class="modal-content" style="background:var(--bg-card);color:var(--text-primary);border-color:var(--border);">
-                        <div class="modal-header" style="border-color:var(--border);">
-                            <h5 class="modal-title" id="historyModalTitle">分析详情</h5>
-                            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-                        </div>
-                        <div class="modal-body" id="historyModalBody" style="color:#c9d1d9;"></div>
+            <!-- Detail overlay (custom, not Bootstrap modal) -->
+            <div id="historyOverlay" class="detail-overlay">
+                <div class="detail-panel">
+                    <div class="detail-header">
+                        <h5 id="historyModalTitle">分析详情</h5>
+                        <button type="button" class="detail-close" onclick="closeHistoryDetail()" aria-label="关闭">
+                            <i class="fas fa-xmark"></i>
+                        </button>
                     </div>
+                    <div class="detail-body" id="historyModalBody"></div>
                 </div>
             </div>
         </div>
 
         <!-- Page: Screener -->
         <div class="page" id="page-screener">
-            <h3 class="page-title">智能选股</h3>
-            <div class="row g-2 mb-3">
-                <div class="col-6 col-md-3">
-                    <select class="form-select" id="screen-market">
-                        <option value="us">美股</option>
-                        <option value="cn">A股</option>
-                        <option value="all">全部</option>
-                    </select>
+            <h3 class="page-title">智能选股 V2 · Agent 驱动</h3>
+
+            <!-- Natural language search box (V1.1: primary input) -->
+            <div class="nl-search-box mb-2" style="padding:18px 20px;">
+                <div class="search-icon"><i class="fas fa-wand-magic-sparkles"></i></div>
+                <input type="text" class="nl-search-input" id="screen-nl-query"
+                       style="font-size:15px;"
+                       placeholder='用自然语言描述你想找的股票，例如："AI 板块中被低估的成长股"、"高股息的稳健大盘股"'>
+                <button class="btn-primary-glow" id="btn-screen-v2" onclick="runScreenV2()">
+                    <i class="fas fa-bolt"></i> AI 筛选
+                </button>
+            </div>
+            <div class="mb-3" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12px;color:var(--text-secondary);">
+                <span>辅助提示：</span>
+                <select class="form-select form-select-sm" id="screen-market" style="max-width:90px;">
+                    <option value="us">美股</option>
+                    <option value="cn">A股</option>
+                </select>
+                <span style="color:var(--text-secondary);">市场偏好</span>
+                <select class="form-select form-select-sm" id="screen-strategy" style="max-width:130px;">
+                    <option value="">（无）</option>
+                    <option value="growth">成长动能</option>
+                    <option value="value">价值挖掘</option>
+                    <option value="momentum">均值回归</option>
+                    <option value="low_volatility">低波稳健</option>
+                </select>
+                <span style="color:var(--text-secondary);">弱策略提示（可选）</span>
+                <span style="margin-left:auto;font-family:var(--font-mono);font-size:11px;color:var(--text-dim);">
+                    <i class="fas fa-circle-info"></i> 留空 NL 将使用默认大盘股 + 策略提示
+                </span>
+            </div>
+
+            <!-- AI intent summary badge (shown after results) -->
+            <div id="intent-summary-banner" style="display:none;background:linear-gradient(135deg, rgba(168,85,247,0.08), rgba(0,212,255,0.04));border:1px solid rgba(168,85,247,0.25);border-radius:10px;padding:10px 14px;margin-bottom:12px;display:none;align-items:center;gap:12px;">
+                <div style="width:28px;height:28px;border-radius:7px;background:rgba(168,85,247,0.15);color:#a855f7;display:flex;align-items:center;justify-content:center;font-size:12px;"><i class="fas fa-wand-magic-sparkles"></i></div>
+                <div style="flex:1;font-size:12px;">
+                    <div style="color:#a855f7;font-weight:600;margin-bottom:2px;">AI 理解你的意图</div>
+                    <div id="intent-summary-text" style="color:var(--text-primary);">--</div>
                 </div>
-                <div class="col-6 col-md-3">
-                    <select class="form-select" id="screen-strategy">
-                        <option value="growth">成长股</option>
-                        <option value="value">价值股</option>
-                        <option value="momentum">动量股</option>
-                        <option value="low_volatility">低波动</option>
-                    </select>
-                </div>
-                <div class="col-12 col-md-3">
-                    <button class="btn btn-primary w-100" id="btn-screen" onclick="runScreen()">
-                        <i class="fas fa-search"></i> 开始筛选
-                    </button>
+                <div style="font-family:var(--font-mono);font-size:10px;color:var(--text-secondary);" id="universe-source-tag">
+                    宇宙源: --
                 </div>
             </div>
-            <div id="screen-loading" class="text-center py-5" style="display:none;">
-                <div class="spinner-border text-primary" role="status"></div>
-                <p class="mt-3">三层筛选进行中...</p>
-                <p class="text-muted small">IB Scanner → Finviz基本面 → AI Agent评估</p>
-            </div>
-            <div class="card" id="screen-results" style="display:none;">
-                <div class="card-header">筛选结果</div>
+
+            <!-- Guru philosophy panel -->
+            <div class="card mb-3">
+                <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;">
+                    <span><i class="fas fa-crown" style="color:#ffd700;"></i> 投资大师哲学</span>
+                    <span style="font-family:var(--font-mono);font-size:11px;color:var(--text-secondary);" id="guru-active-count">已启用 4 / 8</span>
+                </div>
                 <div class="card-body">
-                    <div class="table-responsive d-none d-md-block">
-                        <table class="table table-sm table-hover" id="screen-table">
-                            <thead>
-                                <tr>
-                                    <th>#</th><th>股票代码</th><th>名称</th>
-                                    <th>价格</th><th>AI信号</th><th>摘要</th>
-                                    <th>操作</th>
-                                </tr>
-                            </thead>
-                            <tbody></tbody>
-                        </table>
-                    </div>
-                    <div class="d-md-none" id="screen-cards"></div>
+                    <div id="guru-grid" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;"></div>
+                </div>
+            </div>
+
+            <!-- Regime banner (filled after first run) -->
+            <div id="regime-banner" class="regime-banner-v2" style="display:none;">
+                <div class="regime-icon-v2"><i class="fas fa-chart-line"></i></div>
+                <div style="flex:1;">
+                    <div class="regime-title-v2" id="regime-title">检测中...</div>
+                    <div class="regime-desc-v2" id="regime-desc"></div>
+                </div>
+                <div class="regime-stats-v2" id="regime-stats"></div>
+            </div>
+
+            <!-- 8 Agent parallel scoring cards -->
+            <div class="card mb-3" id="agent-pipeline-card" style="display:none;">
+                <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;">
+                    <span><i class="fas fa-diagram-project"></i> 8 Agent 并行评分</span>
+                    <span id="agent-pipeline-status" style="font-family:var(--font-mono);font-size:11px;color:var(--text-secondary);">运行中...</span>
+                </div>
+                <div class="card-body">
+                    <div id="agent-grid-screener" style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;"></div>
+                </div>
+            </div>
+
+            <!-- Pipeline status (4 stages) -->
+            <div class="card mb-3" id="screen-stages-card" style="display:none;">
+                <div class="card-header"><i class="fas fa-filter"></i> 筛选管线</div>
+                <div class="card-body">
+                    <div id="screen-stages" style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;"></div>
+                </div>
+            </div>
+
+            <!-- Final picks -->
+            <div class="card" id="screen-picks-card" style="display:none;">
+                <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;">
+                    <span><i class="fas fa-trophy"></i> 最终精选</span>
+                    <span id="screen-picks-meta" style="font-family:var(--font-mono);font-size:11px;color:var(--text-secondary);"></span>
+                </div>
+                <div class="card-body" style="padding:12px;">
+                    <div id="screen-picks-list"></div>
                 </div>
             </div>
         </div>
@@ -549,6 +719,24 @@
                     <div class="d-md-none" id="alerts-cards"></div>
                 </div>
             </div>
+
+            <div class="card">
+                <div class="card-header"><i class="fas fa-clock-rotate-left"></i> 触发历史</div>
+                <div class="card-body">
+                    <div class="table-responsive d-none d-md-block">
+                        <table class="table table-sm table-hover" id="alert-history-table">
+                            <thead>
+                                <tr>
+                                    <th>股票</th><th>条件</th><th>阈值</th>
+                                    <th>触发价</th><th>触发时间</th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                    <div class="d-md-none" id="alert-history-cards"></div>
+                </div>
+            </div>
         </div>
 
         <!-- Page: Reports -->
@@ -571,7 +759,7 @@
                         </div>
                         <div class="col-12 col-md-3">
                             <button class="btn btn-primary w-100" onclick="generateReport()">
-                                <i class="fas fa-file-alt"></i> 生成
+                                <i class="fas fa-file-lines"></i> 生成
                             </button>
                         </div>
                     </div>
@@ -588,6 +776,230 @@
         </div>
 
         <!-- Page: Settings -->
+        <!-- Page: Backtest -->
+        <div class="page" id="page-backtest">
+            <h3 class="page-title">策略回测</h3>
+            <div class="card mb-3">
+                <div class="card-header"><i class="fas fa-flask"></i> 回测参数</div>
+                <div class="card-body">
+                    <div class="row g-2">
+                        <div class="col-6 col-md-3">
+                            <label class="form-label small">股票代码</label>
+                            <input type="text" class="form-control" id="bt-ticker" placeholder="AAPL">
+                        </div>
+                        <div class="col-6 col-md-3">
+                            <label class="form-label small">策略</label>
+                            <select class="form-select" id="bt-strategy"></select>
+                        </div>
+                        <div class="col-6 col-md-2">
+                            <label class="form-label small">开始日期</label>
+                            <input type="date" class="form-control" id="bt-start" value="2025-01-01">
+                        </div>
+                        <div class="col-6 col-md-2">
+                            <label class="form-label small">结束日期</label>
+                            <input type="date" class="form-control" id="bt-end">
+                        </div>
+                        <div class="col-6 col-md-2">
+                            <label class="form-label small">初始资金</label>
+                            <input type="number" class="form-control" id="bt-capital" value="100000">
+                        </div>
+                    </div>
+                    <div class="row g-2 mt-2" id="bt-params-row"></div>
+                    <div class="mt-3">
+                        <button class="btn btn-primary" id="btn-backtest" onclick="runBacktest()">
+                            <i class="fas fa-play"></i> 开始回测
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <div id="bt-loading" class="text-center py-4" style="display:none;">
+                <div class="spinner-border text-primary"></div>
+                <p class="mt-2">回测计算中...</p>
+            </div>
+
+            <div id="bt-result" style="display:none;">
+                <div class="row g-3 mb-3" id="bt-metrics"></div>
+                <div class="card mb-3">
+                    <div class="card-header">权益曲线</div>
+                    <div class="card-body">
+                        <div id="chart-backtest" class="chart-box" style="height:350px;"></div>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-header">交易记录</div>
+                    <div class="card-body">
+                        <div class="table-responsive d-none d-md-block">
+                            <table class="table table-sm table-hover" id="bt-trades-table">
+                                <thead>
+                                    <tr>
+                                        <th>日期</th><th>操作</th><th>价格</th>
+                                        <th>数量</th><th>金额</th><th>盈亏</th><th>持有天数</th>
+                                    </tr>
+                                </thead>
+                                <tbody></tbody>
+                            </table>
+                        </div>
+                        <div class="d-md-none" id="bt-trades-cards"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Page: Paper Trade (V2 — per-ticker live tracking) -->
+        <div class="page" id="page-paper">
+            <h3 class="page-title">
+                <i class="fas fa-vial"></i> 纸面交易
+                <small class="text-muted ms-2" style="font-size:14px;">每只股票一个独立会话，按 AI 建议前瞻追踪</small>
+            </h3>
+
+            <!-- Ticker Grid -->
+            <div id="paper-ticker-view">
+                <div class="d-flex gap-2 mb-3 flex-wrap align-items-center">
+                    <button class="btn btn-sm btn-outline-secondary" onclick="loadPaperTickers()">
+                        <i class="fas fa-sync"></i> 刷新
+                    </button>
+                    <button class="btn btn-sm btn-outline-primary" onclick="runPaperBackfill()">
+                        <i class="fas fa-file-import"></i> 从历史分析回填
+                    </button>
+                    <button class="btn btn-sm btn-outline-info" onclick="runAllPaperEod()">
+                        <i class="fas fa-clock"></i> 刷新所有日度数据
+                    </button>
+                    <span class="text-muted small ms-auto">每次 AI 分析自动路由到对应 ticker 会话 · EOD 每日 16:30 自动更新</span>
+                </div>
+                <div id="paper-ticker-grid" class="paper-ticker-grid">
+                    <div class="text-muted text-center py-4">
+                        <div class="spinner-border spinner-border-sm"></div> 加载中...
+                    </div>
+                </div>
+            </div>
+
+            <!-- Per-ticker Detail -->
+            <div id="paper-ticker-detail" style="display:none;">
+                <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+                    <div>
+                        <button class="btn btn-sm btn-outline-secondary" onclick="closePaperTickerDetail()">
+                            <i class="fas fa-arrow-left"></i> 返回
+                        </button>
+                        <span class="h4 ms-2 mb-0" id="ptv-ticker">—</span>
+                        <span class="badge bg-secondary ms-1" id="ptv-status">—</span>
+                    </div>
+                    <button class="btn btn-sm btn-outline-primary" onclick="runTickerEod()">
+                        <i class="fas fa-sync"></i> 更新日度数据
+                    </button>
+                </div>
+
+                <ul class="nav nav-tabs mb-3" id="ptv-tabs">
+                    <li class="nav-item">
+                        <a class="nav-link active" href="#" data-tab="strategy" onclick="switchPtvTab('strategy');return false;">
+                            <i class="fas fa-bullseye"></i> 当前策略
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="#" data-tab="timeline" onclick="switchPtvTab('timeline');return false;">
+                            <i class="fas fa-stream"></i> 时间轴
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="#" data-tab="daily" onclick="switchPtvTab('daily');return false;">
+                            <i class="fas fa-chart-line"></i> 日度数据
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="#" data-tab="history" onclick="switchPtvTab('history');return false;">
+                            <i class="fas fa-history"></i> 策略历史
+                        </a>
+                    </li>
+                </ul>
+
+                <!-- Tab: Strategy (V3: active plan + order ladder) -->
+                <div class="ptv-tab" id="ptv-tab-strategy">
+                    <div class="row g-3 mb-3">
+                        <div class="col-12 col-lg-8">
+                            <div class="card h-100">
+                                <div class="card-header">
+                                    <i class="fas fa-bullseye"></i> 当前策略
+                                    <span class="badge bg-secondary ms-2" id="ptv-plan-method">—</span>
+                                </div>
+                                <div class="card-body" id="ptv-plan-summary">—</div>
+                            </div>
+                        </div>
+                        <div class="col-12 col-lg-4">
+                            <div class="card h-100">
+                                <div class="card-header"><i class="fas fa-wallet"></i> 持仓状态</div>
+                                <div class="card-body" id="ptv-position">—</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="card mb-3">
+                        <div class="card-header">
+                            <i class="fas fa-list-ol"></i> 计划档位（已执行 / 待触发）
+                        </div>
+                        <div class="card-body p-0">
+                            <div id="ptv-orders-ladder">—</div>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header"><i class="fas fa-align-left"></i> AI 原文</div>
+                        <div class="card-body" id="ptv-raw-summary" style="white-space:pre-wrap;font-size:13px;line-height:1.65;">—</div>
+                    </div>
+                </div>
+
+                <!-- Tab: Timeline -->
+                <div class="ptv-tab" id="ptv-tab-timeline" style="display:none;">
+                    <div class="card">
+                        <div class="card-header">
+                            <i class="fas fa-stream"></i> 策略变更事件
+                            <small class="text-muted ms-2">每次 AI 分析 + 止损/止盈/时间止损触发</small>
+                        </div>
+                        <div class="card-body">
+                            <div id="ptv-timeline" class="ptv-timeline">—</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Tab: Daily -->
+                <div class="ptv-tab" id="ptv-tab-daily" style="display:none;">
+                    <div class="card mb-3">
+                        <div class="card-header"><i class="fas fa-chart-area"></i> 权益曲线</div>
+                        <div class="card-body">
+                            <div id="chart-ptv-equity" style="height:300px;"></div>
+                        </div>
+                    </div>
+                    <div class="row g-3 mb-3" id="ptv-metrics"></div>
+                    <div class="card">
+                        <div class="card-header"><i class="fas fa-table"></i> 日度明细</div>
+                        <div class="card-body">
+                            <div class="table-responsive">
+                                <table class="table table-sm table-hover" id="ptv-daily-table">
+                                    <thead>
+                                        <tr>
+                                            <th>日期</th><th>收盘</th><th>持仓</th>
+                                            <th>市值</th><th>现金</th><th>总值</th>
+                                            <th>当日盈亏</th><th>累计</th><th>回撤</th>
+                                            <th>信号</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody></tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Tab: Strategy History -->
+                <div class="ptv-tab" id="ptv-tab-history" style="display:none;">
+                    <div class="card">
+                        <div class="card-header">
+                            <i class="fas fa-history"></i> 策略演进历史
+                            <small class="text-muted ms-2">按分析时间倒序，含已失效的计划</small>
+                        </div>
+                        <div class="card-body" id="ptv-plan-history">—</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <div class="page" id="page-settings">
             <h3 class="page-title">设置</h3>
 
@@ -614,10 +1026,78 @@
             </div>
 
             <div class="card mb-3">
-                <div class="card-header"><i class="fas fa-robot"></i> 当前生效配置（只读）</div>
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <span><i class="fas fa-robot"></i> 配置管理</span>
+                    <button class="btn btn-sm btn-primary" id="btn-save-settings" onclick="saveSettings()" style="display:none;">
+                        <i class="fas fa-save"></i> 保存修改
+                    </button>
+                </div>
                 <div class="card-body" id="settings-config">加载中...</div>
                 <div class="card-footer text-muted" style="font-size:12px;background:transparent;border-top-color:var(--border);">
-                    敏感字段已脱敏。如需修改 API Key/Token/密码，请编辑 <code>~/.stock_trading/config.yaml</code> 后重启服务。
+                    点击值即可编辑。修改后点击"保存修改"写入配置文件。敏感字段显示为脱敏值，编辑时输入新值即可覆盖。
+                </div>
+            </div>
+        </div>
+
+        <!-- Page: Task Center -->
+        <div class="page" id="page-tasks">
+            <h3 class="page-title">
+                <i class="fas fa-list-check"></i> 任务中心
+                <small class="text-muted ms-2" style="font-size:14px;">异步任务执行记录</small>
+            </h3>
+
+            <div class="d-flex gap-2 mb-3 flex-wrap">
+                <button class="task-filter-btn active" data-status="">全部</button>
+                <button class="task-filter-btn" data-status="running">运行中</button>
+                <button class="task-filter-btn" data-status="pending">等待中</button>
+                <button class="task-filter-btn" data-status="success">已完成</button>
+                <button class="task-filter-btn" data-status="failed">失败</button>
+                <button class="task-filter-btn" data-status="cancelled">已取消</button>
+                <div class="ms-auto">
+                    <button class="btn btn-sm btn-outline-secondary" onclick="loadTasks()">
+                        <i class="fas fa-sync"></i> 刷新
+                    </button>
+                </div>
+            </div>
+
+            <div id="tasks-empty" class="empty-state text-center py-5" style="display:none;">
+                <i class="fas fa-inbox" style="font-size:64px;opacity:0.2;"></i>
+                <p class="text-muted mt-3">暂无任务记录</p>
+                <p class="text-muted" style="font-size:12px;">触发 AI 分析、选股或回测后，任务会显示在这里</p>
+            </div>
+
+            <div id="tasks-list"></div>
+
+            <div class="text-center mt-3" id="tasks-load-more-wrap" style="display:none;">
+                <button class="btn btn-sm btn-outline-secondary" onclick="loadMoreTasks()">
+                    <i class="fas fa-chevron-down"></i> 加载更多
+                </button>
+            </div>
+
+            <!-- Task detail modal -->
+            <div class="modal fade" id="taskDetailModal" tabindex="-1">
+                <div class="modal-dialog modal-lg modal-dialog-scrollable modal-fullscreen-md-down">
+                    <div class="modal-content" style="background:var(--bg-card);color:var(--text-primary);border-color:var(--border);">
+                        <div class="modal-header" style="border-color:var(--border);">
+                            <h5 class="modal-title" id="taskDetailTitle">任务详情</h5>
+                            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body" id="taskDetailBody"></div>
+                        <div class="modal-footer" style="border-color:var(--border);">
+                            <button type="button" class="btn btn-outline-danger me-auto" id="taskDetailDeleteBtn">
+                                <i class="fas fa-trash"></i> 删除记录
+                            </button>
+                            <button type="button" class="btn btn-outline-warning" id="taskDetailRetryBtn" style="display:none;">
+                                <i class="fas fa-redo"></i> 重试
+                            </button>
+                            <button type="button" class="btn btn-outline-secondary" id="taskDetailCancelBtn" style="display:none;">
+                                <i class="fas fa-ban"></i> 取消任务
+                            </button>
+                            <button type="button" class="btn btn-primary" id="taskDetailViewResultBtn" style="display:none;">
+                                <i class="fas fa-external-link-alt"></i> 查看结果
+                            </button>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -629,6 +1109,10 @@
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
     <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <!-- TradingView Advanced Chart Widget (free, requires Powered-by attribution) -->
+    <script src="https://s3.tradingview.com/tv.js" onerror="window.__tvLoadFailed=true"></script>
+    <script src="/static/js/tv_symbol.js"></script>
     <script src="/static/js/app.js"></script>
 </body>
 </html>

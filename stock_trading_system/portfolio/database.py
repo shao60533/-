@@ -78,6 +78,16 @@ class PortfolioDatabase:
                     advice_json TEXT,
                     created_at TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS alert_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    alert_id INTEGER,
+                    ticker TEXT NOT NULL,
+                    condition TEXT NOT NULL,
+                    threshold REAL NOT NULL,
+                    current_price REAL,
+                    triggered_at TEXT NOT NULL
+                );
             """)
 
     # ── Positions ────────────────────────────────────────────────────────
@@ -179,11 +189,36 @@ class PortfolioDatabase:
         with self._get_conn() as conn:
             conn.execute("DELETE FROM alerts WHERE id = ?", (alert_id,))
 
-    # ── Analysis History ────────────────────────────────────────────────
-
-    def save_analysis(self, data: dict):
+    def save_alert_trigger(self, alert_id: int, ticker: str, condition: str,
+                           threshold: float, current_price: float | None = None):
+        from datetime import datetime
         with self._get_conn() as conn:
             conn.execute(
+                """INSERT INTO alert_history (alert_id, ticker, condition, threshold, current_price, triggered_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (alert_id, ticker, condition, threshold, current_price,
+                 datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+            )
+
+    def get_alert_history(self, ticker: str | None = None, limit: int = 50) -> list[dict]:
+        with self._get_conn() as conn:
+            if ticker:
+                rows = conn.execute(
+                    "SELECT * FROM alert_history WHERE ticker = ? ORDER BY id DESC LIMIT ?",
+                    (ticker, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM alert_history ORDER BY id DESC LIMIT ?", (limit,)
+                ).fetchall()
+            return [dict(r) for r in rows]
+
+    # ── Analysis History ────────────────────────────────────────────────
+
+    def save_analysis(self, data: dict) -> int:
+        """Insert one analysis_history row. Returns the new row id."""
+        with self._get_conn() as conn:
+            cur = conn.execute(
                 """INSERT INTO analysis_history
                    (ticker, date, signal, market_report, sentiment_report,
                     news_report, fundamentals_report, investment_debate,
@@ -202,6 +237,7 @@ class PortfolioDatabase:
                     data.get("created_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
                 ),
             )
+            return int(cur.lastrowid)
 
     def get_analysis_history(self, ticker: str | None = None, limit: int = 50) -> list[dict]:
         with self._get_conn() as conn:
