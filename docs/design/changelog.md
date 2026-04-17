@@ -2,6 +2,7 @@
 
 | 日期 | 文档 | 版本 | 变更内容 | 关联 Commit |
 |------|------|------|---------|-------------|
+| 2026-04-18 | [self-iterating-agents.md](self-iterating-agents.md) | v1.0 | 自我迭代 Agent 方案（美股版）：Scorecard + Darwinian 权重 + L1/L2 宏观板块 Agent + Meta Agent prompt 进化 | — |
 | 2026-04-18 | [batch-analyze-holdings.md](batch-analyze-holdings.md) | v1.0 | 一键持仓分析方案：batch_analysis worker + 逐只推送 + 跳过近期 + 进度面板 | — |
 | 2026-04-12 | [ui-ux-redesign.md](ui-ux-redesign.md) | v1.0 | 初版 UI/UX 重设计方案：9 页面线框图、移动端适配、组件规范（8 大类） | — |
 | 2026-04-12 | [technical-design.md](technical-design.md) | v1.0 | 初版技术方案：前端改造 + 后端 API 补全 + 回测引擎 + PRD 追踪矩阵 | — |
