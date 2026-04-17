@@ -129,7 +129,7 @@ class StockAnalyzer:
         self._init_graph()
 
         logger.info("Starting analysis for %s on %s", ticker, date)
-        final_state, signal = self._graph.propagate(ticker, date, progress_callback=progress_callback)
+        final_state, signal = self._graph.propagate(ticker, date)
 
         result = AnalysisResult(
             ticker=ticker,
