@@ -88,6 +88,27 @@ class PortfolioDatabase:
                     current_price REAL,
                     triggered_at TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS agent_scorecards (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    analysis_id INTEGER NOT NULL,
+                    agent_id TEXT NOT NULL,
+                    ticker TEXT NOT NULL,
+                    date TEXT NOT NULL,
+                    signal TEXT NOT NULL,
+                    price_at_call REAL,
+                    return_5d REAL,
+                    hit_5d INTEGER,
+                    return_20d REAL,
+                    hit_20d INTEGER,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_sc_agent_date
+                    ON agent_scorecards(agent_id, date DESC);
+                CREATE INDEX IF NOT EXISTS idx_sc_backfill
+                    ON agent_scorecards(date)
+                    WHERE return_5d IS NULL AND price_at_call IS NOT NULL;
             """)
 
     # ── Positions ────────────────────────────────────────────────────────
