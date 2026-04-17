@@ -1,4 +1,4 @@
-# 实施指令 — 自我迭代美股分析 Agent
+# 实施指令 — 自我迭代 Agent 能力模块
 
 > 在新会话中说：
 > "读 docs/design/self-iterating-agents.impl.md，按 Phase 1 实施，完成后跑 pytest tests/ -x"
@@ -7,100 +7,107 @@
 
 ## 上下文
 
-技术方案：`docs/design/self-iterating-agents.md`（v2.0，完整方案，必读第五~九节）
+技术方案：`docs/design/self-iterating-agents.md`（v3.0，必读第四~五节）
 
-**核心定位**：独立于现有 TradingAgents 管线的新模块，统一用 `qwen3.6-plus`，有自己的 Agent 体系、Scorecard、Darwinian 权重和 Meta Agent 自我进化。
+**核心定位**：包裹 TradingAgents 7-Agent 管线的独立迭代能力模块。分析仍走 TradingAgents，迭代模块观察每个 agent 表现、调权重、改 prompt。
 
-## Phase 1 实施范围 — 骨架 + Scorecard + 3 个 Agent 闭环
+**复用原则**：
+- Sharpe/胜率计算 → 复用 `strategy/paper_trader/metrics.py`
+- A/B 验证 → 复用 paper_trade_sessions
+- Darwinian 常量 → 采用 atlas-elenchus（0.3/2.5/1.05/0.95）
+- Meta Agent prompt → 采用 atlas-elenchus MUTATOR_SYSTEM_PROMPT
 
-### 新建目录和文件
+## Phase 1 实施范围 — Agent Scorer + Darwinian 权重
+
+### 新建文件
 
 ```
 stock_trading_system/agents/iterative/
 ├── __init__.py
-├── qwen_client.py         ← 方案第五节，qwen3.6-plus 客户端封装
-├── base.py                ← 方案第六节，IterativeAgent 基类
-├── scorecard.py           ← 方案第八节，scorecard 记录 + 回填 + 指标计算
-├── darwinian.py           ← 方案第九节，权重更新
-├── pipeline.py            ← 简化版管线（Phase 1 只跑 3 个 agent）
-│
-├── L1_macro/
-│   ├── __init__.py
-│   └── fed_watcher.py     ← 第一个 L1 agent
-│
-├── L2_sector/
-│   ├── __init__.py
-│   └── tech_ai.py         ← 第一个 L2 agent
-│
-├── L4_decision/
-│   ├── __init__.py
-│   └── cio.py             ← CIO 综合决策
-│
-└── prompts/
-    ├── L1_fed.md           ← Fed Watcher 的 system prompt
-    ├── L2_tech_ai.md       ← Tech/AI 板块 agent 的 system prompt
-    └── L4_cio.md           ← CIO 的 system prompt
+├── config.py              # IterationConfig dataclass，从 config.yaml 的 iteration: 节加载
+├── agent_scorer.py        # 核心模块，方案第四节
+│   - AGENT_MAP: 7 个 agent 的 state_key + 提取方式
+│   - record_analysis(analysis_id, ticker, date, final_state, price): 提取 7 个信号并写入
+│   - backfill_returns(data_router): 回填 5d/20d return
+│   - compute_agent_sharpe(returns): 复用 metrics.py 的 Sharpe 公式
+│   - get_all_agent_metrics(): 返回每个 agent 的 {sharpe, hit_rate, weight}
+├── darwinian.py           # 方案第五节
+│   - update_darwinian_weights(scorer): top/bottom 25% 调权
+│   - format_weight_context(): 生成注入到 init_state 的权重文本
+│   - 常量: WEIGHT_MIN=0.3, MAX=2.5, BOOST=1.05, DECAY=0.95 (atlas-elenchus)
+└── signal_extractor.py    # 工具函数
+    - extract_signal_llm(report_text, qwen_client): 从报告文本提取 BULLISH/BEARISH/NEUTRAL
+    - extract_signal_regex(trader_plan): 从 trader 输出正则提取 BUY/SELL/HOLD → BULLISH/BEARISH/NEUTRAL
+    - bull/bear 固定返回，不调 LLM
 ```
 
 ### 修改文件
 
-1. **`stock_trading_system/portfolio/database.py`**
-   - 在 `_init_db()` 新增 3 张表的 CREATE TABLE：
-     - `agent_scorecards`（方案第八节 SQL）
-     - `darwinian_weights`（方案第十二节 SQL）
-     - `macro_signals`（方案第十二节 SQL）
+1. **`stock_trading_system/agents/analyzer.py`**（关键改动，方案第五节第三小节）
+   - `analyze()` 方法改造：
+     - 绕过 `self._graph.propagate()`，改为直接调 `self._graph.graph.invoke(init_state, **args)`
+     - 如果 `iteration.enabled`，在 init_state["messages"] 前插入 weight context
+     - 返回值从 `AnalysisResult` 改为 `(AnalysisResult, final_state)` 二元组
+   - 新增 `_format_weight_context()` 方法
+   - 新增 `_iteration_enabled` 属性（读 config）
+   - **注意**：用 `self._graph.propagator.create_initial_state()` 和 `self._graph.propagator.get_graph_args()` 构造参数，保留 debug 的 stream 模式
 
-2. **`stock_trading_system/tasks/workers.py`**
-   - 新增 `make_iterative_daily_worker(deps)` — 调用 pipeline.run_daily()
-   - 新增 `make_scorecard_backfill_worker(deps)` — 调用 scorecard.daily_scorecard_update()
-   - 在 `register_default_workers()` 中注册 `iterative_daily` 和 `scorecard_backfill`
+2. **`stock_trading_system/portfolio/database.py`**
+   - 在 `_init_db()` 新增 `agent_scorecards` 表（方案第八节 SQL）
 
-3. **`stock_trading_system/web/app.py`**
-   - 新增 `POST /api/iterative/run` — 手动触发管线（提交 iterative_daily 任务）
-   - 新增 `GET /api/iterative/latest` — 返回最近一次运行结果
-   - 新增 `GET /api/iterative/agents` — 返回所有 agent 的 Sharpe/权重/命中率
+3. **`stock_trading_system/tasks/workers.py`**
+   - `make_analysis_worker` 末尾：分析成功后调用 `scorer.record_analysis()`
+     - 需要处理 `analyze()` 返回二元组的变化
+     - 需要获取 price_at_call（复用 data_router.get_price）
+   - 新增 `make_score_update_worker(deps)` — 调用 `scorer.backfill_returns()` + `update_darwinian_weights()`
+   - 在 `register_default_workers()` 中注册 `agent_score_update`
 
-4. **`stock_trading_system/config/default_config.yaml`**
-   - 新增 `iterative:` 配置节（方案第十四节，enabled 默认 false）
+4. **`stock_trading_system/web/app.py`**
+   - 新增 `GET /api/iteration/agents` — 返回 7 个 agent 的 sharpe/hit_rate/weight
+
+5. **`stock_trading_system/config/default_config.yaml`**
+   - 新增 `iteration:` 配置节（方案第九节），enabled 默认 false
 
 ### 测试文件
 
-5. **`tests/test_iterative_scorecard.py`**（新建）
-   - 测试 SC-1 ~ SC-8（方案第十七节）
-   - mock qwen_client.call_json 返回固定 JSON
-   - mock yfinance 的 get_close_price
-
-6. **`tests/test_iterative_darwinian.py`**（新建）
-   - 测试 DW-1 ~ DW-5
-
-7. **`tests/test_iterative_pipeline.py`**（新建）
-   - 测试 PL-1（简化版：3 agent 闭环）+ PL-6 + PL-8
-   - mock 全部 Qwen 调用
+6. **`tests/test_iterative.py`**（新建）
+   - 测试 IS-1 ~ IS-8 + DW-1 ~ DW-5 + REG-1 ~ REG-3（方案第十二节）
+   - mock 要点：
+     - mock `signal_extractor.extract_signal_llm` 返回固定信号
+     - mock `data_router.get_price` 返回固定价格
+     - mock `analyzer.analyze` 返回带 final_state 的二元组
+   - 重点验证 REG-1：`iteration.enabled=false` 时 analyze() 行为完全不变
 
 ## 实施顺序
 
-1. 读完方案第五~九节 + 第十二节（表结构）+ 第十四节（配置）
-2. `database.py` → 建表
-3. `qwen_client.py` → Qwen 封装
-4. `base.py` → Agent 基类
-5. 3 个 prompt 文件 → `prompts/L1_fed.md`, `L2_tech_ai.md`, `L4_cio.md`
-6. 3 个 agent 实现 → `fed_watcher.py`, `tech_ai.py`, `cio.py`
-7. `scorecard.py` → 记录 + 回填 + 指标
-8. `darwinian.py` → 权重更新
-9. `pipeline.py` → 简化版管线（只 3 个 agent）
-10. `workers.py` → 注册任务
-11. `app.py` → 3 个 API
-12. `pytest tests/test_iterative_*.py` → 单元测试
-13. `pytest tests/ -x` → 回归测试
+1. 读完方案第四~五节 + 第八节（SQL）+ 第九节（config）
+2. `config/default_config.yaml` → 新增 iteration 配置
+3. `agents/iterative/__init__.py` + `config.py` + `signal_extractor.py`
+4. `portfolio/database.py` → 建表
+5. `agents/iterative/agent_scorer.py` → 核心实现
+6. `agents/iterative/darwinian.py` → 权重管理
+7. `agents/analyzer.py` → 改造 analyze() 方法（**最关键改动，仔细对照方案第五节第三小节**）
+8. `tasks/workers.py` → 集成 scorer + 注册 worker
+9. `web/app.py` → 新增 API
+10. `tests/test_iterative.py` → 写测试
+11. `pytest tests/test_iterative.py -x` → 单元测试
+12. `pytest tests/ -x` → 回归测试
 
 ## 完成标准
 
-- [ ] `POST /api/iterative/run` 触发管线，返回 task_id
-- [ ] 管线运行完成后，`agent_scorecards` 表新增 3 条记录（L1_fed + L2_tech_ai + L4_cio）
-- [ ] `macro_signals` 表新增 1 条 Fed Watcher 信号
-- [ ] `daily_scorecard_update()` 正确回填 5d 价格 + 计算 Sharpe
-- [ ] `update_darwinian_weights()` 正确调节权重
-- [ ] `GET /api/iterative/agents` 返回 3 个 agent 的状态
-- [ ] `iterative.enabled: false` 时不运行任何逻辑
-- [ ] `pytest tests/test_iterative_*.py` 全部通过
+- [ ] `iteration.enabled: false` 时，analyze() 行为与改前完全一致（REG-1）
+- [ ] `iteration.enabled: true` 时，分析 AAPL 后 agent_scorecards 新增 7 条记录
+- [ ] signal_extractor 正确处理 4 种提取方式（LLM/fixed/regex）
+- [ ] backfill_returns 正确回填 5d return 和 hit
+- [ ] compute_agent_sharpe 计算正确
+- [ ] update_darwinian_weights 正确调节（top ×1.05 / bottom ×0.95 / 边界 0.3~2.5）
+- [ ] format_weight_context 生成格式化权重文本
+- [ ] GET /api/iteration/agents 返回 7 个 agent 状态
+- [ ] `pytest tests/test_iterative.py` 全部通过
 - [ ] `pytest tests/ -x` 无回归
+
+## 关键注意事项
+
+- `analyzer.py` 改动最大：从调 `self._graph.propagate()` 改为直接调 `self._graph.graph.invoke()`。必须保留 debug stream 模式的行为。仔细对照方案中的代码。
+- `analyze()` 返回二元组 `(AnalysisResult, final_state)` 会影响所有调用方（workers.py 的 analysis_worker）。确保所有调用点都更新。
+- `agent_scorer.record_analysis` 中的 LLM 调用（提取 4 个 analyst 的信号）是额外的 API 调用。如果分析本身失败了（signal=ERROR），不要调 scorer。
