@@ -239,6 +239,7 @@
                                 <button class="btn btn-primary" onclick="switchTab('analysis')"><i class="fas fa-brain"></i> AI 分析</button>
                                 <button class="btn btn-info" onclick="switchTab('screener')"><i class="fas fa-crosshairs"></i> 智能选股</button>
                                 <button class="btn btn-success" onclick="switchTab('reports')"><i class="fas fa-file-lines"></i> 生成报告</button>
+                                <button class="btn btn-warning" onclick="showBatchAnalysisConfirm()"><i class="fas fa-layer-group"></i> 分析全部持仓</button>
                                 <button class="btn btn-warning" onclick="switchTab('alerts')"><i class="fas fa-bell"></i> 预警中心</button>
                                 <button class="btn btn-secondary" onclick="switchTab('backtest')"><i class="fas fa-flask"></i> 策略回测</button>
                             </div>
@@ -597,9 +598,14 @@
             <div class="card mb-3">
                 <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
                     <span>当前持仓</span>
-                    <button class="btn btn-sm btn-outline-info" onclick="takeSnapshot()">
-                        <i class="fas fa-camera"></i> 保存今日快照
-                    </button>
+                    <div class="btn-group btn-group-sm">
+                        <button class="btn btn-outline-primary" id="btn-batch-analyze" onclick="showBatchAnalysisConfirm()">
+                            <i class="fas fa-brain"></i> 一键分析全部
+                        </button>
+                        <button class="btn btn-outline-info" onclick="takeSnapshot()">
+                            <i class="fas fa-camera"></i> 快照
+                        </button>
+                    </div>
                 </div>
                 <div class="card-body">
                     <div class="table-responsive d-none d-md-block">
@@ -1114,5 +1120,71 @@
     <script src="https://s3.tradingview.com/tv.js" onerror="window.__tvLoadFailed=true"></script>
     <script src="/static/js/tv_symbol.js"></script>
     <script src="/static/js/app.js"></script>
+
+    <!-- Batch Analysis Confirm Modal -->
+    <div class="modal fade" id="batchAnalysisModal" tabindex="-1">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content" style="background:var(--bg-card);border:1px solid var(--border);">
+                <div class="modal-header border-0">
+                    <h5 class="modal-title"><i class="fas fa-brain"></i> 分析全部持仓</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <p id="batch-confirm-text">当前持仓 — 只股票，预计耗时 —</p>
+                    <div class="form-check mb-2">
+                        <input class="form-check-input" type="checkbox" id="batch-skip-check" checked>
+                        <label class="form-check-label" for="batch-skip-check">
+                            跳过最近 <input type="number" id="batch-skip-hours" value="4"
+                                style="width:48px;display:inline;padding:2px 6px;"
+                                class="form-control form-control-sm d-inline"> 小时内已分析的股票
+                        </label>
+                    </div>
+                </div>
+                <div class="modal-footer border-0">
+                    <button class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button class="btn btn-primary" id="btn-batch-start" onclick="runBatchAnalysis()">
+                        <i class="fas fa-play"></i> 开始分析
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Batch Analysis Floating Progress (minimized bar) -->
+    <div id="batch-float-bar" style="display:none;">
+        <div class="batch-float-inner">
+            <i class="fas fa-brain fa-spin"></i>
+            <span id="batch-float-text">持仓分析中...</span>
+            <div class="batch-float-progress">
+                <div class="batch-float-fill" id="batch-float-fill"></div>
+            </div>
+            <button class="btn btn-sm btn-outline-light" onclick="expandBatchPanel()">展开</button>
+        </div>
+    </div>
+
+    <!-- Batch Analysis Full Panel (overlay on portfolio page) -->
+    <div id="batch-panel" style="display:none;">
+        <div class="card batch-panel-card">
+            <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+                <span><i class="fas fa-brain"></i> 持仓全量分析</span>
+                <div class="btn-group btn-group-sm">
+                    <button class="btn btn-outline-secondary" onclick="minimizeBatchPanel()">最小化</button>
+                    <button class="btn btn-outline-danger" onclick="closeBatchPanel()">关闭</button>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="mb-3">
+                    <div class="d-flex justify-content-between small text-muted mb-1">
+                        <span id="batch-progress-label">准备中...</span>
+                        <span id="batch-progress-pct">0%</span>
+                    </div>
+                    <div class="progress" style="height:6px;">
+                        <div class="progress-bar" id="batch-progress-bar" style="width:0%"></div>
+                    </div>
+                </div>
+                <div id="batch-items-list"></div>
+            </div>
+        </div>
+    </div>
 </body>
 </html>

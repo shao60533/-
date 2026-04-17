@@ -3444,3 +3444,192 @@ if (typeof socket !== 'undefined' && socket) {
         }
     });
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Batch Analysis — one-click all holdings
+// ═══════════════════════════════════════════════════════════════════════════
+
+let _batchTaskId = null;
+let _batchItems = [];
+let _batchTotal = 0;
+
+async function showBatchAnalysisConfirm() {
+    // Fetch holdings count for the confirm text
+    const holdings = await api('/api/portfolio/holdings');
+    const count = Array.isArray(holdings) ? holdings.filter(h => (h.shares || 0) > 0).length : 0;
+    if (count === 0) {
+        showToast('暂无持仓，请先添加持仓', 'warning');
+        return;
+    }
+    const estMin = count * 2, estMax = count * 5;
+    document.getElementById('batch-confirm-text').textContent =
+        `当前持仓 ${count} 只股票，预计耗时 ${estMin}-${estMax} 分钟`;
+    const modal = new bootstrap.Modal(document.getElementById('batchAnalysisModal'));
+    modal.show();
+}
+
+async function runBatchAnalysis() {
+    bootstrap.Modal.getInstance(document.getElementById('batchAnalysisModal'))?.hide();
+    const skipCheck = document.getElementById('batch-skip-check').checked;
+    const skipHours = skipCheck ? (parseInt(document.getElementById('batch-skip-hours').value) || 4) : 0;
+
+    const resp = await api('/api/tasks/submit', {
+        method: 'POST',
+        body: JSON.stringify({
+            type: 'batch_analysis',
+            params: { skip_recent_hours: skipHours },
+            title: '持仓全量分析',
+        }),
+    });
+    if (!resp || resp.error) {
+        showToast('提交失败: ' + (resp?.error || 'unknown'), 'error');
+        return;
+    }
+    _batchTaskId = resp.id;
+    _batchItems = [];
+    _batchTotal = 0;
+    showBatchPanel();
+    document.getElementById('btn-batch-analyze').disabled = true;
+    showToast('批量分析已提交', 'info');
+}
+
+function showBatchPanel() {
+    document.getElementById('batch-panel').style.display = 'block';
+    document.getElementById('batch-float-bar').style.display = 'none';
+    document.getElementById('batch-items-list').innerHTML =
+        '<div class="text-muted text-center py-3"><div class="spinner-border spinner-border-sm"></div> 准备中...</div>';
+    updateBatchProgress(0, '准备中...');
+}
+
+function minimizeBatchPanel() {
+    document.getElementById('batch-panel').style.display = 'none';
+    document.getElementById('batch-float-bar').style.display = 'block';
+}
+
+function expandBatchPanel() {
+    document.getElementById('batch-panel').style.display = 'block';
+    document.getElementById('batch-float-bar').style.display = 'none';
+}
+
+function closeBatchPanel() {
+    document.getElementById('batch-panel').style.display = 'none';
+    document.getElementById('batch-float-bar').style.display = 'none';
+    _batchTaskId = null;
+    const btn = document.getElementById('btn-batch-analyze');
+    if (btn) btn.disabled = false;
+}
+
+function updateBatchProgress(pct, label) {
+    document.getElementById('batch-progress-bar').style.width = pct + '%';
+    document.getElementById('batch-progress-pct').textContent = pct + '%';
+    document.getElementById('batch-progress-label').textContent = label || '';
+    document.getElementById('batch-float-fill').style.width = pct + '%';
+    document.getElementById('batch-float-text').textContent = label || '分析中...';
+}
+
+function _batchItemHtml(item) {
+    const sigCls = {
+        BUY: 'text-success', OVERWEIGHT: 'text-success',
+        SELL: 'text-danger', UNDERWEIGHT: 'text-danger',
+        HOLD: 'text-warning',
+    }[(item.signal || '').toUpperCase()] || '';
+    if (item.status === 'success') {
+        return `
+            <div class="batch-item batch-item-done">
+                <span class="batch-item-icon">✅</span>
+                <strong>${escapeHtml(item.ticker)}</strong>
+                <span class="badge ${sigCls ? 'bg-' + (sigCls === 'text-success' ? 'success' : sigCls === 'text-danger' ? 'danger' : 'warning') : 'bg-secondary'} ms-2">
+                    ${escapeHtml(item.signal || '—')}
+                </span>
+                ${item.confidence != null ? `<span class="text-muted small ms-1">置信度 ${Math.round(item.confidence * 100)}%</span>` : ''}
+                <button class="btn btn-sm btn-outline-primary ms-auto" onclick="viewBatchItemDetail(${item.analysis_id})">查看详情</button>
+            </div>`;
+    }
+    if (item.status === 'failed') {
+        return `
+            <div class="batch-item batch-item-fail">
+                <span class="batch-item-icon">❌</span>
+                <strong>${escapeHtml(item.ticker)}</strong>
+                <span class="text-danger small ms-2">${escapeHtml(item.error || '失败')}</span>
+            </div>`;
+    }
+    if (item.status === 'skipped') {
+        return `
+            <div class="batch-item batch-item-skip">
+                <span class="batch-item-icon">⏭️</span>
+                <strong>${escapeHtml(item.ticker)}</strong>
+                <span class="text-muted small ms-2">${escapeHtml(item.reason || '已跳过')}</span>
+                ${item.last_signal ? `<span class="badge bg-secondary ms-1">${item.last_signal}</span>` : ''}
+            </div>`;
+    }
+    if (item.status === 'running') {
+        return `
+            <div class="batch-item batch-item-running">
+                <span class="batch-item-icon"><div class="spinner-border spinner-border-sm"></div></span>
+                <strong>${escapeHtml(item.ticker)}</strong>
+                <span class="text-muted small ms-2">分析中...</span>
+            </div>`;
+    }
+    return `
+        <div class="batch-item batch-item-pending">
+            <span class="batch-item-icon">⏳</span>
+            <strong>${escapeHtml(item.ticker)}</strong>
+            <span class="text-muted small ms-2">等待中</span>
+        </div>`;
+}
+
+function renderBatchItems() {
+    const el = document.getElementById('batch-items-list');
+    el.innerHTML = _batchItems.map(_batchItemHtml).join('');
+}
+
+function viewBatchItemDetail(analysisId) {
+    if (typeof openHistoryDetail === 'function') {
+        openHistoryDetail(analysisId);
+    }
+}
+
+// Socket events for batch
+if (typeof socket !== 'undefined' && socket) {
+    socket.on('batch_analysis_item', (data) => {
+        if (!_batchTaskId || data.batch_task_id !== _batchTaskId) return;
+        _batchTotal = data.total || _batchTotal;
+        // Update or insert item
+        const idx = _batchItems.findIndex(i => i.ticker === data.ticker);
+        if (idx >= 0) {
+            _batchItems[idx] = { ..._batchItems[idx], ...data };
+        } else {
+            _batchItems.push(data);
+        }
+        renderBatchItems();
+        const done = _batchItems.filter(i => i.status !== 'pending' && i.status !== 'running').length;
+        updateBatchProgress(
+            Math.round(done / _batchTotal * 100),
+            `${done}/${_batchTotal} 完成`
+        );
+    });
+
+    socket.on('task_progress', (data) => {
+        if (!_batchTaskId || data.id !== _batchTaskId) return;
+        updateBatchProgress(data.progress || 0, data.step || '');
+    });
+
+    socket.on('task_completed', (data) => {
+        if (!_batchTaskId || data.id !== _batchTaskId) return;
+        updateBatchProgress(100, '全部完成');
+        const succ = _batchItems.filter(i => i.status === 'success').length;
+        const fail = _batchItems.filter(i => i.status === 'failed').length;
+        const skip = _batchItems.filter(i => i.status === 'skipped').length;
+        showToast(`持仓分析完成：${succ} 成功 / ${fail} 失败 / ${skip} 跳过`, 'success');
+        const btn = document.getElementById('btn-batch-analyze');
+        if (btn) btn.disabled = false;
+    });
+
+    socket.on('task_failed', (data) => {
+        if (!_batchTaskId || data.id !== _batchTaskId) return;
+        updateBatchProgress(0, '失败: ' + (data.error_message || ''));
+        showToast('批量分析失败: ' + (data.error_message || ''), 'error');
+        const btn = document.getElementById('btn-batch-analyze');
+        if (btn) btn.disabled = false;
+    });
+}

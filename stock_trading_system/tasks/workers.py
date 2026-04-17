@@ -251,6 +251,146 @@ def _today_str() -> str:
     return datetime.now().strftime("%Y-%m-%d")
 
 
+# ── Batch analysis (one-click all holdings) ──────────────────────────────────
+
+
+def make_batch_analysis_worker(deps):
+    """Sequentially analyze every holding. Emits per-ticker WS events."""
+
+    analysis_worker_fn = make_analysis_worker(
+        deps.get_analyzer, deps.get_strategy_engine,
+        deps.get_portfolio, deps.get_router,
+    )
+
+    def worker(params: dict, progress_cb: ProgressCb) -> dict:
+        skip_hours = int(params.get("skip_recent_hours", 4))
+        date = params.get("date") or _today_str()
+        task_id = params.get("__task_id__", "")
+
+        # 1. Get holdings
+        pm = deps.get_portfolio()
+        holdings = pm.get_holdings()
+        tickers = [h["ticker"] for h in holdings if h.get("shares", 0) > 0]
+
+        if not tickers:
+            return {"total": 0, "analyzed": 0, "succeeded": 0,
+                    "failed": 0, "skipped": 0, "items": []}
+
+        # 2. Check skip (recently analyzed)
+        from stock_trading_system.portfolio.database import PortfolioDatabase
+        from stock_trading_system.config import get_config
+        cfg = get_config()
+        db_path = cfg.get("portfolio", {}).get("db_path", "data/portfolio.db")
+        db = PortfolioDatabase(db_path)
+
+        items = []
+        to_analyze = []
+
+        for ticker in tickers:
+            if skip_hours > 0:
+                recent = db.get_analysis_history(ticker=ticker, limit=1)
+                if recent and _within_hours(recent[0].get("created_at", ""), skip_hours):
+                    items.append({
+                        "ticker": ticker,
+                        "status": "skipped",
+                        "reason": f"{skip_hours} 小时内已分析",
+                        "last_analysis_id": recent[0].get("id"),
+                        "last_signal": recent[0].get("signal"),
+                    })
+                    _emit_batch_item(deps, task_id, items[-1],
+                                     len(items) - 1, len(tickers))
+                    continue
+            to_analyze.append(ticker)
+
+        total = len(tickers)
+        skipped = len(items)
+        succeeded = 0
+        failed = 0
+
+        progress_cb(5, f"持仓 {total} 只，跳过 {skipped} 只，待分析 {len(to_analyze)} 只")
+
+        # 3. Analyze sequentially
+        for i, ticker in enumerate(to_analyze):
+            progress_cb(_batch_pct(i, len(to_analyze)),
+                        f"分析 {ticker} ({skipped + i + 1}/{total})")
+
+            def sub_progress(pct, step=None, partial=None,
+                             _i=i, _n=len(to_analyze)):
+                batch_pct = _batch_pct(_i, _n, sub_pct=pct)
+                progress_cb(batch_pct, f"{ticker}: {step or ''}")
+
+            try:
+                result = analysis_worker_fn(
+                    {"ticker": ticker, "date": date, "__task_id__": task_id},
+                    sub_progress,
+                )
+                advice = result.get("advice") or {}
+                item = {
+                    "ticker": ticker,
+                    "status": "success",
+                    "analysis_id": result.get("analysis_id"),
+                    "signal": result.get("signal"),
+                    "confidence": advice.get("confidence"),
+                    "advice_action": advice.get("action"),
+                }
+                items.append(item)
+                succeeded += 1
+            except Exception as e:
+                logger.warning("Batch analysis failed for %s: %s", ticker, e)
+                items.append({"ticker": ticker, "status": "failed",
+                              "error": str(e)})
+                failed += 1
+
+            _emit_batch_item(deps, task_id, items[-1],
+                             skipped + i, total)
+
+        progress_cb(99, f"完成：{succeeded} 成功，{failed} 失败，{skipped} 跳过")
+
+        return {
+            "total": total,
+            "analyzed": len(to_analyze),
+            "succeeded": succeeded,
+            "failed": failed,
+            "skipped": skipped,
+            "items": items,
+        }
+
+    return worker
+
+
+def _emit_batch_item(deps, batch_task_id: str, item: dict,
+                      index: int, total: int) -> None:
+    sio = getattr(deps, "socketio", None)
+    if sio is None:
+        return
+    try:
+        sio.emit("batch_analysis_item", {
+            "batch_task_id": batch_task_id,
+            **item,
+            "index": index,
+            "total": total,
+        })
+    except Exception as e:
+        logger.warning("batch_analysis_item emit failed: %s", e)
+
+
+def _batch_pct(i: int, n: int, sub_pct: float = 0) -> int:
+    if n == 0:
+        return 99
+    per_ticker = 94.0 / n
+    base = 5 + i * per_ticker
+    return int(base + (sub_pct / 100) * per_ticker)
+
+
+def _within_hours(created_at_str: str, hours: int) -> bool:
+    from datetime import datetime, timedelta
+    try:
+        created = datetime.strptime(created_at_str, "%Y-%m-%d %H:%M:%S")
+        return datetime.now() - created < timedelta(hours=hours)
+    except Exception:
+        return False
+
+
 # ── Echo (kept for smoke tests) ──────────────────────────────────────────────
 
 
@@ -275,6 +415,7 @@ class WorkerDeps:
         get_strategy_engine: Callable[[], Any] | None = None,
         get_portfolio: Callable[[], Any] | None = None,
         get_router: Callable[[], Any] | None = None,
+        socketio: Any | None = None,
     ):
         self.get_analyzer = get_analyzer
         self.get_screener = get_screener
@@ -282,6 +423,7 @@ class WorkerDeps:
         self.get_strategy_engine = get_strategy_engine
         self.get_portfolio = get_portfolio
         self.get_router = get_router
+        self.socketio = socketio
 
 
 def register_default_workers(tm, deps: WorkerDeps) -> None:
@@ -318,6 +460,11 @@ def register_default_workers(tm, deps: WorkerDeps) -> None:
         tm.register("qwen_news",
                     make_qwen_news_worker(deps.get_router))
         tm.register("backtest", make_backtest_worker(deps.get_router))
+
+    # ── Batch analysis (one-click all holdings) ──
+    if deps.get_analyzer and deps.get_strategy_engine and deps.get_portfolio \
+            and deps.get_router:
+        tm.register("batch_analysis", make_batch_analysis_worker(deps))
 
 
 # ─────────────────────────────────────────────────────────────────

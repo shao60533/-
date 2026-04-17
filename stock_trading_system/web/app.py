@@ -146,6 +146,7 @@ def _register_default_workers(tm):
         get_strategy_engine=_get_strategy_engine,
         get_portfolio=_get_portfolio_mgr,
         get_router=_get_data_router,
+        socketio=socketio,
     )
     register_default_workers(tm, deps)
 
