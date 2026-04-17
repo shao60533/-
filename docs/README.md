@@ -48,6 +48,7 @@ docs/
 | 2026-04-15 | Railway 部署指南 | [Deploy](deploy/railway.md) | `fa3c653` |
 | 2026-04-16 | 纸面交易方案（v1.0 ~ v1.2） | [Paper Trade](design/paper-trade.md) | — |
 | 2026-04-16 | 选股 V2 修订：NL 驱动优先 | [Screener V2 v1.1](design/screener-v2.md) | — |
+| 2026-04-18 | 一键持仓分析方案 | [Batch Analyze](design/batch-analyze-holdings.md) | — |
 
 ---
 
