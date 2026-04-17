@@ -41,7 +41,18 @@ def make_analysis_worker(get_analyzer, get_strategy_engine, get_portfolio, get_r
         # TradingAgents' analyze() is monolithic (no internal progress hook),
         # so we report coarse-grained milestones only.
         progress_cb(15, "启动 7 Agent 分析")
-        result = analyzer.analyze(ticker, date)
+        raw = analyzer.analyze(ticker, date)
+
+        # When iteration is enabled, analyze() returns (AnalysisResult, final_state)
+        final_state = None
+        if isinstance(raw, tuple):
+            result, final_state = raw
+        else:
+            result = raw
+
+        # Record per-agent scorecards if iteration module is enabled
+        if final_state is not None:
+            _record_agent_scores(result, final_state, ticker, date, get_router)
 
         progress_cb(85, "生成策略建议")
         advice = _build_advice(result, ticker, get_strategy_engine, get_portfolio,
@@ -89,6 +100,87 @@ def _build_advice(result, ticker, get_strategy_engine, get_portfolio, get_router
     except Exception as e:  # noqa: BLE001 — advice is best-effort
         logger.warning("Strategy advice failed for %s: %s", ticker, e)
         return None
+
+
+def _record_agent_scores(result, final_state, ticker, date, get_router):
+    """Best-effort: record per-agent scorecards after a successful analysis."""
+    try:
+        from stock_trading_system.config import get_config
+        from stock_trading_system.agents.iterative.config import load_iteration_config
+        from stock_trading_system.agents.iterative.agent_scorer import AgentScorer
+
+        cfg = get_config()
+        iter_config = load_iteration_config(cfg.get("iteration", {}))
+        if not iter_config.enabled:
+            return
+
+        db_path = cfg.get("portfolio", {}).get("db_path", "data/portfolio.db")
+
+        # Get price at call
+        price_at_call = None
+        try:
+            router = get_router()
+            price_data = router.get_price(ticker) if router else None
+            if price_data:
+                price_at_call = price_data.get("last") or price_data.get("close")
+        except Exception:
+            pass
+
+        # Save analysis to get an ID, then record scorecards
+        from stock_trading_system.portfolio.database import PortfolioDatabase
+        db = PortfolioDatabase(db_path)
+        analysis_id = db.save_analysis({
+            "ticker": ticker, "date": date, "signal": result.signal,
+            "market_report": result.market_report,
+            "sentiment_report": result.sentiment_report,
+            "news_report": result.news_report,
+            "fundamentals_report": result.fundamentals_report,
+        })
+
+        scorer = AgentScorer(db_path, iter_config)
+        scorer.record_analysis(analysis_id, ticker, date, final_state, price_at_call)
+    except Exception as e:
+        logger.warning("Agent score recording failed (non-fatal): %s", e)
+
+
+def make_score_update_worker(get_router):
+    """Factory for the daily agent score update worker.
+
+    Runs: backfill_returns → compute metrics → update Darwinian weights.
+    """
+    def worker(params: dict, progress_cb: ProgressCb) -> dict:
+        from stock_trading_system.config import get_config
+        from stock_trading_system.agents.iterative.config import load_iteration_config
+        from stock_trading_system.agents.iterative.agent_scorer import AgentScorer
+        from stock_trading_system.agents.iterative.darwinian import update_darwinian_weights
+
+        cfg = get_config()
+        iter_config = load_iteration_config(cfg.get("iteration", {}))
+        if not iter_config.enabled:
+            return {"status": "skipped", "reason": "iteration not enabled"}
+
+        db_path = cfg.get("portfolio", {}).get("db_path", "data/portfolio.db")
+        scorer = AgentScorer(db_path, iter_config)
+
+        progress_cb(20, "回填价格数据")
+        router = get_router()
+        get_price = router.get_price if router else lambda t: None
+        updated = scorer.backfill_returns(get_price)
+
+        progress_cb(60, "计算 Agent 指标")
+        metrics = scorer.get_all_agent_metrics()
+
+        progress_cb(80, "更新 Darwinian 权重")
+        weights = update_darwinian_weights(scorer, iter_config.darwinian)
+
+        return {
+            "status": "ok",
+            "backfilled": updated,
+            "metrics": metrics,
+            "weights": weights,
+        }
+
+    return worker
 
 
 # ── Screen worker ─────────────────────────────────────────────────────────────
@@ -465,6 +557,10 @@ def register_default_workers(tm, deps: WorkerDeps) -> None:
     if deps.get_analyzer and deps.get_strategy_engine and deps.get_portfolio \
             and deps.get_router:
         tm.register("batch_analysis", make_batch_analysis_worker(deps))
+
+    # ── Agent score update (daily backfill + Darwinian weights) ──
+    if deps.get_router:
+        tm.register("agent_score_update", make_score_update_worker(deps.get_router))
 
 
 # ─────────────────────────────────────────────────────────────────

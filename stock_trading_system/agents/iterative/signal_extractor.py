@@ -17,7 +17,7 @@ logger = get_logger("iterative.signal_extractor")
 
 _SIGNAL_EXTRACTION_PROMPT = (
     "Extract the directional signal from this analyst report.\n"
-    'Output exactly one JSON: {"signal": "BULLISH" | "BEARISH" | "NEUTRAL"}\n'
+    'Output exactly one JSON: {{"signal": "BULLISH" | "BEARISH" | "NEUTRAL"}}\n'
     "Report: {report_text}"
 )
 

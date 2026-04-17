@@ -1417,6 +1417,40 @@ def create_app(config_path=None):
             "routing": _get_data_router().routing_summary(),
         }), (200 if ok else 207)  # 207 = Multi-Status (some failed)
 
+    # ── Iteration / Agent Evolution ───────────────────────────────────
+
+    @app.route("/api/iteration/agents", methods=["GET"])
+    def api_iteration_agents():
+        """Return per-agent Sharpe, hit rate, and Darwinian weight."""
+        try:
+            from stock_trading_system.agents.iterative.config import load_iteration_config
+            from stock_trading_system.agents.iterative.agent_scorer import AgentScorer
+
+            cfg = get_config()
+            iter_config = load_iteration_config(cfg.get("iteration", {}))
+            db_path = cfg.get("portfolio", {}).get("db_path", "data/portfolio.db")
+            scorer = AgentScorer(db_path, iter_config)
+            metrics = scorer.get_all_agent_metrics()
+            weights = scorer.get_all_weights()
+
+            agents = []
+            for agent_id in metrics:
+                agents.append({
+                    "agent_id": agent_id,
+                    "sharpe": metrics[agent_id]["sharpe"],
+                    "hit_rate": metrics[agent_id]["hit_rate"],
+                    "weight": weights.get(agent_id, 1.0),
+                })
+            agents.sort(key=lambda a: a["sharpe"], reverse=True)
+
+            return jsonify({
+                "enabled": iter_config.enabled,
+                "agents": agents,
+            })
+        except Exception as e:
+            logger.error("Failed to load iteration agents: %s", e)
+            return jsonify({"error": str(e)}), 500
+
     # ── Seed Data ───────────────────────────────────────────────────────
 
     @app.route("/api/seed", methods=["POST"])

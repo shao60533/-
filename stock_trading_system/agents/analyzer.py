@@ -12,8 +12,11 @@ Uses TradingAgents' built-in agents:
 Data is fetched automatically by TradingAgents (yfinance + Alpha Vantage).
 """
 
+from __future__ import annotations
+
 import os
 from dataclasses import dataclass, field
+from typing import Any
 
 from stock_trading_system.utils import get_logger
 
@@ -147,7 +150,13 @@ class StockAnalyzer:
             config=ta_config,
         )
 
-    def analyze(self, ticker: str, date: str, progress_callback=None) -> AnalysisResult:
+    @property
+    def _iteration_enabled(self) -> bool:
+        return self._config.get("iteration", {}).get("enabled", False)
+
+    def analyze(
+        self, ticker: str, date: str, progress_callback=None,
+    ) -> AnalysisResult | tuple[AnalysisResult, dict[str, Any]]:
         """Run full multi-agent analysis on a stock.
 
         Args:
@@ -156,12 +165,16 @@ class StockAnalyzer:
             progress_callback: Optional callable(step, status) for real-time progress
 
         Returns:
-            AnalysisResult with signal, reports, and decision details
+            When iteration is disabled: AnalysisResult (backwards-compatible).
+            When iteration is enabled:  (AnalysisResult, final_state) tuple.
         """
         self._init_graph()
-
         logger.info("Starting analysis for %s on %s", ticker, date)
-        final_state, signal = self._graph.propagate(ticker, date)
+
+        if self._iteration_enabled:
+            final_state, signal = self._run_with_weights(ticker, date)
+        else:
+            final_state, signal = self._graph.propagate(ticker, date)
 
         result = AnalysisResult(
             ticker=ticker,
@@ -176,7 +189,59 @@ class StockAnalyzer:
         )
 
         logger.info("Analysis complete for %s: signal=%s", ticker, signal)
+        if self._iteration_enabled:
+            return result, final_state
         return result
+
+    def _run_with_weights(
+        self, ticker: str, date: str,
+    ) -> tuple[dict[str, Any], Any]:
+        """Bypass propagate() to inject weight context into init_state."""
+        from stock_trading_system.agents.iterative.config import load_iteration_config
+        from stock_trading_system.agents.iterative.darwinian import format_weight_context
+
+        iter_config = load_iteration_config(self._config.get("iteration", {}))
+
+        # Build initial state via the propagator
+        init_state = self._graph.propagator.create_initial_state(ticker, date)
+
+        # Inject weight context if a scorer is available
+        if iter_config.darwinian.enabled:
+            weight_text = self._get_weight_context()
+            if weight_text:
+                init_state["messages"].insert(0, ("system", weight_text))
+
+        # Run graph (preserve debug stream behaviour)
+        args = self._graph.propagator.get_graph_args()
+        if self._graph.debug:
+            trace: list[dict] = []
+            for chunk in self._graph.graph.stream(init_state, **args):
+                if chunk.get("messages"):
+                    chunk["messages"][-1].pretty_print()
+                trace.append(chunk)
+            final_state = trace[-1] if trace else {}
+        else:
+            final_state = self._graph.graph.invoke(init_state, **args)
+
+        signal = self._graph.process_signal(
+            final_state.get("final_trade_decision", "")
+        )
+        return final_state, signal
+
+    def _get_weight_context(self) -> str:
+        """Return formatted weight context from the scorer singleton, if any."""
+        try:
+            from stock_trading_system.agents.iterative.darwinian import format_weight_context
+            from stock_trading_system.agents.iterative.agent_scorer import AgentScorer
+            from stock_trading_system.agents.iterative.config import load_iteration_config
+
+            iter_config = load_iteration_config(self._config.get("iteration", {}))
+            db_path = self._config.get("portfolio", {}).get("db_path", "data/portfolio.db")
+            scorer = AgentScorer(db_path, iter_config)
+            return format_weight_context(scorer)
+        except Exception as e:
+            logger.warning("Could not load weight context: %s", e)
+            return ""
 
     def quick_screen(self, ticker: str, date: str) -> str:
         """Quick analysis returning just the signal (for batch screening).

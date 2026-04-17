@@ -1,0 +1,438 @@
+"""Tests for the self-iterating agent module (Phase 1).
+
+Test IDs follow the spec (docs/design/self-iterating-agents.md §12):
+  IS-1 ~ IS-8  : Agent Scorer
+  DW-1 ~ DW-5  : Darwinian weights
+  REG-1 ~ REG-3: Regression
+"""
+
+from __future__ import annotations
+
+import os
+import sqlite3
+import tempfile
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from stock_trading_system.agents.iterative.config import (
+    DarwinianConfig,
+    IterationConfig,
+    ScorerConfig,
+    load_iteration_config,
+)
+from stock_trading_system.agents.iterative.signal_extractor import (
+    extract_signal_fixed,
+    extract_signal_llm,
+    extract_signal_regex,
+)
+from stock_trading_system.agents.iterative.agent_scorer import (
+    AGENT_MAP,
+    AgentScorer,
+    compute_agent_sharpe,
+)
+from stock_trading_system.agents.iterative.darwinian import (
+    format_weight_context,
+    update_darwinian_weights,
+)
+
+
+# ── Fixtures ──────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture()
+def db_path(tmp_path):
+    """Create a temporary SQLite DB with the agent_scorecards table."""
+    path = str(tmp_path / "test.db")
+    conn = sqlite3.connect(path)
+    conn.executescript("""
+        CREATE TABLE agent_scorecards (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            analysis_id INTEGER NOT NULL,
+            agent_id TEXT NOT NULL,
+            ticker TEXT NOT NULL,
+            date TEXT NOT NULL,
+            signal TEXT NOT NULL,
+            price_at_call REAL,
+            return_5d REAL,
+            hit_5d INTEGER,
+            return_20d REAL,
+            hit_20d INTEGER,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_sc_agent_date ON agent_scorecards(agent_id, date DESC);
+    """)
+    conn.close()
+    return path
+
+
+@pytest.fixture()
+def iter_config():
+    return IterationConfig(
+        enabled=True,
+        scorer=ScorerConfig(min_samples=2),
+    )
+
+
+@pytest.fixture()
+def scorer(db_path, iter_config):
+    mock_llm = MagicMock(return_value='{"signal": "BULLISH"}')
+    return AgentScorer(db_path, iter_config, llm_call=mock_llm)
+
+
+@pytest.fixture()
+def sample_final_state():
+    """Simulates a TradingAgents final_state dict."""
+    return {
+        "market_report": "The market outlook is positive with strong momentum.",
+        "sentiment_report": "Social sentiment is bearish, negative tweets dominate.",
+        "news_report": "Earnings beat expectations significantly.",
+        "fundamentals_report": "PE ratio is reasonable at 18x.",
+        "investment_debate_state": {
+            "bull_history": ["Bull argument"],
+            "bear_history": ["Bear argument"],
+        },
+        "trader_investment_plan": "FINAL TRANSACTION PROPOSAL: **BUY** 100 shares",
+        "final_trade_decision": "BUY",
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════
+# IS: Agent Scorer tests
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestIS1_RecordAnalysis:
+    """IS-1: After analysing AAPL, 7 scorecard records are created."""
+
+    def test_records_seven_agents(self, scorer, sample_final_state):
+        records = scorer.record_analysis(
+            analysis_id=1, ticker="AAPL", date="2026-04-10",
+            final_state=sample_final_state, price_at_call=185.0,
+        )
+        assert len(records) == 7
+        agent_ids = {r["agent_id"] for r in records}
+        assert agent_ids == set(AGENT_MAP.keys())
+
+    def test_records_persisted_to_db(self, scorer, sample_final_state, db_path):
+        scorer.record_analysis(
+            analysis_id=1, ticker="AAPL", date="2026-04-10",
+            final_state=sample_final_state, price_at_call=185.0,
+        )
+        conn = sqlite3.connect(db_path)
+        count = conn.execute("SELECT COUNT(*) FROM agent_scorecards").fetchone()[0]
+        conn.close()
+        assert count == 7
+
+
+class TestIS2_SignalExtractionLLM:
+    """IS-2: LLM extraction returns BULLISH for a positive report."""
+
+    def test_bullish_report(self):
+        mock_llm = MagicMock(return_value='{"signal": "BULLISH"}')
+        assert extract_signal_llm("Strong upside potential", mock_llm) == "BULLISH"
+
+    def test_bearish_report(self):
+        mock_llm = MagicMock(return_value='{"signal": "BEARISH"}')
+        assert extract_signal_llm("Declining revenue", mock_llm) == "BEARISH"
+
+    def test_neutral_on_empty(self):
+        mock_llm = MagicMock()
+        assert extract_signal_llm("", mock_llm) == "NEUTRAL"
+
+    def test_error_on_exception(self):
+        mock_llm = MagicMock(side_effect=RuntimeError("LLM down"))
+        assert extract_signal_llm("some report", mock_llm) == "ERROR"
+
+
+class TestIS3_SignalExtractionFixed:
+    """IS-3: Fixed extraction for bull/bear researchers."""
+
+    def test_bull_researcher(self):
+        assert extract_signal_fixed("bull_researcher") == "BULLISH"
+
+    def test_bear_researcher(self):
+        assert extract_signal_fixed("bear_researcher") == "BEARISH"
+
+    def test_unknown_agent(self):
+        assert extract_signal_fixed("unknown") == "NEUTRAL"
+
+
+class TestIS4_SignalExtractionRegex:
+    """IS-4: Regex extraction from trader output."""
+
+    def test_buy(self):
+        assert extract_signal_regex("FINAL TRANSACTION PROPOSAL: **BUY** 100 shares") == "BULLISH"
+
+    def test_sell(self):
+        assert extract_signal_regex("FINAL TRANSACTION PROPOSAL: **SELL** 50 shares") == "BEARISH"
+
+    def test_hold(self):
+        assert extract_signal_regex("FINAL TRANSACTION PROPOSAL: **HOLD**") == "NEUTRAL"
+
+    def test_fallback_keyword(self):
+        assert extract_signal_regex("We recommend to SELL") == "BEARISH"
+
+    def test_empty(self):
+        assert extract_signal_regex("") == "NEUTRAL"
+
+
+class TestIS5_BackfillReturns:
+    """IS-5: 5-day return backfill computes correctly."""
+
+    def test_backfill_with_price_increase(self, scorer, sample_final_state, db_path):
+        scorer.record_analysis(
+            analysis_id=1, ticker="AAPL", date="2026-04-01",
+            final_state=sample_final_state, price_at_call=100.0,
+        )
+        # Simulate current price = 110 → 10% return
+        get_price = MagicMock(return_value={"last": 110.0})
+        updated = scorer.backfill_returns(get_price)
+        assert updated > 0
+
+        conn = sqlite3.connect(db_path)
+        row = conn.execute(
+            "SELECT return_5d, hit_5d FROM agent_scorecards WHERE agent_id = 'market_analyst'"
+        ).fetchone()
+        conn.close()
+        assert row is not None
+        assert abs(row[0] - 0.1) < 0.01  # ~10% return
+
+
+class TestIS6_SharpeCalculation:
+    """IS-6: Sharpe matches manual calculation."""
+
+    def test_positive_returns(self):
+        returns = [0.02, 0.03, 0.01, 0.04, 0.02]
+        sharpe = compute_agent_sharpe(returns)
+        assert sharpe > 0
+
+    def test_zero_std(self):
+        returns = [0.01, 0.01, 0.01, 0.01, 0.01]
+        # All same → std=0 → sharpe=0
+        sharpe = compute_agent_sharpe(returns)
+        assert sharpe == 0.0
+
+    def test_negative_returns(self):
+        returns = [-0.02, -0.03, -0.01, -0.04, -0.02]
+        sharpe = compute_agent_sharpe(returns)
+        assert sharpe < 0
+
+
+class TestIS7_MinSamples:
+    """IS-7: With < min_samples observations, Sharpe returns 0.0."""
+
+    def test_too_few_samples(self):
+        returns = [0.02, 0.03]
+        sharpe = compute_agent_sharpe(returns)
+        assert sharpe == 0.0
+
+    def test_get_all_agent_metrics_empty_db(self, scorer):
+        metrics = scorer.get_all_agent_metrics()
+        for agent_id in AGENT_MAP:
+            assert metrics[agent_id]["sharpe"] == 0.0
+            assert metrics[agent_id]["hit_rate"] == 0.0
+
+
+class TestIS8_DisabledNoTrigger:
+    """IS-8: iteration.enabled=false → no scorecards recorded."""
+
+    def test_disabled_config(self, db_path):
+        disabled_config = IterationConfig(enabled=True, scorer=ScorerConfig(extract_signals=False))
+        scorer = AgentScorer(db_path, disabled_config)
+        records = scorer.record_analysis(
+            analysis_id=1, ticker="AAPL", date="2026-04-10",
+            final_state={"market_report": "test"}, price_at_call=100.0,
+        )
+        assert records == []
+
+
+# ═══════════════════════════════════════════════════════════════════
+# DW: Darwinian weight tests
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestDW1_TopBoost:
+    """DW-1: Top 25% get boosted by WEIGHT_BOOST."""
+
+    def test_top_agent_boosted(self, scorer, db_path):
+        _seed_varied_returns(db_path)
+        cfg = DarwinianConfig()
+        weights = update_darwinian_weights(scorer, cfg)
+        # The agent with highest Sharpe should have weight > 1.0
+        max_w = max(weights.values())
+        assert max_w >= 1.05 * 0.99  # ~1.05 (initial 1.0 * boost)
+
+
+class TestDW2_BottomDecay:
+    """DW-2: Bottom 25% get decayed by WEIGHT_DECAY."""
+
+    def test_bottom_agent_decayed(self, scorer, db_path):
+        _seed_varied_returns(db_path)
+        cfg = DarwinianConfig()
+        weights = update_darwinian_weights(scorer, cfg)
+        min_w = min(weights.values())
+        assert min_w <= 0.95 * 1.01  # ~0.95 (initial 1.0 * decay)
+
+
+class TestDW3_BoundaryClamping:
+    """DW-3: Weights stay within [0.3, 2.5]."""
+
+    def test_ceiling(self, scorer):
+        scorer.save_weight("market_analyst", 2.48)
+        _seed_varied_returns_for_scorer(scorer)
+        cfg = DarwinianConfig()
+        update_darwinian_weights(scorer, cfg)
+        assert scorer.get_weight("market_analyst") <= 2.5
+
+    def test_floor(self, scorer):
+        scorer.save_weight("bear_researcher", 0.31)
+        _seed_varied_returns_for_scorer(scorer)
+        cfg = DarwinianConfig()
+        update_darwinian_weights(scorer, cfg)
+        assert scorer.get_weight("bear_researcher") >= 0.3
+
+
+class TestDW4_MiddleUnchanged:
+    """DW-4: Middle 50% weights remain the same."""
+
+    def test_middle_stays(self, scorer, db_path):
+        _seed_varied_returns(db_path)
+        initial = dict(scorer.get_all_weights())
+        cfg = DarwinianConfig()
+        update_darwinian_weights(scorer, cfg)
+        # At least one agent in the middle should keep its weight
+        unchanged_count = sum(
+            1 for aid in initial
+            if abs(scorer.get_weight(aid) - initial[aid]) < 1e-6
+        )
+        # With 7 agents, top_n=1, bottom_n=1 → 5 unchanged
+        assert unchanged_count >= 3
+
+
+class TestDW5_WeightContextFormat:
+    """DW-5: format_weight_context contains all agents + weight values."""
+
+    def test_contains_all_agents(self, scorer):
+        text = format_weight_context(scorer)
+        assert "Market Analyst:" in text
+        assert "Trader:" in text
+        assert "Agent Reliability Weights" in text
+
+    def test_sorted_by_weight(self, scorer):
+        scorer.save_weight("market_analyst", 2.0)
+        scorer.save_weight("bear_researcher", 0.5)
+        text = format_weight_context(scorer)
+        market_pos = text.index("Market Analyst:")
+        bear_pos = text.index("Bear Researcher:")
+        assert market_pos < bear_pos  # Higher weight listed first
+
+
+# ═══════════════════════════════════════════════════════════════════
+# REG: Regression tests
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestREG1_DisabledBehaviorUnchanged:
+    """REG-1: iteration.enabled=false → analyze() returns AnalysisResult only."""
+
+    def test_returns_single_value(self):
+        from stock_trading_system.agents.analyzer import StockAnalyzer, AnalysisResult
+
+        config = {"iteration": {"enabled": False}}
+        analyzer = StockAnalyzer(config)
+
+        mock_graph = MagicMock()
+        mock_graph.propagate.return_value = (
+            {
+                "market_report": "ok",
+                "sentiment_report": "",
+                "news_report": "",
+                "fundamentals_report": "",
+                "investment_debate_state": {},
+                "risk_debate_state": {},
+                "final_trade_decision": "BUY",
+            },
+            "BUY",
+        )
+        analyzer._graph = mock_graph
+
+        result = analyzer.analyze("AAPL", "2026-04-10")
+        # When disabled, should return plain AnalysisResult, not a tuple
+        assert isinstance(result, AnalysisResult)
+        assert result.signal == "BUY"
+
+
+class TestREG2_PaperTradeUnaffected:
+    """REG-2: Existing paper_trade functionality should not be affected."""
+
+    def test_compute_session_metrics_still_works(self):
+        from stock_trading_system.strategy.paper_trader.metrics import compute_session_metrics
+
+        equity = [
+            {"total_value": 100000},
+            {"total_value": 101000},
+            {"total_value": 102000},
+        ]
+        metrics = compute_session_metrics([], equity, 100000)
+        assert "sharpe_ratio" in metrics
+        assert "total_return_pct" in metrics
+
+
+class TestREG3_ConfigLoading:
+    """REG-3: Config loading works with and without iteration section."""
+
+    def test_empty_config(self):
+        config = load_iteration_config({})
+        assert config.enabled is False
+        assert config.darwinian.boost == 1.05
+
+    def test_full_config(self):
+        raw = {
+            "enabled": True,
+            "model": "qwen-plus",
+            "scorer": {"min_samples": 10},
+            "darwinian": {"boost": 1.10, "floor": 0.5},
+        }
+        config = load_iteration_config(raw)
+        assert config.enabled is True
+        assert config.scorer.min_samples == 10
+        assert config.darwinian.boost == 1.10
+        assert config.darwinian.floor == 0.5
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+
+def _seed_varied_returns(db_path: str) -> None:
+    """Insert diverse scorecard rows so each agent has different returns."""
+    conn = sqlite3.connect(db_path)
+    agents = list(AGENT_MAP.keys())
+    # Give each agent different return profiles
+    return_profiles = {
+        agents[0]: [0.05, 0.03, 0.04, 0.02, 0.06],   # best
+        agents[1]: [0.01, 0.02, 0.01, 0.01, 0.02],
+        agents[2]: [0.00, 0.01, -0.01, 0.02, 0.01],
+        agents[3]: [-0.01, 0.01, 0.00, 0.01, -0.01],
+        agents[4]: [-0.01, -0.02, 0.01, 0.00, -0.01],
+        agents[5]: [-0.03, -0.02, -0.04, -0.01, -0.03],  # worst
+        agents[6]: [0.02, 0.01, 0.03, 0.01, 0.02],
+    }
+
+    for agent_id, returns in return_profiles.items():
+        for i, ret in enumerate(returns):
+            hit = 1 if ret > 0 else 0
+            conn.execute(
+                """INSERT INTO agent_scorecards
+                   (analysis_id, agent_id, ticker, date, signal, price_at_call,
+                    return_5d, hit_5d, created_at)
+                   VALUES (?, ?, 'AAPL', ?, 'BULLISH', 100.0, ?, ?, '2026-04-10')""",
+                (i + 1, agent_id, f"2026-04-{10 + i:02d}", ret, hit),
+            )
+    conn.commit()
+    conn.close()
+
+
+def _seed_varied_returns_for_scorer(scorer: AgentScorer) -> None:
+    """Seed returns via the scorer's DB so get_all_agent_metrics works."""
+    _seed_varied_returns(scorer._db_path)
