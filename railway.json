@@ -6,7 +6,7 @@
   "deploy": {
     "startCommand": "python -m stock_trading_system.main web --host 0.0.0.0",
     "healthcheckPath": "/api/health",
-    "healthcheckTimeout": 60,
+    "healthcheckTimeout": 120,
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 5
   }

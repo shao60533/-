@@ -41,10 +41,42 @@ class StockAnalyzer:
         self._config = config
         self._graph = None
 
+    @staticmethod
+    def _patch_tradingagents_qwen():
+        """Monkey-patch TradingAgents factory to accept 'qwen'/'dashscope' providers.
+
+        The upstream factory only knows openai/anthropic/google/xai/ollama/openrouter.
+        DashScope uses an OpenAI-compatible endpoint, so we register it as a custom
+        provider in the same OpenAIClient, but WITHOUT use_responses_api.
+        Idempotent — safe to call multiple times.
+        """
+        try:
+            from tradingagents.llm_clients import factory as _factory
+            from tradingagents.llm_clients import openai_client as _oc
+            if "qwen" in getattr(_oc, "_PROVIDER_CONFIG", {}):
+                return  # already patched
+            _oc._PROVIDER_CONFIG["qwen"] = (
+                "https://dashscope.aliyuncs.com/compatible-mode/v1", "DASHSCOPE_API_KEY")
+            _oc._PROVIDER_CONFIG["dashscope"] = (
+                "https://dashscope.aliyuncs.com/compatible-mode/v1", "DASHSCOPE_API_KEY")
+            _orig = _factory.create_llm_client
+
+            def _patched(provider, model, base_url=None, **kwargs):
+                if provider.lower() in ("qwen", "dashscope"):
+                    return _oc.OpenAIClient(model, base_url, provider=provider.lower(), **kwargs)
+                return _orig(provider, model, base_url, **kwargs)
+
+            _factory.create_llm_client = _patched
+            logger.info("Patched TradingAgents factory for Qwen/DashScope")
+        except Exception as e:
+            logger.warning("Failed to patch TradingAgents for Qwen: %s", e)
+
     def _init_graph(self):
         """Lazy-init TradingAgents graph."""
         if self._graph is not None:
             return
+
+        self._patch_tradingagents_qwen()
 
         from tradingagents.graph.trading_graph import TradingAgentsGraph
         from tradingagents.default_config import DEFAULT_CONFIG
