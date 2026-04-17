@@ -7,73 +7,100 @@
 
 ## 上下文
 
-技术方案：`docs/design/self-iterating-agents.md`（完整方案，必读第五~六节）
+技术方案：`docs/design/self-iterating-agents.md`（v2.0，完整方案，必读第五~九节）
 
-## Phase 1 实施范围 — Scorecard 基础
+**核心定位**：独立于现有 TradingAgents 管线的新模块，统一用 `qwen3.6-plus`，有自己的 Agent 体系、Scorecard、Darwinian 权重和 Meta Agent 自我进化。
 
-### 新建文件
+## Phase 1 实施范围 — 骨架 + Scorecard + 3 个 Agent 闭环
 
-1. **`stock_trading_system/agents/scorecard.py`**（新建）
-   - `record_analysis_scorecards(analysis_result, analysis_id)` — 从一次分析中提取 7 个 agent 的 call 并写入 scorecard
-   - `extract_direction(report_text)` — 用 Qwen-flash 从报告文本中提取 bullish/bearish/neutral
-   - `backfill_returns()` — 回填 5d/20d 后续价格
-   - `update_rolling_metrics()` — 更新滚动 30 天 Sharpe + 命中率
-   - 参考方案第五节完整设计
+### 新建目录和文件
 
-2. **`stock_trading_system/agents/darwinian.py`**（新建）
-   - `update_darwinian_weights()` — 每日权重更新（top 25% × 1.05, bottom 25% × 0.95, 边界 [0.3, 2.5]）
-   - `get_current_weight(agent_id)` / `format_agent_weights()` — 读取和格式化权重
-   - 参考方案第六节
-
-3. **`tests/test_scorecard.py`**（新建）
-   - 测试用例 SC-1 ~ SC-5 + DW-1 ~ DW-4（方案第十三节）
-   - mock analysis_result 和 get_close_price
+```
+stock_trading_system/agents/iterative/
+├── __init__.py
+├── qwen_client.py         ← 方案第五节，qwen3.6-plus 客户端封装
+├── base.py                ← 方案第六节，IterativeAgent 基类
+├── scorecard.py           ← 方案第八节，scorecard 记录 + 回填 + 指标计算
+├── darwinian.py           ← 方案第九节，权重更新
+├── pipeline.py            ← 简化版管线（Phase 1 只跑 3 个 agent）
+│
+├── L1_macro/
+│   ├── __init__.py
+│   └── fed_watcher.py     ← 第一个 L1 agent
+│
+├── L2_sector/
+│   ├── __init__.py
+│   └── tech_ai.py         ← 第一个 L2 agent
+│
+├── L4_decision/
+│   ├── __init__.py
+│   └── cio.py             ← CIO 综合决策
+│
+└── prompts/
+    ├── L1_fed.md           ← Fed Watcher 的 system prompt
+    ├── L2_tech_ai.md       ← Tech/AI 板块 agent 的 system prompt
+    └── L4_cio.md           ← CIO 的 system prompt
+```
 
 ### 修改文件
 
-4. **`stock_trading_system/tasks/workers.py`**
-   - 在 `make_analysis_worker` 返回的 worker 函数末尾（分析成功后）：
-     ```python
-     from stock_trading_system.agents.scorecard import record_analysis_scorecards
-     record_analysis_scorecards(result, analysis_id)
-     ```
-   - 注册新任务类型 `scorecard_backfill` 和 `darwinian_update`
+1. **`stock_trading_system/portfolio/database.py`**
+   - 在 `_init_db()` 新增 3 张表的 CREATE TABLE：
+     - `agent_scorecards`（方案第八节 SQL）
+     - `darwinian_weights`（方案第十二节 SQL）
+     - `macro_signals`（方案第十二节 SQL）
 
-5. **`stock_trading_system/portfolio/database.py`**
-   - 在 `_init_db()` 中新增 `agent_scorecards` 表和 `darwinian_weights` 表的 CREATE TABLE
-   - 参考方案第五节和第九节的 SQL
+2. **`stock_trading_system/tasks/workers.py`**
+   - 新增 `make_iterative_daily_worker(deps)` — 调用 pipeline.run_daily()
+   - 新增 `make_scorecard_backfill_worker(deps)` — 调用 scorecard.daily_scorecard_update()
+   - 在 `register_default_workers()` 中注册 `iterative_daily` 和 `scorecard_backfill`
 
-6. **`stock_trading_system/web/templates/index.html`**
-   - 仪表盘新增"Agent 健康度"卡片：显示 top 3 / bottom 3 agent 的 Sharpe + 权重
+3. **`stock_trading_system/web/app.py`**
+   - 新增 `POST /api/iterative/run` — 手动触发管线（提交 iterative_daily 任务）
+   - 新增 `GET /api/iterative/latest` — 返回最近一次运行结果
+   - 新增 `GET /api/iterative/agents` — 返回所有 agent 的 Sharpe/权重/命中率
 
-7. **`stock_trading_system/web/static/js/app.js`**
-   - 新增 `loadAgentHealth()` — 调 `/api/agents/health` 渲染健康度卡片
+4. **`stock_trading_system/config/default_config.yaml`**
+   - 新增 `iterative:` 配置节（方案第十四节，enabled 默认 false）
 
-8. **`stock_trading_system/web/app.py`**
-   - 新增 `GET /api/agents/health` — 返回每个 agent 的 Sharpe/命中率/权重
+### 测试文件
 
-### 不改动
+5. **`tests/test_iterative_scorecard.py`**（新建）
+   - 测试 SC-1 ~ SC-8（方案第十七节）
+   - mock qwen_client.call_json 返回固定 JSON
+   - mock yfinance 的 get_close_price
 
-- TradingAgents 框架代码（`/Users/zhixingshao/TradingAgents/`）不动
-- 现有分析流程不动（只在末尾追加 scorecard 记录）
+6. **`tests/test_iterative_darwinian.py`**（新建）
+   - 测试 DW-1 ~ DW-5
+
+7. **`tests/test_iterative_pipeline.py`**（新建）
+   - 测试 PL-1（简化版：3 agent 闭环）+ PL-6 + PL-8
+   - mock 全部 Qwen 调用
 
 ## 实施顺序
 
-1. 读完方案第五~六节
-2. database.py → 建表
-3. scorecard.py → 核心逻辑
-4. darwinian.py → 权重逻辑
-5. workers.py → 集成到分析流程
-6. 跑 `pytest tests/test_scorecard.py`
-7. app.py + index.html + app.js → 前端展示
-8. `pytest tests/ -x` 确认无回归
+1. 读完方案第五~九节 + 第十二节（表结构）+ 第十四节（配置）
+2. `database.py` → 建表
+3. `qwen_client.py` → Qwen 封装
+4. `base.py` → Agent 基类
+5. 3 个 prompt 文件 → `prompts/L1_fed.md`, `L2_tech_ai.md`, `L4_cio.md`
+6. 3 个 agent 实现 → `fed_watcher.py`, `tech_ai.py`, `cio.py`
+7. `scorecard.py` → 记录 + 回填 + 指标
+8. `darwinian.py` → 权重更新
+9. `pipeline.py` → 简化版管线（只 3 个 agent）
+10. `workers.py` → 注册任务
+11. `app.py` → 3 个 API
+12. `pytest tests/test_iterative_*.py` → 单元测试
+13. `pytest tests/ -x` → 回归测试
 
 ## 完成标准
 
-- [ ] 分析 AAPL 后 `agent_scorecards` 表新增 7 条记录
-- [ ] 5 天后 `backfill_returns` 能回填 price_5d / return_5d
-- [ ] `update_rolling_metrics` 计算 Sharpe 正确
-- [ ] `update_darwinian_weights` 正确调节权重
-- [ ] 仪表盘可看到 Agent 健康度卡片
-- [ ] `pytest tests/test_scorecard.py` 全部通过
+- [ ] `POST /api/iterative/run` 触发管线，返回 task_id
+- [ ] 管线运行完成后，`agent_scorecards` 表新增 3 条记录（L1_fed + L2_tech_ai + L4_cio）
+- [ ] `macro_signals` 表新增 1 条 Fed Watcher 信号
+- [ ] `daily_scorecard_update()` 正确回填 5d 价格 + 计算 Sharpe
+- [ ] `update_darwinian_weights()` 正确调节权重
+- [ ] `GET /api/iterative/agents` 返回 3 个 agent 的状态
+- [ ] `iterative.enabled: false` 时不运行任何逻辑
+- [ ] `pytest tests/test_iterative_*.py` 全部通过
 - [ ] `pytest tests/ -x` 无回归

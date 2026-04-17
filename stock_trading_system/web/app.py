@@ -300,7 +300,31 @@ def create_app(config_path=None):
         pnl = pm.get_pnl()
         holdings = pm.get_holdings()
         alerts = _get_alert_monitor().list_alerts()
+
+        # Auto-snapshot: save today's data if no snapshot exists yet
+        # (uses already-fetched pnl, avoids double price lookup)
+        import json as _json
+        from datetime import datetime as _dt
+        from stock_trading_system.portfolio.models import DailySnapshot
+        today_str = _dt.now().strftime("%Y-%m-%d")
         history = pm.get_history(days=30)
+        if not history or history[0].get("date") != today_str:
+            try:
+                snap = DailySnapshot(
+                    date=today_str,
+                    total_value=pnl["total_value"],
+                    total_cost=pnl["total_cost"],
+                    pnl=pnl["total_pnl"],
+                    pnl_pct=pnl["total_pnl_pct"],
+                    positions_json=_json.dumps(holdings, default=str),
+                )
+                pm._db.save_snapshot(snap)
+                history = pm.get_history(days=30)
+                logger.info("Auto-snapshot for %s (value=%.2f)",
+                            today_str, pnl["total_value"])
+            except Exception as e:
+                logger.warning("Auto-snapshot failed: %s", e)
+
         return jsonify({
             "pnl": pnl,
             "holdings": holdings,
