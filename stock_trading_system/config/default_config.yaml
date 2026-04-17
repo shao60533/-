@@ -89,3 +89,28 @@ reports:
 # at a Persistent Volume mount (e.g. /data/portfolio.db) for durability.
 portfolio:
   db_path: "data/portfolio.db"
+
+# Self-iterating agent evolution module (see docs/design/self-iterating-agents.md).
+iteration:
+  enabled: false                  # Master switch — disabled by default
+  model: "qwen3.6-plus"          # LLM for Meta Agent + signal extraction
+  fallback_model: "qwen-plus"
+
+  scorer:
+    extract_signals: true         # Extract per-agent directional signals
+    backfill_5d: true
+    backfill_20d: true
+    rolling_window_days: 30
+    min_samples: 5                # Skip Sharpe when fewer than 5 observations
+
+  darwinian:
+    enabled: true
+    boost: 1.05                   # atlas-elenchus default: top 25% daily +5%
+    decay: 0.95                   # atlas-elenchus default: bottom 25% daily -5%
+    floor: 0.3
+    ceiling: 2.5
+
+  meta:
+    enabled: false                # Phase 3 — disabled until prompt injection ready
+    ab_test_days: 5
+    max_rewrites_per_week: 1
