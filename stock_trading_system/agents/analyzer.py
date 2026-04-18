@@ -53,15 +53,19 @@ class StockAnalyzer:
         provider in the same OpenAIClient, but WITHOUT use_responses_api.
         Idempotent — safe to call multiple times.
         """
+        # Mainland DashScope endpoint — keys from bailian.console.aliyun.com
+        # are NOT valid on dashscope-intl (international) which is a separate
+        # service. Always overwrite even if upstream pre-registered qwen,
+        # because upstream now ships dashscope-intl by default.
+        _MAINLAND_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
         try:
             from tradingagents.llm_clients import factory as _factory
             from tradingagents.llm_clients import openai_client as _oc
-            if "qwen" in getattr(_oc, "_PROVIDER_CONFIG", {}):
-                return  # already patched
-            _oc._PROVIDER_CONFIG["qwen"] = (
-                "https://dashscope.aliyuncs.com/compatible-mode/v1", "DASHSCOPE_API_KEY")
-            _oc._PROVIDER_CONFIG["dashscope"] = (
-                "https://dashscope.aliyuncs.com/compatible-mode/v1", "DASHSCOPE_API_KEY")
+            existing = getattr(_oc, "_PROVIDER_CONFIG", {}).get("qwen")
+            if existing == (_MAINLAND_URL, "DASHSCOPE_API_KEY"):
+                return  # already patched to mainland
+            _oc._PROVIDER_CONFIG["qwen"] = (_MAINLAND_URL, "DASHSCOPE_API_KEY")
+            _oc._PROVIDER_CONFIG["dashscope"] = (_MAINLAND_URL, "DASHSCOPE_API_KEY")
             _orig = _factory.create_llm_client
 
             def _patched(provider, model, base_url=None, **kwargs):
