@@ -16,7 +16,6 @@ import json
 from dataclasses import dataclass, field, asdict
 
 from stock_trading_system.utils import get_logger
-from stock_trading_system.data.qwen_provider import QwenProvider
 
 logger = get_logger("screener.v2.nl_parser")
 
@@ -111,7 +110,7 @@ class NLParser:
 
     def __init__(self, config: dict, local_cache=None):
         self._config = config
-        self._qwen = QwenProvider(config)
+        self._llm = None  # lazy via _get_llm()
         self._cache = local_cache
 
     def parse(
@@ -152,13 +151,14 @@ class NLParser:
                 except Exception:
                     pass
 
-        # Qwen call with hard timeout (NL parse should be fast, <10s)
-        if not self._qwen.enabled:
-            logger.info("Qwen disabled; NL parse falls back to raw query keyword")
+        # LLM call with hard timeout (NL parse should be fast, <10s)
+        llm = self._get_llm()
+        if llm is None:
+            logger.info("LLM unavailable; NL parse falls back to raw query keyword")
             return self._fallback_spec(q, market, strategy_hint)
 
         user_prompt = self._build_user_prompt(q, market, strategy_hint)
-        raw = self._call_with_timeout(user_prompt, timeout=15.0)
+        raw = self._call_with_timeout(llm, user_prompt, timeout=15.0)
 
         if not raw:
             return self._fallback_spec(q, market, strategy_hint)
@@ -182,14 +182,36 @@ class NLParser:
         )
         return spec
 
-    def _call_with_timeout(self, user_prompt: str, timeout: float = 15.0) -> dict | None:
-        """Call Qwen with a hard wall-clock timeout (using a worker thread)."""
+    def _get_llm(self):
+        """Lazy-init the LLM text client via the global provider router."""
+        if self._llm is None:
+            try:
+                from stock_trading_system.llm.client import get_text_client
+                self._llm = get_text_client(self._config)
+            except Exception as e:
+                logger.warning("Failed to initialize LLM client: %s", e)
+                return None
+        return self._llm
+
+    def _call_with_timeout(self, llm, user_prompt: str, timeout: float = 15.0) -> dict | None:
+        """Call the active LLM with a hard wall-clock timeout."""
+        import json as _json
         import threading
+
         result_box: dict = {"result": None, "error": None}
 
         def _worker():
             try:
-                result_box["result"] = self._qwen._call(_SYSTEM_PROMPT, user_prompt)  # noqa: SLF001
+                raw_text = llm.chat(
+                    system=_SYSTEM_PROMPT,
+                    user=user_prompt,
+                    json_mode=True,
+                    timeout=int(timeout),
+                )
+                result_box["result"] = _json.loads(raw_text) if raw_text else None
+            except _json.JSONDecodeError as e:
+                logger.warning("LLM returned invalid JSON: %s", e)
+                result_box["result"] = None
             except Exception as e:  # noqa: BLE001
                 result_box["error"] = str(e)
 
@@ -197,10 +219,10 @@ class NLParser:
         t.start()
         t.join(timeout=timeout)
         if t.is_alive():
-            logger.warning("NL parse Qwen call exceeded %.1fs, falling back", timeout)
+            logger.warning("NL parse LLM call exceeded %.1fs, falling back", timeout)
             return None
         if result_box["error"]:
-            logger.warning("NL parse Qwen call failed: %s", result_box["error"])
+            logger.warning("NL parse LLM call failed: %s", result_box["error"])
             return None
         return result_box["result"]
 
@@ -221,7 +243,7 @@ class NLParser:
         if strategy_hint:
             fb.append(strategy_hint)
         return FilterSpec(
-            intent_summary=f"(Qwen 不可用，按关键词降级搜索) {query[:30]}",
+            intent_summary=f"(LLM 不可用，按关键词降级搜索) {query[:30]}",
             market=market,
             target_count=30,
             natural_fallback=fb,

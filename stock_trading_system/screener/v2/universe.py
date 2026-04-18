@@ -12,7 +12,6 @@ FilterSpec is provided.
 from __future__ import annotations
 
 from stock_trading_system.utils import get_logger
-from stock_trading_system.data.qwen_provider import QwenProvider
 from stock_trading_system.screener.v2.nl_parser import FilterSpec
 
 logger = get_logger("screener.v2.universe")
@@ -38,7 +37,8 @@ class UniverseFilter:
 
     def __init__(self, config: dict, data_helper=None):
         self._config = config
-        self._qwen = QwenProvider(config)
+        self._llm = None  # lazy via _get_llm()
+        self._qwen = None  # lazy for screen_stocks data API
         self._data = data_helper
 
     # ── V1.1 main entry ────────────────────────────────────────────────
@@ -51,12 +51,13 @@ class UniverseFilter:
         market = (spec.market or "us").lower()
         target = min(max_universe, max(5, spec.target_count or 30))
 
-        # Layer A — Qwen
-        if self._qwen.enabled:
-            tickers = self._qwen_universe(spec, target, market)
+        # Layer A — LLM (Qwen or Gemini)
+        llm = self._get_llm()
+        if llm is not None:
+            tickers = self._llm_universe(llm, spec, target, market)
             if tickers:
-                return tickers[:max_universe], "qwen"
-            logger.info("Layer A (Qwen) yielded 0 tickers, falling to Layer B")
+                return tickers[:max_universe], "llm"
+            logger.info("Layer A (LLM) yielded 0 tickers, falling to Layer B")
 
         # Layer B — Heuristic narrow over default list
         defaults = _DEFAULT_US if market == "us" else _DEFAULT_CN
@@ -76,27 +77,51 @@ class UniverseFilter:
         defaults = _DEFAULT_US if market == "us" else _DEFAULT_CN
         return defaults[:max_n]
 
-    # ── Layer A: Qwen ─────────────────────────────────────────────────
+    # ── Lazy init ──────────────────────────────────────────────────────
 
-    def _qwen_universe(self, spec: FilterSpec, target: int, market: str) -> list[str]:
-        """Use Qwen web-search to materialize a universe matching the spec.
-
-        Builds a natural-language criteria string from FilterSpec fields
-        and calls QwenProvider.screen_stocks if available, else falls back
-        to a direct Qwen call that returns {tickers: [...]}.
-        """
-        criteria_text = self._spec_to_nl_criteria(spec)
-        logger.info("Qwen universe query: %s", criteria_text[:100])
-
-        # Prefer the existing screen_stocks API if it exists
-        if hasattr(self._qwen, "screen_stocks"):
+    def _get_llm(self):
+        """Lazy-init the LLM text client via the global provider router."""
+        if self._llm is None:
             try:
-                picks = self._qwen.screen_stocks(
+                from stock_trading_system.llm.client import get_text_client
+                self._llm = get_text_client(self._config)
+            except Exception as e:
+                logger.warning("Failed to initialize LLM client: %s", e)
+                return None
+        return self._llm
+
+    def _get_qwen(self):
+        """Lazy-init QwenProvider for screen_stocks data API (not text completion)."""
+        if self._qwen is None:
+            try:
+                from stock_trading_system.data.qwen_provider import QwenProvider
+                self._qwen = QwenProvider(self._config)
+            except Exception:
+                pass
+        return self._qwen
+
+    # ── Layer A: LLM ─────────────────────────────────────────────────
+
+    def _llm_universe(self, llm, spec: FilterSpec, target: int, market: str) -> list[str]:
+        """Use LLM to materialize a universe matching the spec.
+
+        First tries QwenProvider.screen_stocks (data API, Qwen-only),
+        then falls back to a generic LLM call returning {tickers: [...]}.
+        """
+        import json as _json
+
+        criteria_text = self._spec_to_nl_criteria(spec)
+        logger.info("LLM universe query: %s", criteria_text[:100])
+
+        # Prefer QwenProvider.screen_stocks data API when available
+        qwen = self._get_qwen()
+        if qwen and hasattr(qwen, "screen_stocks") and qwen.enabled:
+            try:
+                picks = qwen.screen_stocks(
                     criteria=criteria_text,
                     market=market,
                     count=target,
                 )
-                # screen_stocks returns list of dicts (ticker+meta) or tickers
                 out = []
                 for p in picks or []:
                     if isinstance(p, dict):
@@ -105,23 +130,22 @@ class UniverseFilter:
                             out.append(str(t).upper())
                     elif isinstance(p, str):
                         out.append(p.upper())
-                return out
+                if out:
+                    return out
             except Exception as e:  # noqa: BLE001
-                logger.warning("Qwen screen_stocks failed: %s", e)
+                logger.warning("QwenProvider.screen_stocks failed: %s", e)
 
-        # Fallback: direct call returning {tickers: [...]}
+        # Fallback: generic LLM call returning {tickers: [...]}
         system = (
             "你是股票筛选助手。根据用户的中文筛选条件，返回一组股票代码列表。"
             f"市场: {market.upper()}。返回 JSON: {{\"tickers\": [\"AAPL\", ...]}}, 不含其他文字。"
             f"目标数量约 {target}。只返回真实存在、流动性好的股票代码。"
         )
-        user = criteria_text
         try:
-            data = self._qwen._call(system, user)  # noqa: SLF001
+            raw_text = llm.chat(system=system, user=criteria_text, json_mode=True, timeout=30)
+            data = _json.loads(raw_text) if raw_text else {}
         except Exception as e:  # noqa: BLE001
-            logger.warning("Qwen direct universe call failed: %s", e)
-            return []
-        if not data:
+            logger.warning("LLM universe call failed: %s", e)
             return []
         raw = data.get("tickers") or data.get("stocks") or []
         return [str(t).upper() for t in raw if t]
