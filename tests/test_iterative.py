@@ -547,3 +547,204 @@ class TestPS4_GetAllActive:
         assert "trader" in active
         assert active["market_analyst"]["prompt_type"] == "system_prompt"
         assert active["trader"]["prompt_type"] == "prompt_prefix"
+
+
+# ═══════════════════════════════════════════════════════════════════
+# MA: Meta Agent tests (Phase 3)
+# ═══════════════════════════════════════════════════════════════════
+
+from stock_trading_system.agents.iterative.meta_agent import (
+    MetaAgent,
+    extract_prompt,
+    extract_reasoning,
+)
+
+
+@pytest.fixture()
+def meta_agent(db_path):
+    """Create a MetaAgent with seeded scorecard data and a mock LLM."""
+    _seed_varied_returns(db_path)
+    iter_config = IterationConfig(
+        enabled=True,
+        scorer=ScorerConfig(min_samples=2),
+        meta=__import__(
+            "stock_trading_system.agents.iterative.config", fromlist=["MetaConfig"]
+        ).MetaConfig(enabled=True, ab_test_days=5),
+    )
+    scorer = AgentScorer(db_path, iter_config)
+    prompt_store = PromptStore(db_path)
+    mock_llm = MagicMock(return_value=(
+        "---NEW_PROMPT---\nYou are an improved analyst focusing on confirmation.\n"
+        "---END_PROMPT---\n---REASONING---\nAdded confirmation requirement for signals.\n"
+    ))
+    return MetaAgent(
+        scorer=scorer,
+        prompt_store=prompt_store,
+        config=iter_config,
+        llm_call=mock_llm,
+    )
+
+
+class TestMA1_FindWorstAgent:
+    """MA-1: Find the agent with the lowest Sharpe."""
+
+    def test_worst_is_lowest_sharpe(self, meta_agent):
+        result = meta_agent.run_weekly()
+        assert result["status"] == "ok"
+        # bear_researcher has the worst returns in our seed data
+        assert result["worst_agent"] == "bear_researcher"
+
+
+class TestMA2_GenerateImprovedPrompt:
+    """MA-2: LLM generates a prompt with NEW_PROMPT + REASONING markers."""
+
+    def test_generates_new_prompt(self, meta_agent):
+        result = meta_agent.run_weekly()
+        assert result["status"] == "ok"
+        assert result["version_id"] > 0
+        assert result["reasoning"] is not None
+
+    def test_extract_prompt_from_response(self):
+        raw = (
+            "Some preamble\n"
+            "---NEW_PROMPT---\nImproved prompt text here.\n---END_PROMPT---\n"
+            "---REASONING---\nBecause the old one was bad.\n"
+        )
+        assert extract_prompt(raw) == "Improved prompt text here."
+        assert extract_reasoning(raw) == "Because the old one was bad."
+
+    def test_extract_prompt_missing(self):
+        assert extract_prompt("No markers here") is None
+
+    def test_extract_reasoning_missing(self):
+        assert extract_reasoning("No markers here") is None
+
+
+class TestMA3_CreateABSessions:
+    """MA-3: A/B paper trade sessions are created when session_store is available."""
+
+    def test_creates_sessions_with_store(self, db_path):
+        _seed_varied_returns(db_path)
+        from stock_trading_system.agents.iterative.config import MetaConfig
+        iter_config = IterationConfig(
+            enabled=True,
+            scorer=ScorerConfig(min_samples=2),
+            meta=MetaConfig(enabled=True, ab_test_days=5),
+        )
+        scorer = AgentScorer(db_path, iter_config)
+        prompt_store = PromptStore(db_path)
+
+        mock_llm = MagicMock(return_value=(
+            "---NEW_PROMPT---\nNew prompt\n---END_PROMPT---\n"
+            "---REASONING---\nReason\n"
+        ))
+        mock_session_store = MagicMock()
+        mock_session_store.create_session.return_value = 99
+        mock_session_store.list_sessions.return_value = []
+
+        meta = MetaAgent(
+            scorer=scorer, prompt_store=prompt_store,
+            config=iter_config, llm_call=mock_llm,
+            session_store=mock_session_store,
+        )
+        result = meta.run_weekly()
+        assert result["status"] == "ok"
+        assert result["ab_session_id"] == 99
+        assert mock_session_store.create_session.call_count == 2  # baseline + test
+
+    def test_no_sessions_without_store(self, meta_agent):
+        result = meta_agent.run_weekly()
+        assert result["ab_session_id"] is None
+
+
+class TestMA4_SettleActivate:
+    """MA-4: Sharpe improvement → activate the prompt version."""
+
+    def test_sharpe_improved_activates(self, db_path):
+        prompt_store = PromptStore(db_path)
+        vid = prompt_store.save_version("market_analyst", "new prompt", source="meta_agent")
+        # Manually set to testing with session IDs
+        prompt_store.start_testing(vid, ab_session_id=10, baseline_session_id=11)
+        # Backdate created_at so it's past ab_test_days
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "UPDATE prompt_versions SET created_at = '2026-01-01 00:00:00' WHERE id = ?",
+            (vid,),
+        )
+        conn.commit()
+        conn.close()
+
+        iter_config = IterationConfig(
+            enabled=True,
+            scorer=ScorerConfig(min_samples=2),
+            meta=__import__(
+                "stock_trading_system.agents.iterative.config", fromlist=["MetaConfig"]
+            ).MetaConfig(enabled=True, ab_test_days=5),
+        )
+        scorer = AgentScorer(db_path, iter_config)
+
+        mock_session_store = MagicMock()
+        # Test session has better Sharpe than baseline
+        mock_session_store.list_trades.return_value = []
+        mock_session_store.list_equity.side_effect = [
+            # baseline equity
+            [{"total_value": 100000}, {"total_value": 100500}],
+            # test equity (better performance)
+            [{"total_value": 100000}, {"total_value": 102000}],
+        ]
+
+        meta = MetaAgent(
+            scorer=scorer, prompt_store=prompt_store,
+            config=iter_config, session_store=mock_session_store,
+        )
+        settlements = meta.settle_ab_tests()
+        assert len(settlements) == 1
+        assert settlements[0]["decision"] == "activated"
+
+        version = prompt_store.get_version(vid)
+        assert version["status"] == "active"
+
+
+class TestMA5_SettleRetire:
+    """MA-5: No Sharpe improvement → retire the prompt version."""
+
+    def test_no_improvement_retires(self, db_path):
+        prompt_store = PromptStore(db_path)
+        vid = prompt_store.save_version("trader", "worse prompt", source="meta_agent")
+        prompt_store.start_testing(vid, ab_session_id=20, baseline_session_id=21)
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "UPDATE prompt_versions SET created_at = '2026-01-01 00:00:00' WHERE id = ?",
+            (vid,),
+        )
+        conn.commit()
+        conn.close()
+
+        iter_config = IterationConfig(
+            enabled=True,
+            scorer=ScorerConfig(min_samples=2),
+            meta=__import__(
+                "stock_trading_system.agents.iterative.config", fromlist=["MetaConfig"]
+            ).MetaConfig(enabled=True, ab_test_days=5),
+        )
+        scorer = AgentScorer(db_path, iter_config)
+
+        mock_session_store = MagicMock()
+        mock_session_store.list_trades.return_value = []
+        mock_session_store.list_equity.side_effect = [
+            # baseline equity (better)
+            [{"total_value": 100000}, {"total_value": 103000}],
+            # test equity (worse)
+            [{"total_value": 100000}, {"total_value": 100200}],
+        ]
+
+        meta = MetaAgent(
+            scorer=scorer, prompt_store=prompt_store,
+            config=iter_config, session_store=mock_session_store,
+        )
+        settlements = meta.settle_ab_tests()
+        assert len(settlements) == 1
+        assert settlements[0]["decision"] == "retired"
+
+        version = prompt_store.get_version(vid)
+        assert version["status"] == "retired"
