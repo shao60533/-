@@ -3,6 +3,7 @@
 | 日期 | 版本 | 变更内容 | 关联文件 | 关联 Commit |
 |------|------|---------|---------|-------------|
 | 2026-04-12 | v2.0 | 初版 PRD，定义 9 大页面功能、P0/P1/P2 需求矩阵、后端 API 规格、成功指标 | [v2.0-stock-trading-system.md](v2.0-stock-trading-system.md) | — |
+| 2026-04-18 | v1.0 | 全局模型切换（Qwen ↔ Gemini）：推理层一键切换 + Nav 下拉 UI + env 锁定态 + 目标 key 校验 | [model-switch.md](model-switch.md) | — |
 
 ## 待跟进
 - P2 需求（R-2.1 ~ R-2.8）尚未排期

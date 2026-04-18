@@ -5,6 +5,7 @@
 | 2026-04-14 | [v2.0-manual-test-cases.md](v2.0-manual-test-cases.md) | v1.0 | 151 | 初版测试用例：后端 API(42) + 前端页面(47) + 移动端(12) + WebSocket(8) + 状态(10) + 图表(8) + Toast(4) + 跨页面(4) + 异常(9) + 性能(7) | PRD v2.0 + 技术方案 v1.0 |
 | 2026-04-15 | [architecture-upgrade.md](architecture-upgrade.md) | v1.0 | 204 | 架构升级测试用例：TaskManager(51) + LocalCache(18) + DataRouter(17) + Qwen 扩展(16) + TV Widget(16) + 回测(16) + 任务中心 UI(19) + WebSocket(6) + 性能(12) + 幂等(5) + 异常(10) + 回归(8) | 架构升级方案 |
 | 2026-04-15 | [screener-v2.md](screener-v2.md) | v1.0 | 110 | 选股 V2 测试用例：单元测试(56) + 集成(18) + 前端(20) + 回归(8) + 性能(8) | 选股 V2 技术方案 |
+| 2026-04-18 | [model-switch.md](model-switch.md) | v1.0 | 66 | 模型切换测试用例：单元(22: resolver 12 + client 4 + config 6) + 集成(11: analyzer 6 + screener 5) + API(10) + 前端(7) + 异常(8) + 回归(5) + 性能(3) | 模型切换技术方案 |
 
 ## 用例总数汇总
 
@@ -13,7 +14,8 @@
 | V2.0 手动测试用例 | 151 |
 | 架构升级测试用例 | 204 |
 | 选股 V2 测试用例 | 110 |
-| **总计** | **465** |
+| 模型切换测试用例 | 66 |
+| **总计** | **531** |
 
 ## 覆盖状态
 
