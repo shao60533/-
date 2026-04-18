@@ -2,8 +2,8 @@
 
 | 日期 | 文档 | 版本 | 变更内容 | 关联 Commit |
 |------|------|------|---------|-------------|
-| 2026-04-18 | [model-switch.md](model-switch.md) | v1.0 | 全局模型切换：新建 `stock_trading_system/llm/` 模块（router + client + constants），analyzer graph 按 provider 缓存，screener V2 call site 改用 LLMTextClient 抽象，Nav 下拉 + `/api/settings/llm-provider` GET/POST | — |
-| 2026-04-18 | [self-iterating-agents.md](self-iterating-agents.md) | v3.0 | 自我迭代能力模块（包裹 TradingAgents）：最大化复用版。Agent Scorer(唯一核心新模块) + Darwinian 权重(采用 atlas-elenchus 常量) + Meta Agent(采用 atlas MUTATOR_SYSTEM_PROMPT) + A/B 验证复用 paper trade sessions。仅 2 张新表 | — |
+| 2026-04-18 | [model-switch.md](model-switch.md) | v1.0 | 全局模型切换：新建 `stock_trading_system/llm/` 模块（router + client + constants），analyzer graph 按 provider 缓存，screener V2 call site 改用 LLMTextClient 抽象，Nav 下拉 + `/api/settings/llm-provider` GET/POST | `f682855` (P1), `dffbab4` (P2), `a549b90` (P3), `e21f6ac` (P4) |
+| 2026-04-18 | [self-iterating-agents.md](self-iterating-agents.md) | v3.0 | 自我迭代能力模块（包裹 TradingAgents）：最大化复用版。Agent Scorer(唯一核心新模块) + Darwinian 权重(采用 atlas-elenchus 常量) + Meta Agent(采用 atlas MUTATOR_SYSTEM_PROMPT) + A/B 验证复用 paper trade sessions。仅 2 张新表 | `e083788` |
 | 2026-04-18 | [batch-analyze-holdings.md](batch-analyze-holdings.md) | v1.0 | 一键持仓分析方案：batch_analysis worker + 逐只推送 + 跳过近期 + 进度面板 | — |
 | 2026-04-12 | [ui-ux-redesign.md](ui-ux-redesign.md) | v1.0 | 初版 UI/UX 重设计方案：9 页面线框图、移动端适配、组件规范（8 大类） | — |
 | 2026-04-12 | [technical-design.md](technical-design.md) | v1.0 | 初版技术方案：前端改造 + 后端 API 补全 + 回测引擎 + PRD 追踪矩阵 | — |
