@@ -109,6 +109,24 @@ class PortfolioDatabase:
                 CREATE INDEX IF NOT EXISTS idx_sc_backfill
                     ON agent_scorecards(date)
                     WHERE return_5d IS NULL AND price_at_call IS NOT NULL;
+
+                CREATE TABLE IF NOT EXISTS prompt_versions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    agent_id TEXT NOT NULL,
+                    prompt_text TEXT NOT NULL,
+                    prompt_type TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    reasoning TEXT,
+                    status TEXT DEFAULT 'candidate',
+                    ab_session_id INTEGER,
+                    baseline_session_id INTEGER,
+                    sharpe_before REAL,
+                    sharpe_after REAL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_pv_agent_status
+                    ON prompt_versions(agent_id, status);
             """)
 
     # ── Positions ────────────────────────────────────────────────────────

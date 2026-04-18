@@ -144,6 +144,12 @@ class StockAnalyzer:
             ta_config["backend_url"] = None
             logger.info("Using Gemini LLM provider (model=%s)", ta_config["quick_think_llm"])
 
+        # Inject active prompt overrides from prompt_store (Phase 2)
+        if self._iteration_enabled:
+            agent_prompts = self._load_active_prompts()
+            if agent_prompts:
+                ta_config["agent_prompts"] = agent_prompts
+
         self._graph = TradingAgentsGraph(
             selected_analysts=["market", "social", "news", "fundamentals"],
             debug=True,
@@ -242,6 +248,30 @@ class StockAnalyzer:
         except Exception as e:
             logger.warning("Could not load weight context: %s", e)
             return ""
+
+    def _load_active_prompts(self) -> dict[str, dict[str, str]]:
+        """Load active prompt overrides from the prompt_versions table.
+
+        Returns a dict suitable for ta_config["agent_prompts"]:
+          {agent_id: {"system_prompt": ...} | {"prompt_prefix": ...}}
+        """
+        try:
+            from stock_trading_system.agents.iterative.prompt_store import PromptStore
+
+            db_path = self._config.get("portfolio", {}).get("db_path", "data/portfolio.db")
+            store = PromptStore(db_path)
+            active = store.get_all_active_prompts()
+            if not active:
+                return {}
+
+            result: dict[str, dict[str, str]] = {}
+            for agent_id, row in active.items():
+                prompt_type = row.get("prompt_type", "system_prompt")
+                result[agent_id] = {prompt_type: row["prompt_text"]}
+            return result
+        except Exception as e:
+            logger.warning("Could not load active prompts: %s", e)
+            return {}
 
     def quick_screen(self, ticker: str, date: str) -> str:
         """Quick analysis returning just the signal (for batch screening).

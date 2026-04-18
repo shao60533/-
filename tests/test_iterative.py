@@ -1,9 +1,10 @@
-"""Tests for the self-iterating agent module (Phase 1).
+"""Tests for the self-iterating agent module (Phase 1 + Phase 2).
 
 Test IDs follow the spec (docs/design/self-iterating-agents.md §12):
   IS-1 ~ IS-8  : Agent Scorer
   DW-1 ~ DW-5  : Darwinian weights
   REG-1 ~ REG-3: Regression
+  PS-1 ~ PS-4  : Prompt Store (Phase 2)
 """
 
 from __future__ import annotations
@@ -42,7 +43,7 @@ from stock_trading_system.agents.iterative.darwinian import (
 
 @pytest.fixture()
 def db_path(tmp_path):
-    """Create a temporary SQLite DB with the agent_scorecards table."""
+    """Create a temporary SQLite DB with the agent_scorecards + prompt_versions tables."""
     path = str(tmp_path / "test.db")
     conn = sqlite3.connect(path)
     conn.executescript("""
@@ -61,6 +62,22 @@ def db_path(tmp_path):
             created_at TEXT NOT NULL
         );
         CREATE INDEX idx_sc_agent_date ON agent_scorecards(agent_id, date DESC);
+
+        CREATE TABLE prompt_versions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            agent_id TEXT NOT NULL,
+            prompt_text TEXT NOT NULL,
+            prompt_type TEXT NOT NULL,
+            source TEXT NOT NULL,
+            reasoning TEXT,
+            status TEXT DEFAULT 'candidate',
+            ab_session_id INTEGER,
+            baseline_session_id INTEGER,
+            sharpe_before REAL,
+            sharpe_after REAL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_pv_agent_status ON prompt_versions(agent_id, status);
     """)
     conn.close()
     return path
@@ -436,3 +453,96 @@ def _seed_varied_returns(db_path: str) -> None:
 def _seed_varied_returns_for_scorer(scorer: AgentScorer) -> None:
     """Seed returns via the scorer's DB so get_all_agent_metrics works."""
     _seed_varied_returns(scorer._db_path)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# PS: Prompt Store tests (Phase 2)
+# ═══════════════════════════════════════════════════════════════════
+
+from stock_trading_system.agents.iterative.prompt_store import PromptStore
+
+
+class TestPS1_SaveAndRetrieve:
+    """PS-1: Save a prompt version and retrieve it."""
+
+    def test_save_and_get(self, db_path):
+        store = PromptStore(db_path)
+        vid = store.save_version(
+            agent_id="market_analyst",
+            prompt_text="You are an improved market analyst...",
+            prompt_type="system_prompt",
+            source="meta_agent",
+            reasoning="Added confirmation requirements",
+        )
+        assert vid > 0
+
+        version = store.get_version(vid)
+        assert version["agent_id"] == "market_analyst"
+        assert version["status"] == "candidate"
+        assert version["prompt_type"] == "system_prompt"
+
+
+class TestPS2_ActivateAndRetire:
+    """PS-2: Activating a version retires the previous active one."""
+
+    def test_activate_retires_old(self, db_path):
+        store = PromptStore(db_path)
+        v1 = store.save_version("market_analyst", "prompt v1", source="manual")
+        store.activate_version(v1)
+        assert store.get_version(v1)["status"] == "active"
+
+        v2 = store.save_version("market_analyst", "prompt v2", source="meta_agent")
+        store.activate_version(v2)
+        assert store.get_version(v2)["status"] == "active"
+        assert store.get_version(v1)["status"] == "retired"
+
+    def test_get_active_prompt(self, db_path):
+        store = PromptStore(db_path)
+        vid = store.save_version("news_analyst", "better news prompt", source="manual")
+        store.activate_version(vid)
+        active = store.get_active_prompt("news_analyst")
+        assert active is not None
+        assert active["prompt_text"] == "better news prompt"
+
+    def test_no_active_returns_none(self, db_path):
+        store = PromptStore(db_path)
+        assert store.get_active_prompt("nonexistent") is None
+
+
+class TestPS3_ABTesting:
+    """PS-3: A/B testing lifecycle."""
+
+    def test_testing_workflow(self, db_path):
+        store = PromptStore(db_path)
+        vid = store.save_version("trader", "improved trader prompt", source="meta_agent")
+        store.start_testing(vid, ab_session_id=42, baseline_session_id=41)
+
+        version = store.get_version(vid)
+        assert version["status"] == "testing"
+        assert version["ab_session_id"] == 42
+
+        testing = store.get_testing_versions()
+        assert len(testing) == 1
+
+        # Simulate positive result → activate
+        store.update_version(vid, sharpe_before=0.5, sharpe_after=0.8)
+        store.activate_version(vid)
+        assert store.get_version(vid)["status"] == "active"
+        assert store.get_version(vid)["sharpe_after"] == 0.8
+
+
+class TestPS4_GetAllActive:
+    """PS-4: get_all_active_prompts returns prompts for all agents."""
+
+    def test_multiple_agents(self, db_path):
+        store = PromptStore(db_path)
+        v1 = store.save_version("market_analyst", "market v1", prompt_type="system_prompt", source="manual")
+        v2 = store.save_version("trader", "trader v1", prompt_type="prompt_prefix", source="manual")
+        store.activate_version(v1)
+        store.activate_version(v2)
+
+        active = store.get_all_active_prompts()
+        assert "market_analyst" in active
+        assert "trader" in active
+        assert active["market_analyst"]["prompt_type"] == "system_prompt"
+        assert active["trader"]["prompt_type"] == "prompt_prefix"
