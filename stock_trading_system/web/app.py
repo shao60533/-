@@ -1451,6 +1451,62 @@ def create_app(config_path=None):
             logger.error("Failed to load iteration agents: %s", e)
             return jsonify({"error": str(e)}), 500
 
+    @app.route("/api/iteration/meta/run", methods=["POST"])
+    def api_iteration_meta_run():
+        """Trigger a Meta Agent mutation cycle (or settle A/B tests)."""
+        try:
+            from stock_trading_system.agents.iterative.config import load_iteration_config
+            from stock_trading_system.agents.iterative.agent_scorer import AgentScorer
+            from stock_trading_system.agents.iterative.prompt_store import PromptStore
+            from stock_trading_system.agents.iterative.meta_agent import MetaAgent
+
+            cfg = get_config()
+            iter_config = load_iteration_config(cfg.get("iteration", {}))
+            db_path = cfg.get("portfolio", {}).get("db_path", "data/portfolio.db")
+            scorer = AgentScorer(db_path, iter_config)
+            prompt_store = PromptStore(db_path)
+
+            session_store = None
+            try:
+                from stock_trading_system.strategy.paper_trader.session_store import SessionStore
+                session_store = SessionStore(db_path)
+            except Exception:
+                pass
+
+            meta = MetaAgent(
+                scorer=scorer, prompt_store=prompt_store,
+                config=iter_config, session_store=session_store,
+            )
+
+            data = request.get_json(silent=True) or {}
+            action = data.get("action", "mutate")
+
+            if action == "settle":
+                results = meta.settle_ab_tests()
+                return jsonify({"action": "settle", "results": results})
+
+            result = meta.run_weekly()
+            return jsonify(result)
+        except Exception as e:
+            logger.error("Meta agent run failed: %s", e)
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/iteration/prompts", methods=["GET"])
+    def api_iteration_prompts():
+        """Return prompt version history."""
+        try:
+            from stock_trading_system.agents.iterative.prompt_store import PromptStore
+
+            cfg = get_config()
+            db_path = cfg.get("portfolio", {}).get("db_path", "data/portfolio.db")
+            store = PromptStore(db_path)
+            agent_id = request.args.get("agent_id")
+            history = store.get_history(agent_id=agent_id, limit=50)
+            return jsonify({"prompts": history})
+        except Exception as e:
+            logger.error("Failed to load prompt history: %s", e)
+            return jsonify({"error": str(e)}), 500
+
     # ── Seed Data ───────────────────────────────────────────────────────
 
     @app.route("/api/seed", methods=["POST"])

@@ -183,6 +183,65 @@ def make_score_update_worker(get_router):
     return worker
 
 
+def make_meta_evolution_worker():
+    """Factory for the weekly meta agent evolution worker.
+
+    Runs: find worst agent → generate improved prompt → create A/B sessions.
+    Optionally settles mature A/B tests.
+    """
+    def worker(params: dict, progress_cb: ProgressCb) -> dict:
+        from stock_trading_system.config import get_config
+        from stock_trading_system.agents.iterative.config import load_iteration_config
+        from stock_trading_system.agents.iterative.agent_scorer import AgentScorer
+        from stock_trading_system.agents.iterative.prompt_store import PromptStore
+        from stock_trading_system.agents.iterative.meta_agent import MetaAgent
+
+        cfg = get_config()
+        iter_config = load_iteration_config(cfg.get("iteration", {}))
+        if not iter_config.enabled or not iter_config.meta.enabled:
+            return {"status": "skipped", "reason": "iteration or meta not enabled"}
+
+        db_path = cfg.get("portfolio", {}).get("db_path", "data/portfolio.db")
+        scorer = AgentScorer(db_path, iter_config)
+        prompt_store = PromptStore(db_path)
+
+        # Try to get session store for A/B testing
+        session_store = None
+        try:
+            from stock_trading_system.strategy.paper_trader.session_store import SessionStore
+            session_store = SessionStore(db_path)
+        except Exception:
+            pass
+
+        meta = MetaAgent(
+            scorer=scorer,
+            prompt_store=prompt_store,
+            config=iter_config,
+            session_store=session_store,
+        )
+
+        action = params.get("action", "mutate")
+
+        if action == "settle":
+            progress_cb(30, "结算 A/B 测试")
+            settlements = meta.settle_ab_tests()
+            return {"status": "ok", "action": "settle", "settlements": settlements}
+
+        # Default: run mutation
+        progress_cb(30, "查找最差 Agent")
+        progress_cb(50, "生成改进 Prompt")
+        result = meta.run_weekly()
+
+        # Also settle any mature tests
+        progress_cb(80, "结算成熟的 A/B 测试")
+        settlements = meta.settle_ab_tests()
+        result["settlements"] = settlements
+
+        return result
+
+    return worker
+
+
 # ── Screen worker ─────────────────────────────────────────────────────────────
 
 
@@ -561,6 +620,9 @@ def register_default_workers(tm, deps: WorkerDeps) -> None:
     # ── Agent score update (daily backfill + Darwinian weights) ──
     if deps.get_router:
         tm.register("agent_score_update", make_score_update_worker(deps.get_router))
+
+    # ── Meta Agent evolution (weekly prompt mutation + A/B settlement) ──
+    tm.register("meta_evolution", make_meta_evolution_worker())
 
 
 # ─────────────────────────────────────────────────────────────────

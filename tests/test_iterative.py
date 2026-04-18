@@ -1,10 +1,11 @@
-"""Tests for the self-iterating agent module (Phase 1 + Phase 2).
+"""Tests for the self-iterating agent module (Phase 1 + Phase 2 + Phase 3).
 
 Test IDs follow the spec (docs/design/self-iterating-agents.md §12):
   IS-1 ~ IS-8  : Agent Scorer
   DW-1 ~ DW-5  : Darwinian weights
   REG-1 ~ REG-3: Regression
   PS-1 ~ PS-4  : Prompt Store (Phase 2)
+  MA-1 ~ MA-5  : Meta Agent (Phase 3)
 """
 
 from __future__ import annotations
