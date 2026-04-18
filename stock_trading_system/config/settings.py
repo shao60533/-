@@ -40,6 +40,7 @@ def _apply_env_overrides(config: dict) -> dict:
         EMAIL_TO              -> config["alerts"]["email"]["to_address"]
     """
     env_map = {
+        "LLM_PROVIDER": ("llm_provider",),
         "GEMINI_API_KEY": ("gemini", "api_key"),
         "GEMINI_MODEL": ("gemini", "model"),
         "POLYGON_API_KEY": ("polygon", "api_key"),

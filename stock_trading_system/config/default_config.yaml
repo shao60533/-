@@ -1,3 +1,5 @@
+llm_provider: null   # null -> legacy auto-detect; "qwen" | "gemini" -> force
+
 gemini:
   api_key: ""
   model: "gemini-2.5-flash"
