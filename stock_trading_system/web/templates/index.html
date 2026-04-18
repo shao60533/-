@@ -82,8 +82,18 @@
                 </a>
             </li>
         </ul>
-        <div class="sidebar-footer">
-            <span class="status-dot ok"></span> <span id="bot-status">Qwen 在线</span>
+        <div class="sidebar-footer" style="flex-direction:column;gap:6px;">
+            <div class="llm-switcher" style="display:flex;align-items:center;gap:6px;width:100%;">
+                <label style="font-size:11px;color:var(--text-secondary);white-space:nowrap;">模型</label>
+                <select id="llm-provider-select" style="flex:1;font-size:12px;padding:2px 4px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;">
+                    <option value="qwen">Qwen</option>
+                    <option value="gemini">Gemini</option>
+                </select>
+                <span class="llm-lock-icon" id="llm-lock-icon" style="display:none;font-size:12px;" title="由环境变量 LLM_PROVIDER 锁定">🔒</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:4px;">
+                <span class="status-dot ok"></span> <span id="bot-status">在线</span>
+            </div>
         </div>
     </nav>
 
@@ -1119,6 +1129,7 @@
     <!-- TradingView Advanced Chart Widget (free, requires Powered-by attribution) -->
     <script src="https://s3.tradingview.com/tv.js" onerror="window.__tvLoadFailed=true"></script>
     <script src="/static/js/tv_symbol.js"></script>
+    <script src="/static/js/llm-switcher.js?v=20260418"></script>
     <script src="/static/js/app.js?v=20260418"></script>
 
     <!-- Batch Analysis Confirm Modal -->
