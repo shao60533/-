@@ -687,10 +687,12 @@ class TestMA4_SettleActivate:
         # Test session has better Sharpe than baseline
         mock_session_store.list_trades.return_value = []
         mock_session_store.list_equity.side_effect = [
-            # baseline equity
-            [{"total_value": 100000}, {"total_value": 100500}],
-            # test equity (better performance)
-            [{"total_value": 100000}, {"total_value": 102000}],
+            # baseline equity (small, mixed returns → low Sharpe)
+            [{"total_value": 100000}, {"total_value": 100200},
+             {"total_value": 99800}, {"total_value": 100100}],
+            # test equity (consistently positive → high Sharpe)
+            [{"total_value": 100000}, {"total_value": 101000},
+             {"total_value": 102000}, {"total_value": 103000}],
         ]
 
         meta = MetaAgent(
@@ -732,10 +734,12 @@ class TestMA5_SettleRetire:
         mock_session_store = MagicMock()
         mock_session_store.list_trades.return_value = []
         mock_session_store.list_equity.side_effect = [
-            # baseline equity (better)
-            [{"total_value": 100000}, {"total_value": 103000}],
-            # test equity (worse)
-            [{"total_value": 100000}, {"total_value": 100200}],
+            # baseline equity (consistently positive → high Sharpe)
+            [{"total_value": 100000}, {"total_value": 101000},
+             {"total_value": 102000}, {"total_value": 103000}],
+            # test equity (mixed returns → low Sharpe)
+            [{"total_value": 100000}, {"total_value": 100200},
+             {"total_value": 99800}, {"total_value": 100100}],
         ]
 
         meta = MetaAgent(
