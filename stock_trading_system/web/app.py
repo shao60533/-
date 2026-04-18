@@ -1399,6 +1399,61 @@ def create_app(config_path=None):
         sched = _get_cleanup_scheduler()
         return jsonify(sched.run_once())
 
+    # ── LLM Provider Switch ──────────────────────────────────────────
+
+    @app.route("/api/settings/llm-provider", methods=["GET"])
+    def get_llm_provider():
+        """Return current LLM provider, key status, and env lock state."""
+        from stock_trading_system.llm.router import (
+            get_active_provider, has_provider_key, is_provider_locked_by_env,
+        )
+        cfg = get_config()
+        return jsonify({
+            "active": get_active_provider(cfg),
+            "has_qwen_key": has_provider_key(cfg, "qwen"),
+            "has_gemini_key": has_provider_key(cfg, "gemini"),
+            "locked_by_env": is_provider_locked_by_env(),
+        })
+
+    @app.route("/api/settings/llm-provider", methods=["POST"])
+    def set_llm_provider():
+        """Switch the active LLM provider (persisted to config.yaml)."""
+        from stock_trading_system.llm.router import (
+            is_provider_locked_by_env, has_provider_key,
+        )
+        from stock_trading_system.llm.constants import VALID_PROVIDERS
+
+        if is_provider_locked_by_env():
+            return jsonify({
+                "reason": "locked_by_env",
+                "message": "LLM_PROVIDER 已由环境变量锁定，请取消 env 设置后重试",
+            }), 409
+
+        body = request.get_json(silent=True) or {}
+        provider = (body.get("provider") or "").strip().lower()
+        if provider not in VALID_PROVIDERS:
+            return jsonify({
+                "reason": "invalid_provider",
+                "message": f"provider 必须是 {sorted(VALID_PROVIDERS)} 之一",
+            }), 400
+
+        cfg = get_config()
+        if not has_provider_key(cfg, provider):
+            label = "Qwen" if provider == "qwen" else "Gemini"
+            envname = "DASHSCOPE_API_KEY" if provider == "qwen" else "GEMINI_API_KEY"
+            return jsonify({
+                "reason": "missing_api_key",
+                "message": (
+                    f"{label} 未配置 API key，请在 ~/.stock_trading/config.yaml "
+                    f"或环境变量 {envname} 中设置"
+                ),
+            }), 400
+
+        save_config({"llm_provider": provider})
+        logger.info("LLM provider switched to %s via UI", provider)
+
+        return jsonify({"active": provider, "source": "user_config"})
+
     # ── Diagnostics (Railway / cloud deployment) ────────────────────────
 
     @app.route("/api/diagnostics/providers", methods=["GET"])
