@@ -6,6 +6,7 @@
 | 2026-04-15 | [architecture-upgrade.md](architecture-upgrade.md) | v1.0 | 204 | 架构升级测试用例：TaskManager(51) + LocalCache(18) + DataRouter(17) + Qwen 扩展(16) + TV Widget(16) + 回测(16) + 任务中心 UI(19) + WebSocket(6) + 性能(12) + 幂等(5) + 异常(10) + 回归(8) | 架构升级方案 |
 | 2026-04-15 | [screener-v2.md](screener-v2.md) | v1.0 | 110 | 选股 V2 测试用例：单元测试(56) + 集成(18) + 前端(20) + 回归(8) + 性能(8) | 选股 V2 技术方案 |
 | 2026-04-18 | [model-switch.md](model-switch.md) | v1.0 | 66 | 模型切换测试用例：单元(22: resolver 12 + client 4 + config 6) + 集成(11: analyzer 6 + screener 5) + API(10) + 前端(7) + 异常(8) + 回归(5) + 性能(3) | 模型切换技术方案 |
+| 2026-04-18 | [mobile-optimization.md](mobile-optimization.md) | v1.0 | 82 | 移动端优化测试用例：通用组件单元(12) + 断点矩阵 11 页×3 断点(33) + 可达性(8) + 表格卡片降级(5) + 横滑(4) + 折叠行(5) + 性能 Lighthouse(4) + 桌面回归(6) + 真机(5) | 移动端优化技术方案 |
 
 ## 用例总数汇总
 
@@ -15,7 +16,8 @@
 | 架构升级测试用例 | 204 |
 | 选股 V2 测试用例 | 110 |
 | 模型切换测试用例 | 66 |
-| **总计** | **531** |
+| 移动端优化测试用例 | 82 |
+| **总计** | **613** |
 
 ## 覆盖状态
 
