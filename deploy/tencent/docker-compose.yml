@@ -1,0 +1,22 @@
+services:
+  app:
+    build:
+      context: ../..
+      dockerfile: deploy/tencent/Dockerfile
+    image: stock-trading-system:latest
+    container_name: stock-trading-system
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    env_file:
+      - .env
+    volumes:
+      - /opt/stock-trading-system/data:/app/data
+    mem_limit: 800m
+    memswap_limit: 800m
+    cpus: "1.5"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
