@@ -15,6 +15,7 @@ Data is fetched automatically by TradingAgents (yfinance + Alpha Vantage).
 from __future__ import annotations
 
 import os
+import threading
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -43,6 +44,8 @@ class StockAnalyzer:
     def __init__(self, config: dict):
         self._config = config
         self._graph = None
+        self._graphs: dict[str, Any] = {}
+        self._graph_lock = threading.Lock()
 
     @staticmethod
     def _patch_tradingagents_qwen():
@@ -79,86 +82,99 @@ class StockAnalyzer:
             logger.warning("Failed to patch TradingAgents for Qwen: %s", e)
 
     def _init_graph(self):
-        """Lazy-init TradingAgents graph."""
-        if self._graph is not None:
-            return
+        """Lazy-init TradingAgents graph, cached per provider."""
+        from stock_trading_system.llm.router import get_active_provider
 
-        self._patch_tradingagents_qwen()
+        provider = get_active_provider(self._config)
 
-        from tradingagents.graph.trading_graph import TradingAgentsGraph
-        from tradingagents.default_config import DEFAULT_CONFIG
+        with self._graph_lock:
+            if provider in self._graphs:
+                self._graph = self._graphs[provider]
+                return
 
-        ta_config = DEFAULT_CONFIG.copy()
-        ta_config["output_language"] = "Chinese"
-        ta_config["llm_timeout"] = 120
+            self._patch_tradingagents_qwen()
 
-        qwen_config = self._config.get("qwen", {})
-        gemini_config = self._config.get("gemini", {})
+            from tradingagents.graph.trading_graph import TradingAgentsGraph
+            from tradingagents.default_config import DEFAULT_CONFIG
 
-        qwen_key = qwen_config.get("api_key", "")
-        gemini_key = gemini_config.get("api_key", "")
+            ta_config = DEFAULT_CONFIG.copy()
+            ta_config["output_language"] = "Chinese"
+            ta_config["llm_timeout"] = 120
 
-        if qwen_key:
-            # ── Qwen / DashScope (OpenAI-compatible) ──────────────────────────
-            os.environ["DASHSCOPE_API_KEY"] = qwen_key
-            model = qwen_config.get("model", "qwen-plus")
-            ta_config["llm_provider"] = "qwen"
-            ta_config["deep_think_llm"] = qwen_config.get("deep_think_model", model)
-            ta_config["quick_think_llm"] = model
-            ta_config["backend_url"] = qwen_config.get(
-                "base_url", "https://dashscope.aliyuncs.com/compatible-mode/v1"
+            if provider == "qwen":
+                self._configure_qwen(ta_config)
+            else:
+                self._configure_gemini(ta_config)
+
+            # Inject active prompt overrides from prompt_store (Phase 2)
+            if self._iteration_enabled:
+                agent_prompts = self._load_active_prompts()
+                if agent_prompts:
+                    ta_config["agent_prompts"] = agent_prompts
+
+            graph = TradingAgentsGraph(
+                selected_analysts=["market", "social", "news", "fundamentals"],
+                debug=True,
+                config=ta_config,
             )
-            # Deep thinker (Judge / Trader / Risk Manager): enable Qwen3 thinking
-            # for high-quality reasoning on final investment decisions.
-            # Quick thinker (Market / News / Fundamentals data collectors): disable
-            # thinking for fast data retrieval — no reasoning depth needed.
-            ta_config["llm_deep_kwargs"] = {
-                "extra_body": {"enable_thinking": True},
-                "timeout": 600,   # 10 min — thinking on long context can be slow
-            }
-            ta_config["llm_quick_kwargs"] = {
-                "extra_body": {"enable_thinking": False},
-                "timeout": 120,
-            }
-            logger.info("Using Qwen LLM provider (model=%s, deep_thinking=ON)", model)
-        else:
-            # ── Google Gemini ─────────────────────────────────────────────────
-            if gemini_key:
-                os.environ["GOOGLE_API_KEY"] = gemini_key
-                os.environ["GEMINI_API_KEY"] = gemini_key
+            self._graphs[provider] = graph
+            self._graph = graph
 
-            import httpx as _httpx
-
-            # Disable HTTP/2 and add transport-level retries.
-            # TUN-mode proxy (Clash/Surge) cold-starts the first TCP connection,
-            # causing "Server disconnected" on the first call; retries fix this.
-            ta_config["llm_client_args"] = {
-                "http2": False,
-                "transport": _httpx.HTTPTransport(retries=3),
-            }
-            # Clear proxy env vars — Gemini blocks HK exit IPs.
-            for _var in ("https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY",
-                         "all_proxy", "ALL_PROXY"):
-                os.environ.pop(_var, None)
-
-            ta_config["llm_provider"] = "google"
-            ta_config["deep_think_llm"] = gemini_config.get("deep_think_model", "gemini-2.5-flash")
-            ta_config["quick_think_llm"] = gemini_config.get("model", "gemini-2.5-flash")
-            ta_config["google_thinking_level"] = gemini_config.get("thinking_level", "low")
-            ta_config["backend_url"] = None
-            logger.info("Using Gemini LLM provider (model=%s)", ta_config["quick_think_llm"])
-
-        # Inject active prompt overrides from prompt_store (Phase 2)
-        if self._iteration_enabled:
-            agent_prompts = self._load_active_prompts()
-            if agent_prompts:
-                ta_config["agent_prompts"] = agent_prompts
-
-        self._graph = TradingAgentsGraph(
-            selected_analysts=["market", "social", "news", "fundamentals"],
-            debug=True,
-            config=ta_config,
+    def _configure_qwen(self, ta_config: dict) -> None:
+        """Configure ta_config for Qwen / DashScope."""
+        qwen_config = self._config.get("qwen", {})
+        qwen_key = qwen_config.get("api_key", "")
+        if not qwen_key:
+            raise RuntimeError(
+                "llm_provider=qwen but qwen.api_key is empty. "
+                "Set DASHSCOPE_API_KEY env var or update config.yaml."
+            )
+        os.environ["DASHSCOPE_API_KEY"] = qwen_key
+        model = qwen_config.get("model", "qwen-plus")
+        ta_config["llm_provider"] = "qwen"
+        ta_config["deep_think_llm"] = qwen_config.get("deep_think_model", model)
+        ta_config["quick_think_llm"] = model
+        ta_config["backend_url"] = qwen_config.get(
+            "base_url", "https://dashscope.aliyuncs.com/compatible-mode/v1"
         )
+        ta_config["llm_deep_kwargs"] = {
+            "extra_body": {"enable_thinking": True},
+            "timeout": 600,
+        }
+        ta_config["llm_quick_kwargs"] = {
+            "extra_body": {"enable_thinking": False},
+            "timeout": 120,
+        }
+        logger.info("Using Qwen LLM provider (model=%s, deep_thinking=ON)", model)
+
+    def _configure_gemini(self, ta_config: dict) -> None:
+        """Configure ta_config for Google Gemini."""
+        gemini_config = self._config.get("gemini", {})
+        gemini_key = gemini_config.get("api_key", "")
+        if not gemini_key:
+            raise RuntimeError(
+                "llm_provider=gemini but gemini.api_key is empty. "
+                "Set GEMINI_API_KEY env var or update config.yaml."
+            )
+        os.environ["GOOGLE_API_KEY"] = gemini_key
+        os.environ["GEMINI_API_KEY"] = gemini_key
+
+        import httpx as _httpx
+
+        ta_config["llm_client_args"] = {
+            "http2": False,
+            "transport": _httpx.HTTPTransport(retries=3),
+        }
+        for _var in ("https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY",
+                     "all_proxy", "ALL_PROXY"):
+            os.environ.pop(_var, None)
+
+        ta_config["llm_provider"] = "google"
+        ta_config["deep_think_llm"] = gemini_config.get("deep_think_model", "gemini-2.5-flash")
+        ta_config["quick_think_llm"] = gemini_config.get("model", "gemini-2.5-flash")
+        ta_config["google_thinking_level"] = gemini_config.get("thinking_level", "low")
+        ta_config["backend_url"] = None
+        logger.info("Using Gemini LLM provider (model=%s)", ta_config["quick_think_llm"])
 
     @property
     def _iteration_enabled(self) -> bool:

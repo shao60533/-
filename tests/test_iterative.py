@@ -374,6 +374,7 @@ class TestREG1_DisabledBehaviorUnchanged:
             "BUY",
         )
         analyzer._graph = mock_graph
+        analyzer._graphs["gemini"] = mock_graph  # populate cache to skip _init_graph
 
         result = analyzer.analyze("AAPL", "2026-04-10")
         # When disabled, should return plain AnalysisResult, not a tuple
