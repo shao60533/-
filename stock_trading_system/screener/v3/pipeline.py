@@ -171,7 +171,7 @@ class ScreenerV3Pipeline:
                 "duration_sec": round(elapsed, 1),
                 "llm_calls": len(units),
                 "cache_hits": len(signals) - len(units) + cache_hits,
-                "cost_cny": 0,  # filled by estimator post-hoc
+                "cost_cny": self._estimate_cost(len(units), with_roundtable),
             },
         }
 
@@ -253,6 +253,23 @@ class ScreenerV3Pipeline:
                 "split": len(bullish) == len(bearish),
             }
         return results
+
+    def _estimate_cost(self, guru_calls: int, with_roundtable: bool) -> float:
+        """Post-hoc cost estimate based on actual LLM call count.
+
+        Qwen/Gemini responses don't always expose usage, so we approximate
+        using the same AVG token assumptions as the pre-run estimator.
+        """
+        from stock_trading_system.screener.v3.estimator import (
+            AVG_TOKENS_IN, AVG_TOKENS_OUT, PROVIDER_PRICING,
+        )
+        rt_calls = 15 if with_roundtable else 0
+        total_calls = guru_calls + rt_calls
+        tokens_in = total_calls * AVG_TOKENS_IN
+        tokens_out = total_calls * AVG_TOKENS_OUT
+        pricing = PROVIDER_PRICING.get(self._provider, PROVIDER_PRICING["qwen"])
+        cost_cny = (tokens_in * pricing["in"] + tokens_out * pricing["out"]) / 1000
+        return round(cost_cny, 2)
 
     def _aggregate(self, candidates, signals, roundtable) -> list[dict]:
         """Phase 6: aggregate guru signals into ranked results."""
