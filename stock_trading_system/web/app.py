@@ -1839,15 +1839,24 @@ def create_app(config_path=None):
 
     @socketio.on("connect")
     def handle_connect():
-        user = getattr(g, "user", None)
-        if user is None and _multi_tenant_ready:
-            logger.info("WS connect rejected: no auth")
-            return False  # reject unauthenticated WS
-        if user:
-            join_room(f"user:{user.id}")
-            logger.info("Client connected → room user:%d", user.id)
+        from flask import session as _sess
+        # SocketIO connect doesn't go through before_request, so read session directly
+        uid = _sess.get("user_id")
+        if uid is None and _multi_tenant_ready:
+            # Still allow connection — many events are useful pre-login
+            # Just don't join a user room
+            logger.info("WS connect: anonymous (no session)")
+            return  # allow but no room
+        if uid:
+            # Verify user exists
+            user = _user_repo.find_by_id(uid)
+            if user:
+                join_room(f"user:{user.id}")
+                logger.info("Client connected → room user:%d", user.id)
+            else:
+                logger.info("WS connect: stale session uid=%d", uid)
         else:
-            logger.info("Client connected (no auth, pre-migration)")
+            logger.info("Client connected (pre-migration mode)")
 
     @socketio.on("disconnect")
     def handle_disconnect():
