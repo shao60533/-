@@ -424,8 +424,24 @@ async def on_unit_done(guru, ticker, signal, cached=False):
 
 ### 4.9 Round-table 辩论
 
+**【复用】**：复用 TradingAgents 的辩论图节点作为基底（见 [engineering-principles §5.1](../engineering-principles.md#51-screenerv3md--需要修订重点)）：
+
+| 复用节点 | 位置 | 用途 |
+|---|---|---|
+| `bull_researcher.py` | `tradingagents/agents/researchers/` | 牛方角色模板 |
+| `bear_researcher.py` | 同上 | 熊方角色模板 |
+| `conservative_debator.py` | `tradingagents/agents/risk_mgmt/` | 反驳对方论点的模板 |
+| `reflection.py` | `tradingagents/graph/` | 共识/分歧判定节点 |
+
+我们**只替换身份 system prompt**（把 "bull researcher" 换成 "as Warren Buffett 看 AAPL"），图结构和状态机零改动。
+
 ```python
 # roundtable.py
+from tradingagents.agents.researchers.bull_researcher import make_bull_researcher
+from tradingagents.agents.researchers.bear_researcher import make_bear_researcher
+from tradingagents.agents.risk_mgmt.conservative_debator import make_conservative_debator
+from tradingagents.graph.reflection import make_reflection_node
+
 async def run_roundtable(
     top5_signals: dict[str, list[GuruSignal]],  # ticker -> signals
     llm_client,
@@ -436,27 +452,38 @@ async def run_roundtable(
         bearish = [s for s in signals if s.signal == "bearish"]
 
         if not bullish or not bearish:
-            # 一致看多/看空 → 无需辩论
             results[ticker] = _consensus(signals)
             continue
 
-        # 挑最自信的牛熊各 1 位，互相反驳 2 轮
         bull_champion = max(bullish, key=lambda s: s.confidence)
         bear_champion = max(bearish, key=lambda s: s.confidence)
 
-        debate = await _two_round_debate(
-            llm_client, ticker, bull_champion, bear_champion,
+        # 复用 TA 的 bull/bear researcher 作辩论基底；只替换身份 prompt
+        bull_node = make_bull_researcher(llm_client, persona=bull_champion.guru)
+        bear_node = make_bear_researcher(llm_client, persona=bear_champion.guru)
+        rebuttal  = make_conservative_debator(llm_client)  # 轮次 2 的反驳
+        judge     = make_reflection_node(llm_client)       # consensus 判定
+
+        # TA 既有状态机驱动这个迷你图（bull → bear → rebuttal → judge）
+        state = await _drive_debate_graph(
+            ticker, bull_champion, bear_champion,
+            bull_node, bear_node, rebuttal, judge,
         )
         results[ticker] = RoundtableResult(
             consensus=[s.guru for s in bullish] if len(bullish) > len(bearish) else [s.guru for s in bearish],
-            dissent=[s.guru for s in bearish] if len(bullish) > len(bearish) else [s.guru for s in bullish],
+            dissent=[s.guru for s in bearish]  if len(bullish) > len(bearish) else [s.guru for s in bullish],
             split=len(bullish) == len(bearish),
-            debate_snippets=debate,
+            debate_snippets=state["debate_log"],
         )
     return results
 ```
 
-**成本上限**：Top 5 × 每只 ≤ 3 次 LLM ≈ 15 calls，对应 ~30-60s（与 PRD 声明一致）。
+**复用收益**：
+- `bull/bear_researcher` + `conservative_debator` 的 prompt 框架和 state schema 由 TA 维护，我们零维护
+- 当 TA 升级辩论提示工程 → 我们自动受益
+- 自写 LOC 从 ~150 降到 ~50（见 [engineering-principles §5.1](../engineering-principles.md#51-screenerv3md--需要修订重点)）
+
+**成本上限**：Top 5 × 每只 ≤ 3 次 LLM ≈ 15 calls，~30-60s（与 PRD 一致）。
 
 ### 4.10 Marks / Dalio 自建 prompt
 
@@ -726,8 +753,74 @@ def make_screen_v3_worker(db, task_manager):
 | [paper-trade](./paper-trade.md) v1.2 | V3 产出 Top 10 → auto_track → 纸面交易持续跟踪表现 |
 | [batch-analyze-holdings](./batch-analyze-holdings.md) v1.0 | v3 大师池可复用，持仓分析也能走 Agent 模式（v1.1 议题） |
 
-## 12. 版本历史
+## 12. 复用 / Reuse
+
+按 [docs/engineering-principles.md](../engineering-principles.md) 约束，本方案的"复用 / 自写"比例清单：
+
+### L0 项目内直接复用
+
+| 模块 | 用途 |
+|---|---|
+| [screener/v2/nl_parser.py](../../stock_trading_system/screener/v2/nl_parser.py) | NL → FilterSpec（Phase 1）|
+| [screener/v2/universe.py](../../stock_trading_system/screener/v2/universe.py) | 股池筛选（Phase 2）|
+| [screener/v2/aggregator.py](../../stock_trading_system/screener/v2/aggregator.py) | Signal 聚合（Phase 6）|
+| [screener/v2/regime_detector.py](../../stock_trading_system/screener/v2/regime_detector.py) | Regime 权重（Phase 6）|
+| [screener/v2/data_helper.py](../../stock_trading_system/screener/v2/data_helper.py) | 基本面拉取；v3 扩展为 `GuruDataBundle`（不新建模块）|
+| [data/local_cache.py](../../stock_trading_system/data/local_cache.py) | `(ticker, guru, date)` 缓存（§4.4）|
+| [tasks/task_store.py](../../stock_trading_system/tasks/task_store.py) + `workers.py` | 异步任务 + 取消 + 流式推送（§4.7）|
+| [llm/router.py](../../stock_trading_system/llm/router.py)（model-switch）| 用户级 provider 解析 |
+| [auth/session.py](../../stock_trading_system/auth/session.py)（multi-tenant）| `g.user.id` 注入 |
+
+### L1 依赖库（成熟 pip 包）
+
+| 库 | 用途 | 替代的自写代码 |
+|---|---|---|
+| `pydantic>=2` | `GuruSignal` 结构化 schema | 自写 dataclass + JSON 校验 |
+| `langchain>=0.3`（已装）+ `langchain_openai` / `langchain_google_genai` | **`chat.with_structured_output(GuruSignal)`** 替代自写 `_llm_reason`（§4.1）| 每大师 ~30 LOC × 14 = **~420 LOC** |
+| `tenacity>=9.0`（需追加到 requirements）| 指数退避重试装饰器（§4.3）| ~30 LOC 自写循环 |
+| `asyncio`（stdlib）| Semaphore(10) + gather | — |
+
+### L2 开源项目（vendor / 思路借鉴）
+
+| 项目 | license | 采取方式 |
+|---|---|---|
+| [TauricResearch/TradingAgents](https://github.com/TauricResearch/TradingAgents)（已装） | Apache-2.0 | **直接 import** 其 `bull_researcher` / `bear_researcher` / `conservative_debator` / `reflection` 作为 Round-table 辩论图基底（§4.9），仅替换身份 prompt |
+| [hengruiyun/AI-Investment-Master](https://github.com/hengruiyun/AI-Investment-Master) | AGPL-3.0 | **仅借鉴思路**：AKShare 数据适配 + 中文 prompt 结构；不 copy 代码（AGPL 传染）|
+| [yejining99/GuruAgents (arXiv 2510.01664)](https://github.com/yejining99/GuruAgents) | 学术 | 借鉴 prompt 模板结构，用于 Marks / Dalio 自建 |
+
+### L3 Clean-room 重写
+
+| 项目 | 原因 | 范围 |
+|---|---|---|
+| [virattt/ai-hedge-fund](https://github.com/virattt/ai-hedge-fund) | **无 LICENSE 文件**，直接 fork/copy 法律风险不明 | 14 大师中的 12 位 —— 读源码作 spec，独立重写子分析逻辑 + prompt，**结构/命名/注释完全原创**。保留 attribution 链接到 virattt 作为灵感致谢。|
+| [KRSHH/ritadel](https://github.com/KRSHH/ritadel) | MIT，但其 MIT 无法合法授予从 virattt copy 的部分 | 同上，`round_table.py` 的**思路**借鉴，实现采用 TA 辩论图（上面 L2）|
+
+### L4 必须自写
+
+| 模块 | 行数 | 无替代理由 |
+|---|---|---|
+| `gurus_agents/marks.py` | ~120 | Howard Marks 专属 prompt（周期判断 + 第二层思考），开源无等价 |
+| `gurus_agents/dalio.py` | ~120 | Ray Dalio 四象限判定逻辑，开源无等价 |
+| `estimator.py` | ~100 | 成本预估 + 动态校准常量，业务特定 |
+| `ScreenerV3Pipeline` 编排 | ~150 | 6 Phase 特有编排（NL → Universe → Threshold → Guru → RT → Aggregate）|
+| 预选配置面板 UI | ~200 | 业务特定 UI |
+
+### 汇总
+
+| 来源 | 估算 LOC |
+|---|---|
+| L0（纯 import）| 0（复用，不增量）|
+| L1（依赖库包装）| ~150 |
+| L2（TA 节点直接使用）| ~50（适配胶水）|
+| L3（clean-room 12 大师）| ~2400（~200 LOC/位 × 12）|
+| L4（自写）| ~690 |
+| **合计新增** | **~3290 LOC** |
+| **若全部自写** | **~4800+ LOC** |
+| **节省** | **~31%**（主要来自 structured_output / tenacity / TA 辩论图）|
+
+## 13. 版本历史
 
 | 版本 | 日期 | 变更 |
 |---|---|---|
 | v1.0 | 2026-04-19 | 初版：新建 `screener/v3/` + 14 大师 agent（12 清洁重写 + 2 自建）+ 并发缓存流式 + 预选面板 + 成本预估 + 圆桌辩论 + 经典模式兼容保留 |
+| v1.1 | 2026-04-19 | 复用审计修订（依据 [engineering-principles.md](../engineering-principles.md) §5.1）：§4.1 改用 `ChatOpenAI.with_structured_output()`；§4.3 改用 `tenacity` 重试；§4.9 复用 TradingAgents 辩论图节点；新增 §12 复用清单（自写 LOC 减 ~31%）|
