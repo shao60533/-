@@ -4372,9 +4372,15 @@ function _renderPtvStrategy(data) {
             orders.map(_renderOrderRow).join('') + '</div>';
     }
 
-    // 4. Raw summary
+    // 4. Raw summary — prefer trade_decision (final decision full text)
     const rawEl = document.getElementById('ptv-raw-summary');
-    rawEl.textContent = plan?.raw_summary || data.latest_advice?.reasoning || '—';
+    if (data.latest_trade_decision) {
+        rawEl.innerHTML = typeof renderMd === 'function'
+            ? renderMd(data.latest_trade_decision)
+            : data.latest_trade_decision;
+    } else {
+        rawEl.textContent = plan?.raw_summary || data.latest_advice?.reasoning || '—';
+    }
 }
 
 function _renderOrderRow(o) {

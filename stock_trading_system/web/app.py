@@ -1490,17 +1490,20 @@ def create_app(config_path=None):
             plan_history.append({**p, "orders": p_orders})
         latest = events[0] if events else None
         latest_advice = None
+        latest_trade_decision = None
         if latest:
             try:
                 from stock_trading_system.portfolio.database import PortfolioDatabase
                 db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
                 ana = PortfolioDatabase(db_path).get_analysis_by_id(latest["analysis_id"])
-                if ana and ana.get("advice_json"):
-                    import json as _j
-                    try:
-                        latest_advice = _j.loads(ana["advice_json"])
-                    except Exception:
-                        latest_advice = None
+                if ana:
+                    latest_trade_decision = ana.get("trade_decision") or ""
+                    if ana.get("advice_json"):
+                        import json as _j
+                        try:
+                            latest_advice = _j.loads(ana["advice_json"])
+                        except Exception:
+                            latest_advice = None
             except Exception:
                 pass
         return jsonify({
@@ -1509,6 +1512,7 @@ def create_app(config_path=None):
             "dailies": dailies,
             "trades": trades,
             "latest_advice": latest_advice,
+            "latest_trade_decision": latest_trade_decision,
             "active_plan": active_plan,
             "active_orders": active_orders,
             "plan_history": plan_history,
