@@ -757,11 +757,6 @@
                             <span class="small text-muted" id="rule-current-price"></span>
                         </div>
                         <div class="card-body">
-<<<<<<< HEAD
-                            <div class="row g-2 form-row-mobile">
-                                <div class="col-6 col-md-3">
-                                    <input type="text" class="form-control" id="alert-ticker" placeholder="股票代码">
-=======
                             <!-- Step 1: ticker -->
                             <div class="rule-step">
                                 <label class="rule-step-label"><span class="rule-step-num">1</span> 选择标的</label>
@@ -788,7 +783,6 @@
                                     <button type="button" class="rule-preset-chip" data-preset="pct_change_3">
                                         <i class="fas fa-bolt"></i> 日内涨跌 ±3%
                                     </button>
->>>>>>> origin/claude/stock-trading-system-LXzEI
                                 </div>
                             </div>
 
@@ -1249,16 +1243,25 @@
             </div>
 
             <div class="card mb-3">
-<<<<<<< HEAD
-                <div class="card-header d-flex justify-content-between align-items-center">
+                <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
                     <span><i class="fas fa-robot"></i> 配置管理</span>
-                    <button class="btn btn-sm btn-primary" id="btn-save-settings" onclick="saveSettings()" style="display:none;">
-                        <i class="fas fa-save"></i> 保存修改
-                    </button>
+                    <div class="btn-group btn-group-sm" id="settings-edit-toolbar">
+                        <button class="btn btn-outline-primary" id="btn-settings-edit" onclick="toggleSettingsEdit(true)">
+                            <i class="fas fa-pen"></i> 编辑
+                        </button>
+                        <button class="btn btn-primary d-none" id="btn-settings-save" onclick="saveSettings()">
+                            <i class="fas fa-save"></i> 保存
+                        </button>
+                        <button class="btn btn-outline-secondary d-none" id="btn-settings-cancel" onclick="toggleSettingsEdit(false)">
+                            取消
+                        </button>
+                    </div>
                 </div>
                 <div class="card-body" id="settings-config">加载中...</div>
                 <div class="card-footer text-muted" style="font-size:12px;background:transparent;border-top-color:var(--border);">
-                    点击值即可编辑。修改后点击"保存修改"写入配置文件。敏感字段显示为脱敏值，编辑时输入新值即可覆盖。
+                    <i class="fas fa-circle-info"></i>
+                    敏感字段（API Key / Token / 密码）输入后会写入 <code>~/.stock_trading/config.yaml</code>。
+                    调度器 / 长连接需手动重启才能加载新配置。
                 </div>
             </div>
         </div>
@@ -1322,27 +1325,6 @@
                             </button>
                         </div>
                     </div>
-=======
-                <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
-                    <span><i class="fas fa-robot"></i> 当前生效配置</span>
-                    <div class="btn-group btn-group-sm" id="settings-edit-toolbar">
-                        <button class="btn btn-outline-primary" id="btn-settings-edit" onclick="toggleSettingsEdit(true)">
-                            <i class="fas fa-pen"></i> 编辑
-                        </button>
-                        <button class="btn btn-primary d-none" id="btn-settings-save" onclick="saveSettings()">
-                            <i class="fas fa-save"></i> 保存
-                        </button>
-                        <button class="btn btn-outline-secondary d-none" id="btn-settings-cancel" onclick="toggleSettingsEdit(false)">
-                            取消
-                        </button>
-                    </div>
-                </div>
-                <div class="card-body" id="settings-config">加载中...</div>
-                <div class="card-footer text-muted" style="font-size:12px;background:transparent;border-top-color:var(--border);">
-                    <i class="fas fa-circle-info"></i>
-                    敏感字段（API Key / Token / 密码）输入后会写入 <code>~/.stock_trading/config.yaml</code>。
-                    调度器 / 长连接需手动重启才能加载新配置。
->>>>>>> origin/claude/stock-trading-system-LXzEI
                 </div>
             </div>
         </div>
