@@ -326,8 +326,176 @@ def create_app(config_path=None):
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
     app.config["SESSION_COOKIE_SECURE"] = not app.debug
 
+    from datetime import timedelta
+    app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=30)
+
     load_config(config_path)
     socketio.init_app(app, cors_allowed_origins="*", async_mode="threading")
+
+    # ── Auth setup ─────────────────────────────────────────────────────
+
+    cfg = get_config()
+    db_path = cfg.get("portfolio", {}).get("db_path", "data/portfolio.db")
+
+    from stock_trading_system.auth.repository import UserRepository
+    from stock_trading_system.auth.session import load_current_user, login_user, logout_user
+    from stock_trading_system.auth.password import verify_password, validate_password_strength
+    from stock_trading_system.auth.invite import InviteCodeManager
+    from stock_trading_system.auth.bootstrap import ensure_multi_tenant_ready
+
+    _user_repo = UserRepository(db_path)
+    _invite_mgr = InviteCodeManager(db_path)
+    _multi_tenant_ready = ensure_multi_tenant_ready(db_path)
+
+    # Public paths that don't require authentication
+    PUBLIC_PREFIXES = ("/static/", "/login", "/register", "/reset",
+                       "/api/auth/login", "/api/auth/register", "/api/auth/reset",
+                       "/health", "/api/seed")
+
+    @app.before_request
+    def enforce_auth():
+        """Load current user and enforce authentication."""
+        if _multi_tenant_ready:
+            load_current_user(_user_repo)
+        else:
+            # Single-user fallback: no users table yet
+            from flask import g
+            g.user = None
+            return  # allow all access in non-migrated mode
+
+        from flask import g
+        path = request.path
+        if any(path.startswith(p) for p in PUBLIC_PREFIXES):
+            return
+        if g.user is None:
+            if path.startswith("/api/"):
+                return jsonify({"error": "unauthorized"}), 401
+            return redirect("/login?next=" + path)
+
+    # ── Auth API Routes ────────────────────────────────────────────────
+
+    @app.route("/login")
+    def login_page():
+        return render_template("login.html")
+
+    @app.route("/register")
+    def register_page():
+        return render_template("register.html")
+
+    @app.route("/api/auth/login", methods=["POST"])
+    def api_login():
+        body = request.get_json(silent=True) or {}
+        email = (body.get("email") or "").strip().lower()
+        password = body.get("password") or ""
+        if not email or not password:
+            return jsonify({"error": "invalid_credentials", "message": "请输入邮箱和密码"}), 401
+
+        user = _user_repo.find_by_email(email)
+        if not user or not verify_password(password, user.password_hash):
+            return jsonify({"error": "invalid_credentials", "message": "邮箱或密码错误"}), 401
+
+        login_user(user.id)
+        _user_repo.update_last_login(user.id)
+        return jsonify({"user": {"id": user.id, "email": user.email,
+                                  "display_name": user.display_name, "role": user.role}})
+
+    @app.route("/api/auth/register", methods=["POST"])
+    def api_register():
+        body = request.get_json(silent=True) or {}
+        invite_code = body.get("invite_code") or ""
+        email = (body.get("email") or "").strip().lower()
+        password = body.get("password") or ""
+        display_name = body.get("display_name")
+
+        # Validate invite code
+        err = _invite_mgr.validate(invite_code)
+        if err:
+            return jsonify({"error": err, "message": f"邀请码无效: {err}"}), 400
+
+        # Validate email
+        if not email or "@" not in email:
+            return jsonify({"error": "invalid_email", "message": "请输入有效邮箱"}), 400
+        if _user_repo.find_by_email(email):
+            return jsonify({"error": "email_taken", "message": "该邮箱已注册"}), 400
+
+        # Validate password
+        pwd_err = validate_password_strength(password)
+        if pwd_err:
+            return jsonify({"error": "password_weak", "message": pwd_err}), 400
+
+        # Create user + redeem invite
+        user = _user_repo.create(email, password, display_name)
+        _invite_mgr.redeem(invite_code, user.id)
+        login_user(user.id)
+
+        return jsonify({"user": {"id": user.id, "email": user.email,
+                                  "display_name": user.display_name, "role": user.role}})
+
+    @app.route("/api/auth/logout", methods=["POST"])
+    def api_logout():
+        logout_user()
+        return jsonify({"ok": True})
+
+    @app.route("/api/auth/me")
+    def api_auth_me():
+        from flask import g
+        u = g.get("user")
+        if u is None:
+            return jsonify({"user": None})
+        return jsonify({"user": {"id": u.id, "email": u.email,
+                                  "display_name": u.display_name, "role": u.role}})
+
+    @app.route("/api/auth/change-password", methods=["POST"])
+    def api_change_password():
+        from flask import g
+        u = g.get("user")
+        if u is None:
+            return jsonify({"error": "unauthorized"}), 401
+        body = request.get_json(silent=True) or {}
+        old = body.get("old_password") or ""
+        new = body.get("new_password") or ""
+        if not verify_password(old, u.password_hash):
+            return jsonify({"error": "wrong_password", "message": "当前密码错误"}), 401
+        pwd_err = validate_password_strength(new)
+        if pwd_err:
+            return jsonify({"error": "password_weak", "message": pwd_err}), 400
+        _user_repo.update_password(u.id, new)
+        return jsonify({"ok": True})
+
+    # ── Admin Routes ───────────────────────────────────────────────────
+
+    from stock_trading_system.auth.decorators import admin_required
+
+    @app.route("/api/admin/invites", methods=["GET"])
+    @admin_required
+    def api_admin_invites_list():
+        return jsonify({"invites": _invite_mgr.list_all()})
+
+    @app.route("/api/admin/invites", methods=["POST"])
+    @admin_required
+    def api_admin_invites_create():
+        from flask import g
+        body = request.get_json(silent=True) or {}
+        days = int(body.get("expires_in_days", 7))
+        code = _invite_mgr.generate(g.user.id, expires_in_days=days)
+        return jsonify({"code": code})
+
+    @app.route("/api/admin/invites/<code>", methods=["DELETE"])
+    @admin_required
+    def api_admin_invites_revoke(code):
+        ok = _invite_mgr.revoke(code)
+        return jsonify({"ok": ok})
+
+    @app.route("/api/admin/users")
+    @admin_required
+    def api_admin_users():
+        users = _user_repo.list_all()
+        return jsonify({"users": [
+            {"id": u.id, "email": u.email, "display_name": u.display_name,
+             "role": u.role, "status": u.status, "created_at": u.created_at,
+             "last_login_at": u.last_login_at}
+            for u in users
+        ]})
 
     # ── Page Routes ─────────────────────────────────────────────────────
 
