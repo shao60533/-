@@ -71,6 +71,11 @@
                 </a>
             </li>
             <li class="nav-item">
+                <a class="nav-link" href="#" data-page="backtest">
+                    <i class="fas fa-vials"></i> 策略回测
+                </a>
+            </li>
+            <li class="nav-item">
                 <a class="nav-link" href="#" data-page="settings">
                     <i class="fas fa-gear"></i> 设置
                 </a>
@@ -138,6 +143,9 @@
             <a href="#" class="more-sheet-item" data-page="paper" onclick="closeMoreSheet()">
                 <i class="fas fa-vial"></i><span>纸面交易</span>
             </a>
+            <a href="#" class="more-sheet-item" data-page="backtest" onclick="closeMoreSheet()">
+                <i class="fas fa-vials"></i><span>策略回测</span>
+            </a>
             <a href="#" class="more-sheet-item" data-page="settings" onclick="closeMoreSheet()">
                 <i class="fas fa-gear"></i><span>设置</span>
             </a>
@@ -155,6 +163,7 @@
             <button id="sidebar-toggle" class="btn btn-sm btn-outline-secondary">
                 <i class="fas fa-bars"></i>
             </button>
+<<<<<<< HEAD
             <div class="global-search-box" style="flex:1;max-width:400px;margin:0 16px;position:relative;">
                 <input type="text" class="form-control form-control-sm" id="global-search" placeholder="搜索股票/持仓/分析/预警..." autocomplete="off">
                 <div class="search-dropdown" id="search-dropdown" style="display:none;"></div>
@@ -167,6 +176,17 @@
                     </select>
                     <span class="llm-lock-icon-topbar" style="display:none;font-size:11px;" title="由环境变量锁定">🔒</span>
                 </div>
+=======
+            <div class="global-search" id="global-search">
+                <i class="fas fa-search global-search-icon"></i>
+                <input type="text" id="global-search-input"
+                    placeholder="搜索股票/持仓/记录/预警"
+                    autocomplete="off" spellcheck="false">
+                <kbd class="global-search-kbd d-none d-md-inline">/</kbd>
+                <div class="global-search-panel" id="global-search-panel"></div>
+            </div>
+            <div class="top-bar-right">
+>>>>>>> origin/claude/stock-trading-system-LXzEI
                 <span id="clock" class="text-muted"></span>
             </div>
         </div>
@@ -323,6 +343,7 @@
                 </div>
             </div>
 
+<<<<<<< HEAD
             <div id="analysis-loading" style="display:none;">
                 <div class="card mb-3">
                     <div class="card-header"><i class="fas fa-diagram-project"></i> AI 多Agent 分析管线</div>
@@ -373,6 +394,28 @@
                         <p class="text-muted text-center mt-3 mb-0 small">分析中，预计需要 5-10 分钟...</p>
                     </div>
                 </div>
+=======
+            <!-- Live pipeline visualization -->
+            <div class="card mb-3" id="pipeline-card" style="display:none;">
+                <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+                    <span><i class="fas fa-project-diagram"></i> 多 Agent 分析链路</span>
+                    <div class="d-flex align-items-center gap-2">
+                        <span class="small text-muted" id="pipeline-summary">准备中...</span>
+                        <button class="btn btn-sm btn-outline-warning" id="btn-rerun" onclick="rerunAnalysis()" style="display:none;">
+                            <i class="fas fa-redo"></i> 重跑
+                        </button>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div class="pipeline-progress-bar mb-3">
+                        <div class="pipeline-progress-fill" id="pipeline-progress-fill"></div>
+                    </div>
+                    <div class="pipeline-dag" id="pipeline-dag"></div>
+                </div>
+            </div>
+            <div id="analysis-loading" class="text-center py-3" style="display:none;">
+                <p class="text-muted small mb-0">AI Agent 分析中，请稍候（约2-5分钟）...</p>
+>>>>>>> origin/claude/stock-trading-system-LXzEI
             </div>
             <div id="analysis-result" style="display:none;">
                 <div class="mb-2">
@@ -446,12 +489,27 @@
         <!-- Page: Analysis History -->
         <div class="page" id="page-history">
             <h3 class="page-title">分析记录</h3>
+<<<<<<< HEAD
             <div class="row g-2 mb-3 form-row-mobile">
                 <div class="col-8 col-md-4">
+=======
+            <div class="row g-2 mb-3">
+                <div class="col-12 col-md-4">
+>>>>>>> origin/claude/stock-trading-system-LXzEI
                     <input type="text" class="form-control" id="history-filter" placeholder="搜索股票代码..." oninput="filterHistory()">
                 </div>
-                <div class="col-4 col-md-2">
+                <div class="col-6 col-md-3">
                     <button class="btn btn-outline-secondary w-100" onclick="loadHistory()"><i class="fas fa-sync"></i> 刷新</button>
+                </div>
+                <div class="col-6 col-md-3">
+                    <button class="btn btn-outline-primary w-100" id="btn-compare-toggle" onclick="toggleCompareMode()">
+                        <i class="fas fa-check-double"></i> <span id="compare-toggle-label">对比模式</span>
+                    </button>
+                </div>
+                <div class="col-12 col-md-2 d-none" id="compare-action-wrap">
+                    <button class="btn btn-primary w-100" id="btn-run-compare" onclick="runCompare()" disabled>
+                        <i class="fas fa-layer-group"></i> 对比 (<span id="compare-count">0</span>)
+                    </button>
                 </div>
             </div>
             <div id="history-list"></div>
@@ -465,6 +523,30 @@
                         </button>
                     </div>
                     <div class="detail-body" id="historyModalBody"></div>
+                </div>
+            </div>
+            <!-- Compare modal -->
+            <div class="modal fade" id="compareModal" tabindex="-1">
+                <div class="modal-dialog modal-xl modal-dialog-scrollable modal-fullscreen-md-down">
+                    <div class="modal-content" style="background:var(--bg-card);color:var(--text-primary);border-color:var(--border);">
+                        <div class="modal-header" style="border-color:var(--border);">
+                            <h5 class="modal-title"><i class="fas fa-layer-group"></i> 分析对比</h5>
+                            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body" id="compareModalBody" style="color:#c9d1d9;"></div>
+                    </div>
+                </div>
+            </div>
+            <!-- Timeline modal -->
+            <div class="modal fade" id="timelineModal" tabindex="-1">
+                <div class="modal-dialog modal-xl modal-dialog-scrollable modal-fullscreen-md-down">
+                    <div class="modal-content" style="background:var(--bg-card);color:var(--text-primary);border-color:var(--border);">
+                        <div class="modal-header" style="border-color:var(--border);">
+                            <h5 class="modal-title" id="timelineModalTitle"><i class="fas fa-stream"></i> 观点演变</h5>
+                            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body" id="timelineModalBody" style="color:#c9d1d9;"></div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -687,40 +769,106 @@
             <h3 class="page-title">预警中心</h3>
             <div class="row g-3 mb-3">
                 <div class="col-12 col-lg-8">
-                    <div class="card">
-                        <div class="card-header"><i class="fas fa-plus"></i> 添加预警</div>
+                    <div class="card rule-editor">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <span><i class="fas fa-wand-magic-sparkles"></i> 预警规则编辑器</span>
+                            <span class="small text-muted" id="rule-current-price"></span>
+                        </div>
                         <div class="card-body">
+<<<<<<< HEAD
                             <div class="row g-2 form-row-mobile">
                                 <div class="col-6 col-md-3">
                                     <input type="text" class="form-control" id="alert-ticker" placeholder="股票代码">
+=======
+                            <!-- Step 1: ticker -->
+                            <div class="rule-step">
+                                <label class="rule-step-label"><span class="rule-step-num">1</span> 选择标的</label>
+                                <input type="text" class="form-control rule-ticker-input" id="alert-ticker"
+                                    placeholder="股票代码 (如 AAPL, 600519)" autocomplete="off">
+                            </div>
+
+                            <!-- Step 2: preset chips -->
+                            <div class="rule-step">
+                                <label class="rule-step-label"><span class="rule-step-num">2</span> 快速模板（可选）</label>
+                                <div class="rule-presets" id="rule-presets">
+                                    <button type="button" class="rule-preset-chip" data-preset="breakout_up">
+                                        <i class="fas fa-arrow-trend-up"></i> 向上突破 +5%
+                                    </button>
+                                    <button type="button" class="rule-preset-chip" data-preset="breakout_down">
+                                        <i class="fas fa-arrow-trend-down"></i> 向下跌破 -5%
+                                    </button>
+                                    <button type="button" class="rule-preset-chip" data-preset="stop_loss_10">
+                                        <i class="fas fa-shield-halved"></i> 止损 -10%
+                                    </button>
+                                    <button type="button" class="rule-preset-chip" data-preset="take_profit_20">
+                                        <i class="fas fa-trophy"></i> 止盈 +20%
+                                    </button>
+                                    <button type="button" class="rule-preset-chip" data-preset="pct_change_3">
+                                        <i class="fas fa-bolt"></i> 日内涨跌 ±3%
+                                    </button>
+>>>>>>> origin/claude/stock-trading-system-LXzEI
                                 </div>
-                                <div class="col-6 col-md-4">
-                                    <select class="form-select" id="alert-condition">
-                                        <option value="price_above">价格高于</option>
-                                        <option value="price_below">价格低于</option>
-                                        <option value="pct_change_above">涨幅超过(%)</option>
-                                        <option value="pct_change_below">跌幅超过(%)</option>
-                                        <option value="volume_spike">成交量超过</option>
-                                        <option value="stop_loss">止损价</option>
-                                        <option value="take_profit">止盈价</option>
-                                    </select>
+                            </div>
+
+                            <!-- Step 3: condition + threshold -->
+                            <div class="rule-step">
+                                <label class="rule-step-label"><span class="rule-step-num">3</span> 条件 &amp; 阈值</label>
+                                <div class="row g-2 align-items-start">
+                                    <div class="col-12 col-md-5">
+                                        <select class="form-select" id="alert-condition">
+                                            <option value="price_above">价格 ≥ 阈值</option>
+                                            <option value="price_below">价格 ≤ 阈值</option>
+                                            <option value="pct_change_above">涨幅 ≥ 阈值 %</option>
+                                            <option value="pct_change_below">跌幅 ≥ 阈值 %</option>
+                                            <option value="volume_spike">成交量 ≥ 阈值</option>
+                                            <option value="stop_loss">止损 (价格 ≤ 阈值)</option>
+                                            <option value="take_profit">止盈 (价格 ≥ 阈值)</option>
+                                        </select>
+                                        <div class="small text-muted mt-1" id="rule-condition-desc">
+                                            达到阈值时触发预警
+                                        </div>
+                                    </div>
+                                    <div class="col-12 col-md-7">
+                                        <input type="number" class="form-control" id="alert-threshold" placeholder="阈值" step="0.01">
+                                        <div class="rule-threshold-suggestions mt-2" id="rule-threshold-suggestions"></div>
+                                    </div>
                                 </div>
-                                <div class="col-8 col-md-3">
-                                    <input type="number" class="form-control" id="alert-threshold" placeholder="阈值" step="0.01">
+                            </div>
+
+                            <!-- Step 4: preview + actions -->
+                            <div class="rule-step">
+                                <label class="rule-step-label"><span class="rule-step-num">4</span> 规则预览</label>
+                                <div class="rule-preview" id="rule-preview">
+                                    <i class="fas fa-circle-info"></i>
+                                    <span>请输入股票代码和阈值...</span>
                                 </div>
-                                <div class="col-4 col-md-2">
-                                    <button class="btn btn-primary w-100" onclick="addAlert()">添加</button>
+                                <div class="d-flex gap-2 flex-wrap mt-2">
+                                    <button class="btn btn-outline-info btn-sm" onclick="testRule()">
+                                        <i class="fas fa-vial"></i> 测试规则
+                                    </button>
+                                    <button class="btn btn-primary btn-sm flex-grow-1" id="btn-add-alert" onclick="addAlert()" disabled>
+                                        <i class="fas fa-bell"></i> 保存预警
+                                    </button>
                                 </div>
                             </div>
                         </div>
                     </div>
                 </div>
                 <div class="col-12 col-lg-4">
-                    <div class="card">
-                        <div class="card-body text-center">
-                            <button class="btn btn-outline-warning" onclick="checkAlerts()">
-                                <i class="fas fa-sync"></i> 手动检查预警
-                            </button>
+                    <div class="card h-100">
+                        <div class="card-header"><i class="fas fa-info-circle"></i> 规则帮助</div>
+                        <div class="card-body small">
+                            <ul class="rule-help-list">
+                                <li><strong>价格类</strong>：使用标的当前最新成交价判断</li>
+                                <li><strong>涨跌幅</strong>：基于今日收盘价比上一日收盘计算百分比</li>
+                                <li><strong>成交量</strong>：当日累计成交量（股数）</li>
+                                <li><strong>止损/止盈</strong>：语义等同于 ≤ / ≥，但单独归类便于管理</li>
+                            </ul>
+                            <div class="text-center mt-2">
+                                <button class="btn btn-outline-warning btn-sm" onclick="checkAlerts()">
+                                    <i class="fas fa-sync"></i> 立即检查所有预警
+                                </button>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -795,6 +943,75 @@
                         <p class="text-muted">请选择报告类型并点击生成</p>
                     </div>
                 </div>
+            </div>
+        </div>
+
+        <!-- Page: Backtest -->
+        <div class="page" id="page-backtest">
+            <h3 class="page-title">策略回测</h3>
+
+            <div class="card mb-3">
+                <div class="card-header"><i class="fas fa-sliders-h"></i> 回测参数</div>
+                <div class="card-body">
+                    <div class="row g-3">
+                        <div class="col-12 col-md-4">
+                            <label class="form-label">策略</label>
+                            <select id="bt-strategy" class="form-select" onchange="onBacktestStrategyChange()">
+                                <option value="">加载中...</option>
+                            </select>
+                            <div id="bt-strategy-desc" class="form-text"></div>
+                        </div>
+                        <div class="col-6 col-md-2">
+                            <label class="form-label">股票代码</label>
+                            <input type="text" id="bt-ticker" class="form-control" value="AAPL" placeholder="AAPL">
+                        </div>
+                        <div class="col-6 col-md-2">
+                            <label class="form-label">回测区间</label>
+                            <select id="bt-period" class="form-select">
+                                <option value="6mo">近 6 月</option>
+                                <option value="1y" selected>近 1 年</option>
+                                <option value="2y">近 2 年</option>
+                                <option value="5y">近 5 年</option>
+                            </select>
+                        </div>
+                        <div class="col-12 col-md-4">
+                            <label class="form-label">初始资金 (USD)</label>
+                            <input type="number" id="bt-capital" class="form-control" value="100000" min="1000" step="1000">
+                        </div>
+                    </div>
+                    <div id="bt-params-zone" class="row g-3 mt-1"></div>
+                    <div class="mt-3">
+                        <button class="btn btn-primary" id="btn-run-backtest" onclick="runBacktest()">
+                            <i class="fas fa-play"></i> 运行回测
+                        </button>
+                        <span class="text-muted ms-2" style="font-size:12px;">
+                            长仓单持、每次全仓开平、含 1% 模拟滑点 · 结束强制平仓
+                        </span>
+                    </div>
+                </div>
+            </div>
+
+            <div id="bt-results" class="d-none">
+                <div class="row g-3 mb-3" id="bt-stats-row"></div>
+
+                <div class="card mb-3">
+                    <div class="card-header"><i class="fas fa-chart-area"></i> 净值曲线</div>
+                    <div class="card-body">
+                        <div id="bt-equity-chart" style="width:100%;height:min(380px,55vh);"></div>
+                    </div>
+                </div>
+
+                <div class="card mb-3">
+                    <div class="card-header"><i class="fas fa-exchange-alt"></i> 交易明细</div>
+                    <div class="card-body p-0">
+                        <div id="bt-trades-body"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="bt-empty" class="text-center text-muted py-5">
+                <i class="fas fa-vials fa-3x mb-3 opacity-50"></i>
+                <p class="mb-0">选择策略与参数后点击 “运行回测” 查看结果</p>
             </div>
         </div>
 
@@ -1050,6 +1267,7 @@
             </div>
 
             <div class="card mb-3">
+<<<<<<< HEAD
                 <div class="card-header d-flex justify-content-between align-items-center">
                     <span><i class="fas fa-robot"></i> 配置管理</span>
                     <button class="btn btn-sm btn-primary" id="btn-save-settings" onclick="saveSettings()" style="display:none;">
@@ -1122,6 +1340,27 @@
                             </button>
                         </div>
                     </div>
+=======
+                <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+                    <span><i class="fas fa-robot"></i> 当前生效配置</span>
+                    <div class="btn-group btn-group-sm" id="settings-edit-toolbar">
+                        <button class="btn btn-outline-primary" id="btn-settings-edit" onclick="toggleSettingsEdit(true)">
+                            <i class="fas fa-pen"></i> 编辑
+                        </button>
+                        <button class="btn btn-primary d-none" id="btn-settings-save" onclick="saveSettings()">
+                            <i class="fas fa-save"></i> 保存
+                        </button>
+                        <button class="btn btn-outline-secondary d-none" id="btn-settings-cancel" onclick="toggleSettingsEdit(false)">
+                            取消
+                        </button>
+                    </div>
+                </div>
+                <div class="card-body" id="settings-config">加载中...</div>
+                <div class="card-footer text-muted" style="font-size:12px;background:transparent;border-top-color:var(--border);">
+                    <i class="fas fa-circle-info"></i>
+                    敏感字段（API Key / Token / 密码）输入后会写入 <code>~/.stock_trading/config.yaml</code>。
+                    调度器 / 长连接需手动重启才能加载新配置。
+>>>>>>> origin/claude/stock-trading-system-LXzEI
                 </div>
             </div>
         </div>

@@ -1,5 +1,7 @@
 """CLI entry point for Stock Trading Advisory System."""
 
+import os
+
 import click
 from rich.console import Console
 from rich.table import Table
@@ -355,9 +357,23 @@ def monitor():
 
 
 @cli.command()
+<<<<<<< HEAD
 @click.option("--host", default="0.0.0.0", help="Bind host")
 @click.option("--port", default=None, type=int,
               help="Bind port (defaults to $PORT env or 5000)")
+=======
+@click.option(
+    "--host",
+    default=lambda: os.environ.get("HOST", "0.0.0.0"),
+    help="Bind host (env: HOST, default: 0.0.0.0)",
+)
+@click.option(
+    "--port",
+    default=lambda: int(os.environ.get("PORT", "5000")),
+    type=int,
+    help="Bind port (env: PORT, default: 5000)",
+)
+>>>>>>> origin/claude/stock-trading-system-LXzEI
 @click.option("--debug", is_flag=True, help="Enable debug mode")
 def web(host, port, debug):
     """Start web dashboard server."""

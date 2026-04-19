@@ -5,7 +5,12 @@ import threading
 from flask import Flask, render_template, jsonify, request
 from flask_socketio import SocketIO
 
+<<<<<<< HEAD
 from stock_trading_system.config import load_config, get_config, save_config
+=======
+from stock_trading_system.config import load_config, get_config
+from stock_trading_system.config.settings import update_user_config, WRITABLE_SETTING_PATHS
+>>>>>>> origin/claude/stock-trading-system-LXzEI
 from stock_trading_system.utils import get_logger
 
 logger = get_logger("web")
@@ -278,6 +283,35 @@ def _mask_secret(value: str, keep: int = 4) -> str:
     return "*" * (len(s) - keep) + s[-keep:]
 
 
+def _reset_config_dependent_singletons(paths: list[str]):
+    """Clear lazy singletons whose config might have changed.
+
+    Called after a successful /api/settings POST so the next request picks
+    up the new config. We only reset the ones we know about — the scheduler
+    thread is left alone (user can restart it from the UI if needed).
+    """
+    global _analyzer, _alert_monitor, _data_manager, _screener, _strategy_engine, _report_gen
+    paths = paths or []
+    touched_gemini = any(p.startswith("gemini.") for p in paths)
+    touched_qwen = any(p.startswith("qwen.") for p in paths)
+    touched_polygon = any(p.startswith("polygon.") for p in paths)
+    touched_ib = any(p.startswith("ib.") for p in paths)
+    touched_alerts = any(p.startswith("alerts.") for p in paths)
+    # Analyzer uses gemini config.
+    if touched_gemini:
+        _analyzer = None
+    # Data manager fans out to IB/Polygon/Qwen.
+    if touched_ib or touched_polygon or touched_qwen:
+        _data_manager = None
+        _screener = None
+    # Alert monitor owns notifier handles + its own DataManager.
+    if touched_alerts or touched_ib or touched_polygon or touched_qwen:
+        _alert_monitor = None
+    # Reports depend on config defaults for output dir.
+    _report_gen = None
+    _strategy_engine = None
+
+
 def create_app(config_path=None):
     """Create and configure the Flask application."""
     app = Flask(__name__)
@@ -291,6 +325,15 @@ def create_app(config_path=None):
     @app.route("/")
     def index():
         return render_template("index.html")
+
+    # ── Health Check ────────────────────────────────────────────────────
+    # Lightweight probe used by Railway / Render / k8s liveness checks.
+    # Intentionally avoids touching the DB, data sources, or any lazily
+    # initialized singleton so it stays fast and never triggers network I/O.
+
+    @app.route("/api/health")
+    def api_health():
+        return jsonify({"status": "ok", "service": "stock-trading-system"})
 
     # ── Dashboard API ───────────────────────────────────────────────────
 
@@ -405,11 +448,22 @@ def create_app(config_path=None):
             try:
                 socketio.emit("analysis_status", {"ticker": ticker, "status": "running"})
 
+<<<<<<< HEAD
                 def _progress(step, status):
                     socketio.emit("analysis_step", {"ticker": ticker, "step": step, "status": status})
 
                 analyzer = _get_analyzer()
                 result = analyzer.analyze(ticker, date, progress_callback=_progress)
+=======
+                def _progress(event: dict):
+                    # Forward pipeline events verbatim, adding ticker for the UI
+                    # to filter out stale updates if multiple runs overlap.
+                    payload = {"ticker": ticker, **event}
+                    socketio.emit("analysis_pipeline", payload)
+
+                analyzer = _get_analyzer()
+                result = analyzer.analyze(ticker, date, progress_cb=_progress)
+>>>>>>> origin/claude/stock-trading-system-LXzEI
 
                 # Also generate strategy advice
                 advice = None
@@ -449,6 +503,7 @@ def create_app(config_path=None):
                     "risk_assessment": str(result.risk_assessment),
                     "trade_decision": str(result.trade_decision),
                     "advice": advice,
+                    "steps": result.steps,
                 }
                 socketio.emit("analysis_result", result_data)
 
@@ -459,9 +514,19 @@ def create_app(config_path=None):
                     from stock_trading_system.portfolio.database import PortfolioDatabase
                     db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
                     db = PortfolioDatabase(db_path)
+<<<<<<< HEAD
                     new_analysis_id = db.save_analysis({
+=======
+                    # Record which LLM actually produced this run so the history
+                    # page can show provenance for cross-model comparisons.
+                    gemini_cfg = get_config().get("gemini", {}) or {}
+                    model_name = gemini_cfg.get("deep_think_model") or gemini_cfg.get("model", "")
+                    db.save_analysis({
+>>>>>>> origin/claude/stock-trading-system-LXzEI
                         **result_data,
                         "advice_json": _json.dumps(advice, ensure_ascii=False) if advice else "",
+                        "steps_json": _json.dumps(result.steps, ensure_ascii=False),
+                        "model": model_name,
                         "created_at": __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     })
                     logger.info("Analysis saved to history: %s (id=%s)", ticker, new_analysis_id)
@@ -964,6 +1029,44 @@ def create_app(config_path=None):
             return jsonify(record)
         return jsonify({"error": "Not found"}), 404
 
+    @app.route("/api/history/compare")
+    def api_analysis_compare():
+        """Compare multiple analyses side-by-side. Query: ?ids=1,2,3 (up to 5)."""
+        from stock_trading_system.portfolio.database import PortfolioDatabase
+        ids_raw = request.args.get("ids", "").strip()
+        if not ids_raw:
+            return jsonify({"error": "Missing ids"}), 400
+        try:
+            ids = [int(x) for x in ids_raw.split(",") if x.strip()]
+        except ValueError:
+            return jsonify({"error": "Invalid ids"}), 400
+        if not ids:
+            return jsonify({"error": "Missing ids"}), 400
+        if len(ids) > 5:
+            return jsonify({"error": "At most 5 records can be compared"}), 400
+        db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
+        db = PortfolioDatabase(db_path)
+        records = db.get_analyses_by_ids(ids)
+        return jsonify({"count": len(records), "records": records})
+
+    @app.route("/api/history/timeline/<ticker>")
+    def api_analysis_timeline(ticker):
+        """Structured chronological history for one ticker (drift view)."""
+        from stock_trading_system.portfolio.database import PortfolioDatabase
+        limit = int(request.args.get("limit", 20))
+        db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
+        db = PortfolioDatabase(db_path)
+        records = db.get_analysis_timeline(ticker.upper(), limit=limit)
+        return jsonify({"ticker": ticker.upper(), "count": len(records), "records": records})
+
+    @app.route("/api/history/<int:analysis_id>", methods=["DELETE"])
+    def api_analysis_delete(analysis_id):
+        from stock_trading_system.portfolio.database import PortfolioDatabase
+        db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
+        db = PortfolioDatabase(db_path)
+        ok = db.delete_analysis(analysis_id)
+        return jsonify({"ok": ok})
+
     # ── Reports API ─────────────────────────────────────────────────────
 
     @app.route("/api/report", methods=["POST"])
@@ -1203,6 +1306,193 @@ def create_app(config_path=None):
                 "db_path": portfolio_cfg.get("db_path", ""),
             },
             "data_sources": dm_status,
+            "writable_paths": sorted(WRITABLE_SETTING_PATHS),
+        })
+
+    @app.route("/api/settings", methods=["POST"])
+    def api_settings_update():
+        """Write whitelisted settings to ~/.stock_trading/config.yaml.
+
+        Body: { "gemini.api_key": "sk-...", "qwen.enabled": true, ... }
+        Only keys listed in WRITABLE_SETTING_PATHS are accepted; unknown
+        keys are silently ignored. Empty strings DO get persisted so the
+        user can clear a bad credential.
+        """
+        data = request.json or {}
+        if not isinstance(data, dict):
+            return jsonify({"error": "Expected JSON object"}), 400
+        # Reject empty writes outright — no point rewriting the file.
+        valid_updates = {k: v for k, v in data.items() if k in WRITABLE_SETTING_PATHS}
+        if not valid_updates:
+            return jsonify({"error": "No writable fields provided"}), 400
+        try:
+            new_cfg = update_user_config(valid_updates)
+        except Exception as e:
+            logger.error("Failed to write user config: %s", e)
+            return jsonify({"error": str(e)}), 500
+        applied = new_cfg.get("_applied_paths", []) or []
+        _reset_config_dependent_singletons(applied)
+        logger.info("Settings updated: %s", applied)
+        return jsonify({"ok": True, "applied": applied, "count": len(applied)})
+
+    # ── Backtesting ─────────────────────────────────────────────────────
+
+    @app.route("/api/backtest/strategies")
+    def api_backtest_strategies():
+        """List available backtest strategies with their parameter schemas."""
+        from stock_trading_system.strategy.backtest import Backtester
+        bt = Backtester(get_config())
+        return jsonify({"strategies": bt.list_strategies()})
+
+    @app.route("/api/backtest/run", methods=["POST"])
+    def api_backtest_run():
+        """Run a backtest and return the equity curve + trades + stats.
+
+        Body: {
+            "ticker": "AAPL",
+            "strategy": "sma_crossover",
+            "period": "1y",
+            "initial_capital": 100000,
+            "params": { "short_window": 20, "long_window": 50 }
+        }
+        """
+        from dataclasses import asdict
+        from stock_trading_system.strategy.backtest import Backtester
+        data = request.json or {}
+        ticker = (data.get("ticker") or "").upper().strip()
+        strategy = data.get("strategy") or "buy_and_hold"
+        period = data.get("period") or "1y"
+        try:
+            initial_capital = float(data.get("initial_capital") or 100_000)
+        except (TypeError, ValueError):
+            return jsonify({"error": "Invalid initial_capital"}), 400
+        params = data.get("params") or {}
+        if not ticker:
+            return jsonify({"error": "Missing ticker"}), 400
+
+        try:
+            bt = Backtester(get_config())
+            result = bt.run(
+                ticker=ticker,
+                strategy_id=strategy,
+                initial_capital=initial_capital,
+                period=period,
+                params=params,
+            )
+        except ValueError as ve:
+            return jsonify({"error": str(ve)}), 400
+        except Exception as e:
+            logger.error("Backtest failed: %s", e)
+            return jsonify({"error": str(e)}), 500
+
+        # Convert dataclasses to dicts for JSON serialisation.
+        payload = asdict(result)
+        payload["trades"] = [asdict(t) if not isinstance(t, dict) else t for t in result.trades]
+        return jsonify(payload)
+
+    # ── Global Search ───────────────────────────────────────────────────
+
+    @app.route("/api/search")
+    def api_search():
+        """Unified search across positions, transactions, alerts, analysis history.
+
+        Query: ?q=<substring>&limit=<per-group>
+        Returns: { q, positions, transactions, analyses, alerts } — each a list.
+        Matching is case-insensitive substring against ticker plus
+        category-specific fields (action/signal/condition/notes).
+        """
+        raw = (request.args.get("q") or "").strip()
+        if not raw:
+            return jsonify({
+                "q": "", "positions": [], "transactions": [],
+                "analyses": [], "alerts": [],
+            })
+        limit = max(1, min(int(request.args.get("limit", 10)), 50))
+        q = raw.lower()
+
+        from stock_trading_system.portfolio.database import PortfolioDatabase
+        db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
+        db = PortfolioDatabase(db_path)
+
+        # Positions — read rows directly so we don't trigger live price fetches.
+        positions_out = []
+        try:
+            for p in db.get_all_positions():
+                if q in p.ticker.lower():
+                    positions_out.append({
+                        "ticker": p.ticker,
+                        "market": p.market,
+                        "shares": p.shares,
+                        "avg_cost": p.avg_cost,
+                        "added_date": p.added_date,
+                    })
+        except Exception as e:
+            logger.warning("search positions failed: %s", e)
+        positions_out = positions_out[:limit]
+
+        # Transactions — ticker, action, notes.
+        transactions_out = []
+        try:
+            for t in db.get_transactions():
+                hay = f"{t.ticker} {t.action} {t.notes or ''}".lower()
+                if q in hay:
+                    transactions_out.append({
+                        "id": t.id, "ticker": t.ticker, "action": t.action,
+                        "shares": t.shares, "price": t.price,
+                        "timestamp": t.timestamp, "notes": t.notes,
+                    })
+                if len(transactions_out) >= limit:
+                    break
+        except Exception as e:
+            logger.warning("search transactions failed: %s", e)
+
+        # Analysis history — ticker, signal, action. Keep payload small.
+        analyses_out = []
+        try:
+            # Pull a reasonable window and filter in Python; avoids full-table scans
+            # while still matching against the structured columns already stored.
+            for r in db.get_analysis_history(limit=500):
+                hay = " ".join(str(r.get(k) or "") for k in ("ticker", "signal", "action", "confidence", "model")).lower()
+                if q in hay:
+                    analyses_out.append({
+                        "id": r.get("id"),
+                        "ticker": r.get("ticker"),
+                        "date": r.get("date"),
+                        "signal": r.get("signal"),
+                        "action": r.get("action"),
+                        "confidence": r.get("confidence"),
+                        "model": r.get("model"),
+                        "created_at": r.get("created_at"),
+                    })
+                if len(analyses_out) >= limit:
+                    break
+        except Exception as e:
+            logger.warning("search analyses failed: %s", e)
+
+        # Alerts — match ticker or condition (e.g. "price_above").
+        alerts_out = []
+        try:
+            for a in db.get_active_alerts():
+                hay = f"{a.get('ticker','')} {a.get('condition','')}".lower()
+                if q in hay:
+                    alerts_out.append({
+                        "id": a.get("id"),
+                        "ticker": a.get("ticker"),
+                        "condition": a.get("condition"),
+                        "threshold": a.get("threshold"),
+                        "created": a.get("created"),
+                    })
+                if len(alerts_out) >= limit:
+                    break
+        except Exception as e:
+            logger.warning("search alerts failed: %s", e)
+
+        return jsonify({
+            "q": raw,
+            "positions": positions_out,
+            "transactions": transactions_out,
+            "analyses": analyses_out,
+            "alerts": alerts_out,
         })
 
     # ── Backtest API ────────────────────────────────────────────────────

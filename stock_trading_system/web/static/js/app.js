@@ -6,6 +6,7 @@ let chartAllocation = null;
 let chartKline = null;
 let currentKlineTicker = null;
 let currentKlineRange = '1mo';
+<<<<<<< HEAD
 let dashPnlDays = 30;
 let alertBadgeCount = 0;
 
@@ -14,6 +15,10 @@ function renderMd(text) {
     if (typeof marked !== 'undefined') return marked.parse(String(text));
     return '<pre>' + String(text).replace(/</g, '&lt;') + '</pre>';
 }
+=======
+let chartBacktest = null;
+let _backtestStrategies = null;
+>>>>>>> origin/claude/stock-trading-system-LXzEI
 
 // ── Navigation ─────────────────────────────────────────────────────────────
 
@@ -44,8 +49,12 @@ function switchTab(page) {
     if (page === 'backtest') loadBacktestStrategies();
     if (page === 'paper') loadPaperTickers();
     if (page === 'settings') loadSettings();
+<<<<<<< HEAD
     if (page === 'tasks') { loadTasks(); clearTaskBadge(); }
     if (page === 'screener') loadGurus();
+=======
+    if (page === 'backtest') loadBacktestStrategies();
+>>>>>>> origin/claude/stock-trading-system-LXzEI
 
     window.scrollTo({ top: 0, behavior: 'instant' in window ? 'instant' : 'auto' });
 }
@@ -86,6 +95,219 @@ function closeMoreSheet() {
     document.getElementById('more-sheet').classList.remove('show');
     document.getElementById('more-sheet-backdrop').classList.remove('show');
 }
+
+// ── Global Search ──────────────────────────────────────────────────────────
+
+let _searchTimer = null;
+let _searchHighlight = -1;  // index in the flat result list for arrow-key nav
+let _searchFlatResults = [];  // flat list of {type,id,ticker,action}
+
+function _escapeHtml(s) {
+    if (s == null) return '';
+    return String(s).replace(/[&<>"']/g, c => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+    }[c]));
+}
+
+function _highlightMatch(text, q) {
+    if (!text || !q) return _escapeHtml(text);
+    const i = text.toLowerCase().indexOf(q.toLowerCase());
+    if (i < 0) return _escapeHtml(text);
+    return _escapeHtml(text.slice(0, i))
+        + '<mark>' + _escapeHtml(text.slice(i, i + q.length)) + '</mark>'
+        + _escapeHtml(text.slice(i + q.length));
+}
+
+function _closeSearchPanel() {
+    const panel = document.getElementById('global-search-panel');
+    if (panel) panel.classList.remove('show');
+    _searchHighlight = -1;
+}
+
+function _showSearchPanel() {
+    const panel = document.getElementById('global-search-panel');
+    if (panel) panel.classList.add('show');
+}
+
+function _renderSearchResults(data) {
+    const panel = document.getElementById('global-search-panel');
+    if (!panel) return;
+    const q = data.q || '';
+    const groups = [
+        { key: 'positions',    label: '持仓',    icon: 'fa-briefcase' },
+        { key: 'analyses',     label: '分析记录', icon: 'fa-brain' },
+        { key: 'transactions', label: '交易',    icon: 'fa-exchange-alt' },
+        { key: 'alerts',       label: '预警',    icon: 'fa-bell' },
+    ];
+    const total = groups.reduce((n, g) => n + (data[g.key] || []).length, 0);
+    if (total === 0) {
+        panel.innerHTML = `<div class="global-search-empty">没有找到 "${_escapeHtml(q)}" 的结果</div>`;
+        _searchFlatResults = [];
+        _showSearchPanel();
+        return;
+    }
+    _searchFlatResults = [];
+    let flatIdx = 0;
+    const html = groups.map(g => {
+        const items = data[g.key] || [];
+        if (items.length === 0) return '';
+        const rows = items.map(it => {
+            const myIdx = flatIdx++;
+            let subtitle = '';
+            let payload = { type: g.key };
+            if (g.key === 'positions') {
+                subtitle = `${it.market || ''} · ${fmt(it.shares)} 股 @ ${fmt(it.avg_cost)}`;
+                payload = { type: 'positions', ticker: it.ticker };
+                _searchFlatResults.push(payload);
+                return `<div class="gs-result" data-idx="${myIdx}" onclick="_onSearchResultClick(${myIdx})">
+                    <div class="gs-result-main">
+                        <span class="gs-result-ticker">${_highlightMatch(it.ticker, q)}</span>
+                        <span class="gs-result-sub">${_escapeHtml(subtitle)}</span>
+                    </div>
+                </div>`;
+            }
+            if (g.key === 'analyses') {
+                const sig = it.signal || '';
+                const sigCls = getSignalClass(sig);
+                subtitle = `${it.date || ''} · ${it.action || '--'} · ${it.model || ''}`;
+                payload = { type: 'analyses', id: it.id, ticker: it.ticker };
+                _searchFlatResults.push(payload);
+                return `<div class="gs-result" data-idx="${myIdx}" onclick="_onSearchResultClick(${myIdx})">
+                    <div class="gs-result-main">
+                        <span class="gs-result-ticker">${_highlightMatch(it.ticker || '', q)}</span>
+                        <span class="gs-result-sub">${_escapeHtml(subtitle)}</span>
+                    </div>
+                    <span class="gs-result-badge ${sigCls}">${_escapeHtml(sig)}</span>
+                </div>`;
+            }
+            if (g.key === 'transactions') {
+                const cls = it.action === 'buy' ? 'text-green' : 'text-red';
+                subtitle = `${it.timestamp || ''} · ${fmt(it.shares)} @ ${fmt(it.price)}`;
+                payload = { type: 'transactions', ticker: it.ticker };
+                _searchFlatResults.push(payload);
+                return `<div class="gs-result" data-idx="${myIdx}" onclick="_onSearchResultClick(${myIdx})">
+                    <div class="gs-result-main">
+                        <span class="gs-result-ticker">${_highlightMatch(it.ticker, q)}</span>
+                        <span class="gs-result-sub">${_escapeHtml(subtitle)}</span>
+                    </div>
+                    <span class="gs-result-badge ${cls}">${(it.action || '').toUpperCase()}</span>
+                </div>`;
+            }
+            if (g.key === 'alerts') {
+                subtitle = `${it.condition || ''} · ${fmt(it.threshold)}`;
+                payload = { type: 'alerts', id: it.id, ticker: it.ticker };
+                _searchFlatResults.push(payload);
+                return `<div class="gs-result" data-idx="${myIdx}" onclick="_onSearchResultClick(${myIdx})">
+                    <div class="gs-result-main">
+                        <span class="gs-result-ticker">${_highlightMatch(it.ticker, q)}</span>
+                        <span class="gs-result-sub">${_escapeHtml(subtitle)}</span>
+                    </div>
+                </div>`;
+            }
+            return '';
+        }).join('');
+        return `<div class="gs-group">
+            <div class="gs-group-head"><i class="fas ${g.icon}"></i> ${g.label} <span class="gs-group-count">${items.length}</span></div>
+            ${rows}
+        </div>`;
+    }).join('');
+    panel.innerHTML = html;
+    _showSearchPanel();
+}
+
+function _onSearchResultClick(idx) {
+    const r = _searchFlatResults[idx];
+    if (!r) return;
+    _closeSearchPanel();
+    document.getElementById('global-search-input').blur();
+    if (r.type === 'positions' || r.type === 'transactions') {
+        switchTab('portfolio');
+    } else if (r.type === 'analyses') {
+        switchTab('history');
+        // Open detail modal shortly after the page swap so the modal host exists.
+        if (r.id) setTimeout(() => showHistoryDetail(r.id), 100);
+    } else if (r.type === 'alerts') {
+        switchTab('alerts');
+    }
+}
+
+async function _runGlobalSearch(q) {
+    if (!q) {
+        _closeSearchPanel();
+        return;
+    }
+    try {
+        const data = await api('/api/search?q=' + encodeURIComponent(q));
+        if (data) _renderSearchResults(data);
+    } catch (e) { /* ignore */ }
+}
+
+(function initGlobalSearch() {
+    const input = document.getElementById('global-search-input');
+    const panel = document.getElementById('global-search-panel');
+    if (!input || !panel) return;
+
+    input.addEventListener('input', () => {
+        const q = input.value.trim();
+        clearTimeout(_searchTimer);
+        if (!q) { _closeSearchPanel(); return; }
+        // Debounce so we don't hammer the endpoint on every keystroke.
+        _searchTimer = setTimeout(() => _runGlobalSearch(q), 200);
+    });
+
+    input.addEventListener('focus', () => {
+        if (input.value.trim()) _showSearchPanel();
+    });
+
+    input.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            _closeSearchPanel();
+            input.blur();
+            return;
+        }
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+            if (_searchFlatResults.length === 0) return;
+            e.preventDefault();
+            _searchHighlight += (e.key === 'ArrowDown' ? 1 : -1);
+            if (_searchHighlight < 0) _searchHighlight = _searchFlatResults.length - 1;
+            if (_searchHighlight >= _searchFlatResults.length) _searchHighlight = 0;
+            panel.querySelectorAll('.gs-result').forEach((el, i) => {
+                el.classList.toggle('highlighted', i === _searchHighlight);
+                if (i === _searchHighlight) el.scrollIntoView({ block: 'nearest' });
+            });
+            return;
+        }
+        if (e.key === 'Enter') {
+            if (_searchHighlight >= 0) {
+                _onSearchResultClick(_searchHighlight);
+                return;
+            }
+            // Enter with no selection → jump to analysis page with the ticker
+            const q = input.value.trim().toUpperCase();
+            if (q) {
+                document.getElementById('analyze-ticker').value = q;
+                switchTab('analysis');
+                _closeSearchPanel();
+                input.blur();
+            }
+        }
+    });
+
+    // Click outside panel closes it.
+    document.addEventListener('click', (e) => {
+        if (!e.target.closest('#global-search')) _closeSearchPanel();
+    });
+
+    // "/" keyboard shortcut to focus (skip if already typing in an input).
+    document.addEventListener('keydown', (e) => {
+        if (e.key !== '/') return;
+        const tag = (e.target.tagName || '').toLowerCase();
+        if (tag === 'input' || tag === 'textarea' || e.target.isContentEditable) return;
+        e.preventDefault();
+        input.focus();
+        input.select();
+    });
+})();
 
 // ── Clock ──────────────────────────────────────────────────────────────────
 
@@ -288,6 +510,7 @@ function renderAllocationChart(alloc) {
 
 // ── Analysis ───────────────────────────────────────────────────────────────
 
+<<<<<<< HEAD
 function switchReportTab(btn, panelId) {
     document.querySelectorAll('.report-tab').forEach(t => t.classList.remove('active'));
     document.querySelectorAll('.report-panel').forEach(p => p.classList.remove('active'));
@@ -299,6 +522,78 @@ function switchReportTab(btn, panelId) {
 // Track active tasks by ticker so we can route task_* events back to UI.
 const _activeAnalysisTasks = new Map();   // taskId -> ticker
 const _activeScreenTasks = new Map();     // taskId -> {market, strategy}
+=======
+// Pipeline steps mirror PIPELINE_STEPS in agents/analyzer.py so the UI can
+// render all step cards up-front (before any WebSocket events arrive).
+const PIPELINE_STEPS = [
+    { id: 'market',       label: '技术面分析', icon: 'fa-chart-bar' },
+    { id: 'social',       label: '情绪分析',   icon: 'fa-comments' },
+    { id: 'news',         label: '新闻分析',   icon: 'fa-newspaper' },
+    { id: 'fundamentals', label: '基本面分析', icon: 'fa-building' },
+    { id: 'debate',       label: '多空辩论',   icon: 'fa-balance-scale' },
+    { id: 'risk',         label: '风险评估',   icon: 'fa-shield-alt' },
+    { id: 'decision',     label: '最终决策',   icon: 'fa-gavel' },
+];
+// Track live per-step state; keyed by step id.
+let _pipelineState = {};
+let _pipelineRunTicker = null;
+
+function _pipelineStatusLabel(status) {
+    if (status === 'done') return '完成';
+    if (status === 'running') return '进行中';
+    if (status === 'failed') return '失败';
+    return '等待';
+}
+
+function _pipelineRender() {
+    const host = document.getElementById('pipeline-dag');
+    if (!host) return;
+    const steps = PIPELINE_STEPS;
+    const html = steps.map((s, idx) => {
+        const st = _pipelineState[s.id] || { status: 'pending', duration_ms: 0 };
+        const cls = `pipeline-step pipeline-step-${st.status}`;
+        const dur = st.duration_ms ? `${(st.duration_ms / 1000).toFixed(1)}s` : '';
+        const badge = _pipelineStatusLabel(st.status);
+        const arrow = idx < steps.length - 1 ? '<div class="pipeline-arrow"><i class="fas fa-chevron-right"></i></div>' : '';
+        return `
+            <div class="${cls}" data-step="${s.id}">
+                <div class="pipeline-step-head">
+                    <i class="fas ${s.icon}"></i>
+                    <span class="pipeline-step-label">${s.label}</span>
+                </div>
+                <div class="pipeline-step-meta">
+                    <span class="pipeline-step-badge">${badge}</span>
+                    ${dur ? `<span class="pipeline-step-dur">${dur}</span>` : ''}
+                </div>
+            </div>${arrow}`;
+    }).join('');
+    host.innerHTML = html;
+
+    // Progress bar = done / total
+    const done = steps.filter(s => (_pipelineState[s.id] || {}).status === 'done').length;
+    const pct = Math.round((done / steps.length) * 100);
+    const fill = document.getElementById('pipeline-progress-fill');
+    if (fill) fill.style.width = pct + '%';
+
+    const summary = document.getElementById('pipeline-summary');
+    if (summary) {
+        const running = steps.find(s => (_pipelineState[s.id] || {}).status === 'running');
+        const failed = steps.find(s => (_pipelineState[s.id] || {}).status === 'failed');
+        if (failed) summary.textContent = `失败于: ${failed.label}`;
+        else if (done === steps.length) summary.textContent = `全部完成 (${done}/${steps.length})`;
+        else if (running) summary.textContent = `${running.label} · ${done}/${steps.length}`;
+        else summary.textContent = `${done}/${steps.length}`;
+    }
+}
+
+function _pipelineReset() {
+    _pipelineState = {};
+    PIPELINE_STEPS.forEach(s => { _pipelineState[s.id] = { status: 'pending', duration_ms: 0 }; });
+    document.getElementById('pipeline-card').style.display = 'block';
+    document.getElementById('btn-rerun').style.display = 'none';
+    _pipelineRender();
+}
+>>>>>>> origin/claude/stock-trading-system-LXzEI
 
 function runAnalysis() {
     const ticker = document.getElementById('analyze-ticker').value.trim().toUpperCase();
@@ -308,6 +603,8 @@ function runAnalysis() {
     // Load price chart + fundamentals + news immediately (fast preview)
     loadQuickData(ticker);
 
+    _pipelineRunTicker = ticker;
+    _pipelineReset();
     document.getElementById('analysis-loading').style.display = 'block';
     document.getElementById('analysis-result').style.display = 'none';
     document.getElementById('btn-analyze').disabled = true;
@@ -339,6 +636,7 @@ function runAnalysis() {
     });
 }
 
+<<<<<<< HEAD
 async function handleAnalysisTaskCompleted(taskId, tickerHint) {
     try {
         const data = await api(`/api/tasks/${taskId}/result`);
@@ -369,6 +667,13 @@ async function handleAnalysisTaskCompleted(taskId, tickerHint) {
 
 function safeJsonParse(s) {
     try { return JSON.parse(s); } catch (_) { return null; }
+=======
+function rerunAnalysis() {
+    // Re-submit the last ticker+date combination. We don't yet support
+    // re-running a single failed step (that needs TradingAgents refactor);
+    // for now "重跑" triggers a full fresh run.
+    runAnalysis();
+>>>>>>> origin/claude/stock-trading-system-LXzEI
 }
 
 // ── Quick data (chart / fundamentals / news) ───────────────────────────────
@@ -696,6 +1001,38 @@ socket.on('analysis_step', data => {
     }
 });
 
+// Live pipeline progress stream from StockAnalyzer.analyze() via the
+// `progress_cb` callback in /api/analyze. Events:
+//   pipeline_start / step_start / step_done / pipeline_done / pipeline_error
+socket.on('analysis_pipeline', event => {
+    // Ignore events that belong to a different (older) run.
+    if (_pipelineRunTicker && event.ticker && event.ticker !== _pipelineRunTicker) return;
+    const type = event.type;
+    if (type === 'pipeline_start') {
+        if (Array.isArray(event.steps)) {
+            event.steps.forEach(s => { _pipelineState[s.id] = { status: s.status, duration_ms: s.duration_ms || 0 }; });
+        }
+        _pipelineRender();
+    } else if (type === 'step_start') {
+        if (event.step) _pipelineState[event.step] = { status: 'running', duration_ms: 0 };
+        _pipelineRender();
+    } else if (type === 'step_done') {
+        if (event.step) _pipelineState[event.step] = { status: 'done', duration_ms: event.duration_ms || 0 };
+        _pipelineRender();
+    } else if (type === 'pipeline_done') {
+        if (Array.isArray(event.steps)) {
+            event.steps.forEach(s => { _pipelineState[s.id] = { status: s.status, duration_ms: s.duration_ms || 0 }; });
+        }
+        _pipelineRender();
+    } else if (type === 'pipeline_error') {
+        if (Array.isArray(event.steps)) {
+            event.steps.forEach(s => { _pipelineState[s.id] = { status: s.status, duration_ms: s.duration_ms || 0 }; });
+        }
+        document.getElementById('btn-rerun').style.display = 'inline-block';
+        _pipelineRender();
+    }
+});
+
 socket.on('analysis_result', data => {
     renderAnalysisResultPayload(data);
 });
@@ -754,6 +1091,9 @@ function renderAnalysisResultPayload(data) {
 socket.on('analysis_error', data => {
     document.getElementById('analysis-loading').style.display = 'none';
     document.getElementById('btn-analyze').disabled = false;
+    // Surface the rerun button so the user doesn't have to retype everything.
+    const rerunBtn = document.getElementById('btn-rerun');
+    if (rerunBtn) rerunBtn.style.display = 'inline-block';
     showToast(`分析失败: ${data.error}`, 'error');
 });
 
@@ -1481,6 +1821,212 @@ async function loadAlertHistory() {
     }
 }
 
+// ── Alert Rule Editor ──────────────────────────────────────────────────────
+
+// Live cache of the current price for the ticker typed in the rule editor.
+// Used by threshold suggestion chips, rule preview, and test-rule.
+let _rulePrice = null;    // numeric last price, or null
+let _ruleMarket = null;   // "us" / "cn"
+let _rulePriceTimer = null;
+
+const CONDITION_LABELS = {
+    price_above:      { verb: '达到或超过', unit: '价格',   desc: '当最新价 ≥ 阈值时触发' },
+    price_below:      { verb: '跌至或低于', unit: '价格',   desc: '当最新价 ≤ 阈值时触发' },
+    pct_change_above: { verb: '当日涨幅达到', unit: '%',    desc: '今收相对昨收涨幅 ≥ 阈值时触发' },
+    pct_change_below: { verb: '当日跌幅达到', unit: '%',    desc: '今收相对昨收跌幅 ≥ 阈值时触发' },
+    volume_spike:     { verb: '成交量达到', unit: '股',     desc: '当日成交量 ≥ 阈值时触发' },
+    stop_loss:        { verb: '跌至止损位', unit: '价格',   desc: '当最新价 ≤ 阈值时触发（止损语义）' },
+    take_profit:      { verb: '涨至止盈位', unit: '价格',   desc: '当最新价 ≥ 阈值时触发（止盈语义）' },
+};
+
+function _ruleThresholdKind(cond) {
+    // Returns 'price' / 'pct' / 'volume' — drives suggestion chips.
+    if (cond === 'pct_change_above' || cond === 'pct_change_below') return 'pct';
+    if (cond === 'volume_spike') return 'volume';
+    return 'price';
+}
+
+function _ruleCurrency(n) {
+    if (n == null) return '--';
+    if (_ruleMarket === 'cn') return '¥' + fmt(n);
+    return '$' + fmt(n);
+}
+
+function _updateRuleConditionDesc() {
+    const cond = document.getElementById('alert-condition').value;
+    const info = CONDITION_LABELS[cond] || {};
+    const el = document.getElementById('rule-condition-desc');
+    if (el) el.textContent = info.desc || '';
+}
+
+function _updateRuleThresholdSuggestions() {
+    const host = document.getElementById('rule-threshold-suggestions');
+    if (!host) return;
+    const cond = document.getElementById('alert-condition').value;
+    const kind = _ruleThresholdKind(cond);
+    let chips = [];
+    if (kind === 'price' && _rulePrice != null) {
+        // Offer common offsets from current price. Negative for downside
+        // conditions, positive for upside.
+        const neg = (cond === 'price_below' || cond === 'stop_loss');
+        const offsets = neg ? [-3, -5, -10, -15] : [3, 5, 10, 15];
+        chips = offsets.map(pct => {
+            const v = +(_rulePrice * (1 + pct / 100)).toFixed(2);
+            const sign = pct > 0 ? '+' : '';
+            return { label: `${sign}${pct}% → ${_ruleCurrency(v)}`, value: v };
+        });
+    } else if (kind === 'pct') {
+        chips = [3, 5, 8, 10].map(v => ({ label: `${v}%`, value: v }));
+    } else if (kind === 'volume') {
+        chips = [1e6, 5e6, 1e7, 5e7].map(v => ({
+            label: (v / 1e6).toFixed(0) + 'M',
+            value: v,
+        }));
+    }
+    host.innerHTML = chips.map(c =>
+        `<button type="button" class="rule-suggest-chip" data-val="${c.value}">${c.label}</button>`
+    ).join('');
+}
+
+function _updateRulePreview() {
+    const ticker = (document.getElementById('alert-ticker').value || '').trim().toUpperCase();
+    const cond = document.getElementById('alert-condition').value;
+    const thresholdRaw = document.getElementById('alert-threshold').value;
+    const threshold = parseFloat(thresholdRaw);
+    const preview = document.getElementById('rule-preview');
+    const btn = document.getElementById('btn-add-alert');
+
+    const valid = ticker && !isNaN(threshold) && threshold > 0;
+    if (btn) btn.disabled = !valid;
+
+    if (!preview) return;
+    if (!ticker) {
+        preview.className = 'rule-preview rule-preview-muted';
+        preview.innerHTML = '<i class="fas fa-circle-info"></i> <span>请输入股票代码...</span>';
+        return;
+    }
+    if (isNaN(threshold)) {
+        preview.className = 'rule-preview rule-preview-muted';
+        preview.innerHTML = '<i class="fas fa-circle-info"></i> <span>请输入阈值...</span>';
+        return;
+    }
+    const info = CONDITION_LABELS[cond] || {};
+    const kind = _ruleThresholdKind(cond);
+    let displayThreshold;
+    if (kind === 'price') displayThreshold = _ruleCurrency(threshold);
+    else if (kind === 'pct') displayThreshold = fmt(threshold) + '%';
+    else displayThreshold = fmt(threshold, 0) + ' 股';
+
+    let distance = '';
+    if (kind === 'price' && _rulePrice != null) {
+        const pct = ((threshold / _rulePrice) - 1) * 100;
+        const sign = pct >= 0 ? '+' : '';
+        const cls = pct >= 0 ? 'text-green' : 'text-red';
+        distance = `<span class="rule-preview-distance ${cls}">距现价 ${sign}${fmt(pct)}%</span>`;
+    }
+
+    preview.className = 'rule-preview rule-preview-ready';
+    preview.innerHTML = `
+        <i class="fas fa-bell"></i>
+        <span>
+            当 <strong>${ticker}</strong> ${info.verb || ''}
+            <strong>${displayThreshold}</strong> 时触发预警
+            ${distance}
+        </span>`;
+}
+
+async function _fetchRulePrice(ticker) {
+    if (!ticker) {
+        _rulePrice = null;
+        _ruleMarket = null;
+        document.getElementById('rule-current-price').textContent = '';
+        _updateRuleThresholdSuggestions();
+        _updateRulePreview();
+        return;
+    }
+    try {
+        const data = await api('/api/quote/' + encodeURIComponent(ticker));
+        if (data && data.price) {
+            _rulePrice = data.price.last || data.price.close || null;
+            _ruleMarket = data.market || null;
+        } else {
+            _rulePrice = null;
+            _ruleMarket = null;
+        }
+    } catch (e) {
+        _rulePrice = null;
+        _ruleMarket = null;
+    }
+    const label = document.getElementById('rule-current-price');
+    if (label) {
+        label.textContent = _rulePrice != null
+            ? `${ticker} 现价 ${_ruleCurrency(_rulePrice)}`
+            : (ticker ? `${ticker} 暂无行情` : '');
+    }
+    _updateRuleThresholdSuggestions();
+    _updateRulePreview();
+}
+
+function _applyPreset(preset) {
+    const condSel = document.getElementById('alert-condition');
+    const thrInput = document.getElementById('alert-threshold');
+    // Presets map to (condition, threshold-generator). Price-based presets
+    // need _rulePrice; percent-based don't.
+    if (preset === 'breakout_up') {
+        condSel.value = 'price_above';
+        if (_rulePrice != null) thrInput.value = (_rulePrice * 1.05).toFixed(2);
+    } else if (preset === 'breakout_down') {
+        condSel.value = 'price_below';
+        if (_rulePrice != null) thrInput.value = (_rulePrice * 0.95).toFixed(2);
+    } else if (preset === 'stop_loss_10') {
+        condSel.value = 'stop_loss';
+        if (_rulePrice != null) thrInput.value = (_rulePrice * 0.90).toFixed(2);
+    } else if (preset === 'take_profit_20') {
+        condSel.value = 'take_profit';
+        if (_rulePrice != null) thrInput.value = (_rulePrice * 1.20).toFixed(2);
+    } else if (preset === 'pct_change_3') {
+        condSel.value = 'pct_change_above';
+        thrInput.value = 3;
+    }
+    if (_rulePrice == null && preset !== 'pct_change_3') {
+        showToast('请先输入股票代码以加载行情', 'warning');
+    }
+    _updateRuleConditionDesc();
+    _updateRuleThresholdSuggestions();
+    _updateRulePreview();
+}
+
+function testRule() {
+    const ticker = (document.getElementById('alert-ticker').value || '').trim().toUpperCase();
+    const cond = document.getElementById('alert-condition').value;
+    const threshold = parseFloat(document.getElementById('alert-threshold').value);
+    if (!ticker || isNaN(threshold)) {
+        showToast('请先填写完整的规则', 'warning');
+        return;
+    }
+    if (_rulePrice == null) {
+        showToast(`无法获取 ${ticker} 现价，无法测试`, 'warning');
+        return;
+    }
+    // Reuse the same logic as AlertMonitor._evaluate_condition. We don't have
+    // prev-close/volume client-side, so percent/volume conditions are reported
+    // as "cannot evaluate without historical data".
+    let triggered = null;
+    if (cond === 'price_above' || cond === 'take_profit') {
+        triggered = _rulePrice >= threshold;
+    } else if (cond === 'price_below' || cond === 'stop_loss') {
+        triggered = _rulePrice <= threshold;
+    }
+    if (triggered === null) {
+        showToast('此条件需服务端数据，无法客户端模拟', 'info');
+        return;
+    }
+    const msg = triggered
+        ? `✅ 规则已触发 (${ticker} = ${_ruleCurrency(_rulePrice)})`
+        : `⏸ 规则未触发 (${ticker} = ${_ruleCurrency(_rulePrice)})`;
+    showToast(msg, triggered ? 'success' : 'info');
+}
+
 async function addAlert() {
     const ticker = document.getElementById('alert-ticker').value.trim();
     const condition = document.getElementById('alert-condition').value;
@@ -1495,9 +2041,61 @@ async function addAlert() {
         showToast(data.message, 'success');
         document.getElementById('alert-ticker').value = '';
         document.getElementById('alert-threshold').value = '';
+        _rulePrice = null;
+        _ruleMarket = null;
+        document.getElementById('rule-current-price').textContent = '';
+        _updateRuleThresholdSuggestions();
+        _updateRulePreview();
         loadAlerts();
     }
 }
+
+// Wire up the rule editor once on page load.
+(function initRuleEditor() {
+    const tickerInput = document.getElementById('alert-ticker');
+    const thresholdInput = document.getElementById('alert-threshold');
+    const condSel = document.getElementById('alert-condition');
+    if (!tickerInput || !condSel) return;
+
+    tickerInput.addEventListener('input', () => {
+        clearTimeout(_rulePriceTimer);
+        const t = tickerInput.value.trim().toUpperCase();
+        if (!t) {
+            _fetchRulePrice('');
+            return;
+        }
+        // Debounce network calls.
+        _rulePriceTimer = setTimeout(() => _fetchRulePrice(t), 400);
+        _updateRulePreview();
+    });
+
+    condSel.addEventListener('change', () => {
+        _updateRuleConditionDesc();
+        _updateRuleThresholdSuggestions();
+        _updateRulePreview();
+    });
+
+    thresholdInput.addEventListener('input', _updateRulePreview);
+
+    document.getElementById('rule-presets').addEventListener('click', e => {
+        const chip = e.target.closest('[data-preset]');
+        if (!chip) return;
+        document.querySelectorAll('.rule-preset-chip').forEach(c => c.classList.remove('active'));
+        chip.classList.add('active');
+        _applyPreset(chip.dataset.preset);
+    });
+
+    document.getElementById('rule-threshold-suggestions').addEventListener('click', e => {
+        const chip = e.target.closest('[data-val]');
+        if (!chip) return;
+        thresholdInput.value = chip.dataset.val;
+        _updateRulePreview();
+    });
+
+    _updateRuleConditionDesc();
+    _updateRuleThresholdSuggestions();
+    _updateRulePreview();
+})();
 
 async function removeAlert(id) {
     const data = await api('/api/alerts/remove', {
@@ -1547,6 +2145,8 @@ async function generateReport() {
 // ── Analysis History ───────────────────────────────────────────────────────
 
 let _historyData = [];
+let _compareMode = false;
+let _compareSelected = new Set();
 
 async function loadHistory() {
     const data = await api('/api/history');
@@ -1561,26 +2161,198 @@ function filterHistory() {
     renderHistory(_historyData.filter(h => h.ticker.includes(q)));
 }
 
+function toggleCompareMode() {
+    _compareMode = !_compareMode;
+    _compareSelected.clear();
+    document.getElementById('compare-toggle-label').textContent = _compareMode ? '退出对比' : '对比模式';
+    document.getElementById('btn-compare-toggle').classList.toggle('active', _compareMode);
+    document.getElementById('compare-action-wrap').classList.toggle('d-none', !_compareMode);
+    _syncCompareButton();
+    renderHistory(_historyData);
+}
+
+function _syncCompareButton() {
+    const btn = document.getElementById('btn-run-compare');
+    const cnt = document.getElementById('compare-count');
+    if (cnt) cnt.textContent = String(_compareSelected.size);
+    if (btn) btn.disabled = _compareSelected.size < 2;
+}
+
+function toggleHistorySelect(id, event) {
+    if (event) { event.stopPropagation(); }
+    id = Number(id);
+    if (_compareSelected.has(id)) {
+        _compareSelected.delete(id);
+    } else {
+        if (_compareSelected.size >= 5) {
+            showToast('最多只能选择 5 条记录对比', 'warning');
+            return;
+        }
+        _compareSelected.add(id);
+    }
+    // Update only the affected item visually instead of full re-render
+    const el = document.querySelector(`.history-item[data-id="${id}"]`);
+    if (el) el.classList.toggle('selected', _compareSelected.has(id));
+    const chk = document.querySelector(`.history-item[data-id="${id}"] .h-check i`);
+    if (chk) chk.className = _compareSelected.has(id) ? 'fas fa-check-square' : 'far fa-square';
+    _syncCompareButton();
+}
+
 function renderHistory(records) {
     const container = document.getElementById('history-list');
     if (!records || records.length === 0) {
         container.innerHTML = '<p class="text-muted">暂无分析记录</p>';
         return;
     }
-    container.innerHTML = records.map(r => `
-        <div class="history-item" onclick="showHistoryDetail(${r.id})">
+    container.innerHTML = records.map(r => {
+        const sel = _compareSelected.has(r.id);
+        const checkBox = _compareMode
+            ? `<span class="h-check me-2" style="cursor:pointer;"><i class="${sel ? 'fas fa-check-square text-info' : 'far fa-square text-muted'}"></i></span>`
+            : '';
+        const clickAttr = _compareMode
+            ? `onclick="toggleHistorySelect(${r.id}, event)"`
+            : `onclick="showHistoryDetail(${r.id})"`;
+        const actionInfo = r.action ? `<span class="text-muted ms-2" style="font-size:12px;">${r.action}${r.confidence ? ' · ' + r.confidence : ''}</span>` : '';
+        return `
+        <div class="history-item ${sel ? 'selected' : ''}" data-id="${r.id}" ${clickAttr}>
             <div class="d-flex justify-content-between align-items-center">
                 <div>
-                    <span class="h-ticker">${r.ticker}</span>
+                    ${checkBox}<span class="h-ticker">${r.ticker}</span>
                     <span class="h-signal ${getSignalBadgeClass(r.signal)}" style="margin-left:12px;">${r.signal}</span>
+                    ${actionInfo}
                 </div>
-                <div class="h-date">${r.created_at || r.date}</div>
+                <div class="d-flex align-items-center gap-2">
+                    <button class="btn btn-sm btn-outline-secondary" onclick="showTimeline('${r.ticker}', event)" title="查看该股票历史演变">
+                        <i class="fas fa-stream"></i>
+                    </button>
+                    <div class="h-date">${r.created_at || r.date}</div>
+                </div>
             </div>
             <div class="mt-1" style="font-size:12px;color:var(--text-secondary);">
                 分析日期: ${r.date}
             </div>
         </div>
-    `).join('');
+        `;
+    }).join('');
+}
+
+async function runCompare() {
+    if (_compareSelected.size < 2) return;
+    const ids = Array.from(_compareSelected).join(',');
+    const data = await api('/api/history/compare?ids=' + encodeURIComponent(ids));
+    if (!data || !data.records) return;
+    renderCompareModal(data.records);
+    const modal = new bootstrap.Modal(document.getElementById('compareModal'));
+    modal.show();
+}
+
+function renderCompareModal(records) {
+    const body = document.getElementById('compareModalBody');
+    if (!records || records.length === 0) {
+        body.innerHTML = '<p class="text-muted">没有可对比的记录</p>';
+        return;
+    }
+    const headers = records.map(r => `
+        <th class="text-center">
+            <div><strong>${r.ticker}</strong></div>
+            <div style="font-size:11px;color:var(--text-secondary);">${(r.created_at || r.date || '').split(' ')[0]}</div>
+        </th>`).join('');
+    const valueRow = (label, getter, options={}) => {
+        const vals = records.map(getter);
+        const changed = options.driftHighlight && _hasDrift(vals);
+        const cells = vals.map(v => `<td class="text-center">${v == null || v === '' ? '<span class="text-muted">--</span>' : v}</td>`).join('');
+        return `<tr${changed ? ' class="drift-row"' : ''}><th scope="row" class="text-muted" style="font-weight:normal;">${label}</th>${cells}</tr>`;
+    };
+    const sigCell = r => `<span class="h-signal ${getSignalBadgeClass(r.signal)}">${r.signal || '--'}</span>`;
+    body.innerHTML = `
+        <div class="table-responsive">
+            <table class="table table-sm compare-table">
+                <thead><tr><th style="width:140px;">字段</th>${headers}</tr></thead>
+                <tbody>
+                    ${valueRow('信号', sigCell, {driftHighlight: true})}
+                    ${valueRow('策略建议', r => r.action || '', {driftHighlight: true})}
+                    ${valueRow('信心', r => r.confidence || '')}
+                    ${valueRow('建议仓位', r => r.position_pct != null ? fmt(r.position_pct) + '%' : '')}
+                    ${valueRow('入场低位', r => r.entry_low != null ? fmt(r.entry_low) : '')}
+                    ${valueRow('入场高位', r => r.entry_high != null ? fmt(r.entry_high) : '')}
+                    ${valueRow('止损', r => r.stop_loss != null ? fmt(r.stop_loss) : '')}
+                    ${valueRow('止盈', r => r.take_profit != null ? fmt(r.take_profit) : '')}
+                    ${valueRow('模型', r => r.model || '')}
+                </tbody>
+            </table>
+        </div>
+        <p class="text-muted mb-0" style="font-size:12px;">
+            <i class="fas fa-info-circle"></i> 标黄行表示不同记录间信号/策略建议存在漂移。
+        </p>
+    `;
+}
+
+function _hasDrift(values) {
+    const norm = values.map(v => {
+        if (v == null || v === '') return '';
+        // Strip HTML from signal cell to compare raw signal text
+        if (typeof v === 'string' && v.includes('<')) {
+            return v.replace(/<[^>]+>/g, '').trim();
+        }
+        return String(v).trim();
+    });
+    const nonEmpty = norm.filter(v => v !== '');
+    if (nonEmpty.length < 2) return false;
+    return !nonEmpty.every(v => v === nonEmpty[0]);
+}
+
+async function showTimeline(ticker, event) {
+    if (event) { event.stopPropagation(); }
+    const data = await api('/api/history/timeline/' + encodeURIComponent(ticker));
+    if (!data) return;
+    renderTimelineModal(ticker, data.records || []);
+    const modal = new bootstrap.Modal(document.getElementById('timelineModal'));
+    modal.show();
+}
+
+function renderTimelineModal(ticker, records) {
+    document.getElementById('timelineModalTitle').innerHTML =
+        `<i class="fas fa-stream"></i> ${ticker} 观点演变 <small class="text-muted">(${records.length} 条)</small>`;
+    const body = document.getElementById('timelineModalBody');
+    if (records.length === 0) {
+        body.innerHTML = '<p class="text-muted">该股票暂无历史分析</p>';
+        return;
+    }
+    // Render timeline cards + a small confidence / signal strip
+    let prevSignal = null;
+    const items = records.map(r => {
+        const drift = prevSignal && r.signal && prevSignal !== r.signal;
+        prevSignal = r.signal || prevSignal;
+        const dt = (r.created_at || r.date || '').split(' ')[0] || r.date;
+        const pos = r.position_pct != null ? fmt(r.position_pct) + '%' : '--';
+        const sl = r.stop_loss != null ? fmt(r.stop_loss) : '--';
+        const tp = r.take_profit != null ? fmt(r.take_profit) : '--';
+        return `
+        <div class="timeline-item ${drift ? 'drift' : ''}">
+            <div class="timeline-dot ${getSignalBadgeClass(r.signal)}"></div>
+            <div class="timeline-body">
+                <div class="d-flex justify-content-between flex-wrap gap-2">
+                    <div>
+                        <span class="h-signal ${getSignalBadgeClass(r.signal)}">${r.signal || '--'}</span>
+                        ${r.action ? `<span class="ms-2">${r.action}</span>` : ''}
+                        ${r.confidence ? `<span class="text-muted ms-1" style="font-size:12px;">· ${r.confidence}</span>` : ''}
+                        ${drift ? '<span class="badge bg-warning text-dark ms-2">观点漂移</span>' : ''}
+                    </div>
+                    <div class="text-muted" style="font-size:12px;">${dt}</div>
+                </div>
+                <div class="row g-2 mt-1" style="font-size:12px;color:var(--text-secondary);">
+                    <div class="col-4">仓位: ${pos}</div>
+                    <div class="col-4">止损: ${sl}</div>
+                    <div class="col-4">止盈: ${tp}</div>
+                </div>
+                <div class="mt-1">
+                    <a href="#" onclick="event.preventDefault();event.stopPropagation();showHistoryDetail(${r.id});" style="font-size:12px;">查看完整报告 →</a>
+                </div>
+            </div>
+        </div>
+        `;
+    }).join('');
+    body.innerHTML = `<div class="timeline-list">${items}</div>`;
 }
 
 // Cache raw report text for lazy rendering in history detail modal
@@ -1962,11 +2734,95 @@ function renderDataSourceStatus(settings) {
     `).join('');
 }
 
+<<<<<<< HEAD
 let settingsDirty = {};
+=======
+// Settings editor state — the last full /api/settings response + edit mode.
+let _settingsData = null;
+let _settingsEditMode = false;
+let _settingsWritable = new Set();
+
+// Definition of every editable row — label, dotted-path, input type,
+// current-value accessor (reads from the /api/settings response), and
+// optional hint. Rendered in both read and edit modes so the layout stays
+// identical on toggle.
+function _settingsFields(s) {
+    const mask = v => v || '未配置';
+    return [
+        { group: 'Gemini (LLM)', rows: [
+            { label: '快速模型', path: 'gemini.model', type: 'text',
+              display: s.gemini?.model || '--' },
+            { label: '深度模型', path: 'gemini.deep_think_model', type: 'text',
+              display: s.gemini?.deep_think_model || '--' },
+            { label: '思考等级', path: 'gemini.thinking_level', type: 'text',
+              display: s.gemini?.thinking_level || '--' },
+            { label: 'API Key', path: 'gemini.api_key', type: 'password',
+              display: mask(s.gemini?.api_key_masked),
+              placeholder: '粘贴新 Gemini API Key 以覆盖' },
+        ]},
+        { group: 'Polygon', rows: [
+            { label: 'API Key', path: 'polygon.api_key', type: 'password',
+              display: mask(s.polygon?.api_key_masked) },
+        ]},
+        { group: 'Qwen (DashScope 兜底)', rows: [
+            { label: '启用', path: 'qwen.enabled', type: 'bool',
+              display: s.qwen?.enabled ? '<span class="text-green">已启用</span>' : '<span class="text-muted">未启用</span>',
+              valueBool: !!s.qwen?.enabled },
+            { label: '模型', path: 'qwen.model', type: 'text',
+              display: s.qwen?.model || '--' },
+            { label: 'API Key', path: 'qwen.api_key', type: 'password',
+              display: mask(s.qwen?.api_key_masked) },
+        ]},
+        { group: 'Interactive Brokers', rows: [
+            { label: '启用', path: 'ib.enabled', type: 'bool',
+              display: s.ib?.enabled ? '<span class="text-green">已启用</span>' : '<span class="text-muted">未启用</span>',
+              valueBool: !!s.ib?.enabled },
+            { label: 'Host', path: 'ib.host', type: 'text',
+              display: s.ib?.host || '--' },
+            { label: 'Port', path: 'ib.port', type: 'number',
+              display: s.ib?.port || '--' },
+            { label: 'Client ID', path: 'ib.client_id', type: 'number',
+              display: s.ib?.client_id || '--' },
+        ]},
+        { group: 'Telegram Bot', rows: [
+            { label: '启用', path: 'alerts.telegram.enabled', type: 'bool',
+              display: s.telegram?.bot_token_masked ? '<span class="text-green">已配置</span>' : '<span class="text-muted">未配置</span>',
+              valueBool: !!s.telegram?.bot_token_masked },
+            { label: 'Bot Token', path: 'alerts.telegram.bot_token', type: 'password',
+              display: mask(s.telegram?.bot_token_masked) },
+            { label: 'Chat ID', path: 'alerts.telegram.chat_id', type: 'text',
+              display: s.telegram?.chat_id || '--' },
+        ]},
+        { group: 'Email', rows: [
+            { label: '启用', path: 'alerts.email.enabled', type: 'bool',
+              display: s.email?.smtp_host ? '<span class="text-green">已配置</span>' : '<span class="text-muted">未配置</span>',
+              valueBool: !!s.email?.smtp_host },
+            { label: 'SMTP Host', path: 'alerts.email.smtp_host', type: 'text',
+              display: s.email?.smtp_host || '--' },
+            { label: 'SMTP Port', path: 'alerts.email.smtp_port', type: 'number',
+              display: s.email?.smtp_port || '--' },
+            { label: '用户名', path: 'alerts.email.username', type: 'text',
+              display: s.email?.username || '--' },
+            { label: '密码', path: 'alerts.email.password', type: 'password',
+              display: mask(s.email?.password_masked) },
+            { label: '收件人', path: 'alerts.email.to_address', type: 'text',
+              display: s.email?.to_address || '--' },
+        ]},
+        { group: '运行时', rows: [
+            { label: '预警检查间隔 (秒)', path: 'alerts.check_interval', type: 'number',
+              display: (s.data_sources && s.alert_interval) || s.alert_interval || '--',
+              valueFallback: s.alert_interval },
+            { label: '持仓数据库', path: null, type: 'readonly',
+              display: s.portfolio?.db_path || '--' },
+        ]},
+    ];
+}
+>>>>>>> origin/claude/stock-trading-system-LXzEI
 
 function renderSettingsConfig(s) {
     const box = document.getElementById('settings-config');
     if (!box || !s) return;
+<<<<<<< HEAD
     settingsDirty = {};
     document.getElementById('btn-save-settings').style.display = 'none';
 
@@ -2014,6 +2870,85 @@ function renderSettingsConfig(s) {
             <span class="value setting-val" data-key="${key}" ${editable ? 'onclick="editSetting(this)"' : ''} style="${editable ? 'cursor:pointer;' : ''}" title="${editable ? '点击编辑' : ''}">${val || '<span class=text-muted>--</span>'}</span>
         </div>
     `).join('');
+=======
+    _settingsData = s;
+    _settingsWritable = new Set(s.writable_paths || []);
+    const groups = _settingsFields(s);
+
+    const html = groups.map(g => {
+        const rowsHtml = g.rows.map(r => {
+            // Hide rows that aren't writable in edit mode unless they're readonly-display.
+            const writable = r.path && _settingsWritable.has(r.path);
+            const editable = _settingsEditMode && writable;
+            let valueHtml;
+            if (editable) {
+                if (r.type === 'bool') {
+                    valueHtml = `<label class="form-check form-switch m-0">
+                        <input class="form-check-input settings-input" type="checkbox"
+                            data-path="${r.path}" ${r.valueBool ? 'checked' : ''}>
+                    </label>`;
+                } else {
+                    const inputType = r.type === 'password' ? 'password' : (r.type === 'number' ? 'number' : 'text');
+                    const placeholder = r.placeholder || '输入以覆盖当前值';
+                    valueHtml = `<input type="${inputType}" class="form-control form-control-sm settings-input"
+                        data-path="${r.path}" placeholder="${placeholder}" autocomplete="off">`;
+                }
+            } else {
+                valueHtml = `<span class="value">${r.display}</span>`;
+            }
+            return `<div class="settings-row">
+                <span class="label">${r.label}${writable && !_settingsEditMode ? '' : ''}</span>
+                ${valueHtml}
+            </div>`;
+        }).join('');
+        return `<div class="settings-group">
+            <div class="settings-group-head">${g.group}</div>
+            ${rowsHtml}
+        </div>`;
+    }).join('');
+    box.innerHTML = html;
+}
+
+function toggleSettingsEdit(on) {
+    _settingsEditMode = !!on;
+    document.getElementById('btn-settings-edit').classList.toggle('d-none', _settingsEditMode);
+    document.getElementById('btn-settings-save').classList.toggle('d-none', !_settingsEditMode);
+    document.getElementById('btn-settings-cancel').classList.toggle('d-none', !_settingsEditMode);
+    if (_settingsData) renderSettingsConfig(_settingsData);
+}
+
+async function saveSettings() {
+    // Collect non-empty inputs. Password fields that are left blank on
+    // purpose don't get sent (so the existing key survives an accidental
+    // edit-without-typing-anything save).
+    const payload = {};
+    document.querySelectorAll('.settings-input').forEach(el => {
+        const path = el.dataset.path;
+        if (!path) return;
+        if (el.type === 'checkbox') {
+            payload[path] = el.checked;
+        } else {
+            const v = el.value.trim();
+            if (v !== '') payload[path] = v;
+        }
+    });
+    if (Object.keys(payload).length === 0) {
+        showToast('没有需要保存的改动', 'info');
+        toggleSettingsEdit(false);
+        return;
+    }
+    const data = await api('/api/settings', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+    });
+    if (data && data.ok) {
+        showToast(`已保存 ${data.count} 项设置`, 'success');
+        toggleSettingsEdit(false);
+        loadSettings();
+    } else if (data && data.error) {
+        showToast('保存失败: ' + data.error, 'error');
+    }
+>>>>>>> origin/claude/stock-trading-system-LXzEI
 }
 
 function editSetting(el) {
@@ -2078,6 +3013,7 @@ socket.on('alert_triggered', data => {
     updateAlertBadge();
 });
 
+<<<<<<< HEAD
 function updateAlertBadge() {
     ['sidebar-alert-badge', 'mobile-alert-badge'].forEach(id => {
         const el = document.getElementById(id);
@@ -2094,6 +3030,248 @@ function updateAlertBadge() {
 function clearAlertBadge() {
     alertBadgeCount = 0;
     updateAlertBadge();
+=======
+// ── Backtest ───────────────────────────────────────────────────────────────
+
+async function loadBacktestStrategies() {
+    // Cache: only fetch once per session unless the dropdown is empty.
+    const sel = document.getElementById('bt-strategy');
+    if (!sel) return;
+    if (_backtestStrategies) {
+        _renderBacktestStrategyOptions();
+        return;
+    }
+    const data = await api('/api/backtest/strategies');
+    if (!data || !data.strategies) {
+        sel.innerHTML = '<option value="">加载失败</option>';
+        return;
+    }
+    _backtestStrategies = data.strategies;
+    _renderBacktestStrategyOptions();
+}
+
+function _renderBacktestStrategyOptions() {
+    const sel = document.getElementById('bt-strategy');
+    if (!sel || !_backtestStrategies) return;
+    sel.innerHTML = _backtestStrategies
+        .map(s => `<option value="${s.id}">${s.label}</option>`)
+        .join('');
+    onBacktestStrategyChange();
+}
+
+function onBacktestStrategyChange() {
+    const sel = document.getElementById('bt-strategy');
+    const descEl = document.getElementById('bt-strategy-desc');
+    const zone = document.getElementById('bt-params-zone');
+    if (!sel || !_backtestStrategies) return;
+    const strat = _backtestStrategies.find(s => s.id === sel.value);
+    if (!strat) { zone.innerHTML = ''; descEl.textContent = ''; return; }
+    descEl.textContent = strat.description || '';
+    if (!strat.params || strat.params.length === 0) {
+        zone.innerHTML = '<div class="col-12 text-muted" style="font-size:12px;">该策略无需额外参数</div>';
+        return;
+    }
+    zone.innerHTML = strat.params.map(p => {
+        const step = p.type === 'float' ? '0.1' : '1';
+        return `<div class="col-6 col-md-3">
+            <label class="form-label">${p.label}</label>
+            <input type="number" class="form-control bt-param" data-name="${p.name}"
+                value="${p.default}" min="${p.min ?? ''}" max="${p.max ?? ''}" step="${step}">
+        </div>`;
+    }).join('');
+}
+
+async function runBacktest() {
+    const btn = document.getElementById('btn-run-backtest');
+    const ticker = (document.getElementById('bt-ticker').value || '').trim().toUpperCase();
+    const strategy = document.getElementById('bt-strategy').value;
+    const period = document.getElementById('bt-period').value;
+    const capital = parseFloat(document.getElementById('bt-capital').value || '100000');
+    if (!ticker) { showToast('请输入股票代码', 'warning'); return; }
+    if (!strategy) { showToast('请选择策略', 'warning'); return; }
+
+    const params = {};
+    document.querySelectorAll('#bt-params-zone .bt-param').forEach(inp => {
+        const v = inp.value;
+        if (v !== '' && !isNaN(Number(v))) params[inp.dataset.name] = Number(v);
+    });
+
+    btn.disabled = true;
+    const originalHtml = btn.innerHTML;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 运行中...';
+    try {
+        const data = await api('/api/backtest/run', {
+            method: 'POST',
+            body: JSON.stringify({
+                ticker, strategy, period,
+                initial_capital: capital,
+                params,
+            }),
+        });
+        if (!data || data.error) {
+            showToast('回测失败: ' + (data && data.error ? data.error : '未知错误'), 'error');
+            return;
+        }
+        renderBacktestResults(data);
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = originalHtml;
+    }
+}
+
+function renderBacktestResults(r) {
+    document.getElementById('bt-empty').classList.add('d-none');
+    document.getElementById('bt-results').classList.remove('d-none');
+    renderBacktestStats(r);
+    renderBacktestEquity(r.equity_curve);
+    renderBacktestTrades(r.trades);
+}
+
+function renderBacktestStats(r) {
+    const row = document.getElementById('bt-stats-row');
+    const totalCls = r.total_return_pct > 0 ? 'text-green' : (r.total_return_pct < 0 ? 'text-red' : '');
+    const annCls = r.annualized_return_pct > 0 ? 'text-green' : (r.annualized_return_pct < 0 ? 'text-red' : '');
+    const stats = [
+        { label: '总收益率', value: fmtPct(r.total_return_pct), cls: totalCls },
+        { label: '年化收益', value: fmtPct(r.annualized_return_pct), cls: annCls },
+        { label: '最大回撤', value: '-' + fmt(r.max_drawdown_pct) + '%', cls: r.max_drawdown_pct > 0 ? 'text-red' : '' },
+        { label: '胜率', value: fmt(r.win_rate * 100) + '%', cls: '' },
+        { label: '交易次数', value: r.trade_count, cls: '' },
+        { label: '最终净值', value: '$' + fmt(r.final_equity), cls: '' },
+    ];
+    row.innerHTML = stats.map(s => `
+        <div class="col-6 col-md-2">
+            <div class="stat-card">
+                <div class="stat-label">${s.label}</div>
+                <div class="stat-value ${s.cls}" style="font-size:20px;">${s.value}</div>
+            </div>
+        </div>
+    `).join('');
+    // Small caption below — initial capital / date range / strategy.
+    const caption = `${r.ticker} · ${r.strategy} · ${r.start_date} ~ ${r.end_date} · 初始资金 $${fmt(r.initial_capital)}`;
+    row.innerHTML += `<div class="col-12"><div class="text-muted" style="font-size:12px;">${caption}</div></div>`;
+}
+
+function renderBacktestEquity(curve) {
+    const el = document.getElementById('bt-equity-chart');
+    if (!el) return;
+    if (!curve || curve.length === 0) {
+        el.innerHTML = '<p class="text-muted text-center" style="padding-top:120px;">暂无数据</p>';
+        return;
+    }
+    el.innerHTML = '';
+    if (chartBacktest) { chartBacktest.dispose(); chartBacktest = null; }
+    chartBacktest = echarts.init(el, 'dark');
+
+    const dates = curve.map(p => p.date);
+    const equity = curve.map(p => p.equity);
+    const prices = curve.map(p => p.price);
+    // Normalize price to a "buy-and-hold benchmark" starting at the same initial equity
+    // so the two series share a comparable scale.
+    const initEquity = equity[0] || 1;
+    const firstPrice = prices[0] || 1;
+    const benchmark = prices.map(p => initEquity * (p / firstPrice));
+
+    chartBacktest.setOption({
+        backgroundColor: 'transparent',
+        animation: false,
+        tooltip: {
+            trigger: 'axis',
+            backgroundColor: '#1c2128',
+            borderColor: '#30363d',
+            textStyle: { color: '#e6edf3' },
+            valueFormatter: v => '$' + Number(v).toLocaleString('en-US', { maximumFractionDigits: 0 }),
+        },
+        legend: {
+            data: ['策略净值', '买入并持有'],
+            textStyle: { color: '#e6edf3' },
+            top: 0,
+        },
+        grid: { left: 60, right: 20, top: 35, bottom: 40 },
+        xAxis: {
+            type: 'category', data: dates,
+            axisLine: { lineStyle: { color: '#30363d' } },
+            axisLabel: { color: '#8b949e' },
+        },
+        yAxis: {
+            scale: true,
+            axisLine: { lineStyle: { color: '#30363d' } },
+            axisLabel: { color: '#8b949e', formatter: v => '$' + Math.round(v / 1000) + 'k' },
+            splitLine: { lineStyle: { color: '#21262d' } },
+        },
+        series: [
+            {
+                name: '策略净值', type: 'line', data: equity, smooth: true, showSymbol: false,
+                lineStyle: { color: '#58a6ff', width: 2 },
+                areaStyle: { color: 'rgba(88, 166, 255, 0.15)' },
+            },
+            {
+                name: '买入并持有', type: 'line', data: benchmark, smooth: true, showSymbol: false,
+                lineStyle: { color: '#8b949e', width: 1, type: 'dashed' },
+            },
+        ],
+    });
+}
+
+function renderBacktestTrades(trades) {
+    const box = document.getElementById('bt-trades-body');
+    if (!trades || trades.length === 0) {
+        box.innerHTML = '<p class="text-muted text-center py-3 mb-0">该策略未产生交易</p>';
+        return;
+    }
+    // Desktop: table layout
+    const rows = trades.map((t, i) => {
+        const pnlCls = t.pnl > 0 ? 'text-green' : (t.pnl < 0 ? 'text-red' : '');
+        return `<tr>
+            <td>${i + 1}</td>
+            <td>${t.entry_date}</td>
+            <td>$${fmt(t.entry_price, 2)}</td>
+            <td>${t.exit_date}</td>
+            <td>$${fmt(t.exit_price, 2)}</td>
+            <td>${fmt(t.shares, 2)}</td>
+            <td class="${pnlCls}">$${fmt(t.pnl, 2)}</td>
+            <td class="${pnlCls}">${fmtPct(t.pnl_pct)}</td>
+            <td class="text-muted" style="font-size:11px;">${t.reason || ''}</td>
+        </tr>`;
+    }).join('');
+    // Mobile: card list layout
+    const cards = trades.map((t, i) => {
+        const pnlCls = t.pnl > 0 ? 'text-green' : (t.pnl < 0 ? 'text-red' : '');
+        return `
+        <div class="bt-trade-card">
+            <div class="bt-trade-card-head">
+                <span>#${i + 1} · ${fmt(t.shares, 2)} 股</span>
+                <span class="${pnlCls}">${fmtPct(t.pnl_pct)}</span>
+            </div>
+            <div class="bt-trade-card-grid">
+                <div><span class="label">买入</span> ${t.entry_date}</div>
+                <div><span class="label">@</span> $${fmt(t.entry_price, 2)}</div>
+                <div><span class="label">卖出</span> ${t.exit_date}</div>
+                <div><span class="label">@</span> $${fmt(t.exit_price, 2)}</div>
+                <div class="${pnlCls}" style="grid-column:1/-1;">
+                    <span class="label">盈亏</span> $${fmt(t.pnl, 2)}
+                </div>
+                ${t.reason ? `<div class="text-muted" style="grid-column:1/-1;font-size:11px;">${t.reason}</div>` : ''}
+            </div>
+        </div>`;
+    }).join('');
+    box.innerHTML = `
+        <div class="bt-trades-table-wrap">
+            <div class="table-responsive">
+                <table class="table table-sm mb-0 bt-trades-table">
+                    <thead>
+                        <tr>
+                            <th>#</th><th>买入日期</th><th>买入价</th>
+                            <th>卖出日期</th><th>卖出价</th><th>股数</th>
+                            <th>盈亏</th><th>收益率</th><th>说明</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            </div>
+        </div>
+        <div class="bt-trades-cards p-2">${cards}</div>`;
+>>>>>>> origin/claude/stock-trading-system-LXzEI
 }
 
 // ── Window resize ──────────────────────────────────────────────────────────
