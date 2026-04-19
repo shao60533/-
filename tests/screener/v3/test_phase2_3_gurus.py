@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from stock_trading_system.screener.v3.guru_agents.base import GuruSignal
 from stock_trading_system.screener.v3.guru_agents.buffett import BuffettAgent
 from stock_trading_system.screener.v3.guru_agents.graham import GrahamAgent
 from stock_trading_system.screener.v3.guru_agents.munger import MungerAgent
@@ -80,13 +81,13 @@ class TestAllAgentsMeta:
         assert len(cls.SYSTEM_PROMPT) > 100, f"{cls.__name__} SYSTEM_PROMPT too short"
 
     @pytest.mark.parametrize("cls", ALL_AGENTS, ids=lambda c: c.__name__)
-    def test_evaluate_deep_raises_without_llm(self, cls, sample_data):
-        """evaluate_deep should reach _llm_reason (which needs a real LLM).
-        We just verify it doesn't crash before the LLM call."""
+    def test_evaluate_deep_returns_signal_without_llm(self, cls, sample_data):
+        """evaluate_deep with no API key should fallback to neutral signal (not crash)."""
         agent = cls()
-        # This will fail at _llm_reason because no API key — that's expected
-        with pytest.raises(Exception):
-            agent.evaluate_deep("AAPL", sample_data, {"provider": "qwen", "config": {}})
+        result = agent.evaluate_deep("AAPL", sample_data, {"provider": "qwen", "config": {}})
+        # Tolerant parsing returns a neutral fallback on LLM failure
+        assert isinstance(result, GuruSignal)
+        assert result.signal in ("bullish", "bearish", "neutral")
 
 
 class TestGuruCount:
