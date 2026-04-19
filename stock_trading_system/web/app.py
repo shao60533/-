@@ -1746,6 +1746,79 @@ def create_app(config_path=None):
             logger.error("Failed to load prompt history: %s", e)
             return jsonify({"error": str(e)}), 500
 
+    # ── Screener V3 API ──────────────────────────────────────────────
+
+    @app.route("/api/screen/v3/gurus")
+    def api_screen_v3_gurus():
+        """Return metadata for all 14 guru agents (config panel)."""
+        from stock_trading_system.screener.v3.pipeline import get_all_guru_metas
+        return jsonify({"gurus": get_all_guru_metas()})
+
+    @app.route("/api/screen/v3/estimate", methods=["POST"])
+    def api_screen_v3_estimate():
+        """Estimate cost and duration for a V3 screening run."""
+        from stock_trading_system.screener.v3.estimator import estimate
+        from stock_trading_system.llm.router import get_active_provider
+        from flask import g
+
+        body = request.get_json(silent=True) or {}
+        cfg = get_config()
+        user_id = getattr(g, "user", None) and g.user.id
+        provider = get_active_provider(cfg, user_id=user_id)
+
+        result = estimate(
+            num_candidates=int(body.get("candidate_n", 20)),
+            num_gurus=len(body.get("gurus", ["buffett", "graham", "munger", "lynch"])),
+            with_roundtable=bool(body.get("with_roundtable", False)),
+            provider=provider,
+        )
+        return jsonify(result)
+
+    @app.route("/api/screen/v3/trigger", methods=["POST"])
+    def api_screen_v3_trigger():
+        """Trigger a V3 screening task."""
+        from flask import g
+        from stock_trading_system.llm.router import get_active_provider
+
+        body = request.get_json(silent=True) or {}
+        cfg = get_config()
+        user_id = getattr(g, "user", None) and g.user.id
+        provider = get_active_provider(cfg, user_id=user_id)
+
+        params = {
+            "nl_query": body.get("nl_query", ""),
+            "market": body.get("market", "us"),
+            "candidate_n": int(body.get("candidate_n", 20)),
+            "gurus": body.get("gurus", ["buffett", "graham", "munger", "lynch"]),
+            "mode": body.get("mode", "agent"),
+            "with_roundtable": bool(body.get("with_roundtable", False)),
+            "user_id": user_id,
+            "provider": provider,
+        }
+
+        tm = _get_task_manager()
+        task = tm.submit(
+            task_type="screen_v3",
+            params=params,
+            title=f"V3 选股: {params['nl_query'][:30] or '默认'}",
+        )
+        return jsonify({"task_id": task["id"], "estimated": params})
+
+    @app.route("/api/screen/v3/results/<result_id>")
+    def api_screen_v3_result(result_id):
+        """Return full V3 screening result."""
+        try:
+            from stock_trading_system.screener.v2.result_store import ScreenResultStore
+            store = ScreenResultStore(
+                get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
+            )
+            result = store.get_by_id(int(result_id))
+            if not result:
+                return jsonify({"error": "not found"}), 404
+            return jsonify(result)
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
     # ── Seed Data ───────────────────────────────────────────────────────
 
     @app.route("/api/seed", methods=["POST"])

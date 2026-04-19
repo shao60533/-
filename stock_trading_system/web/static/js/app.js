@@ -3635,6 +3635,7 @@ function openTaskResult(task) {
         'batch_analysis':   () => { switchTab('history'); },
         'screen':           () => { switchTab('screener'); },
         'screen_v2':        () => { switchTab('screener'); },
+        'screen_v3':        () => { switchTab('screener'); },
         'backtest':         () => { switchTab('backtest'); },
         'report':           () => { switchTab('reports'); },
         'paper_trade':      () => { switchTab('paper'); },

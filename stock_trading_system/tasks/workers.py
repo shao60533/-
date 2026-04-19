@@ -242,6 +242,51 @@ def make_meta_evolution_worker():
     return worker
 
 
+def make_screen_v3_worker():
+    """Factory for the V3 guru agent screening worker."""
+    def worker(params: dict, progress_cb: ProgressCb) -> dict:
+        import asyncio
+        from stock_trading_system.config import get_config
+        from stock_trading_system.screener.v3.pipeline import ScreenerV3Pipeline
+
+        cfg = get_config()
+        user_id = params.get("user_id")
+        provider = params.get("provider", "qwen")
+
+        def _on_progress(event):
+            if event.get("type") == "guru_unit_done":
+                done = event.get("progress", 0)
+                total = event.get("total", 1)
+                pct = min(95, int(done / total * 90) + 5)
+                progress_cb(pct, f"{event.get('guru_display','')}: {event.get('ticker','')}")
+
+        try:
+            from stock_trading_system.data.local_cache import LocalCache
+            db_path = cfg.get("portfolio", {}).get("db_path", "data/portfolio.db")
+            cache_path = db_path.replace("portfolio.db", "cache.db")
+            local_cache = LocalCache(cache_path, config=cfg)
+        except Exception:
+            local_cache = None
+
+        pipeline = ScreenerV3Pipeline(
+            config=cfg,
+            user_id=user_id,
+            provider=provider,
+            local_cache=local_cache,
+            on_progress=_on_progress,
+        )
+
+        progress_cb(5, "启动 V3 大师评估管线")
+        result = asyncio.run(pipeline.run(**{
+            k: v for k, v in params.items()
+            if k not in ("user_id", "provider", "__task_id__")
+        }))
+        progress_cb(98, "整理结果")
+        return result
+
+    return worker
+
+
 # ── Screen worker ─────────────────────────────────────────────────────────────
 
 
@@ -623,6 +668,9 @@ def register_default_workers(tm, deps: WorkerDeps) -> None:
 
     # ── Meta Agent evolution (weekly prompt mutation + A/B settlement) ──
     tm.register("meta_evolution", make_meta_evolution_worker())
+
+    # ── Screener V3 (Guru Agent deep evaluation) ──
+    tm.register("screen_v3", make_screen_v3_worker())
 
 
 # ─────────────────────────────────────────────────────────────────
