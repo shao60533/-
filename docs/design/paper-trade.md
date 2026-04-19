@@ -927,4 +927,214 @@ HOLD 占比: 1/5 = 20%
 
 ---
 
+## 二十七、v1.3 修订（2026-04-19）—— UX / 数据 surface 5 处修正
+
+上线后实战反馈发现 5 处影响用户校验 AI 决策的问题。本章节是对既有功能的 **UX + 数据 surface 修订**，不引入新功能，不改流水线主体。
+
+### 27.1 问题诊断
+
+| # | 症状 | 根因位置 | 类别 |
+|---|---|---|---|
+| F1 | 同一只股票反复出现内容完全相同的 Plan 卡（#69 当前 / #49 已失效 内容字段一致） | [session_store.py:896-903](../../stock_trading_system/strategy/paper_trader/session_store.py) `save_plan` 无 dedup | 数据污染 |
+| F2 | 底部 "AI 原文" 永远是固定文案（BUY→"AI 信号看多，建议建仓"）| [strategy_engine.py:100-122](../../stock_trading_system/strategy/strategy_engine.py) 按 signal 值返回硬编码句子 | 数据错位 |
+| F3 | "核心论点" 永远显示 "regex 解析" 字样 | [plan_parser.py:253](../../stock_trading_system/strategy/paper_trader/plan_parser.py) 将 fallback label 写为内容 | 数据错位 |
+| F4 | 日度数据图表视觉粗糙 | [app.js:4518-4549](../../stock_trading_system/web/static/js/app.js) 基础 ECharts line+bar 配置 | UX 视觉 |
+| F5 | "时间轴" 与 "策略历史" 两 tab 空态下内容重合，用户误判为重复功能 | tab 分工未在 UI 呈现 | UX 结构 |
+
+### 27.2 修法
+
+#### F1 · Plan 内容指纹 dedup
+
+**改**：[session_store.py](../../stock_trading_system/strategy/paper_trader/session_store.py) `save_plan()`
+
+```python
+def _plan_fingerprint(plan: Plan) -> str:
+    # 稳定排序 + hashlib.sha1（stdlib，不装新库）
+    payload = json.dumps({
+        "entry_low": plan.entry_low, "entry_high": plan.entry_high,
+        "stop_loss": plan.stop_loss, "take_profit": plan.take_profit,
+        "tiers": sorted([(o.sequence, o.trigger, o.target_pct) for o in plan.orders]),
+    }, sort_keys=True)
+    return hashlib.sha1(payload.encode()).hexdigest()
+
+def save_plan(self, session_id, plan, analysis_id):
+    fp = _plan_fingerprint(plan)
+    current = self._get_active_plan(session_id, plan.ticker)
+    if current and current.fingerprint == fp:
+        # 指纹一致 → 仅累加重复确认
+        self._db.execute("""
+            UPDATE paper_trade_plans
+            SET reconfirmed_count = reconfirmed_count + 1,
+                reconfirmed_at    = CURRENT_TIMESTAMP,
+                analysis_ids      = json_insert(COALESCE(analysis_ids,'[]'), '$[#]', ?)
+            WHERE id = ?
+        """, (analysis_id, current.id))
+        return current.id
+    # 指纹不同 → 老路径（supersede + insert）
+    ...
+```
+
+**Schema 迁移**（幂等，带 `--dry-run` 和自动备份）：
+
+```sql
+ALTER TABLE paper_trade_plans ADD COLUMN fingerprint TEXT;
+ALTER TABLE paper_trade_plans ADD COLUMN reconfirmed_count INTEGER DEFAULT 1;
+ALTER TABLE paper_trade_plans ADD COLUMN reconfirmed_at TEXT;
+ALTER TABLE paper_trade_plans ADD COLUMN analysis_ids TEXT;  -- JSON array
+CREATE INDEX ix_plans_session_ticker_fp ON paper_trade_plans(session_id, ticker, fingerprint);
+UPDATE paper_trade_plans SET analysis_ids = json_array(analysis_id)
+ WHERE analysis_ids IS NULL;
+```
+
+**UI**：Plan 卡右上角 `重复确认 × 3 · 最新 2026-04-19` 小字（仅当 reconfirmed_count > 1 时显示）。
+
+#### F2 · "AI 最终决策" 真·原文
+
+**改**：[web/app.py:1377-1382](../../stock_trading_system/web/app.py) `/api/paper/tickers/<ticker>` 返回的 `latest_trade_decision` 已存在但前端未用；改前端。
+
+- 板块名：`AI 原文` → **`AI 最终决策`**
+- 头部：`关联分析 #<id> · <created_at>`，点击跳 `/page-analysis?id=<id>`
+- 内容：`analysis_history.trade_decision` **全文 Markdown 渲染**
+- [strategy_engine.py:100-122](../../stock_trading_system/strategy/strategy_engine.py) 的 signal→文案映射**保留**，仅用于任务中心通知/徽章场景
+
+#### F3 · 显式抽取 `executive_summary`
+
+**复用原则 L1**：用 `ChatOpenAI.with_structured_output(ExecutiveSummary)` 抽出，**禁止**自写 JSON 解析或正则（见 [engineering-principles §4 反模式](../engineering-principles.md#4-反模式)）。
+
+1. [agents/analyzer.py](../../stock_trading_system/agents/analyzer.py) 生成分析最后追加一步：
+
+```python
+class ExecutiveSummary(BaseModel):
+    thesis: str = Field(description="2-3 句执行总结，明确 signal + 关键触发条件 + 风险点")
+
+summary_chat = chat_model.with_structured_output(ExecutiveSummary)
+exec_sum = summary_chat.invoke([
+    SystemMessage(content="你是投资决策总结者，根据下面完整分析提炼 2-3 句执行总结"),
+    HumanMessage(content=trade_decision_full_text),
+])
+result.executive_summary = exec_sum.thesis
+```
+
+2. [database.py](../../stock_trading_system/portfolio/database.py) `analysis_history`：
+
+```sql
+ALTER TABLE analysis_history ADD COLUMN executive_summary TEXT;
+```
+
+3. [plan_parser.py:253](../../stock_trading_system/strategy/paper_trader/plan_parser.py)：
+- `thesis` 改为直接读 `analysis_history.executive_summary`
+- 空值时 `thesis = None`（不再写字面量 `"regex 解析"`）
+- **彻底删除** `"regex 解析"` 字符串
+
+4. UI 空值时显示占位 `（执行总结生成失败，查看完整分析 ›）` + 链接
+
+#### F4 · 日度数据图表重配
+
+**复用**：继续用 ECharts（L0，已装），仅改配置。
+
+```js
+// app.js 重写 _renderPtvDailyChart
+option = {
+  grid: [
+    { top: '8%',  height: '60%', left: '8%', right: '4%' },   // 净值区
+    { top: '74%', height: '18%', left: '8%', right: '4%' },   // 迷你 pnl
+  ],
+  xAxis: [
+    { type: 'category', gridIndex: 0, boundaryGap: false, axisLabel: { show: false } },
+    { type: 'category', gridIndex: 1, boundaryGap: true },
+  ],
+  yAxis: [
+    { type: 'value', gridIndex: 0, scale: true, splitLine: { lineStyle: { opacity: 0.08 } } },
+    { type: 'value', gridIndex: 1, splitLine: { show: false } },
+  ],
+  visualMap: [{
+    type: 'piecewise', seriesIndex: 1, show: false,
+    pieces: [{ gt: 0, color: 'var(--accent-green)' }, { lte: 0, color: 'var(--accent-red)' }],
+  }],
+  series: [
+    {
+      name: '净值', type: 'line', smooth: true, showSymbol: false,
+      gridIndex: 0, xAxisIndex: 0, yAxisIndex: 0,
+      areaStyle: { opacity: 0.15 },
+      markPoint: { data: [{ type: 'max' }, { type: 'min' }] },
+      markArea: { /* drawdown_pct < 0 的区段半透明红色阴影 */ },
+      data: totalValues,
+    },
+    {
+      name: '当日盈亏', type: 'bar',
+      gridIndex: 1, xAxisIndex: 1, yAxisIndex: 1,
+      data: dailyPnls,
+    },
+  ],
+  tooltip: {
+    trigger: 'axis', axisPointer: { type: 'cross' },
+    formatter: (p) => `${p[0].axisValue} · ${fmt(p[0].value)} · ${fmt(cumPct)}% · DD ${fmt(dd)}%`,
+  },
+};
+
+// 移动端（≤575.98px）隐藏 grid[1]，净值全高
+if (matchMedia('(max-width: 575.98px)').matches) {
+  option.grid = [{ top: '8%', height: '84%', left: '10%', right: '4%' }];
+  option.series = option.series.slice(0, 1);
+}
+```
+
+参考：ECharts 官方 `stock-dashboard` example、TradingView / Robinhood 视觉风格。
+
+#### F5 · 合并"时间轴 + 策略历史"为单 tab「执行记录」
+
+**根因**：两 tab 分别绑 event-level（`paper_trade_strategy_events`）和 plan-level（`paper_trade_plans + planned_orders`）两张表，空态下内容错觉重合。
+
+**改**：
+- `#ptv-tabs` 4 tab → 3 tab：`当前策略 / 执行记录 / 日度数据`
+- 新 tab `#ptv-tab-records` 内部两视图，用 [mobile-optimization](./mobile-optimization.md) `.chip-row` 切换：
+  - **按 Plan**（默认）：复用现有 `_renderPtvHistory()`（[app.js:4433](../../stock_trading_system/web/static/js/app.js)），每个 plan 卡片底部加可展开区嵌入该 plan 相关的 events（按 `events.analysis_id ∈ plan.analysis_ids` 过滤）
+  - **按 Event**：复用现有 `_renderPtvTimeline()`（[app.js:4477](../../stock_trading_system/web/static/js/app.js)）原样
+- 后端 API 零改动（`/api/paper/tickers/<ticker>` 已同时返回 `events` 和 `plan_history`）
+- 旧 DOM id `ptv-tab-timeline` / `ptv-tab-history` 移除
+
+**复用收益**：两个 render 函数 0 修改，只加一个 ~30 LOC 的 view-switcher + 一个 plan→events 过滤辅助函数。
+
+### 27.3 § 复用 / Reuse
+
+遵循 [engineering-principles.md](../engineering-principles.md) L0→L4 阶梯：
+
+**L0 项目内复用**：
+- [session_store.py](../../stock_trading_system/strategy/paper_trader/session_store.py) `save_plan` 现有事务/supersede 逻辑（F1 仅加前置 dedup 检查）
+- [web/app.py `/api/paper/tickers/<ticker>`](../../stock_trading_system/web/app.py) 已返回 `trade_decision` 和 `events` + `plan_history`（F2/F5 无后端改动）
+- [app.js `_renderPtvHistory` / `_renderPtvTimeline`](../../stock_trading_system/web/static/js/app.js) 保留不动（F5 仅包一层 view switcher）
+- [mobile-optimization](./mobile-optimization.md) `.chip-row` / `form-row-mobile`（F5 视图切换 + F4 移动端适配）
+
+**L1 依赖库**：
+- `hashlib.sha1`（stdlib）—— F1 指纹
+- `ChatOpenAI.with_structured_output()` —— F3 抽取，已在 [screener-v3 v1.1](./screener-v3.md) 引入
+- ECharts（已装）+ `visualMap.piecewise` + `markArea` —— F4 图表
+- 现有 Markdown 渲染器（若项目未装则加 `markdown-it`）
+
+**L2/L3**：
+- ECharts `stock-dashboard` 官方示例（F4 布局灵感，不 copy 代码）
+- TradingView 双栅格风格（F4 视觉参考）
+
+**L4 必须自写**：
+- F1 dedup 前置检查（~20 LOC）
+- F5 view switcher + plan→events 过滤（~40 LOC）
+- F4 ECharts 配置对齐项目 CSS tokens（~80 LOC 纯配置）
+- 总计 ~140 LOC 胶水，0 业务逻辑新增
+
+### 27.4 迁移 & 回滚
+
+**迁移脚本** `migrations/paper_trade_v1_3.py`（幂等、`--dry-run`、自动备份）：
+1. 备份 `portfolio.db → portfolio.db.pre-v1_3.bak`
+2. 按 F1 / F3 Schema 变更执行 ALTER
+3. 为现存 `paper_trade_plans` 行计算 fingerprint 并回填
+4. 汇总输出迁移了 N 行、计算了 M 个指纹
+
+**回滚**：`mv portfolio.db.pre-v1_3.bak portfolio.db`；代码 `git revert`。
+
+### 27.5 实施顺序
+
+F1 → F3（F3 需先跑一次全库回填 executive_summary，成本 ~¥5）→ F2 → F5 → F4。每项独立 commit，独立回滚单位。
+
+---
+
 *v1.2 修订结束 — 全量自动追踪。等待确认后开始 Phase 1 实施*
