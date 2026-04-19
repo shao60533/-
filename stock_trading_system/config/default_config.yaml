@@ -2,7 +2,7 @@ llm_provider: null   # null -> legacy auto-detect; "qwen" | "gemini" -> force
 
 gemini:
   api_key: ""
-  model: "gemini-3.1-flash-lite"
+  model: "gemini-3.1-flash-lite-preview"
   deep_think_model: "gemini-3.1-pro-preview"
   thinking_level: "high"
 
