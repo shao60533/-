@@ -283,10 +283,45 @@ def _probe_providers() -> dict:
     return results
 
 
+def _resolve_secret_key() -> str:
+    """Resolve Flask SECRET_KEY: env > file > auto-generate.
+
+    Priority:
+        1. FLASK_SECRET_KEY env var
+        2. ~/.stock_trading/flask_secret.key file
+        3. Auto-generate + persist to file (first-run)
+    """
+    env_key = os.environ.get("FLASK_SECRET_KEY", "").strip()
+    if env_key:
+        return env_key
+
+    key_path = Path.home() / ".stock_trading" / "flask_secret.key"
+    if key_path.exists():
+        stored = key_path.read_text().strip()
+        if stored:
+            return stored
+
+    # Auto-generate on first run
+    import secrets
+    new_key = secrets.token_hex(32)
+    key_path.parent.mkdir(parents=True, exist_ok=True)
+    key_path.write_text(new_key)
+    key_path.chmod(0o600)
+    logger.info(
+        "Generated Flask SECRET_KEY → %s (chmod 600). "
+        "Back this up or set FLASK_SECRET_KEY env var.",
+        key_path,
+    )
+    return new_key
+
+
 def create_app(config_path=None):
     """Create and configure the Flask application."""
     app = Flask(__name__)
-    app.config["SECRET_KEY"] = "stock-trading-system-secret"
+    app.config["SECRET_KEY"] = _resolve_secret_key()
+    app.config["SESSION_COOKIE_HTTPONLY"] = True
+    app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+    app.config["SESSION_COOKIE_SECURE"] = not app.debug
 
     load_config(config_path)
     socketio.init_app(app, cors_allowed_origins="*", async_mode="threading")
