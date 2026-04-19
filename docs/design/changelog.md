@@ -2,7 +2,7 @@
 
 | 日期 | 文档 | 版本 | 变更内容 | 关联 Commit |
 |------|------|------|---------|-------------|
-| 2026-04-18 | [mobile-optimization.md](mobile-optimization.md) | v1.0 | 移动端统一优化（11 页 × 3 断点）：设计 tokens（断点/字号 clamp/触摸 44px）+ 7 个通用组件（form-row-mobile / num-responsive / table-to-cards / tabs-scrollable / collapse-row / btn-group-wrap / chip-row）+ 11 页逐项清单。含 screener v1.2 移动端专项 | — |
+| 2026-04-19 | [mobile-optimization.md](mobile-optimization.md) | v1.0 | 移动端统一优化（11 页 × 3 断点）：设计 tokens（断点/字号 clamp/触摸 44px）+ 7 个通用组件（form-row-mobile / num-responsive / table-to-cards / tabs-scrollable / collapse-row / btn-group-wrap / chip-row）+ 11 页逐项清单。含 screener v1.2 移动端专项 | `e198acd` (P0), `1bfd290` (P1), `2380d09` (P2) |
 | 2026-04-18 | [model-switch.md](model-switch.md) | v1.0 | 全局模型切换：新建 `stock_trading_system/llm/` 模块（router + client + constants），analyzer graph 按 provider 缓存，screener V2 call site 改用 LLMTextClient 抽象，Nav 下拉 + `/api/settings/llm-provider` GET/POST | `f682855` (P1), `dffbab4` (P2), `a549b90` (P3), `e21f6ac` (P4) |
 | 2026-04-18 | [self-iterating-agents.md](self-iterating-agents.md) | v3.0 | 自我迭代能力模块（包裹 TradingAgents）：最大化复用版。Agent Scorer(唯一核心新模块) + Darwinian 权重(采用 atlas-elenchus 常量) + Meta Agent(采用 atlas MUTATOR_SYSTEM_PROMPT) + A/B 验证复用 paper trade sessions。仅 2 张新表 | `e083788` |
 | 2026-04-18 | [batch-analyze-holdings.md](batch-analyze-holdings.md) | v1.0 | 一键持仓分析方案：batch_analysis worker + 逐只推送 + 跳过近期 + 进度面板 | — |
