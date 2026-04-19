@@ -61,7 +61,7 @@ rsync -az --delete \
   --exclude='.venv/' \
   --exclude='__pycache__/' \
   --exclude='*.pyc' \
-  --exclude='data/' \
+  --exclude='/data/' \
   --exclude='*.db' \
   --exclude='*.db-*' \
   --exclude='reports_output/' \
