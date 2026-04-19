@@ -245,7 +245,7 @@
     });
 
     socket.on('task_completed', (data) => {
-      if (data.task_id !== taskId) return;
+      if (data.id !== taskId) return;
       _onTaskComplete(taskId);
     });
   }
