@@ -242,6 +242,30 @@ def make_meta_evolution_worker():
     return worker
 
 
+def make_cleanup_task_events_worker():
+    """Daily cleanup: delete task_events for tasks completed > 7 days ago."""
+    def worker(params: dict, progress_cb: ProgressCb) -> dict:
+        import sqlite3
+        from stock_trading_system.config import get_config
+        cfg = get_config()
+        db_path = cfg.get("portfolio", {}).get("db_path", "data/portfolio.db")
+        conn = sqlite3.connect(db_path)
+        try:
+            cur = conn.execute(
+                "DELETE FROM task_events WHERE task_id IN ("
+                " SELECT id FROM tasks WHERE status IN ('success','failed','cancelled') "
+                " AND completed_at < datetime('now','-7 days'))"
+            )
+            deleted = cur.rowcount
+            conn.commit()
+        except Exception:
+            deleted = 0
+        finally:
+            conn.close()
+        return {"deleted": deleted}
+    return worker
+
+
 def make_screen_v3_worker():
     """Factory for the V3 guru agent screening worker."""
     def worker(params: dict, progress_cb: ProgressCb) -> dict:
