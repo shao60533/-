@@ -4543,24 +4543,65 @@ function _renderPtvDaily(dailies, startCapital) {
     const dates = dailies.map(d => d.date);
     const totals = dailies.map(d => d.total_value);
     const pnls = dailies.map(d => d.daily_pnl);
-    _chartPtvEquity.setOption({
-        tooltip: { trigger: 'axis' },
-        legend: { data: ['总价值', '当日盈亏'], top: 4 },
-        grid: { left: 60, right: 60, top: 40, bottom: 30 },
-        xAxis: { type: 'category', data: dates },
-        yAxis: [
-            { type: 'value', name: '总价值', scale: true },
-            { type: 'value', name: '日盈亏', scale: true },
-        ],
+    const drawdowns = dailies.map(d => d.drawdown_pct || 0);
+
+    // F4: dual-grid layout (equity top, pnl bar bottom)
+    const isMobile = matchMedia('(max-width: 575.98px)').matches;
+    const option = {
+        tooltip: {
+            trigger: 'axis', axisPointer: { type: 'cross' },
+            formatter: (params) => {
+                const d = params[0]?.axisValue || '';
+                const lines = params.map(p => `${p.seriesName}: ${typeof p.value === 'number' ? p.value.toFixed(2) : p.value}`);
+                const idx = dates.indexOf(d);
+                const dd = idx >= 0 ? drawdowns[idx] : 0;
+                lines.push(`回撤: ${dd.toFixed(2)}%`);
+                return `${d}<br>${lines.join('<br>')}`;
+            },
+        },
+        grid: isMobile
+            ? [{ top: '8%', height: '84%', left: '12%', right: '4%' }]
+            : [
+                { top: '8%', height: '58%', left: '8%', right: '4%' },
+                { top: '74%', height: '18%', left: '8%', right: '4%' },
+            ],
+        xAxis: isMobile
+            ? [{ type: 'category', data: dates, boundaryGap: false }]
+            : [
+                { type: 'category', gridIndex: 0, data: dates, boundaryGap: false, axisLabel: { show: false } },
+                { type: 'category', gridIndex: 1, data: dates, boundaryGap: true },
+            ],
+        yAxis: isMobile
+            ? [{ type: 'value', scale: true, splitLine: { lineStyle: { opacity: 0.08 } } }]
+            : [
+                { type: 'value', gridIndex: 0, scale: true, splitLine: { lineStyle: { opacity: 0.08 } } },
+                { type: 'value', gridIndex: 1, splitLine: { show: false } },
+            ],
+        visualMap: isMobile ? [] : [{
+            type: 'piecewise', seriesIndex: 1, show: false,
+            pieces: [
+                { gt: 0, color: 'var(--accent-green, #3fb950)' },
+                { lte: 0, color: 'var(--accent-red, #f85149)' },
+            ],
+        }],
         series: [
-            { name: '总价值', type: 'line', data: totals, smooth: true,
-              itemStyle: { color: '#3882ff' }, areaStyle: { opacity: 0.1 } },
-            { name: '当日盈亏', type: 'bar', yAxisIndex: 1, data: pnls,
-              itemStyle: {
-                  color: (p) => p.value >= 0 ? '#00c875' : '#ff5a5a',
-              } },
+            {
+                name: '净值', type: 'line', smooth: true, showSymbol: false,
+                ...(isMobile ? {} : { xAxisIndex: 0, yAxisIndex: 0 }),
+                areaStyle: { opacity: 0.12 },
+                lineStyle: { color: '#58a6ff', width: 2 },
+                itemStyle: { color: '#58a6ff' },
+                markPoint: { data: [{ type: 'max', name: '最高' }, { type: 'min', name: '最低' }] },
+                data: totals,
+            },
+            ...(isMobile ? [] : [{
+                name: '当日盈亏', type: 'bar',
+                xAxisIndex: 1, yAxisIndex: 1,
+                data: pnls,
+            }]),
         ],
-    }, true);
+    };
+    _chartPtvEquity.setOption(option, true);
 
     // Metrics summary
     const last = dailies[dailies.length - 1];
