@@ -22,6 +22,12 @@ _report_gen = None
 _strategy_engine = None
 _scheduler = None
 _scheduler_thread = None
+_paper_store = None
+_task_store = None
+_task_manager = None
+_local_cache = None
+_data_router = None
+_cleanup_scheduler = None
 
 
 def _get_portfolio_mgr():
