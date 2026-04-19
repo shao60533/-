@@ -6,19 +6,16 @@ let chartAllocation = null;
 let chartKline = null;
 let currentKlineTicker = null;
 let currentKlineRange = '1mo';
-<<<<<<< HEAD
 let dashPnlDays = 30;
 let alertBadgeCount = 0;
+let chartBacktest = null;
+let _backtestStrategies = null;
 
 function renderMd(text) {
     if (!text) return '<span class="text-muted">N/A</span>';
     if (typeof marked !== 'undefined') return marked.parse(String(text));
     return '<pre>' + String(text).replace(/</g, '&lt;') + '</pre>';
 }
-=======
-let chartBacktest = null;
-let _backtestStrategies = null;
->>>>>>> origin/claude/stock-trading-system-LXzEI
 
 // ── Navigation ─────────────────────────────────────────────────────────────
 
@@ -49,12 +46,8 @@ function switchTab(page) {
     if (page === 'backtest') loadBacktestStrategies();
     if (page === 'paper') loadPaperTickers();
     if (page === 'settings') loadSettings();
-<<<<<<< HEAD
     if (page === 'tasks') { loadTasks(); clearTaskBadge(); }
     if (page === 'screener') loadGurus();
-=======
-    if (page === 'backtest') loadBacktestStrategies();
->>>>>>> origin/claude/stock-trading-system-LXzEI
 
     window.scrollTo({ top: 0, behavior: 'instant' in window ? 'instant' : 'auto' });
 }
