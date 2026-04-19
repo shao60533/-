@@ -98,8 +98,10 @@ class BaseGuruAgent:
 
         chat = self._get_chat_model(context)
         structured = chat.with_structured_output(GuruSignal)
+        # Qwen requires the word "json" in messages when response_format=json_object
+        json_hint = "\n\nPlease respond in valid JSON format matching the GuruSignal schema."
         return structured.invoke([
-            SystemMessage(content=system_prompt),
+            SystemMessage(content=system_prompt + json_hint),
             HumanMessage(content=user_prompt),
         ])
 
