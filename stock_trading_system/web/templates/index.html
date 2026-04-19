@@ -159,7 +159,14 @@
                 <input type="text" class="form-control form-control-sm" id="global-search" placeholder="搜索股票/持仓/分析/预警..." autocomplete="off">
                 <div class="search-dropdown" id="search-dropdown" style="display:none;"></div>
             </div>
-            <div class="top-bar-right">
+            <div class="top-bar-right" style="display:flex;align-items:center;gap:8px;">
+                <div class="llm-switcher-topbar" style="display:flex;align-items:center;gap:4px;">
+                    <select id="llm-provider-select-topbar" style="font-size:11px;padding:2px 4px;background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--border);border-radius:4px;">
+                        <option value="qwen">Qwen</option>
+                        <option value="gemini">Gemini</option>
+                    </select>
+                    <span class="llm-lock-icon-topbar" style="display:none;font-size:11px;" title="由环境变量锁定">🔒</span>
+                </div>
                 <span id="clock" class="text-muted"></span>
             </div>
         </div>
