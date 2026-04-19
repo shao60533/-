@@ -3605,20 +3605,38 @@ function openTaskResult(task) {
     // Route to the matching business page based on task type.
     bootstrap.Modal.getInstance(document.getElementById('taskDetailModal')).hide();
     const ref = task.result_ref || '';
-    if (task.type === 'analysis' && ref.startsWith('analysis_history:')) {
-        const id = ref.split(':')[1];
-        switchTab('history');
-        // Best-effort: after history loads, trigger the detail view
-        setTimeout(() => { if (typeof showAnalysisDetail === 'function') showAnalysisDetail(id); }, 300);
-    } else if (task.type === 'screen') {
-        switchTab('screener');
-    } else if (task.type === 'backtest') {
-        switchTab('backtest');
-    } else if (task.type === 'report') {
-        switchTab('reports');
-    } else if (task.type === 'batch_analysis') {
-        switchTab('history');
-        showToast('已跳转到分析记录，每只持仓的分析结果均已保存', 'success');
+    const typeMap = {
+        'analysis':         () => {
+            if (ref.startsWith('analysis_history:')) {
+                const id = ref.split(':')[1];
+                switchTab('history');
+                setTimeout(() => { if (typeof showAnalysisDetail === 'function') showAnalysisDetail(id); }, 300);
+            } else {
+                switchTab('history');
+            }
+        },
+        'batch_analysis':   () => { switchTab('history'); },
+        'screen':           () => { switchTab('screener'); },
+        'screen_v2':        () => { switchTab('screener'); },
+        'backtest':         () => { switchTab('backtest'); },
+        'report':           () => { switchTab('reports'); },
+        'paper_trade':      () => { switchTab('paper'); },
+        'paper_backfill':   () => { switchTab('paper'); },
+        'qwen_fundamentals':() => {
+            // 基本面查询结果 — 跳到分析页展示
+            const ticker = task.params?.ticker;
+            if (ticker) {
+                switchTab('analysis');
+                document.getElementById('analyze-ticker').value = ticker;
+            } else { switchTab('history'); }
+        },
+        'qwen_news':        () => { switchTab('history'); },
+        'agent_score_update':() => { switchTab('settings'); showToast('Agent 评分已更新', 'success'); },
+        'meta_evolution':   () => { switchTab('settings'); showToast('Meta Agent 进化结果已更新', 'success'); },
+    };
+    const handler = typeMap[task.type];
+    if (handler) {
+        handler();
     } else {
         showToast('该任务无独立结果页', 'info');
     }
