@@ -3229,7 +3229,6 @@ function renderBacktestTrades(trades) {
             </div>
         </div>
         <div class="bt-trades-cards p-2">${cards}</div>`;
->>>>>>> origin/claude/stock-trading-system-LXzEI
 }
 
 // ── Window resize ──────────────────────────────────────────────────────────

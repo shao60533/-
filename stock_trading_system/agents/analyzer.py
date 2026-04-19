@@ -104,6 +104,12 @@ class StockAnalyzer:
             else:
                 self._configure_gemini(ta_config)
 
+            # Inject active prompt overrides from prompt_store (iteration phase 2)
+            if self._iteration_enabled:
+                agent_prompts = self._load_active_prompts()
+                if agent_prompts:
+                    ta_config["agent_prompts"] = agent_prompts
+
             graph = TradingAgentsGraph(
                 selected_analysts=["market", "social", "news", "fundamentals"],
                 debug=True,
@@ -112,6 +118,10 @@ class StockAnalyzer:
             self._graphs[provider] = graph
             self._graph = graph
             logger.info("TradingAgents graph initialized with %s", provider)
+
+    @property
+    def _iteration_enabled(self) -> bool:
+        return self._config.get("iteration", {}).get("enabled", False)
 
     def _configure_qwen(self, ta_config: dict) -> None:
         qwen_config = self._config.get("qwen", {})
@@ -201,6 +211,47 @@ class StockAnalyzer:
         })
 
         try:
+            # Iteration mode: delegate to _run_with_weights which handles
+            # Darwinian weight-context injection + prompt overrides. Skips the
+            # streaming progress view but still emits pipeline_done.
+            if self._iteration_enabled:
+                final_state, signal = self._run_with_weights(ticker, date)
+                # Mark all steps done in a single bulk emit so the UI gets a
+                # best-effort completion view.
+                now = time.monotonic()
+                for idx, (sid, label, state_key) in enumerate(PIPELINE_STEPS):
+                    if _is_step_done(final_state, state_key):
+                        step_status[sid]["status"] = "done"
+                        step_status[sid]["duration_ms"] = 0
+                        emit({
+                            "type": "step_done",
+                            "step": sid,
+                            "label": label,
+                            "index": idx,
+                            "total": total,
+                            "duration_ms": 0,
+                        })
+                result = AnalysisResult(
+                    ticker=ticker,
+                    signal=str(signal),
+                    market_report=final_state.get("market_report", ""),
+                    sentiment_report=final_state.get("sentiment_report", ""),
+                    news_report=final_state.get("news_report", ""),
+                    fundamentals_report=final_state.get("fundamentals_report", ""),
+                    investment_debate=final_state.get("investment_debate_state", {}),
+                    risk_assessment=final_state.get("risk_debate_state", {}),
+                    trade_decision=final_state.get("final_trade_decision", {}),
+                    steps=list(step_status.values()),
+                )
+                emit({
+                    "type": "pipeline_done",
+                    "ticker": ticker,
+                    "steps": result.steps,
+                    "signal": result.signal,
+                })
+                logger.info("Analysis complete (iteration) for %s: signal=%s", ticker, signal)
+                return result
+
             # Replicate TradingAgents.propagate()'s streaming loop so we can
             # peek at intermediate state between chunks and push progress to
             # the UI in real time.
@@ -299,6 +350,79 @@ class StockAnalyzer:
         })
         logger.info("Analysis complete for %s: signal=%s", ticker, signal)
         return result
+
+    def _run_with_weights(
+        self, ticker: str, date: str,
+    ) -> tuple[dict[str, Any], Any]:
+        """Bypass propagate() to inject weight context into init_state."""
+        from stock_trading_system.agents.iterative.config import load_iteration_config
+
+        iter_config = load_iteration_config(self._config.get("iteration", {}))
+
+        # Build initial state via the propagator
+        init_state = self._graph.propagator.create_initial_state(ticker, date)
+
+        # Inject weight context if a scorer is available
+        if iter_config.darwinian.enabled:
+            weight_text = self._get_weight_context()
+            if weight_text:
+                init_state["messages"].insert(0, ("system", weight_text))
+
+        # Run graph (preserve debug stream behaviour)
+        args = self._graph.propagator.get_graph_args()
+        if self._graph.debug:
+            trace: list[dict] = []
+            for chunk in self._graph.graph.stream(init_state, **args):
+                if chunk.get("messages"):
+                    chunk["messages"][-1].pretty_print()
+                trace.append(chunk)
+            final_state = trace[-1] if trace else {}
+        else:
+            final_state = self._graph.graph.invoke(init_state, **args)
+
+        signal = self._graph.process_signal(
+            final_state.get("final_trade_decision", "")
+        )
+        return final_state, signal
+
+    def _get_weight_context(self) -> str:
+        """Return formatted weight context from the scorer singleton, if any."""
+        try:
+            from stock_trading_system.agents.iterative.darwinian import format_weight_context
+            from stock_trading_system.agents.iterative.agent_scorer import AgentScorer
+            from stock_trading_system.agents.iterative.config import load_iteration_config
+
+            iter_config = load_iteration_config(self._config.get("iteration", {}))
+            db_path = self._config.get("portfolio", {}).get("db_path", "data/portfolio.db")
+            scorer = AgentScorer(db_path, iter_config)
+            return format_weight_context(scorer)
+        except Exception as e:
+            logger.warning("Could not load weight context: %s", e)
+            return ""
+
+    def _load_active_prompts(self) -> dict[str, dict[str, str]]:
+        """Load active prompt overrides from the prompt_versions table.
+
+        Returns a dict suitable for ta_config["agent_prompts"]:
+          {agent_id: {"system_prompt": ...} | {"prompt_prefix": ...}}
+        """
+        try:
+            from stock_trading_system.agents.iterative.prompt_store import PromptStore
+
+            db_path = self._config.get("portfolio", {}).get("db_path", "data/portfolio.db")
+            store = PromptStore(db_path)
+            active = store.get_all_active_prompts()
+            if not active:
+                return {}
+
+            result: dict[str, dict[str, str]] = {}
+            for agent_id, row in active.items():
+                prompt_type = row.get("prompt_type", "system_prompt")
+                result[agent_id] = {prompt_type: row["prompt_text"]}
+            return result
+        except Exception as e:
+            logger.warning("Could not load active prompts: %s", e)
+            return {}
 
     def quick_screen(self, ticker: str, date: str) -> str:
         """Quick analysis returning just the signal (for batch screening).
