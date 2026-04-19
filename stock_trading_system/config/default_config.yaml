@@ -34,7 +34,7 @@ ib:
 # DataRouter consults these first to skip even initialization in cloud envs.
 providers:
   ib_enabled: false
-  polygon_enabled: false
+  polygon_enabled: true
   yfinance_enabled: true
   akshare_enabled: true
 
