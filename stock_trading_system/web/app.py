@@ -1,6 +1,9 @@
 """Flask web application with API routes and WebSocket support."""
 
+import os
 import threading
+from pathlib import Path
+
 from flask import Flask, render_template, jsonify, request
 from flask_socketio import SocketIO
 
