@@ -250,7 +250,7 @@ def _extract_via_regex(text: str, signal: str, advice: dict | None) -> dict | No
 
     return {
         "rating": "BUY",
-        "thesis": "regex 解析",
+        "thesis": None,  # filled from analysis_history.executive_summary
         "holding_months_min": hmin, "holding_months_max": hmax,
         "orders": orders,
     }
