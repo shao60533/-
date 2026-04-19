@@ -350,7 +350,7 @@ def create_app(config_path=None):
     # Public paths that don't require authentication
     PUBLIC_PREFIXES = ("/static/", "/login", "/register", "/reset",
                        "/api/auth/login", "/api/auth/register", "/api/auth/reset",
-                       "/health", "/api/seed")
+                       "/health", "/api/health", "/api/seed")
 
     @app.before_request
     def enforce_auth():
