@@ -12,6 +12,7 @@ class Position:
     shares: float
     avg_cost: float
     added_date: str  # YYYY-MM-DD
+    user_id: int | None = None  # multi-tenant
 
 
 @dataclass
@@ -24,6 +25,7 @@ class Transaction:
     price: float
     timestamp: str  # YYYY-MM-DD HH:MM:SS
     notes: str = ""
+    user_id: int | None = None  # multi-tenant
 
 
 @dataclass
@@ -35,3 +37,4 @@ class DailySnapshot:
     pnl: float
     pnl_pct: float
     positions_json: str  # JSON string of all positions
+    user_id: int | None = None  # multi-tenant
