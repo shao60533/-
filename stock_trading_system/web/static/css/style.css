@@ -2040,10 +2040,9 @@ body.modal-open #mobile-tabbar { z-index: 1 !important; }
 /* ── Mobile global helpers ────────────────────────────────────── */
 @media (max-width: 575.98px) {
     /* Reduce chart heights on small screens */
-    .tv-widget, [id*="chart"] {
-        min-height: 280px !important;
-        max-height: 55vh;
-    }
+    .tv-widget { min-height: 280px !important; max-height: 55vh; }
+    .chart-box { height: min(280px, 50vh) !important; min-height: 200px !important; }
+    .chart-box-lg { height: min(320px, 55vh) !important; min-height: 240px !important; }
     /* Content area padding */
     .main-content { padding: var(--page-pad-mobile) !important; }
     /* Hide clock on small screens */
