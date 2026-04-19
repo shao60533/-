@@ -37,11 +37,17 @@ def make_analysis_worker(get_analyzer, get_strategy_engine, get_portfolio, get_r
 
         progress_cb(5, "初始化分析管线")
         analyzer = get_analyzer()
+        task_id = params.get("__task_id__", "")
 
-        # TradingAgents' analyze() is monolithic (no internal progress hook),
-        # so we report coarse-grained milestones only.
+        # Pipeline progress callback — emit events for real-time frontend updates
+        from stock_trading_system.tasks.event_emitter import emit_event as _emit_ev
+
+        def _analysis_progress(event: dict):
+            if task_id:
+                _emit_ev(task_id, "analysis_pipeline", {"ticker": ticker, **event})
+
         progress_cb(15, "启动 7 Agent 分析")
-        raw = analyzer.analyze(ticker, date)
+        raw = analyzer.analyze(ticker, date, progress_cb=_analysis_progress)
 
         # When iteration is enabled, analyze() returns (AnalysisResult, final_state)
         final_state = None
