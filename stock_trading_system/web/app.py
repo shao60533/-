@@ -350,6 +350,7 @@ def create_app(config_path=None):
     # Public paths that don't require authentication
     PUBLIC_PREFIXES = ("/static/", "/login", "/register", "/reset",
                        "/api/auth/login", "/api/auth/register", "/api/auth/reset",
+                       "/api/auth/invites-available",
                        "/health", "/api/health", "/api/seed")
 
     @app.before_request
@@ -444,6 +445,11 @@ def create_app(config_path=None):
             return jsonify({"user": None})
         return jsonify({"user": {"id": u.id, "email": u.email,
                                   "display_name": u.display_name, "role": u.role}})
+
+    @app.route("/api/auth/invites-available")
+    def api_invites_available():
+        """Public list of currently redeemable invite codes (for the register page)."""
+        return jsonify({"codes": _invite_mgr.list_available(limit=50)})
 
     @app.route("/api/auth/change-password", methods=["POST"])
     def api_change_password():

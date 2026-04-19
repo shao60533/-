@@ -93,3 +93,18 @@ class InviteCodeManager:
                 "SELECT * FROM invite_codes ORDER BY created_at DESC"
             ).fetchall()
             return [dict(r) for r in rows]
+
+    def list_available(self, limit: int = 20) -> list[str]:
+        """List unused, non-revoked, non-expired invite codes."""
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT code FROM invite_codes
+                   WHERE used_by IS NULL
+                     AND revoked_at IS NULL
+                     AND (expires_at IS NULL OR expires_at > ?)
+                   ORDER BY created_at ASC
+                   LIMIT ?""",
+                (now, limit),
+            ).fetchall()
+            return [r["code"] for r in rows]
