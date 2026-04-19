@@ -262,7 +262,7 @@
         <!-- Page: Analysis -->
         <div class="page" id="page-analysis">
             <h3 class="page-title">AI 多Agent分析</h3>
-            <div class="row g-2 mb-3 analysis-form">
+            <div class="row g-2 mb-3 analysis-form form-row-mobile">
                 <div class="col-12 col-md-5">
                     <input type="text" class="form-control" id="analyze-ticker" placeholder="股票代码 (如 AAPL, 600519)">
                 </div>
@@ -377,14 +377,14 @@
                     <div class="col-6 col-lg-2">
                         <div class="signal-card" id="signal-card">
                             <div class="signal-label">AI 信号</div>
-                            <div class="signal-value" id="signal-value">--</div>
+                            <div class="signal-value num-responsive" id="signal-value">--</div>
                             <div class="signal-ticker" id="signal-ticker"></div>
                         </div>
                     </div>
                     <div class="col-6 col-lg-2">
                         <div class="signal-card" id="confidence-card" style="display:none;">
                             <div class="signal-label">置信度</div>
-                            <div class="signal-value" id="confidence-value" style="font-size:2rem;">--</div>
+                            <div class="signal-value num-responsive" id="confidence-value">--</div>
                             <div class="signal-ticker" id="confidence-action"></div>
                         </div>
                     </div>
