@@ -503,7 +503,6 @@ function renderAllocationChart(alloc) {
 
 // ── Analysis ───────────────────────────────────────────────────────────────
 
-<<<<<<< HEAD
 function switchReportTab(btn, panelId) {
     document.querySelectorAll('.report-tab').forEach(t => t.classList.remove('active'));
     document.querySelectorAll('.report-panel').forEach(p => p.classList.remove('active'));
@@ -515,7 +514,7 @@ function switchReportTab(btn, panelId) {
 // Track active tasks by ticker so we can route task_* events back to UI.
 const _activeAnalysisTasks = new Map();   // taskId -> ticker
 const _activeScreenTasks = new Map();     // taskId -> {market, strategy}
-=======
+
 // Pipeline steps mirror PIPELINE_STEPS in agents/analyzer.py so the UI can
 // render all step cards up-front (before any WebSocket events arrive).
 const PIPELINE_STEPS = [
@@ -582,11 +581,12 @@ function _pipelineRender() {
 function _pipelineReset() {
     _pipelineState = {};
     PIPELINE_STEPS.forEach(s => { _pipelineState[s.id] = { status: 'pending', duration_ms: 0 }; });
-    document.getElementById('pipeline-card').style.display = 'block';
-    document.getElementById('btn-rerun').style.display = 'none';
+    const card = document.getElementById('pipeline-card');
+    if (card) card.style.display = 'block';
+    const rerun = document.getElementById('btn-rerun');
+    if (rerun) rerun.style.display = 'none';
     _pipelineRender();
 }
->>>>>>> origin/claude/stock-trading-system-LXzEI
 
 function runAnalysis() {
     const ticker = document.getElementById('analyze-ticker').value.trim().toUpperCase();
@@ -629,7 +629,6 @@ function runAnalysis() {
     });
 }
 
-<<<<<<< HEAD
 async function handleAnalysisTaskCompleted(taskId, tickerHint) {
     try {
         const data = await api(`/api/tasks/${taskId}/result`);
@@ -660,13 +659,13 @@ async function handleAnalysisTaskCompleted(taskId, tickerHint) {
 
 function safeJsonParse(s) {
     try { return JSON.parse(s); } catch (_) { return null; }
-=======
+}
+
 function rerunAnalysis() {
     // Re-submit the last ticker+date combination. We don't yet support
     // re-running a single failed step (that needs TradingAgents refactor);
     // for now "重跑" triggers a full fresh run.
     runAnalysis();
->>>>>>> origin/claude/stock-trading-system-LXzEI
 }
 
 // ── Quick data (chart / fundamentals / news) ───────────────────────────────
@@ -2486,7 +2485,7 @@ async function showHistoryDetail(id) {
 
 // ── Backtest ──────────────────────────────────────────────────────────────
 
-let chartBacktest = null;
+// chartBacktest already declared at top level
 let btStrategies = [];
 
 async function loadBacktestStrategies() {
@@ -2727,13 +2726,14 @@ function renderDataSourceStatus(settings) {
     `).join('');
 }
 
-<<<<<<< HEAD
-let settingsDirty = {};
-=======
-// Settings editor state — the last full /api/settings response + edit mode.
+// Settings editor state — origin's approach: the last full /api/settings
+// response + edit mode, driven by the toolbar buttons in the header.
 let _settingsData = null;
 let _settingsEditMode = false;
 let _settingsWritable = new Set();
+// HEAD's legacy inline-edit dirty map is kept for backward compatibility with
+// editSetting/commitSettingEdit flows but no longer drives the primary UI.
+let settingsDirty = {};
 
 // Definition of every editable row — label, dotted-path, input type,
 // current-value accessor (reads from the /api/settings response), and
@@ -2810,16 +2810,11 @@ function _settingsFields(s) {
         ]},
     ];
 }
->>>>>>> origin/claude/stock-trading-system-LXzEI
 
 function renderSettingsConfig(s) {
     const box = document.getElementById('settings-config');
     if (!box || !s) return;
-<<<<<<< HEAD
-    settingsDirty = {};
-    document.getElementById('btn-save-settings').style.display = 'none';
-
-    // Update sidebar status indicator (show LLM provider status)
+    // Sidebar LLM status indicator (HEAD feature — preserved here).
     const botStatusEl = document.getElementById('bot-status');
     if (botStatusEl) {
         const qwenOk = s.qwen && s.qwen.enabled;
@@ -2832,38 +2827,6 @@ function renderSettingsConfig(s) {
             botStatusEl.textContent = 'LLM 未配置';
         }
     }
-    const gemini = s.gemini || {};
-    const qwen = s.qwen || {};
-    const ib = s.ib || {};
-    const telegram = s.telegram || {};
-    const email = s.email || {};
-    // [label, configKey, displayValue, editable]
-    const rows = [
-        ['Gemini 模型', 'gemini.model', gemini.model || '', true],
-        ['Gemini 深度模型', 'gemini.deep_think_model', gemini.deep_think_model || '', true],
-        ['Gemini Thinking', 'gemini.thinking_level', gemini.thinking_level || '', true],
-        ['Gemini API Key', 'gemini.api_key', gemini.api_key_masked || '未配置', true],
-        ['Polygon API Key', 'polygon.api_key', (s.polygon && s.polygon.api_key_masked) || '未配置', true],
-        ['Qwen 启用', 'qwen.enabled', qwen.enabled ? '是' : '否', true],
-        ['Qwen 模型', 'qwen.model', qwen.model || '', true],
-        ['Qwen API Key', 'qwen.api_key', qwen.api_key_masked || '未配置', true],
-        ['IB 主机', 'ib.host', ib.host || '', true],
-        ['IB 端口', 'ib.port', ib.port || '', true],
-        ['IB 启用', 'ib.enabled', ib.enabled ? '是' : '否', true],
-        ['Telegram Token', 'alerts.telegram.bot_token', telegram.bot_token_masked || '未配置', true],
-        ['Telegram Chat ID', 'alerts.telegram.chat_id', telegram.chat_id || '', true],
-        ['Email SMTP', 'alerts.email.smtp_host', email.smtp_host || '', true],
-        ['Email 用户', 'alerts.email.username', email.username || '', true],
-        ['Email 密码', 'alerts.email.password', email.password_masked || '未配置', true],
-        ['Email 收件人', 'alerts.email.to_address', email.to_address || '', true],
-    ];
-    box.innerHTML = rows.map(([label, key, val, editable]) => `
-        <div class="settings-row">
-            <span class="label">${label}</span>
-            <span class="value setting-val" data-key="${key}" ${editable ? 'onclick="editSetting(this)"' : ''} style="${editable ? 'cursor:pointer;' : ''}" title="${editable ? '点击编辑' : ''}">${val || '<span class=text-muted>--</span>'}</span>
-        </div>
-    `).join('');
-=======
     _settingsData = s;
     _settingsWritable = new Set(s.writable_paths || []);
     const groups = _settingsFields(s);
@@ -2904,9 +2867,12 @@ function renderSettingsConfig(s) {
 
 function toggleSettingsEdit(on) {
     _settingsEditMode = !!on;
-    document.getElementById('btn-settings-edit').classList.toggle('d-none', _settingsEditMode);
-    document.getElementById('btn-settings-save').classList.toggle('d-none', !_settingsEditMode);
-    document.getElementById('btn-settings-cancel').classList.toggle('d-none', !_settingsEditMode);
+    const editBtn = document.getElementById('btn-settings-edit');
+    const saveBtn = document.getElementById('btn-settings-save');
+    const cancelBtn = document.getElementById('btn-settings-cancel');
+    if (editBtn) editBtn.classList.toggle('d-none', _settingsEditMode);
+    if (saveBtn) saveBtn.classList.toggle('d-none', !_settingsEditMode);
+    if (cancelBtn) cancelBtn.classList.toggle('d-none', !_settingsEditMode);
     if (_settingsData) renderSettingsConfig(_settingsData);
 }
 
@@ -2941,7 +2907,6 @@ async function saveSettings() {
     } else if (data && data.error) {
         showToast('保存失败: ' + data.error, 'error');
     }
->>>>>>> origin/claude/stock-trading-system-LXzEI
 }
 
 function editSetting(el) {
@@ -3006,7 +2971,6 @@ socket.on('alert_triggered', data => {
     updateAlertBadge();
 });
 
-<<<<<<< HEAD
 function updateAlertBadge() {
     ['sidebar-alert-badge', 'mobile-alert-badge'].forEach(id => {
         const el = document.getElementById(id);
@@ -3023,7 +2987,8 @@ function updateAlertBadge() {
 function clearAlertBadge() {
     alertBadgeCount = 0;
     updateAlertBadge();
-=======
+}
+
 // ── Backtest ───────────────────────────────────────────────────────────────
 
 async function loadBacktestStrategies() {
