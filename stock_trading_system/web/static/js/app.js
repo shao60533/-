@@ -600,7 +600,7 @@ function runAnalysis() {
     _pipelineReset();
     document.getElementById('analysis-loading').style.display = 'block';
     document.getElementById('analysis-result').style.display = 'none';
-    document.getElementById('btn-analyze').disabled = true;
+    // btn-analyze stays enabled — analysis is async
 
     // Submit through the task system. Task center will track it; the
     // task_completed bridge below routes the result back to this page.
@@ -1440,7 +1440,7 @@ function runScreen() {
 
     document.getElementById('screen-loading').style.display = 'block';
     document.getElementById('screen-results').style.display = 'none';
-    document.getElementById('btn-screen').disabled = true;
+    // btn-screen stays enabled — screening is async
 
     // Reset funnel state
     ['funnel-l1', 'funnel-l2', 'funnel-l3'].forEach(id => {
