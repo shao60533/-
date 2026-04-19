@@ -621,6 +621,24 @@ def _now_iso() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _plan_fingerprint(plan: dict) -> str:
+    """SHA1 fingerprint of plan content for dedup (F1)."""
+    import hashlib
+    orders = plan.get("orders", [])
+    payload = json.dumps({
+        "entry_low": plan.get("entry_low"),
+        "entry_high": plan.get("entry_high"),
+        "stop_loss": plan.get("stop_loss"),
+        "take_profit": plan.get("take_profit"),
+        "rating": plan.get("rating"),
+        "tiers": sorted(
+            [(o.get("sequence", 0), str(o.get("trigger", {})), o.get("pct_target_total", 0))
+             for o in orders]
+        ),
+    }, sort_keys=True)
+    return hashlib.sha1(payload.encode()).hexdigest()
+
+
 def _days_between(a: str, b: str) -> int:
     try:
         da = datetime.strptime(a.split()[0], "%Y-%m-%d")
@@ -880,24 +898,6 @@ def _v2_methods():
 
     # ── Trading plans & planned orders (V3) ────────────────────────────
 
-    @staticmethod
-    def _plan_fingerprint(plan: dict) -> str:
-        """SHA1 fingerprint of plan content for dedup (F1)."""
-        import hashlib
-        orders = plan.get("orders", [])
-        payload = json.dumps({
-            "entry_low": plan.get("entry_low"),
-            "entry_high": plan.get("entry_high"),
-            "stop_loss": plan.get("stop_loss"),
-            "take_profit": plan.get("take_profit"),
-            "rating": plan.get("rating"),
-            "tiers": sorted(
-                [(o.get("sequence", 0), str(o.get("trigger", {})), o.get("pct_target_total", 0))
-                 for o in orders]
-            ),
-        }, sort_keys=True)
-        return hashlib.sha1(payload.encode()).hexdigest()
-
     def save_plan(self, *, session_id: int, analysis_id: int,
                    rating: str | None, thesis: str | None,
                    holding_months: tuple[int | None, int | None] | None,
@@ -909,7 +909,7 @@ def _v2_methods():
         only increment reconfirmed_count (no new plan row).
         """
         hm = holding_months or (None, None)
-        fp = self._plan_fingerprint(plan)
+        fp = _plan_fingerprint(plan)
 
         with self._lock, self._conn() as conn:
             # F1: dedup — check if active plan has same fingerprint

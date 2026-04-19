@@ -85,7 +85,7 @@ def migrate(db_path: str, dry_run: bool = False) -> dict:
         conn.close()
         return {"status": "dry_run", "plan": plan}
 
-    if not plan:
+    if not summary["columns_added"]:
         print("✓ Already migrated. Nothing to do.")
         conn.close()
         return {"status": "already_migrated"}

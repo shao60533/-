@@ -19,9 +19,13 @@ def db_path(tmp_path):
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL, mode TEXT NOT NULL, status TEXT NOT NULL,
             start_capital REAL NOT NULL, start_date TEXT NOT NULL,
-            config_json TEXT NOT NULL, created_at TEXT NOT NULL
+            config_json TEXT NOT NULL, auto_track INTEGER DEFAULT 0,
+            is_system INTEGER DEFAULT 0, ticker TEXT, last_eod_date TEXT,
+            metrics_json TEXT, created_at TEXT NOT NULL, completed_at TEXT,
+            end_date TEXT, task_id TEXT, benchmark_metrics_json TEXT
         );
-        INSERT INTO paper_trade_sessions VALUES (1, 'AAPL', 'live', 'running', 100000, '2026-01-01', '{}', '2026-01-01');
+        INSERT INTO paper_trade_sessions (id, name, mode, status, start_capital, start_date, config_json, is_system, ticker, created_at)
+        VALUES (1, 'AAPL', 'live', 'running', 100000, '2026-01-01', '{}', 0, 'AAPL', '2026-01-01');
 
         CREATE TABLE paper_trade_plans (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -75,8 +79,13 @@ class TestMigration:
     def test_backup_created(self, tmp_path):
         path = str(tmp_path / "bak.db")
         conn = sqlite3.connect(path)
-        conn.execute("CREATE TABLE paper_trade_plans (id INTEGER PRIMARY KEY, plan_json TEXT)")
-        conn.execute("CREATE TABLE analysis_history (id INTEGER PRIMARY KEY)")
+        conn.executescript("""
+            CREATE TABLE paper_trade_plans (
+                id INTEGER PRIMARY KEY, session_id INTEGER,
+                analysis_id INTEGER, plan_json TEXT
+            );
+            CREATE TABLE analysis_history (id INTEGER PRIMARY KEY);
+        """)
         conn.close()
         migrate(path)
         assert (tmp_path / "bak.db.pre-v1_3.bak").exists()
