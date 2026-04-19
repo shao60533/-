@@ -880,6 +880,24 @@ def _v2_methods():
 
     # ── Trading plans & planned orders (V3) ────────────────────────────
 
+    @staticmethod
+    def _plan_fingerprint(plan: dict) -> str:
+        """SHA1 fingerprint of plan content for dedup (F1)."""
+        import hashlib
+        orders = plan.get("orders", [])
+        payload = json.dumps({
+            "entry_low": plan.get("entry_low"),
+            "entry_high": plan.get("entry_high"),
+            "stop_loss": plan.get("stop_loss"),
+            "take_profit": plan.get("take_profit"),
+            "rating": plan.get("rating"),
+            "tiers": sorted(
+                [(o.get("sequence", 0), str(o.get("trigger", {})), o.get("pct_target_total", 0))
+                 for o in orders]
+            ),
+        }, sort_keys=True)
+        return hashlib.sha1(payload.encode()).hexdigest()
+
     def save_plan(self, *, session_id: int, analysis_id: int,
                    rating: str | None, thesis: str | None,
                    holding_months: tuple[int | None, int | None] | None,
@@ -887,12 +905,30 @@ def _v2_methods():
                    plan: dict, parse_method: str) -> int:
         """Insert a trading_plan + its planned_orders atomically.
 
-        Any previously active plan on the same session is marked superseded,
-        and its pending orders are cascaded to superseded status. Triggered
-        orders are left intact as history.
+        F1 dedup: if the active plan has the same content fingerprint,
+        only increment reconfirmed_count (no new plan row).
         """
         hm = holding_months or (None, None)
+        fp = self._plan_fingerprint(plan)
+
         with self._lock, self._conn() as conn:
+            # F1: dedup — check if active plan has same fingerprint
+            existing = conn.execute(
+                """SELECT id FROM paper_trade_plans
+                   WHERE session_id=? AND status='active' AND fingerprint=?""",
+                (session_id, fp),
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    """UPDATE paper_trade_plans
+                       SET reconfirmed_count = COALESCE(reconfirmed_count, 1) + 1,
+                           reconfirmed_at = ?,
+                           analysis_ids = json_insert(COALESCE(analysis_ids,'[]'), '$[#]', ?)
+                       WHERE id = ?""",
+                    (_now_iso(), analysis_id, existing[0]),
+                )
+                return int(existing[0])
+
             # Mark previous active plan(s) as superseded
             now = _now_iso()
             conn.execute(
@@ -901,18 +937,18 @@ def _v2_methods():
                    WHERE session_id=? AND status='active'""",
                 (now, session_id),
             )
-            # Insert new plan
+            # Insert new plan with fingerprint
             cur = conn.execute(
                 """INSERT INTO paper_trade_plans
                    (session_id, analysis_id, rating, thesis,
                     holding_months_min, holding_months_max,
                     raw_summary, plan_json, parse_method,
-                    status, created_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,'active',?)""",
+                    status, fingerprint, analysis_ids, created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,'active',?,json_array(?),?)""",
                 (session_id, analysis_id, rating, thesis,
                  hm[0], hm[1], raw_summary,
                  json.dumps(plan, ensure_ascii=False),
-                 parse_method, now),
+                 parse_method, fp, analysis_id, now),
             )
             plan_id = int(cur.lastrowid)
 
