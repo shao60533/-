@@ -330,9 +330,19 @@ class TaskManager:
     # ── Plumbing ─────────────────────────────────────────────────────────
 
     def _emit(self, event: str, payload: dict) -> None:
+        """Legacy emit — routes through unified emit_event when task_id available."""
+        task_id = payload.get("task_id") or payload.get("id", "")
+        if task_id:
+            try:
+                from stock_trading_system.tasks.event_emitter import emit_event
+                emit_event(task_id, event, payload)
+                return
+            except Exception:
+                pass
+        # Fallback: direct socketio emit (for non-task events)
         try:
             self._socketio.emit(event, payload)
-        except Exception as e:  # pragma: no cover — never let WS break the task
+        except Exception as e:  # pragma: no cover
             logger.warning("WS emit failed for %s: %s", event, e)
 
     def wait_for(self, task_id: str, timeout: float | None = None) -> dict | None:

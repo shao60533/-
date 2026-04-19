@@ -253,8 +253,9 @@ def make_screen_v3_worker():
         user_id = params.get("user_id")
         provider = params.get("provider", "qwen")
 
-        # Get socketio for direct event push to frontend
-        from stock_trading_system.web.app import socketio as _sio
+        # Use unified emit_event for all progress events
+        from stock_trading_system.tasks.event_emitter import emit_event
+        task_id = params.get("__task_id__", "")
 
         def _on_progress(event):
             evt_type = event.get("type", "")
@@ -263,16 +264,9 @@ def make_screen_v3_worker():
                 total = event.get("total", 1)
                 pct = min(95, int(done / total * 90) + 5)
                 progress_cb(pct, f"{event.get('guru_display','')}: {event.get('ticker','')}")
-                # Push guru_unit_done directly to frontend via socketio
-                try:
-                    _sio.emit("guru_unit_done", event)
-                except Exception:
-                    pass
+                emit_event(task_id, "guru_unit_done", event, user_id=user_id)
             elif evt_type in ("roundtable_start", "roundtable_done"):
-                try:
-                    _sio.emit(evt_type, event)
-                except Exception:
-                    pass
+                emit_event(task_id, evt_type, event, user_id=user_id)
 
         try:
             from stock_trading_system.data.local_cache import LocalCache
@@ -570,18 +564,13 @@ def make_batch_analysis_worker(deps):
 
 def _emit_batch_item(deps, batch_task_id: str, item: dict,
                       index: int, total: int) -> None:
-    sio = getattr(deps, "socketio", None)
-    if sio is None:
-        return
-    try:
-        sio.emit("batch_analysis_item", {
-            "batch_task_id": batch_task_id,
-            **item,
-            "index": index,
-            "total": total,
-        })
-    except Exception as e:
-        logger.warning("batch_analysis_item emit failed: %s", e)
+    from stock_trading_system.tasks.event_emitter import emit_event
+    emit_event(batch_task_id, "batch_analysis_item", {
+        "batch_task_id": batch_task_id,
+        **item,
+        "index": index,
+        "total": total,
+    })
 
 
 def _batch_pct(i: int, n: int, sub_pct: float = 0) -> int:
