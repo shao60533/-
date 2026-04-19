@@ -1121,7 +1121,6 @@ body.modal-open #mobile-tabbar { z-index: 1 !important; }
     .more-sheet-grid { grid-template-columns: repeat(3, 1fr); }
 }
 
-<<<<<<< HEAD
 /* ══════════════════════════════════════════════════════════════════════════
    Task Center — async task records
    ══════════════════════════════════════════════════════════════════════════ */
@@ -2164,7 +2163,8 @@ body.modal-open #mobile-tabbar { z-index: 1 !important; }
     .btn-group.btn-group-sm .btn { flex: 1 1 auto; min-height: var(--touch-min); }
     /* Tasks: chip-style filter row */
     .task-filter-btn { min-height: var(--touch-min); padding: 8px 14px; }
-=======
+}
+
 /* ── Pipeline visualization (live Agent chain) ────────────────────────── */
 .pipeline-progress-bar {
     height: 6px;
@@ -2659,5 +2659,4 @@ body.modal-open #mobile-tabbar { z-index: 1 !important; }
         padding-left: 30px;
         padding-right: 12px;
     }
->>>>>>> origin/claude/stock-trading-system-LXzEI
 }

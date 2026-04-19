@@ -163,10 +163,13 @@
             <button id="sidebar-toggle" class="btn btn-sm btn-outline-secondary">
                 <i class="fas fa-bars"></i>
             </button>
-<<<<<<< HEAD
-            <div class="global-search-box" style="flex:1;max-width:400px;margin:0 16px;position:relative;">
-                <input type="text" class="form-control form-control-sm" id="global-search" placeholder="搜索股票/持仓/分析/预警..." autocomplete="off">
-                <div class="search-dropdown" id="search-dropdown" style="display:none;"></div>
+            <div class="global-search" id="global-search">
+                <i class="fas fa-search global-search-icon"></i>
+                <input type="text" id="global-search-input"
+                    placeholder="搜索股票/持仓/记录/预警"
+                    autocomplete="off" spellcheck="false">
+                <kbd class="global-search-kbd d-none d-md-inline">/</kbd>
+                <div class="global-search-panel" id="global-search-panel"></div>
             </div>
             <div class="top-bar-right" style="display:flex;align-items:center;gap:8px;">
                 <div class="llm-switcher-topbar" style="display:flex;align-items:center;gap:4px;">
@@ -176,17 +179,6 @@
                     </select>
                     <span class="llm-lock-icon-topbar" style="display:none;font-size:11px;" title="由环境变量锁定">🔒</span>
                 </div>
-=======
-            <div class="global-search" id="global-search">
-                <i class="fas fa-search global-search-icon"></i>
-                <input type="text" id="global-search-input"
-                    placeholder="搜索股票/持仓/记录/预警"
-                    autocomplete="off" spellcheck="false">
-                <kbd class="global-search-kbd d-none d-md-inline">/</kbd>
-                <div class="global-search-panel" id="global-search-panel"></div>
-            </div>
-            <div class="top-bar-right">
->>>>>>> origin/claude/stock-trading-system-LXzEI
                 <span id="clock" class="text-muted"></span>
             </div>
         </div>
@@ -343,10 +335,27 @@
                 </div>
             </div>
 
-<<<<<<< HEAD
+            <!-- Live pipeline visualization (origin's dynamic card) -->
+            <div class="card mb-3" id="pipeline-card" style="display:none;">
+                <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+                    <span><i class="fas fa-project-diagram"></i> 多 Agent 分析链路</span>
+                    <div class="d-flex align-items-center gap-2">
+                        <span class="small text-muted" id="pipeline-summary">准备中...</span>
+                        <button class="btn btn-sm btn-outline-warning" id="btn-rerun" onclick="rerunAnalysis()" style="display:none;">
+                            <i class="fas fa-redo"></i> 重跑
+                        </button>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div class="pipeline-progress-bar mb-3">
+                        <div class="pipeline-progress-fill" id="pipeline-progress-fill"></div>
+                    </div>
+                    <div class="pipeline-dag" id="pipeline-dag"></div>
+                </div>
+            </div>
             <div id="analysis-loading" style="display:none;">
                 <div class="card mb-3">
-                    <div class="card-header"><i class="fas fa-diagram-project"></i> AI 多Agent 分析管线</div>
+                    <div class="card-header"><i class="fas fa-diagram-project"></i> AI 多Agent 分析管线（静态视图）</div>
                     <div class="card-body">
                         <div class="pipeline-progress" id="pipeline-steps">
                             <div class="pipeline-step" data-step="market">
@@ -394,28 +403,6 @@
                         <p class="text-muted text-center mt-3 mb-0 small">分析中，预计需要 5-10 分钟...</p>
                     </div>
                 </div>
-=======
-            <!-- Live pipeline visualization -->
-            <div class="card mb-3" id="pipeline-card" style="display:none;">
-                <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
-                    <span><i class="fas fa-project-diagram"></i> 多 Agent 分析链路</span>
-                    <div class="d-flex align-items-center gap-2">
-                        <span class="small text-muted" id="pipeline-summary">准备中...</span>
-                        <button class="btn btn-sm btn-outline-warning" id="btn-rerun" onclick="rerunAnalysis()" style="display:none;">
-                            <i class="fas fa-redo"></i> 重跑
-                        </button>
-                    </div>
-                </div>
-                <div class="card-body">
-                    <div class="pipeline-progress-bar mb-3">
-                        <div class="pipeline-progress-fill" id="pipeline-progress-fill"></div>
-                    </div>
-                    <div class="pipeline-dag" id="pipeline-dag"></div>
-                </div>
-            </div>
-            <div id="analysis-loading" class="text-center py-3" style="display:none;">
-                <p class="text-muted small mb-0">AI Agent 分析中，请稍候（约2-5分钟）...</p>
->>>>>>> origin/claude/stock-trading-system-LXzEI
             </div>
             <div id="analysis-result" style="display:none;">
                 <div class="mb-2">
@@ -489,13 +476,8 @@
         <!-- Page: Analysis History -->
         <div class="page" id="page-history">
             <h3 class="page-title">分析记录</h3>
-<<<<<<< HEAD
             <div class="row g-2 mb-3 form-row-mobile">
                 <div class="col-8 col-md-4">
-=======
-            <div class="row g-2 mb-3">
-                <div class="col-12 col-md-4">
->>>>>>> origin/claude/stock-trading-system-LXzEI
                     <input type="text" class="form-control" id="history-filter" placeholder="搜索股票代码..." oninput="filterHistory()">
                 </div>
                 <div class="col-6 col-md-3">
