@@ -1,6 +1,23 @@
 /* === Stock Trading System - Frontend === */
 
 const socket = io();
+
+// ── Auth: load current user info ─────────────────────────────────────────
+(async function loadCurrentUser() {
+    try {
+        const resp = await fetch('/api/auth/me');
+        const data = await resp.json();
+        if (data.user) {
+            const el = document.getElementById('nav-user-name');
+            if (el) el.textContent = data.user.display_name || data.user.email;
+        }
+    } catch (_) {}
+})();
+
+async function doLogout() {
+    await fetch('/api/auth/logout', {method: 'POST'});
+    location.href = '/login';
+}
 let chartPnl = null;
 let chartAllocation = null;
 let chartKline = null;
