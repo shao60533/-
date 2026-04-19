@@ -439,7 +439,7 @@
         <!-- Page: Analysis History -->
         <div class="page" id="page-history">
             <h3 class="page-title">分析记录</h3>
-            <div class="row g-2 mb-3">
+            <div class="row g-2 mb-3 form-row-mobile">
                 <div class="col-8 col-md-4">
                     <input type="text" class="form-control" id="history-filter" placeholder="搜索股票代码..." oninput="filterHistory()">
                 </div>
@@ -566,7 +566,7 @@
                     <div class="card">
                         <div class="card-header"><i class="fas fa-plus-circle"></i> 买入记录</div>
                         <div class="card-body">
-                            <div class="row g-2">
+                            <div class="row g-2 form-row-mobile">
                                 <div class="col-6 col-md-4">
                                     <input type="text" class="form-control" id="buy-ticker" placeholder="代码">
                                 </div>
@@ -587,7 +587,7 @@
                     <div class="card">
                         <div class="card-header"><i class="fas fa-minus-circle"></i> 卖出记录</div>
                         <div class="card-body">
-                            <div class="row g-2">
+                            <div class="row g-2 form-row-mobile">
                                 <div class="col-6 col-md-4">
                                     <input type="text" class="form-control" id="sell-ticker" placeholder="代码">
                                 </div>
@@ -683,7 +683,7 @@
                     <div class="card">
                         <div class="card-header"><i class="fas fa-plus"></i> 添加预警</div>
                         <div class="card-body">
-                            <div class="row g-2">
+                            <div class="row g-2 form-row-mobile">
                                 <div class="col-6 col-md-3">
                                     <input type="text" class="form-control" id="alert-ticker" placeholder="股票代码">
                                 </div>
@@ -761,7 +761,7 @@
             <div class="card mb-3">
                 <div class="card-header">生成报告</div>
                 <div class="card-body">
-                    <div class="row g-2">
+                    <div class="row g-2 form-row-mobile">
                         <div class="col-6 col-md-3">
                             <select class="form-select" id="report-type">
                                 <option value="daily">日报</option>
@@ -798,7 +798,7 @@
             <div class="card mb-3">
                 <div class="card-header"><i class="fas fa-flask"></i> 回测参数</div>
                 <div class="card-body">
-                    <div class="row g-2">
+                    <div class="row g-2 form-row-mobile">
                         <div class="col-6 col-md-3">
                             <label class="form-label small">股票代码</label>
                             <input type="text" class="form-control" id="bt-ticker" placeholder="AAPL">
@@ -987,7 +987,7 @@
                         <div class="card-header"><i class="fas fa-table"></i> 日度明细</div>
                         <div class="card-body">
                             <div class="table-responsive">
-                                <table class="table table-sm table-hover" id="ptv-daily-table">
+                                <table class="table table-sm table-hover table-to-cards" id="ptv-daily-table">
                                     <thead>
                                         <tr>
                                             <th>日期</th><th>收盘</th><th>持仓</th>
@@ -999,6 +999,7 @@
                                     <tbody></tbody>
                                 </table>
                             </div>
+                            <div class="table-cards-mobile" id="ptv-daily-cards"></div>
                         </div>
                     </div>
                 </div>

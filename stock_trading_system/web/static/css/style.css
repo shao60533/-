@@ -2055,4 +2055,11 @@ body.modal-open #mobile-tabbar { z-index: 1 !important; }
     /* Screener: NL search button full-width below textarea */
     .nl-search-box { flex-direction: column; }
     .nl-search-box .btn-primary-glow { width: 100%; margin-top: var(--sp-2); }
+    /* Paper: single-column ticker grid */
+    .paper-ticker-grid { grid-template-columns: 1fr !important; }
+    /* Settings: wrap button group */
+    .btn-group.btn-group-sm { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+    .btn-group.btn-group-sm .btn { flex: 1 1 auto; min-height: var(--touch-min); }
+    /* Tasks: chip-style filter row */
+    .task-filter-btn { min-height: var(--touch-min); padding: 8px 14px; }
 }
