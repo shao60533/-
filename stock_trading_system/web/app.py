@@ -599,10 +599,14 @@ def create_app(config_path=None):
                 socketio.emit("analysis_status", {"ticker": ticker, "status": "running"})
 
                 def _progress(event: dict):
-                    # Forward pipeline events verbatim, adding ticker for the UI
-                    # to filter out stale updates if multiple runs overlap.
                     payload = {"ticker": ticker, **event}
-                    socketio.emit("analysis_pipeline", payload)
+                    # Use emit_event for persistence + per-user room broadcast
+                    from stock_trading_system.tasks.event_emitter import emit_event as _emit_ev
+                    _task_id = locals().get('_current_task_id', '')
+                    if _task_id:
+                        _emit_ev(_task_id, "analysis_pipeline", payload)
+                    else:
+                        socketio.emit("analysis_pipeline", payload)
 
                 analyzer = _get_analyzer()
                 result = analyzer.analyze(ticker, date, progress_cb=_progress)
