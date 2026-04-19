@@ -484,16 +484,26 @@ function mountTradingViewWidget(ticker) {
         return;
     }
 
-    // Watchdog: if no iframe mounts within 4s the Widget is broken
-    // (common cause: Great Firewall blocks s3.tradingview.com). Fall back.
-    clearTimeout(_tvWatchdog);
-    _tvWatchdog = setTimeout(() => {
+    // Watchdog: poll for the iframe up to 10s. TV Widget often needs 5-8s
+    // on slower networks (tradingview.com data subdomains can be flaky).
+    // As soon as the iframe appears we declare success and stop polling.
+    clearInterval(_tvWatchdog);
+    const watchdogStart = Date.now();
+    const WATCHDOG_BUDGET_MS = 10000;
+    _tvWatchdog = setInterval(() => {
         const iframe = document.querySelector('#tv-chart-container iframe');
-        if (!iframe) {
+        if (iframe) {
+            clearInterval(_tvWatchdog);
+            _tvWatchdog = null;
+            return;
+        }
+        if (Date.now() - watchdogStart >= WATCHDOG_BUDGET_MS) {
+            clearInterval(_tvWatchdog);
+            _tvWatchdog = null;
             console.warn('TV widget iframe never appeared — falling back');
             activateEchartsFallback(ticker, '(TradingView 超时)');
         }
-    }, 4000);
+    }, 500);
 }
 
 function activateEchartsFallback(ticker, reason) {
