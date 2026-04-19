@@ -4431,6 +4431,19 @@ function _describeTrigger(trig) {
     return escapeHtml(k || '—');
 }
 
+// ── F5: Records tab view switcher (plan ↔ event) ─────────────────────────
+function switchRecordsView(view) {
+    const planEl = document.getElementById('ptv-records-plan');
+    const eventEl = document.getElementById('ptv-records-event');
+    if (!planEl || !eventEl) return;
+    planEl.style.display = view === 'plan' ? 'block' : 'none';
+    eventEl.style.display = view === 'event' ? 'block' : 'none';
+    // Update chip active state
+    document.querySelectorAll('#ptv-tab-records .chip').forEach(c => {
+        c.classList.toggle('active', c.dataset.view === view);
+    });
+}
+
 function _renderPtvHistory(plans) {
     const el = document.getElementById('ptv-plan-history');
     if (!plans.length) {

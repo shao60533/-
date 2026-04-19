@@ -989,18 +989,13 @@
                         </a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="#" data-tab="timeline" onclick="switchPtvTab('timeline');return false;">
-                            <i class="fas fa-stream"></i> 时间轴
+                        <a class="nav-link" href="#" data-tab="records" onclick="switchPtvTab('records');return false;">
+                            <i class="fas fa-list-alt"></i> 执行记录
                         </a>
                     </li>
                     <li class="nav-item">
                         <a class="nav-link" href="#" data-tab="daily" onclick="switchPtvTab('daily');return false;">
                             <i class="fas fa-chart-line"></i> 日度数据
-                        </a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="#" data-tab="history" onclick="switchPtvTab('history');return false;">
-                            <i class="fas fa-history"></i> 策略历史
                         </a>
                     </li>
                 </ul>
@@ -1039,14 +1034,23 @@
                 </div>
 
                 <!-- Tab: Timeline -->
-                <div class="ptv-tab" id="ptv-tab-timeline" style="display:none;">
-                    <div class="card">
-                        <div class="card-header">
-                            <i class="fas fa-stream"></i> 策略变更事件
-                            <small class="text-muted ms-2">每次 AI 分析 + 止损/止盈/时间止损触发</small>
+                <div class="ptv-tab" id="ptv-tab-records" style="display:none;">
+                    <div class="chip-row mb-3">
+                        <span class="chip active" onclick="switchRecordsView('plan')" data-view="plan">按 Plan</span>
+                        <span class="chip" onclick="switchRecordsView('event')" data-view="event">按 Event</span>
+                    </div>
+                    <div id="ptv-records-plan">
+                        <div class="card">
+                            <div class="card-header"><i class="fas fa-history"></i> 策略演进历史</div>
+                            <div class="card-body" id="ptv-plan-history">—</div>
                         </div>
-                        <div class="card-body">
-                            <div id="ptv-timeline" class="ptv-timeline">—</div>
+                    </div>
+                    <div id="ptv-records-event" style="display:none;">
+                        <div class="card">
+                            <div class="card-header"><i class="fas fa-stream"></i> 策略变更事件</div>
+                            <div class="card-body">
+                                <div id="ptv-timeline" class="ptv-timeline">—</div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -1081,16 +1085,7 @@
                     </div>
                 </div>
 
-                <!-- Tab: Strategy History -->
-                <div class="ptv-tab" id="ptv-tab-history" style="display:none;">
-                    <div class="card">
-                        <div class="card-header">
-                            <i class="fas fa-history"></i> 策略演进历史
-                            <small class="text-muted ms-2">按分析时间倒序，含已失效的计划</small>
-                        </div>
-                        <div class="card-body" id="ptv-plan-history">—</div>
-                    </div>
-                </div>
+                <!-- ptv-tab-history removed — merged into ptv-tab-records (F5) -->
             </div>
         </div>
 
