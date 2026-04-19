@@ -483,97 +483,118 @@
 
         <!-- Page: Screener -->
         <div class="page" id="page-screener">
-            <h3 class="page-title">智能选股 V2 · Agent 驱动</h3>
+            <h3 class="page-title">智能选股 V3 · 大师 Agent</h3>
 
-            <!-- Natural language search box (V1.1: primary input) -->
-            <div class="nl-search-box mb-2" style="padding:18px 20px;">
+            <!-- NL 输入 -->
+            <div class="nl-search-box mb-3" style="padding:18px 20px;">
                 <div class="search-icon"><i class="fas fa-wand-magic-sparkles"></i></div>
                 <textarea class="nl-search-input" id="screen-nl-query" rows="2"
                        style="font-size:15px;resize:none;"
-                       placeholder='用自然语言描述你想找的股票，例如："AI 板块中被低估的成长股"、"高股息的稳健大盘股"'></textarea>
-                <button class="btn-primary-glow" id="btn-screen-v2" onclick="runScreenV2()">
-                    <i class="fas fa-bolt"></i> AI 筛选
+                       placeholder='用自然语言描述你想找的股票，例如："AI 板块中被低估的成长股"'></textarea>
+            </div>
+
+            <!-- 预选配置面板 -->
+            <div class="card mb-3" id="v3-config-panel">
+                <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;">
+                    <span><i class="fas fa-crown" style="color:#ffd700;"></i> 大师选择</span>
+                    <div class="chip-row" style="gap:4px;">
+                        <span class="chip" style="font-size:11px;min-height:28px;padding:4px 8px;" onclick="v3SelectGurus('all')">全选</span>
+                        <span class="chip active" style="font-size:11px;min-height:28px;padding:4px 8px;" onclick="v3SelectGurus('recommended')">推荐 4</span>
+                        <span class="chip" style="font-size:11px;min-height:28px;padding:4px 8px;" onclick="v3SelectGurus('none')">全不选</span>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div id="v3-guru-checkboxes" style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;"></div>
+                </div>
+            </div>
+
+            <!-- 深度模式 -->
+            <div class="card mb-3">
+                <div class="card-header"><i class="fas fa-sliders-h"></i> 评估模式</div>
+                <div class="card-body">
+                    <div class="chip-row mb-3" id="v3-mode-chips">
+                        <label class="chip" style="cursor:pointer;">
+                            <input type="radio" name="v3-mode" value="classic" style="display:none;">
+                            经典阈值 (秒级)
+                        </label>
+                        <label class="chip active" style="cursor:pointer;">
+                            <input type="radio" name="v3-mode" value="agent" checked style="display:none;">
+                            Agent 深度
+                        </label>
+                        <label class="chip" style="cursor:pointer;">
+                            <input type="radio" name="v3-mode" value="agent_with_roundtable" style="display:none;">
+                            Agent + 圆桌辩论
+                        </label>
+                    </div>
+                    <div class="row g-2 form-row-mobile">
+                        <div class="col-6 col-md-3">
+                            <label class="form-label small">市场</label>
+                            <select class="form-select" id="v3-market">
+                                <option value="us">美股</option>
+                                <option value="cn">A股</option>
+                            </select>
+                        </div>
+                        <div class="col-6 col-md-3">
+                            <label class="form-label small">候选数量</label>
+                            <div class="chip-row" id="v3-candidate-chips">
+                                <span class="chip" data-n="10">10</span>
+                                <span class="chip active" data-n="20">20</span>
+                                <span class="chip" data-n="30">30</span>
+                                <span class="chip" data-n="50">50</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 预计 -->
+            <div class="card mb-3" id="v3-estimate-card" style="display:none;">
+                <div class="card-body" style="padding:12px 16px;">
+                    <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center;font-size:13px;">
+                        <span><i class="fas fa-robot"></i> <strong id="v3-est-calls">--</strong> 次 LLM 调用</span>
+                        <span><i class="fas fa-clock"></i> ~<strong id="v3-est-duration">--</strong> 分钟</span>
+                        <span><i class="fas fa-coins"></i> ¥<strong id="v3-est-cost">--</strong></span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 操作按钮 -->
+            <div style="display:flex;gap:12px;margin-bottom:16px;">
+                <button class="btn btn-primary" id="btn-screen-v3" onclick="runScreenV3()" style="flex:1;min-height:44px;">
+                    <i class="fas fa-bolt"></i> 开始筛选
                 </button>
             </div>
-            <div class="chip-row mb-3" style="align-items:center;font-size:12px;color:var(--text-secondary);">
-                <span class="chip" style="cursor:default;border:none;padding:6px 0;">辅助提示</span>
-                <select class="form-select form-select-sm chip" id="screen-market" style="max-width:90px;border-radius:999px;min-height:32px;padding:4px 10px;">
-                    <option value="us">美股</option>
-                    <option value="cn">A股</option>
-                </select>
-                <select class="form-select form-select-sm chip" id="screen-strategy" style="max-width:140px;border-radius:999px;min-height:32px;padding:4px 10px;">
-                    <option value="">策略（无）</option>
-                    <option value="growth">成长动能</option>
-                    <option value="value">价值挖掘</option>
-                    <option value="momentum">均值回归</option>
-                    <option value="low_volatility">低波稳健</option>
-                </select>
-                <span class="chip" style="cursor:default;border:none;padding:6px 4px;margin-left:auto;font-family:var(--font-mono);font-size:10px;">
-                    <i class="fas fa-circle-info"></i> 留空 NL = 默认大盘股
-                </span>
-            </div>
 
-            <!-- AI intent summary badge (shown after results) -->
-            <div id="intent-summary-banner" style="display:none;background:linear-gradient(135deg, rgba(168,85,247,0.08), rgba(0,212,255,0.04));border:1px solid rgba(168,85,247,0.25);border-radius:10px;padding:10px 14px;margin-bottom:12px;display:none;align-items:center;gap:12px;">
-                <div style="width:28px;height:28px;border-radius:7px;background:rgba(168,85,247,0.15);color:#a855f7;display:flex;align-items:center;justify-content:center;font-size:12px;"><i class="fas fa-wand-magic-sparkles"></i></div>
-                <div style="flex:1;font-size:12px;">
-                    <div style="color:#a855f7;font-weight:600;margin-bottom:2px;">AI 理解你的意图</div>
-                    <div id="intent-summary-text" style="color:var(--text-primary);">--</div>
-                </div>
-                <div style="font-family:var(--font-mono);font-size:10px;color:var(--text-secondary);" id="universe-source-tag">
-                    宇宙源: --
-                </div>
-            </div>
-
-            <!-- Guru philosophy panel -->
-            <div class="card mb-3">
+            <!-- V3 结果区 -->
+            <div id="v3-results-card" class="card" style="display:none;">
                 <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;">
-                    <span><i class="fas fa-crown" style="color:#ffd700;"></i> 投资大师哲学</span>
-                    <span style="font-family:var(--font-mono);font-size:11px;color:var(--text-secondary);" id="guru-active-count">已启用 4 / 8</span>
-                </div>
-                <div class="card-body">
-                    <div id="guru-grid" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;"></div>
-                </div>
-            </div>
-
-            <!-- Regime banner (filled after first run) -->
-            <div id="regime-banner" class="regime-banner-v2" style="display:none;">
-                <div class="regime-icon-v2"><i class="fas fa-chart-line"></i></div>
-                <div style="flex:1;">
-                    <div class="regime-title-v2" id="regime-title">检测中...</div>
-                    <div class="regime-desc-v2" id="regime-desc"></div>
-                </div>
-                <div class="regime-stats-v2" id="regime-stats"></div>
-            </div>
-
-            <!-- 8 Agent parallel scoring cards -->
-            <div class="card mb-3" id="agent-pipeline-card" style="display:none;">
-                <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;">
-                    <span><i class="fas fa-diagram-project"></i> 8 Agent 并行评分</span>
-                    <span id="agent-pipeline-status" style="font-family:var(--font-mono);font-size:11px;color:var(--text-secondary);">运行中...</span>
-                </div>
-                <div class="card-body">
-                    <div id="agent-grid-screener" style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;"></div>
-                </div>
-            </div>
-
-            <!-- Pipeline status (4 stages) -->
-            <div class="card mb-3" id="screen-stages-card" style="display:none;">
-                <div class="card-header"><i class="fas fa-filter"></i> 筛选管线</div>
-                <div class="card-body">
-                    <div id="screen-stages" style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;"></div>
-                </div>
-            </div>
-
-            <!-- Final picks -->
-            <div class="card" id="screen-picks-card" style="display:none;">
-                <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;">
-                    <span><i class="fas fa-trophy"></i> 最终精选</span>
-                    <span id="screen-picks-meta" style="font-family:var(--font-mono);font-size:11px;color:var(--text-secondary);"></span>
+                    <span><i class="fas fa-trophy"></i> V3 深度评估结果</span>
+                    <span id="v3-results-meta" style="font-family:var(--font-mono);font-size:11px;color:var(--text-secondary);"></span>
                 </div>
                 <div class="card-body" style="padding:12px;">
-                    <div id="screen-picks-list"></div>
+                    <div id="v3-results-list"></div>
                 </div>
+            </div>
+
+            <!-- V3 流式进度（任务运行中） -->
+            <div id="v3-progress-card" class="card mb-3" style="display:none;">
+                <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;">
+                    <span><i class="fas fa-spinner fa-spin"></i> 大师评估进行中</span>
+                    <span id="v3-progress-text" style="font-family:var(--font-mono);font-size:11px;">0/0</span>
+                </div>
+                <div class="card-body">
+                    <div style="height:4px;background:var(--border);border-radius:2px;margin-bottom:12px;">
+                        <div id="v3-progress-bar" style="height:100%;background:var(--accent-blue);border-radius:2px;width:0%;transition:width 0.3s;"></div>
+                    </div>
+                    <div id="v3-stream-list" style="max-height:300px;overflow-y:auto;font-size:12px;"></div>
+                </div>
+            </div>
+
+            <!-- 首次使用 tooltip -->
+            <div id="v3-first-use-tip" style="display:none;background:rgba(88,166,255,0.08);border:1px solid rgba(88,166,255,0.2);border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:12px;">
+                <i class="fas fa-info-circle" style="color:var(--accent-blue);"></i>
+                V3 大师评估已启用，约 3-5 分钟深度分析。
+                <a href="#" onclick="this.parentElement.style.display='none';localStorage.setItem('v3_tip_dismissed','1');return false;" style="color:var(--accent-blue);margin-left:8px;">知道了</a>
             </div>
         </div>
 
@@ -1212,8 +1233,9 @@
     <!-- TradingView Advanced Chart Widget (free, requires Powered-by attribution) -->
     <script src="https://s3.tradingview.com/tv.js" onerror="window.__tvLoadFailed=true"></script>
     <script src="/static/js/tv_symbol.js"></script>
-    <script src="/static/js/llm-switcher.js?v=20260418"></script>
-    <script src="/static/js/app.js?v=20260418"></script>
+    <script src="/static/js/llm-switcher.js?v=20260419"></script>
+    <script src="/static/js/screener_v3.js?v=20260419"></script>
+    <script src="/static/js/app.js?v=20260419"></script>
 
     <!-- Batch Analysis Confirm Modal -->
     <div class="modal fade" id="batchAnalysisModal" tabindex="-1">
