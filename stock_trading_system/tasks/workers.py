@@ -253,12 +253,26 @@ def make_screen_v3_worker():
         user_id = params.get("user_id")
         provider = params.get("provider", "qwen")
 
+        # Get socketio for direct event push to frontend
+        from stock_trading_system.web.app import socketio as _sio
+
         def _on_progress(event):
-            if event.get("type") == "guru_unit_done":
+            evt_type = event.get("type", "")
+            if evt_type == "guru_unit_done":
                 done = event.get("progress", 0)
                 total = event.get("total", 1)
                 pct = min(95, int(done / total * 90) + 5)
                 progress_cb(pct, f"{event.get('guru_display','')}: {event.get('ticker','')}")
+                # Push guru_unit_done directly to frontend via socketio
+                try:
+                    _sio.emit("guru_unit_done", event)
+                except Exception:
+                    pass
+            elif evt_type in ("roundtable_start", "roundtable_done"):
+                try:
+                    _sio.emit(evt_type, event)
+                except Exception:
+                    pass
 
         try:
             from stock_trading_system.data.local_cache import LocalCache
