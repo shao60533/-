@@ -4,7 +4,7 @@ import os
 import threading
 from pathlib import Path
 
-from flask import Flask, render_template, jsonify, request
+from flask import Flask, render_template, jsonify, request, redirect, g
 from flask_socketio import SocketIO
 
 from stock_trading_system.config import load_config, get_config, save_config
