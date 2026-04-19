@@ -4458,6 +4458,14 @@ function _renderPtvHistory(plans) {
                     分析 #${p.analysis_id} · 解析 ${p.parse_method || '—'} ·
                     ${tExec} 执行 · ${tPend} 待触发 · ${tSupd} 已失效
                 </div>
+                ${p.trade_decision ? `<details class="plan-card-decision mt-2">
+                    <summary style="cursor:pointer;font-size:12px;color:var(--accent-blue);">
+                        <i class="fas fa-align-left"></i> AI 最终决策原文
+                    </summary>
+                    <div style="font-size:12px;line-height:1.6;margin-top:8px;white-space:pre-wrap;color:var(--text-secondary);">${
+                        typeof renderMd === 'function' ? renderMd(p.trade_decision) : escapeHtml(p.trade_decision)
+                    }</div>
+                </details>` : ''}
                 <div class="plan-card-orders">
                     ${orders.map(o => _renderOrderRow(o)).join('')}
                 </div>

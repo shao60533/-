@@ -1485,9 +1485,19 @@ def create_app(config_path=None):
         if active_plan:
             active_orders = store.list_orders(plan_id=active_plan["id"])
         plan_history = []
+        from stock_trading_system.portfolio.database import PortfolioDatabase as _PDB
+        _db = _PDB(get_config().get("portfolio", {}).get("db_path", "data/portfolio.db"))
         for p in all_plans:
             p_orders = store.list_orders(plan_id=p["id"])
-            plan_history.append({**p, "orders": p_orders})
+            entry = {**p, "orders": p_orders}
+            # Attach trade_decision text from the linked analysis
+            if p.get("analysis_id"):
+                try:
+                    _ana = _db.get_analysis_by_id(p["analysis_id"])
+                    entry["trade_decision"] = (_ana or {}).get("trade_decision") or ""
+                except Exception:
+                    entry["trade_decision"] = ""
+            plan_history.append(entry)
         latest = events[0] if events else None
         latest_advice = None
         latest_trade_decision = None
