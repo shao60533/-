@@ -1835,13 +1835,57 @@ def create_app(config_path=None):
 
     # ── WebSocket Events ────────────────────────────────────────────────
 
+    from flask_socketio import join_room
+
     @socketio.on("connect")
     def handle_connect():
-        logger.info("Client connected")
+        user = getattr(g, "user", None)
+        if user is None and _multi_tenant_ready:
+            logger.info("WS connect rejected: no auth")
+            return False  # reject unauthenticated WS
+        if user:
+            join_room(f"user:{user.id}")
+            logger.info("Client connected → room user:%d", user.id)
+        else:
+            logger.info("Client connected (no auth, pre-migration)")
 
     @socketio.on("disconnect")
     def handle_disconnect():
         logger.info("Client disconnected")
+
+    # ── Catch-up API ────────────────────────────────────────────────────
+
+    @app.route("/api/tasks/events")
+    def api_task_events():
+        """Return events for current user since given seq (for reconnect catch-up)."""
+        from stock_trading_system.tasks.event_emitter import get_events_since
+        user = getattr(g, "user", None)
+        if not user:
+            return jsonify({"error": "unauthorized"}), 401
+        task_id = request.args.get("task_id", "")
+        since = int(request.args.get("since", 0))
+        db = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
+        events = get_events_since(db, task_id, user.id, since)
+        return jsonify(events)
+
+    @app.route("/api/tasks/running")
+    def api_tasks_running():
+        """Return currently running tasks for the logged-in user."""
+        user = getattr(g, "user", None)
+        if not user:
+            return jsonify({"error": "unauthorized"}), 401
+        import sqlite3 as _sql
+        db = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
+        conn = _sql.connect(db)
+        conn.row_factory = _sql.Row
+        rows = conn.execute(
+            "SELECT id, type, status, progress, created_at FROM tasks "
+            "WHERE created_by = ? AND status IN ('pending','running') "
+            "ORDER BY created_at DESC",
+            (user.id,),
+        ).fetchall()
+        conn.close()
+        return jsonify([dict(r) for r in rows])
 
     return app
 
