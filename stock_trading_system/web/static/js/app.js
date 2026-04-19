@@ -3616,6 +3616,9 @@ function openTaskResult(task) {
         switchTab('backtest');
     } else if (task.type === 'report') {
         switchTab('reports');
+    } else if (task.type === 'batch_analysis') {
+        switchTab('history');
+        showToast('已跳转到分析记录，每只持仓的分析结果均已保存', 'success');
     } else {
         showToast('该任务无独立结果页', 'info');
     }
