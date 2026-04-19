@@ -2048,4 +2048,11 @@ body.modal-open #mobile-tabbar { z-index: 1 !important; }
     .main-content { padding: var(--page-pad-mobile) !important; }
     /* Hide clock on small screens */
     #clock { display: none; }
+    /* Screener: stack grids vertically */
+    #guru-grid { grid-template-columns: 1fr !important; }
+    #agent-grid-screener { grid-template-columns: repeat(2, 1fr) !important; }
+    #screen-stages > div { grid-template-columns: repeat(2, 1fr) !important; }
+    /* Screener: NL search button full-width below textarea */
+    .nl-search-box { flex-direction: column; }
+    .nl-search-box .btn-primary-glow { width: 100%; margin-top: var(--sp-2); }
 }

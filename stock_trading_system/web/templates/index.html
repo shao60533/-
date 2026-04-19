@@ -397,7 +397,8 @@
                 </div>
                 <div class="card">
                     <div class="card-header" style="padding:0;border-bottom:none;">
-                        <div class="report-tabs" style="display:flex;overflow-x:auto;gap:0;border-bottom:1px solid var(--border);">
+                        <div class="tabs-scrollable-wrap">
+                        <div class="report-tabs tabs-scrollable" style="gap:0;border-bottom:1px solid var(--border);">
                             <button class="report-tab active" onclick="switchReportTab(this,'rpt-market')"><i class="fas fa-chart-bar"></i> 技术面</button>
                             <button class="report-tab" onclick="switchReportTab(this,'rpt-fundamentals')"><i class="fas fa-building-columns"></i> 基本面</button>
                             <button class="report-tab" onclick="switchReportTab(this,'rpt-sentiment')"><i class="fas fa-face-smile"></i> 情绪</button>
@@ -405,6 +406,7 @@
                             <button class="report-tab" onclick="switchReportTab(this,'rpt-debate')"><i class="fas fa-scale-balanced"></i> 多空辩论</button>
                             <button class="report-tab" onclick="switchReportTab(this,'rpt-risk')"><i class="fas fa-shield-halved"></i> 风险</button>
                             <button class="report-tab" onclick="switchReportTab(this,'rpt-decision')"><i class="fas fa-gavel"></i> 最终决策</button>
+                        </div>
                         </div>
                     </div>
                     <div class="card-body" style="padding:0;">
@@ -467,30 +469,28 @@
             <!-- Natural language search box (V1.1: primary input) -->
             <div class="nl-search-box mb-2" style="padding:18px 20px;">
                 <div class="search-icon"><i class="fas fa-wand-magic-sparkles"></i></div>
-                <input type="text" class="nl-search-input" id="screen-nl-query"
-                       style="font-size:15px;"
-                       placeholder='用自然语言描述你想找的股票，例如："AI 板块中被低估的成长股"、"高股息的稳健大盘股"'>
+                <textarea class="nl-search-input" id="screen-nl-query" rows="2"
+                       style="font-size:15px;resize:none;"
+                       placeholder='用自然语言描述你想找的股票，例如："AI 板块中被低估的成长股"、"高股息的稳健大盘股"'></textarea>
                 <button class="btn-primary-glow" id="btn-screen-v2" onclick="runScreenV2()">
                     <i class="fas fa-bolt"></i> AI 筛选
                 </button>
             </div>
-            <div class="mb-3" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12px;color:var(--text-secondary);">
-                <span>辅助提示：</span>
-                <select class="form-select form-select-sm" id="screen-market" style="max-width:90px;">
+            <div class="chip-row mb-3" style="align-items:center;font-size:12px;color:var(--text-secondary);">
+                <span class="chip" style="cursor:default;border:none;padding:6px 0;">辅助提示</span>
+                <select class="form-select form-select-sm chip" id="screen-market" style="max-width:90px;border-radius:999px;min-height:32px;padding:4px 10px;">
                     <option value="us">美股</option>
                     <option value="cn">A股</option>
                 </select>
-                <span style="color:var(--text-secondary);">市场偏好</span>
-                <select class="form-select form-select-sm" id="screen-strategy" style="max-width:130px;">
-                    <option value="">（无）</option>
+                <select class="form-select form-select-sm chip" id="screen-strategy" style="max-width:140px;border-radius:999px;min-height:32px;padding:4px 10px;">
+                    <option value="">策略（无）</option>
                     <option value="growth">成长动能</option>
                     <option value="value">价值挖掘</option>
                     <option value="momentum">均值回归</option>
                     <option value="low_volatility">低波稳健</option>
                 </select>
-                <span style="color:var(--text-secondary);">弱策略提示（可选）</span>
-                <span style="margin-left:auto;font-family:var(--font-mono);font-size:11px;color:var(--text-dim);">
-                    <i class="fas fa-circle-info"></i> 留空 NL 将使用默认大盘股 + 策略提示
+                <span class="chip" style="cursor:default;border:none;padding:6px 4px;margin-left:auto;font-family:var(--font-mono);font-size:10px;">
+                    <i class="fas fa-circle-info"></i> 留空 NL = 默认大盘股
                 </span>
             </div>
 
