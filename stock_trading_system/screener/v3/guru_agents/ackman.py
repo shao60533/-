@@ -185,7 +185,7 @@ class AckmanAgent(BaseGuruAgent):
             f"量化子分析得分（0-10）：\n"
             + "\n".join(f"  {k}: {v}" for k, v in scores.items())
             + f"\n\n基于以上数据和你的激进投资哲学，给出最终评估。\n"
-            f"重点关注：这家企业是否有"可行动改善方案"？FCF 生成能力如何？\n"
+            f"重点关注：这家企业是否有可行动改善方案？FCF 生成能力如何？\n"
             f"你必须返回结构化的 GuruSignal，包含：\n"
             f"- guru: \"ackman\"\n"
             f"- ticker: \"{ticker}\"\n"
