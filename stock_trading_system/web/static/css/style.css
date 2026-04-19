@@ -2046,4 +2046,6 @@ body.modal-open #mobile-tabbar { z-index: 1 !important; }
     }
     /* Content area padding */
     .main-content { padding: var(--page-pad-mobile) !important; }
+    /* Hide clock on small screens */
+    #clock { display: none; }
 }
