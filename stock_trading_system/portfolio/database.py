@@ -103,7 +103,6 @@ class PortfolioDatabase:
                     steps_json TEXT
                 );
 
-<<<<<<< HEAD
                 CREATE TABLE IF NOT EXISTS alert_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     alert_id INTEGER,
@@ -152,10 +151,9 @@ class PortfolioDatabase:
 
                 CREATE INDEX IF NOT EXISTS idx_pv_agent_status
                     ON prompt_versions(agent_id, status);
-=======
+
                 CREATE INDEX IF NOT EXISTS idx_analysis_ticker_time
                     ON analysis_history(ticker, created_at DESC);
->>>>>>> origin/claude/stock-trading-system-LXzEI
             """)
             self._migrate_analysis_history(conn)
 
@@ -309,7 +307,6 @@ class PortfolioDatabase:
         with self._get_conn() as conn:
             conn.execute("DELETE FROM alerts WHERE id = ?", (alert_id,))
 
-<<<<<<< HEAD
     def save_alert_trigger(self, alert_id: int, ticker: str, condition: str,
                            threshold: float, current_price: float | None = None):
         from datetime import datetime
@@ -337,12 +334,6 @@ class PortfolioDatabase:
     # ── Analysis History ────────────────────────────────────────────────
 
     def save_analysis(self, data: dict) -> int:
-        """Insert one analysis_history row. Returns the new row id."""
-        with self._get_conn() as conn:
-=======
-    # ── Analysis History ────────────────────────────────────────────────
-
-    def save_analysis(self, data: dict) -> int:
         """Insert an analysis record. Returns the new row id.
 
         Structured fields (action/confidence/entry_low/high/stop_loss/take_profit/
@@ -358,7 +349,6 @@ class PortfolioDatabase:
                 adv = {}
         steps_raw = data.get("steps_json") or ""
         with self._get_conn() as conn:
->>>>>>> origin/claude/stock-trading-system-LXzEI
             cur = conn.execute(
                 """INSERT INTO analysis_history
                    (ticker, date, signal, market_report, sentiment_report,
@@ -389,11 +379,7 @@ class PortfolioDatabase:
                     steps_raw,
                 ),
             )
-<<<<<<< HEAD
             return int(cur.lastrowid)
-=======
-            return cur.lastrowid
->>>>>>> origin/claude/stock-trading-system-LXzEI
 
     def get_analysis_history(self, ticker: str | None = None, limit: int = 50) -> list[dict]:
         with self._get_conn() as conn:

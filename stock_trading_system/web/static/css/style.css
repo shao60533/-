@@ -666,14 +666,6 @@ body {
 
 .history-item .h-date { font-size: 12px; color: var(--text-secondary); font-family: var(--font-mono); }
 
-<<<<<<< HEAD
-/* ═══════ FORMS ═══════ */
-=======
-.history-item .h-date {
-    font-size: 12px;
-    color: var(--text-secondary);
-}
-
 .history-item.selected {
     border-color: var(--accent-blue);
     background: rgba(88,166,255,0.08);
@@ -686,7 +678,7 @@ body {
     border-color: var(--accent-blue);
 }
 
-/* === Compare table === */
+/* ═══════ COMPARE TABLE ═══════ */
 .compare-table th, .compare-table td {
     border-color: var(--border) !important;
     color: var(--text-primary);
@@ -708,7 +700,7 @@ body {
     background: rgba(210,153,34,0.10);
 }
 
-/* === Timeline view === */
+/* ═══════ TIMELINE VIEW ═══════ */
 .timeline-list {
     position: relative;
     padding-left: 24px;
@@ -753,8 +745,7 @@ body {
 .timeline-dot.sig-sell, .timeline-dot.sig-underweight { background: var(--accent-red); }
 .timeline-dot.sig-hold { background: var(--accent-yellow); }
 
-/* === Forms === */
->>>>>>> origin/claude/stock-trading-system-LXzEI
+/* ═══════ FORMS ═══════ */
 .form-control, .form-select {
     background: var(--bg-secondary);
     border: 1px solid var(--border);
@@ -1033,13 +1024,10 @@ body.modal-open #mobile-tabbar { z-index: 1 !important; }
 }
 .settings-row:last-child { border-bottom: 0; }
 .settings-row .label { color: var(--text-secondary); flex-shrink: 0; }
-<<<<<<< HEAD
 .settings-row .value { color: var(--text-primary); text-align: right; word-break: break-all; font-family: var(--font-mono); }
-=======
-.settings-row .value { color: var(--text-primary); text-align: right; word-break: break-all; font-family: ui-monospace, SFMono-Regular, monospace; }
 .settings-row .settings-input {
     max-width: 260px;
-    font-family: ui-monospace, SFMono-Regular, monospace;
+    font-family: var(--font-mono);
     font-size: 12px;
 }
 .settings-row .form-check-input {
@@ -1060,7 +1048,6 @@ body.modal-open #mobile-tabbar { z-index: 1 !important; }
     border-bottom: 1px solid var(--border);
     margin-bottom: 4px;
 }
->>>>>>> origin/claude/stock-trading-system-LXzEI
 .status-dot {
     display: inline-block; width: 8px; height: 8px; border-radius: 50%;
     margin-right: 6px; vertical-align: middle;

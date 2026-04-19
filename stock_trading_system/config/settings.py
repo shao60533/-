@@ -47,16 +47,12 @@ def _apply_env_overrides(config: dict) -> dict:
         EMAIL_TO              -> config["alerts"]["email"]["to_address"]
     """
     env_map = {
-        "LLM_PROVIDER": ("llm_provider",),
         "GEMINI_API_KEY": ("gemini", "api_key"),
         "GEMINI_MODEL": ("gemini", "model"),
         "POLYGON_API_KEY": ("polygon", "api_key"),
         "DASHSCOPE_API_KEY": ("qwen", "api_key"),
         "QWEN_API_KEY": ("qwen", "api_key"),
         "QWEN_MODEL": ("qwen", "model"),
-        "QWEN_DEEP_THINK_MODEL": ("qwen", "deep_think_model"),
-        "QWEN_BASE_URL": ("qwen", "base_url"),
-        "DB_PATH": ("portfolio", "db_path"),
         "IB_HOST": ("ib", "host"),
         "IB_PORT": ("ib", "port"),
         "TELEGRAM_BOT_TOKEN": ("alerts", "telegram", "bot_token"),
@@ -124,41 +120,6 @@ def get_config() -> dict:
     return _config
 
 
-<<<<<<< HEAD
-def save_config(updates: dict) -> dict:
-    """Merge *updates* into the user config YAML and reload.
-
-    Only keys present in *updates* are changed; the rest of the file is
-    preserved.  Writes to a temp file first for atomicity.
-
-    Returns the reloaded (full) config.
-    """
-    import tempfile, shutil
-
-    _USER_CONFIG.parent.mkdir(parents=True, exist_ok=True)
-
-    # Read existing user config (or empty dict)
-    if _USER_CONFIG.exists():
-        with open(_USER_CONFIG) as f:
-            user_cfg = yaml.safe_load(f) or {}
-    else:
-        user_cfg = {}
-
-    merged = _deep_merge(user_cfg, updates)
-
-    # Atomic write: temp file → rename
-    fd, tmp = tempfile.mkstemp(dir=_USER_CONFIG.parent, suffix=".yaml")
-    try:
-        with os.fdopen(fd, "w") as f:
-            yaml.dump(merged, f, default_flow_style=False, allow_unicode=True)
-        shutil.move(tmp, _USER_CONFIG)
-    except Exception:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
-        raise
-
-    return load_config()  # reload global _config
-=======
 # Whitelist of dotted-path keys that the web settings editor is allowed to
 # modify. Everything else is rejected to avoid accidental writes to internal
 # structures (screener thresholds, report schedules, db paths, etc.).
@@ -208,6 +169,36 @@ def _coerce_value(path: str, value):
     return "" if value is None else str(value)
 
 
+def save_config(updates: dict) -> dict:
+    """Merge *updates* into the user config YAML and reload.
+
+    Simple top-level key merge (used by LLM provider switch API).
+    """
+    import tempfile, shutil
+
+    _USER_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+
+    if _USER_CONFIG.exists():
+        with open(_USER_CONFIG) as f:
+            user_cfg = yaml.safe_load(f) or {}
+    else:
+        user_cfg = {}
+
+    merged = _deep_merge(user_cfg, updates)
+
+    fd, tmp = tempfile.mkstemp(dir=_USER_CONFIG_DIR, suffix=".yaml")
+    try:
+        with os.fdopen(fd, "w") as f:
+            yaml.dump(merged, f, default_flow_style=False, allow_unicode=True)
+        shutil.move(tmp, _USER_CONFIG)
+    except Exception:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+
+    return load_config()
+
+
 def update_user_config(updates: dict) -> dict:
     """Write a sub-tree of settings to the user config file.
 
@@ -255,4 +246,3 @@ def update_user_config(updates: dict) -> dict:
     new_cfg = load_config()
     new_cfg["_applied_paths"] = applied  # non-persisted metadata for the caller
     return new_cfg
->>>>>>> origin/claude/stock-trading-system-LXzEI
