@@ -360,24 +360,25 @@ class TestREG1_DisabledBehaviorUnchanged:
         config = {"iteration": {"enabled": False}}
         analyzer = StockAnalyzer(config)
 
+        final_state = {
+            "market_report": "ok",
+            "sentiment_report": "",
+            "news_report": "",
+            "fundamentals_report": "",
+            "investment_debate_state": {},
+            "risk_debate_state": {},
+            "final_trade_decision": "BUY",
+        }
+
         mock_graph = MagicMock()
-        mock_graph.propagate.return_value = (
-            {
-                "market_report": "ok",
-                "sentiment_report": "",
-                "news_report": "",
-                "fundamentals_report": "",
-                "investment_debate_state": {},
-                "risk_debate_state": {},
-                "final_trade_decision": "BUY",
-            },
-            "BUY",
-        )
+        mock_graph.propagator.create_initial_state.return_value = {}
+        mock_graph.propagator.get_graph_args.return_value = {}
+        mock_graph.graph.stream.return_value = [final_state]
+        mock_graph.process_signal.return_value = "BUY"
         analyzer._graph = mock_graph
-        analyzer._graphs["gemini"] = mock_graph  # populate cache to skip _init_graph
+        analyzer._graphs["gemini"] = mock_graph
 
         result = analyzer.analyze("AAPL", "2026-04-10")
-        # When disabled, should return plain AnalysisResult, not a tuple
         assert isinstance(result, AnalysisResult)
         assert result.signal == "BUY"
 
