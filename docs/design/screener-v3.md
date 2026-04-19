@@ -109,14 +109,19 @@ class BuffettAgent(BaseGuruAgent):
         mgmt_quality   = self._analyze_management_quality(full_data)
         intrinsic      = self._calculate_intrinsic_value(full_data)
         margin_safety  = self._calculate_margin_of_safety(intrinsic, full_data)
-        # 聚合为 total_score（6-10 子项加权）
         total = _weighted_sum([...])
-        # LLM 结构化推理
-        signal = self._llm_reason(full_data, {
-            "fund": fund_score, "moat": moat, "intrinsic": intrinsic,
-            "margin_safety": margin_safety, "total": total,
-        })
-        return signal  # Pydantic: signal/confidence/reasoning/key_metrics
+
+        # 【复用】LangChain 原生 structured output，替代自写 JSON 解析
+        # 见 docs/engineering-principles.md §5.1
+        chat = get_chat_model(context["provider"])
+        structured = chat.with_structured_output(GuruSignal)
+        return structured.invoke([
+            SystemMessage(content=self.SYSTEM_PROMPT),
+            HumanMessage(content=self._build_user_prompt(full_data, {
+                "fund": fund_score, "moat": moat, "intrinsic": intrinsic,
+                "margin_safety": margin_safety, "total": total,
+            })),
+        ])  # 返回已填充 GuruSignal，LangChain 自动重试/修正 JSON
 ```
 
 Pipeline 按 `mode` 走不同路径：
@@ -208,54 +213,60 @@ class GuruDataBundle:
 
 ### 4.3 并发与速率
 
+**【复用】**：`tenacity` 库处理重试退避，替代自写循环（见 [engineering-principles §5.1](../engineering-principles.md#51-screenerv3md--需要修订重点)）。
+需在 `requirements.txt` 追加 `tenacity>=9.0`。
+
 ```python
 # concurrency.py
 import asyncio
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from stock_trading_system.screener.v3.gurus_agents.base import BaseGuruAgent
 
-CONCURRENCY = 10  # Semaphore 上限
+CONCURRENCY = 10
 
-async def run_units(units, on_unit_done):
+# 复用 tenacity：3 次指数退避 2/4/8s
+_llm_retry = retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=2, min=2, max=8),
+    retry=retry_if_exception_type(RateLimitError),
+    reraise=True,
+)
+
+async def run_units(units, on_unit_done, cancel_check):
     """units: list of (guru_agent, ticker, bundle)"""
     sem = asyncio.Semaphore(CONCURRENCY)
     results: list[GuruSignal] = []
 
+    @_llm_retry
+    def _invoke(guru, ticker, bundle, ctx):
+        return guru.evaluate_deep(ticker, bundle, ctx)  # 内部 structured-output 已处理 JSON 重试
+
     async def _one(unit):
         guru, ticker, bundle = unit
         async with sem:
-            if cancel_flag.is_set():
+            if cancel_check():
                 return
-            # 先查缓存
             cached = cache.get(ticker, guru.name, today())
             if cached:
                 await on_unit_done(guru, ticker, cached, cached=True)
                 results.append(cached)
                 return
-            # 实调
-            for attempt in range(3):
-                try:
-                    sig = await asyncio.to_thread(
-                        guru.evaluate_deep, ticker, bundle, ctx,
-                    )
-                    cache.set(ticker, guru.name, today(), sig)
-                    await on_unit_done(guru, ticker, sig, cached=False)
-                    results.append(sig)
-                    return
-                except RateLimitError:
-                    await asyncio.sleep(2 ** attempt)
-                except Exception as e:
-                    if attempt == 2:
-                        await on_unit_done(guru, ticker, _error_signal(e))
-                        return
+            try:
+                sig = await asyncio.to_thread(_invoke, guru, ticker, bundle, ctx)
+                cache.set(ticker, guru.name, today(), sig)
+                await on_unit_done(guru, ticker, sig, cached=False)
+                results.append(sig)
+            except Exception as e:
+                await on_unit_done(guru, ticker, _error_signal(e))
 
     await asyncio.gather(*[_one(u) for u in units])
     return results
 ```
 
-速率限制：
-- Semaphore(10) 是**默认**（[PRD §3.1 配置选项 Q1A](../prd/screener-v3.md) 已确认）
-- 出现 rate limit error → 退避 2/4/8s 重试 3 次
-- 全部重试失败 → 记错误 signal（signal="neutral", confidence=0, reasoning="LLM failed"），不阻塞其他单元
+- Semaphore(10) 默认（[PRD 确认](../prd/screener-v3.md)）
+- tenacity 处理 rate-limit 退避
+- 重试耗尽 → 记 neutral signal，不阻塞其他单元
+- 结构化输出层的 JSON 解析异常由 LangChain `with_structured_output` 内部处理
 
 ### 4.4 缓存
 
