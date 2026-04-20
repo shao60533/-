@@ -11,6 +11,7 @@
 | 2026-04-19 | [screener-v3.md](screener-v3.md) | v1.0 | 145 | 选股 V3 测试用例：Pydantic 单元(8) + 14 大师(52) + Pipeline(9) + 并发重试(7) + 缓存(6) + 成本预估(6) + 流式 WS(5) + 圆桌辩论(8) + API(10) + 前端(12) + 经典兼容(5) + 跨模块集成(8) + 性能(5) + 回归(4) | 选股 V3 技术方案 |
 | 2026-04-19 | [paper-trade.md](paper-trade.md) | v1.0 | 89 | 纸面交易测试用例（首版，补齐历史缺口）：基线 v1.0-v1.2(38) + v1.3 F1 dedup(10) + F2 AI 决策 surface(6) + F3 executive_summary(9) + F4 图表(7) + F5 tab 合并(8) + 集成(6) + 性能回归(5) | 纸面交易 v1.0-v1.3 |
 | 2026-04-20 | [unified-progress.md](unified-progress.md) | v1.0 | 101 | 统一进度系统测试用例：emit_event 单元(8) + task_events 表(5) + ProgressStream 组件(12) + per-user room(7) + 断线续传(8) + 11 task 发射(12) + 5 页面集成(10) + 3 布局视觉(9) + 5 态动画(6) + 移动端(6) + 异常(8) + 性能(5) + 回归(5) | 统一进度系统技术方案 |
+| 2026-04-21 | [ui-react-island.md](ui-react-island.md) | v1.0 | 108 | UI React Island 测试用例：构建管道 Vite+Flask(10) + lib api/socket/auth(12) + shadcn 组件(14) + Screener V3 island(12) + Tasks(10) + Paper-trade(8) + Dashboard(7) + 跨岛集成(6) + 视觉一致性(8) + 非迁移页回归(7) + 性能(5) + 安全 CSRF(5) + 真机部署(4) | UI React Island 技术方案 |
 
 ## 用例总数汇总
 
@@ -25,7 +26,8 @@
 | 选股 V3 测试用例 | 145 |
 | 纸面交易测试用例 | 89 |
 | 统一进度系统测试用例 | 101 |
-| **总计** | **1078** |
+| UI React Island 测试用例 | 108 |
+| **总计** | **1186** |
 
 ## 覆盖状态
 
