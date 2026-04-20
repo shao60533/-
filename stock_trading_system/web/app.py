@@ -509,6 +509,27 @@ def create_app(config_path=None):
     def index():
         return render_template("index.html")
 
+    # ── React Island Routes ────────────────────────────────────────────
+
+    from stock_trading_system.web.vite_helpers import vite_assets
+
+    @app.route("/screener-v3")
+    def screener_v3_page():
+        return render_template("islands/screener_v3.html", vite_assets=vite_assets)
+
+    @app.route("/paper-trade/<ticker>")
+    def paper_trade_detail_page(ticker):
+        return render_template("islands/paper_trade_detail.html", vite_assets=vite_assets, ticker=ticker)
+
+    @app.route("/dashboard-v2")
+    def dashboard_v2_page():
+        return render_template("islands/dashboard.html", vite_assets=vite_assets)
+
+    @app.route("/tasks-v2")
+    @app.route("/tasks-v2/<task_id>")
+    def tasks_v2_page(task_id=None):
+        return render_template("islands/tasks.html", vite_assets=vite_assets)
+
     # ── Health Check ────────────────────────────────────────────────────
     # Lightweight probe used by Railway / Render / k8s liveness checks.
     # Intentionally avoids touching the DB, data sources, or any lazily
