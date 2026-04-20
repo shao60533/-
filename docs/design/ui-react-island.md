@@ -869,8 +869,628 @@ flask --app stock_trading_system run --reload
 | [multi-tenant](./multi-tenant.md) | `g.user` 通过 `<meta>` 注入 + CSRF 无缝复用 |
 | [model-switch](./model-switch.md) | 顶栏 provider dropdown **v1.1 可迁** 到 React，v1.0 保留 Jinja |
 
-## 15. 版本历史
+## 15. v2.0 完整迁移（剩余 11 页）
+
+v1.0 覆盖 4 高价值页（screener-v3 / tasks / paper-trade detail / dashboard）。v2.0 把**剩余全部页面**都迁到 React island，实现视觉完全统一，并最终废弃旧 `index.html` + `app.js` + Bootstrap。
+
+### 15.1 剩余页面清单
+
+按交互复杂度 + 业务价值分 4 组：
+
+| 组 | 页面 | 复杂度 | 主要组件 | 优先级 |
+|---|---|---|---|---|
+| **A 数据列表** | Portfolio 持仓 / History 分析记录 / Alerts 预警 / Reports 报告中心 / Paper 会话列表 | 中 | DataTable + Filter + Row actions | P0 |
+| **B 复杂详情** | Analysis 分析详情 / Backtest 回测设置+结果 | 高 | 多 Tab 报告 + ECharts + 流式 | P0 |
+| **C 表单驱动** | Settings 设置 / Analysis 触发表单 | 中 | Tabs + Form 控件 | P1 |
+| **D 认证** | Login / Register / Reset | 低 | Form 单屏 | P1 |
+
+共 11 页，合起来再排 ~40-50h（v2.0 的工作量比 v1.0 大约两倍）。
+
+### 15.2 新增共享组件
+
+v2.0 会沉淀出 v1.0 没覆盖到的模式：
+
+| 组件 | 作用 | 在哪些页用 |
+|---|---|---|
+| **`<AppShell>`** | 统一 Nav + Sidebar + Mobile Tabbar，取代旧 `index.html` 外壳 | 所有 React 页 |
+| **`<DataTable>`** | 列定义 + 排序 + 过滤 + 行操作 + 分页 + 空态 | Portfolio / History / Alerts / Reports / Paper list / Tasks |
+| **`<FilterBar>`** | 搜索框 + chip-row 多维度筛选 + date range | History / Alerts / Reports / Paper list |
+| **`<AuthCard>`** | 极简登录/注册卡片（logo + form + footer 链接） | Login / Register / Reset |
+| **`<Form>` 系列** | 基于 react-hook-form + zod 的字段封装（Input/Select/Switch + 错误展示） | 所有表单页 |
+| **`<SettingsTabs>`** | 左侧垂直 tab + 右侧内容区（Apple System Preferences 风） | Settings |
+| **`<EChartsPanel>`** | ECharts React 包装，响应 theme/resize，支持 loading skeleton | Backtest / Dashboard / Paper-trade |
+
+### 15.3 每页规格
+
+#### 15.3.1 Portfolio（持仓管理）
+
+**路径**：`/portfolio`
+
+**现状**：`index.html` L562-677 一堆 `col-6 col-md-4` 表单（买入/卖出各 4 字段）+ 持仓列表
+
+**升级方案**：
+
+```
+┌─ Page: 持仓管理 ──────────────────────────────┐
+│                                                │
+│  持仓总值  持仓数  今日盈亏  胜率              │
+│  [stat]   [stat]  [stat]   [stat]             │   ← v1.0 Stat 组件
+│                                                │
+│  ┌─ 持仓表 ─────────────────────────────┐     │
+│  │ [搜索] [市场 ▾] [排序 ▾]   [+ 买入] │     │
+│  │ ┌────────────────────────────────────┐│     │
+│  │ │ 代码 名称 持仓 成本 现价 盈亏 信号  ⋯││     │   ← DataTable
+│  │ │ ...                                  ││     │
+│  │ └────────────────────────────────────┘│     │
+│  └────────────────────────────────────────┘     │
+│                                                │
+│  ┌─ 近 30 天净值曲线 ────────────────────┐     │
+│  │ [ECharts]                              │     │   ← EChartsPanel
+│  └────────────────────────────────────────┘     │
+└───────────────────────────────────────────────┘
+
+动作：
+  - 点 [+ 买入]  → Dialog 表单（ticker / shares / price / notes）
+  - 行末 ⋯       → DropdownMenu（分析 / 加仓 / 卖出 / 移除）
+  - 点代码        → 跳 /analysis?ticker=<x>
+```
+
+**API**：复用现有 `/api/portfolio` GET/POST/DELETE，新增 `/api/portfolio/summary`（Stats 聚合）。
+
+**关键组件**：`DataTable` / `Dialog` / `DropdownMenu` / `EChartsPanel`。
+
+**移动端**：DataTable 超过 ≤768px 切 `.m-card` 卡片视图（复用 [mobile-optimization §3.3 table-to-cards](./mobile-optimization.md) 模式的 React 实现）。
+
+#### 15.3.2 History（分析记录）
+
+**路径**：`/history`
+
+**现状**：L438-462 简单列表 + 搜索框
+
+**升级方案**：
+
+```
+┌─ Page: 分析记录 ──────────────────────────────┐
+│                                                │
+│  [搜索 ticker / 关键词]                        │
+│  [全部 | 我的]  [信号 ▾] [Provider ▾] [日期 ▾] │   ← FilterBar
+│                                                │
+│  ┌────────────────────────────────────────────┐│
+│  │ ★ NVDA  BUY  2026-04-19 ...                ││
+│  │   核心论点：AI 基础设施...                   ││   ← 卡片列表（非 table）
+│  │   Buffett · Wood · Druckenmiller           ││
+│  │ ─────────────────────────────────          ││
+│  │ ☆ AAPL  HOLD  2026-04-18 ...               ││
+│  │   ...                                        ││
+│  └────────────────────────────────────────────┘│
+│                                                │
+│  [加载更多]                                    │
+└───────────────────────────────────────────────┘
+
+特性：
+  - 每行可点 ★ 加/取消 bookmark（集成 multi-tenant analysis_bookmarks）
+  - 点标题跳 /analysis/<id>
+  - 「我的」tab 只显示自己 bookmark 的 + 自己触发的
+  - 支持无限滚动
+```
+
+**API**：复用 `/api/analysis/history`（可能需要加 `?bookmarked=true` 过滤）；`/api/analysis/bookmarks` POST/DELETE。
+
+**关键组件**：`FilterBar` / `Card` / 虚拟滚动（data > 500 行考虑 react-virtual）。
+
+#### 15.3.3 Alerts（预警中心）
+
+**路径**：`/alerts`
+
+**现状**：L679-758 4 字段表单 + 2 table（active / history）
+
+**升级方案**：
+
+```
+┌─ Page: 预警中心 ──────────────────────────────┐
+│                                                │
+│  [运行中 12]  [今日触发 3]  [本周触发 18]      │   ← Stats
+│                                                │
+│  [Tab: 规则 | 历史]                            │
+│                                                │
+│  Tab=规则:                                     │
+│  ┌────────────────────────────────────────────┐│
+│  │ [+ 新增规则]                                ││
+│  │ ┌─────────────────────────────────────────┐││
+│  │ │ NVDA  价格 ≥ $210  [启用] ⋯             │││   ← DataTable
+│  │ │ AAPL  跌破 $200    [启用] ⋯             │││
+│  │ └─────────────────────────────────────────┘││
+│  └────────────────────────────────────────────┘│
+│                                                │
+│  Tab=历史:                                     │
+│   按时间倒序的触发事件流                        │
+└───────────────────────────────────────────────┘
+
+[+ 新增规则] 点开 Dialog:
+  条件类型: [价格高于 ▾]
+  股票:    [搜索 / 粘贴]
+  阈值:    [输入]
+  通知方式: [☑ 站内] [☑ 邮件] [☐ Telegram]
+```
+
+**API**：`/api/alerts` GET/POST/PUT/DELETE（现有）+ `/api/alerts/history`。
+
+**关键组件**：`Tabs` / `DataTable` / `Dialog` / `Switch` / `Combobox`（股票搜索）。
+
+#### 15.3.4 Reports（报告中心）
+
+**路径**：`/reports`
+
+**现状**：L759-795 生成表单 + 简单列表
+
+**升级方案**：
+
+```
+┌─ Page: 报告中心 ──────────────────────────────┐
+│                                                │
+│  ┌─ 生成新报告 ───────────────────────────────┐│
+│  │ 类型:[周报 ▾]  股票:[NVDA]  时段:[近 7 天] ││
+│  │                          [预览] [生成]     ││
+│  └────────────────────────────────────────────┘│
+│                                                │
+│  已生成报告:                                    │
+│  ┌────────────────────────────────────────────┐│
+│  │ ★ NVDA 周报 · 2026-04-20 · PDF / MD / HTML ││
+│  │ ☆ AAPL 持仓复盘 · 2026-04-18 · ...         ││
+│  └────────────────────────────────────────────┘│
+└───────────────────────────────────────────────┘
+
+动作：
+  - [生成] → 异步 task → 跳 /tasks/<id> 看进度
+  - 完成后可从 /tasks 或 /reports 下载
+```
+
+**API**：`/api/reports` GET/POST（复用现有）。
+
+**关键组件**：`Form` / `DataTable` / `DropdownMenu`（导出格式）。
+
+#### 15.3.5 Backtest（策略回测）
+
+**路径**：`/backtest`
+
+**现状**：L796-865 大量参数字段 + 触发 + 结果
+
+**升级方案**：
+
+```
+┌─ Page: 策略回测 ──────────────────────────────┐
+│                                                │
+│  [Tab: 新建 | 历史]                            │
+│                                                │
+│  Tab=新建（左右 2 栏）:                         │
+│  ┌─左 40%─────────┐ ┌─右 60%────────────────┐ │
+│  │ 策略参数         │ │ 即时预览              │ │
+│  │ 标的: [NVDA]   │ │ [即时 Sharpe 估算]    │ │
+│  │ 区间: [3M ▾]   │ │ 样本: 近 100 天       │ │
+│  │ 初始: [$10000] │ │ [mini chart]          │ │
+│  │ 策略: [买入持 ▾]│ │                        │ │
+│  │ [+参数组合]    │ │                        │ │
+│  │                 │ │                        │ │
+│  │ 预估成本 ¥0    │ │                        │ │
+│  │ [开始回测]     │ │                        │ │
+│  └─────────────────┘ └────────────────────────┘ │
+│                                                │
+│  Tab=历史:                                     │
+│   DataTable: 策略 / 标的 / 区间 / Sharpe / 时长 │
+│   点击行 → 跳结果详情页                         │
+└───────────────────────────────────────────────┘
+
+结果详情 /backtest/<id>:
+  - 净值曲线 (EChartsPanel 大图)
+  - 指标卡 (Sharpe / max drawdown / 胜率 / PnL)
+  - 交易明细 DataTable
+  - 回测参数 JSON 折叠
+```
+
+**API**：`/api/backtest` 已有；新增 `/api/backtest/estimate`（预览）。
+
+**关键组件**：`Tabs` / `Form` / `EChartsPanel` / `DataTable` / `Accordion`。
+
+#### 15.3.6 Paper list（纸面交易会话列表）
+
+**路径**：`/paper-trade`（无 ticker 参数）
+
+**现状**：L866-933 会话卡片 grid + 添加按钮
+
+**升级方案**：
+
+```
+┌─ Page: 纸面交易 ──────────────────────────────┐
+│                                                │
+│  [默认 session ★]  总值 $100k  Sharpe 1.82    │   ← 突出默认
+│                                                │
+│  [+ 新建 session]   [搜索]   [Tab: 我的 | 全部] │
+│                                                │
+│  ┌────────────────────────────────────────────┐│
+│  │ ┌──────────────┐ ┌──────────────┐          ││
+│  │ │ session 卡   │ │ session 卡   │          ││   ← Grid of 2-3 cols
+│  │ │ NVDA / AAPL  │ │ TSLA / MSFT  │          ││
+│  │ │ PnL +5.2%    │ │ PnL -1.8%    │          ││
+│  │ │ 8 trades     │ │ 3 trades     │          ││
+│  │ └──────────────┘ └──────────────┘          ││
+│  └────────────────────────────────────────────┘│
+│                                                │
+│  点卡片 → /paper-trade/<session_id>            │
+│  （session 详情页在 v1.0 Phase 5 已做）         │
+└───────────────────────────────────────────────┘
+```
+
+**API**：`/api/paper/sessions` GET/POST。
+
+**关键组件**：`Card` grid + `FilterBar` + `Tabs`。
+
+#### 15.3.7 Settings（设置）
+
+**路径**：`/settings`
+
+**现状**：L1019-1058 简单 settings-row 列表
+
+**升级方案** —— Apple System Preferences 风 Tabs：
+
+```
+┌─ Page: 设置 ───────────────────────────────────┐
+│                                                │
+│  ┌─左 220px───┐ ┌─右──────────────────────────┐│
+│  │ 账号       │ │ 账号                         ││
+│  │  · 个人资料│ │                              ││
+│  │  · 修改密码│ │  邮箱     admin@local        ││
+│  │ 集成       │ │  显示名   Admin              ││
+│  │  · LLM     │ │  角色     管理员             ││
+│  │  · 通知    │ │  创建于   2026-04-15         ││
+│  │ 系统       │ │                              ││
+│  │  · 邀请码  │ │  [修改密码]                  ││
+│  │  · 数据    │ │                              ││
+│  │ 高级       │ │                              ││
+│  │  · 诊断    │ │                              ││
+│  └─────────────┘ └──────────────────────────────┘│
+│                                                │
+│  当前子页内容：                                 │
+│    集成/LLM → provider 切换（迁 model-switch）  │
+│    集成/通知 → 邮件/Telegram 配置               │
+│    系统/邀请码 → admin 专属：列表 + 生成（迁 multi-tenant）│
+│    系统/数据 → 导入/导出 / 数据库备份           │
+│    高级/诊断 → 系统状态 / 日志尾 / 清缓存        │
+└───────────────────────────────────────────────┘
+```
+
+**API**：多个分散端点按子页调用。
+
+**关键组件**：`SettingsTabs`（新）+ `Form` + 各子页独立组件。
+
+**特别注意**：这页涉及多个子模块，建议 Phase 化：先框架，再每个子页单独迁入。
+
+#### 15.3.8 Analysis（AI 多 Agent 分析）
+
+**路径**：
+- `/analysis`（触发 + 记录列表）
+- `/analysis/<id>`（单次分析详情）
+
+**现状**：L263-437 非常复杂（触发表单 + 8 个 tab 的报告展示 + debate / risk / decision）
+
+**升级方案**：
+
+##### Analysis 列表/触发 `/analysis`
+
+```
+┌─ Page: AI 多 Agent 分析 ──────────────────────┐
+│                                                │
+│  ┌─ 新建分析 ─────────────────────────────────┐│
+│  │ 股票: [代码或粘贴]   日期: [今天 ▾]        ││
+│  │ 深度: ○经典 ⬤标准 ○加强                   ││
+│  │                     [估算] [开始分析]      ││
+│  └────────────────────────────────────────────┘│
+│                                                │
+│  我最近的分析:                                  │
+│  DataTable: ticker / date / signal / provider /│
+│             duration / score / actions         │
+└───────────────────────────────────────────────┘
+```
+
+##### Analysis 详情 `/analysis/<id>`
+
+```
+┌─ Analysis #25 · NVDA · 2026-04-19 ─────────────┐
+│                                                │
+│  [BUY]  置信度 85%   由 alice 触发              │
+│  [⋯ 操作]   [↗ 再次分析]                       │
+│                                                │
+│  ┌─ Executive Summary ────────────────────────┐│
+│  │ AI 基础设施周期上行, Blackwell 交付加速...  ││   ← executive_summary 字段
+│  └────────────────────────────────────────────┘│
+│                                                │
+│  [Tab: 概览 | 市场 | 情绪 | 新闻 | 基本面 |    │
+│        辩论 | 风险 | 决策]                      │
+│                                                │
+│  当前 tab 的 Markdown 渲染（react-markdown）    │
+│                                                │
+│  底部:                                          │
+│  [加入持仓追踪] [导出 PDF] [分享]               │
+└───────────────────────────────────────────────┘
+
+移动端：
+  Tab 用 tabs-scrollable（横滑）
+  Tab 内 Markdown 正常渲染
+```
+
+**API**：`/api/analyze` POST / `/api/analysis/<id>` GET（现有）。
+
+**关键组件**：`Tabs` / `Markdown` / `Dialog`（操作菜单）/ `DataTable`（列表页）。
+
+**注意**：Tab 数量多（8 个），移动端强制横滑；复用 [mobile-optimization](./mobile-optimization.md) `.tabs-scrollable`。
+
+#### 15.3.9 Login（登录）
+
+**路径**：`/login`
+
+**现状**：multi-tenant v1.0 新建（见 [multi-tenant.md §10.1](./multi-tenant.md)）
+
+**升级方案** —— 极简登录卡：
+
+```
+┌───────────────────────────────────────────────┐
+│                                                │
+│               [Logo]                          │
+│          StockAI Terminal                     │
+│                                                │
+│        ┌──────────────────────────┐           │
+│        │  登录                     │           │
+│        │                           │           │
+│        │  邮箱                     │           │
+│        │  [                      ] │           │
+│        │                           │           │
+│        │  密码                     │           │
+│        │  [                      ] │           │
+│        │                           │           │
+│        │  [ 登录 ───────────────► ]│           │
+│        │                           │           │
+│        │  忘记密码? 联系管理员      │           │
+│        │  没账号? 填邀请码注册 →    │           │
+│        └──────────────────────────┘           │
+│                                                │
+│                                                │
+└───────────────────────────────────────────────┘
+
+特性:
+  - 居中卡片 + 背景轻微渐变
+  - 回车提交
+  - 失败时红色震动 shake 动画
+  - 登录中按钮变 loading spinner
+```
+
+**API**：`/api/auth/login`。
+
+**关键组件**：`AuthCard` + `Form`。
+
+#### 15.3.10 Register（注册）
+
+**路径**：`/register`
+
+与 Login 同布局，字段：邀请码 / 邮箱 / 密码 / 确认密码 / 显示名。
+
+邀请码实时校验（失焦时 debounce 调 `/api/invite/validate`）：
+- ✅ 绿色 `√ 有效邀请码`
+- ❌ 红色 `× 邀请码无效 / 已用 / 过期`
+
+#### 15.3.11 Reset（重置密码）
+
+**路径**：`/reset?token=<uuid>`
+
+与 Login 同布局，字段：新密码 / 确认新密码。
+
+进入时先调 `/api/auth/reset/validate?token=<x>`，无效 token 直接显示错误 card + 返回登录链接。
+
+### 15.4 新增共享组件细节
+
+#### `<AppShell>`
+
+```tsx
+// components/shared/AppShell.tsx
+import { ReactNode } from "react"
+import { Sidebar } from "./Sidebar"
+import { MobileTabbar } from "./MobileTabbar"
+import { NavTopbar } from "./NavTopbar"
+import { ConnectionIndicator } from "./ConnectionIndicator"
+import { Toaster } from "@/components/ui/toaster"
+
+export function AppShell({ children }: { children: ReactNode }) {
+  return (
+    <div className="min-h-screen bg-[var(--color-bg-primary)]">
+      <NavTopbar />
+      <div className="flex">
+        <Sidebar />
+        <main className="flex-1 min-w-0 pb-20 lg:pb-6">
+          <div className="mx-auto max-w-7xl px-4 lg:px-8 py-6">
+            {children}
+          </div>
+        </main>
+      </div>
+      <MobileTabbar />
+      <ConnectionIndicator />
+      <Toaster />
+    </div>
+  )
+}
+```
+
+每个 React island 用 `<AppShell>{pageContent}</AppShell>` 包裹 → 所有页**视觉完全统一**。
+
+侧边栏 active 态通过 `window.location.pathname` 判断。
+
+#### `<DataTable>`
+
+基于 **`@tanstack/react-table`**（L1 库，行业标准，20K⭐），不自写。
+
+```tsx
+// components/shared/DataTable.tsx
+import {
+  useReactTable, getCoreRowModel, getSortedRowModel, getFilteredRowModel,
+  getPaginationRowModel, ColumnDef, flexRender,
+} from "@tanstack/react-table"
+
+interface Props<T> {
+  data: T[]
+  columns: ColumnDef<T>[]
+  searchKey?: keyof T
+  filterBar?: ReactNode
+  emptyState?: ReactNode
+  mobileRenderer?: (row: T) => ReactNode  // ≤768px 走卡片
+}
+
+export function DataTable<T>({ data, columns, ... }: Props<T>) {
+  // ...
+}
+```
+
+依赖：`npm install @tanstack/react-table`。
+
+#### `<Form>` 系列
+
+基于 **`react-hook-form` + `zod`**（行业标准组合）。
+
+```tsx
+// components/ui/form.tsx (shadcn 标配)
+import { zodResolver } from "@hookform/resolvers/zod"
+import { useForm } from "react-hook-form"
+import * as z from "zod"
+
+// shadcn 官方有完整 Form 组件文件，直接 copy
+```
+
+依赖：`npm install react-hook-form zod @hookform/resolvers`。
+
+#### `<EChartsPanel>`
+
+```tsx
+// components/shared/EChartsPanel.tsx
+import { useEffect, useRef } from "react"
+import * as echarts from "echarts/core"
+// ...各模块按需导入
+
+interface Props {
+  option: echarts.EChartsOption
+  height?: number
+  loading?: boolean
+}
+
+export function EChartsPanel({ option, height = 320, loading }: Props) {
+  const ref = useRef<HTMLDivElement>(null)
+  const chart = useRef<echarts.ECharts | null>(null)
+
+  useEffect(() => {
+    if (!ref.current) return
+    chart.current = echarts.init(ref.current, "dark")
+    const ro = new ResizeObserver(() => chart.current?.resize())
+    ro.observe(ref.current)
+    return () => { ro.disconnect(); chart.current?.dispose() }
+  }, [])
+
+  useEffect(() => { chart.current?.setOption(option, true) }, [option])
+  useEffect(() => {
+    loading ? chart.current?.showLoading("default", { text: "", color: "var(--color-accent-blue)" })
+            : chart.current?.hideLoading()
+  }, [loading])
+
+  return <div ref={ref} style={{ height, width: "100%" }} />
+}
+```
+
+### 15.5 实施计划（Phase 8-15）
+
+基于 v1.0 Phase 1-7 已完成。
+
+| Phase | 内容 | 估时 |
+|---|---|---|
+| 8 | 新增共享组件：`<AppShell>` / `<DataTable>` (tanstack) / `<Form>` (react-hook-form+zod) / `<EChartsPanel>` / `<AuthCard>` | ~5h |
+| 9 | Auth 三页：Login / Register / Reset（极简 Island，复用 multi-tenant 后端 API） | ~3h |
+| 10 | Portfolio island | ~4h |
+| 11 | History island | ~3h |
+| 12 | Alerts island（Tabs + 规则/历史）| ~4h |
+| 13 | Reports island | ~3h |
+| 14 | Backtest island（新建 tab + 历史 tab + 结果详情页）| ~6h |
+| 15 | Paper list island | ~2h |
+| 16 | Analysis island（列表 + 详情，含 8 tab 报告）| ~6h |
+| 17 | Settings island（SettingsTabs + 各子页）| ~5h |
+| 18 | 废弃 `index.html` + `app.js` + Bootstrap；清理旧 `style.css` | ~3h |
+| 19 | 端到端验收 + 视觉回归 + 部署 | ~3h |
+
+**v2.0 总计 ~47h**（v1.0 28h + v2.0 47h = 共 **~75h**）。
+
+实施顺序建议：
+1. **Phase 8 先做**（共享组件是后面所有页的基础）
+2. **Phase 9 放前面**（Auth 是独立的 island，作 AppShell 压测）
+3. **Phase 10-13 按数据列表系列批量做**（共用 DataTable 模式，加速）
+4. **Phase 14-16 复杂页**
+5. **Phase 17 设置最复杂**（多子页）
+6. **Phase 18 最后清理**
+
+### 15.6 废弃旧代码（Phase 18）
+
+所有页都迁完后：
+- `templates/index.html` → 改 `render` 旁路到各 Flask 路由
+- `static/js/app.js` → 删除（~4000 行！）
+- `static/css/style.css` → 保留 CSS vars 部分，删 Bootstrap 覆盖 + 各页专用样式
+- Bootstrap 5 `<link>` / `<script>` → 删除
+- bootstrap-icons CSS → 删除（全部换 lucide-react）
+
+**收益**：代码量减 5000+ 行；暗色主题唯一事实源在 Tailwind `@theme`；维护成本大幅下降。
+
+### 15.7 v2.0 新增依赖
+
+```json
+{
+  "@tanstack/react-table": "^8",
+  "react-hook-form": "^7",
+  "zod": "^3",
+  "@hookform/resolvers": "^3",
+  "echarts": "^5",
+  "react-markdown": "^9"
+}
+```
+
+全部行业标配，license 友好（MIT / Apache-2.0）。
+
+### 15.8 v2.0 复用 / Reuse
+
+遵循 [engineering-principles.md](../engineering-principles.md)：
+
+**L0 项目内复用**：
+- `AppShell` 组件复用现有 tabbar / nav HTML 思路
+- `EChartsPanel` 复用现有 ECharts 图表配置思路（见 [app.js:4518-4549](../../stock_trading_system/web/static/js/app.js)）
+- 所有 API 端点已存在
+
+**L1 库**：
+- `@tanstack/react-table` → 替代自写表格（行内编辑/排序/分页/虚拟滚动一站式）
+- `react-hook-form` + `zod` → 替代自写表单状态管理 + 校验
+- `react-markdown` → 替代自写 Markdown 渲染器
+
+**L2 思路**：
+- shadcn 官方 `Form` 组件源码（Apache-2.0 demo，可 copy）
+- shadcn 官方 `DataTable` recipe（基于 tanstack table 的封装模板）
+
+**L4 自写**：
+- `<AppShell>` / `<SettingsTabs>` / `<AuthCard>` / `<EChartsPanel>` / `<FilterBar>` —— ~400 LOC
+- 11 个 page component（平均 150 LOC 每页）—— ~1650 LOC
+- 总计 ~2050 LOC 新写（含业务逻辑）
+
+### 15.9 v2.0 风险
+
+| 风险 | 缓解 |
+|---|---|
+| 迁移 11 页的长工期 Bug 堆积 | Phase 8 先做共享组件，Phase 9-17 每页独立 commit + 独立回滚 |
+| Analysis 的 8 tab 报告内容比 v1.0 移植的任何页都复杂 | 优先覆盖 5 主要 tab（市场/基本面/新闻/辩论/决策），次要 tab 后续加 |
+| tanstack/react-table 学习曲线 | shadcn 官网有完整 recipe；5-6 页的 DataTable 共用一个自封装 |
+| 删除 app.js 的最后一步可能藏 bug | Phase 18 前先让新老并存 2 周（feature flag 切换），稳定后删 |
+| 多个子页的 Settings 拆分复杂 | SettingsTabs 骨架先做，各子页独立 PR |
+| Bootstrap 全量删除后旧用户页面样式丢失 | Phase 18 分"保留 CSS vars 删 Bootstrap" 和 "删 CSS vars" 两步 |
+
+## 16. 版本历史
 
 | 版本 | 日期 | 变更 |
 |---|---|---|
 | v1.0 | 2026-04-21 | 初版：Vite + Flask 协作管道 + manifest.json 驱动 + 4 岛屿首批迁移（screener-v3 / tasks / paper-trade / dashboard）+ 7 Phase 实施计划 + shadcn 组件库从 POC 迁入 + `lib/api.ts` / `lib/socket.ts` / `ProgressStream` 共享基础设施 + Railway 部署适配 |
+| v2.0 | 2026-04-21 | 完整迁移：新增剩余 11 页（Portfolio / History / Alerts / Reports / Backtest / Paper list / Analysis 列表+详情 / Settings / Login / Register / Reset）+ 新增共享组件（`<AppShell>` / `<DataTable>` 基于 tanstack / `<Form>` 基于 react-hook-form+zod / `<EChartsPanel>` / `<AuthCard>` / `<SettingsTabs>` / `<FilterBar>`）+ 每页页面规格 + Phase 8-19 共 ~47h 实施计划 + Phase 18 废弃旧 index.html / app.js / Bootstrap |

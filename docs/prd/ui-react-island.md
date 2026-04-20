@@ -312,8 +312,29 @@ POC 已在 `/tmp/stock-ui-demo/` 验证通过：4 页面 demo + 14 交互组件 
 
 **总计 ~28h**。详见 [技术方案 §10](../design/ui-react-island.md#10-实施计划)。
 
-## 11. 版本历史
+## 11. v2.0 完整迁移说明
+
+v1.0 保留 7 页 Jinja 的决定是为了**降低首次上线风险**。v2.0 把**全部剩余 11 页**都迁到 React，最终废弃 `index.html` / `app.js` / Bootstrap，实现视觉与代码结构的彻底统一。
+
+详细每页规格 + Phase 8-19 实施计划见 [../design/ui-react-island.md §15](../design/ui-react-island.md#15-v20-完整迁移剩余-11-页)。
+
+v2.0 范围：
+- Portfolio 持仓管理 / History 分析记录 / Alerts 预警 / Reports 报告
+- Backtest 回测 / Paper list 会话列表 / Analysis 分析（列表 + 详情）
+- Settings 设置 / Login / Register / Reset
+
+v2.0 新增共享组件：
+- `<AppShell>`（统一 Nav + Sidebar + Mobile Tabbar）
+- `<DataTable>`（基于 @tanstack/react-table）
+- `<Form>` 系列（基于 react-hook-form + zod）
+- `<EChartsPanel>`（ECharts React 封装）
+- `<AuthCard>` / `<SettingsTabs>` / `<FilterBar>`
+
+v2.0 工作量：~47h（Phase 8-19），含 Phase 18 清理旧代码。v1.0 + v2.0 总计 ~75h。
+
+## 12. 版本历史
 
 | 版本 | 日期 | 变更 |
 |---|---|---|
 | v1.0 | 2026-04-21 | 初版：4 岛屿首批迁移（screener-v3 / paper-trade / dashboard / tasks）+ Vite + Flask 协作管道 + 保留 7 页 Jinja 不动 + Tailwind v4 + shadcn/ui + POC 已验证 |
+| v2.0 | 2026-04-21 | 完整迁移：剩余 11 页全部迁 React（Portfolio / History / Alerts / Reports / Backtest / Paper list / Analysis 列表+详情 / Settings / Login / Register / Reset）+ 新共享组件（AppShell / DataTable / Form / EChartsPanel / AuthCard / SettingsTabs / FilterBar）+ Phase 18 废弃旧 index.html / app.js / Bootstrap，减 5000+ 行 |
