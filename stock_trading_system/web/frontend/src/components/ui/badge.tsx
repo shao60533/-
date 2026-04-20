@@ -1,0 +1,28 @@
+import * as React from "react"
+import { cva, type VariantProps } from "class-variance-authority"
+import { cn } from "@/lib/utils"
+
+const badgeVariants = cva(
+  "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold tracking-tight",
+  {
+    variants: {
+      variant: {
+        default: "bg-[var(--color-bg-secondary)] border-[var(--color-border)] text-[var(--color-text-secondary)]",
+        outline: "bg-transparent border-[var(--color-border-bright)] text-[var(--color-text-primary)]",
+        buy: "bg-[color-mix(in_oklch,var(--color-signal-buy)_18%,transparent)] border-[color-mix(in_oklch,var(--color-signal-buy)_40%,transparent)] text-[var(--color-signal-buy)]",
+        sell: "bg-[color-mix(in_oklch,var(--color-signal-sell)_18%,transparent)] border-[color-mix(in_oklch,var(--color-signal-sell)_40%,transparent)] text-[var(--color-signal-sell)]",
+        hold: "bg-[color-mix(in_oklch,var(--color-signal-hold)_18%,transparent)] border-[color-mix(in_oklch,var(--color-signal-hold)_40%,transparent)] text-[var(--color-signal-hold)]",
+        blue: "bg-[color-mix(in_oklch,var(--color-accent-blue)_18%,transparent)] border-[color-mix(in_oklch,var(--color-accent-blue)_40%,transparent)] text-[var(--color-accent-blue)]",
+        success: "bg-[color-mix(in_oklch,var(--color-accent-green)_18%,transparent)] border-[color-mix(in_oklch,var(--color-accent-green)_40%,transparent)] text-[var(--color-accent-green)]",
+        muted: "bg-[var(--color-bg-secondary)] border-transparent text-[var(--color-text-muted)]",
+      },
+    },
+    defaultVariants: { variant: "default" },
+  }
+)
+
+export interface BadgeProps extends React.HTMLAttributes<HTMLSpanElement>, VariantProps<typeof badgeVariants> {}
+
+export function Badge({ className, variant, ...props }: BadgeProps) {
+  return <span className={cn(badgeVariants({ variant, className }))} {...props} />
+}
