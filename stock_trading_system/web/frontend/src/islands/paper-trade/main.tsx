@@ -1,13 +1,10 @@
 import { StrictMode } from "react"
 import { createRoot } from "react-dom/client"
+import "@/styles/index.css"
+import { PaperTradePage } from "./PaperTradePage"
 
-function PaperTradePage() {
-  return <div style={{padding: 40, color: '#e6edf3'}}>
-    <h1>PaperTrade Island</h1>
-    <p>React island loaded successfully.</p>
-  </div>
-}
+document.documentElement.classList.add("dark")
 
 createRoot(document.getElementById("react-root")!).render(
-  <StrictMode><PaperTradePage /></StrictMode>
+  <StrictMode><PaperTradePage /></StrictMode>,
 )

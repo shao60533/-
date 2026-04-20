@@ -1,13 +1,10 @@
 import { StrictMode } from "react"
 import { createRoot } from "react-dom/client"
+import "@/styles/index.css"
+import { DashboardPage } from "./DashboardPage"
 
-function DashboardPage() {
-  return <div style={{padding: 40, color: '#e6edf3'}}>
-    <h1>Dashboard Island</h1>
-    <p>React island loaded successfully.</p>
-  </div>
-}
+document.documentElement.classList.add("dark")
 
 createRoot(document.getElementById("react-root")!).render(
-  <StrictMode><DashboardPage /></StrictMode>
+  <StrictMode><DashboardPage /></StrictMode>,
 )
