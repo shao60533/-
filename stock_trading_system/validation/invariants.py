@@ -1,0 +1,110 @@
+"""Business invariant checks — 10 SQL assertions that must hold post-migration.
+
+Usage:
+    python -m stock_trading_system.validation.invariants [--db-path ...]
+
+Any failure → exit(1) → block production deployment.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sqlite3
+import sys
+from datetime import datetime
+from pathlib import Path
+
+
+INVARIANTS = [
+    ("positions_have_owner",
+     "SELECT COUNT(*) FROM positions WHERE user_id IS NULL", 0),
+
+    ("alerts_have_owner",
+     "SELECT COUNT(*) FROM alerts WHERE user_id IS NULL", 0),
+
+    ("paper_sessions_have_owner",
+     "SELECT COUNT(*) FROM paper_trade_sessions WHERE user_id IS NULL", 0),
+
+    ("plans_have_fingerprint",
+     "SELECT COUNT(*) FROM paper_trade_plans WHERE fingerprint IS NULL", 0),
+
+    ("tasks_created_by_not_string",
+     "SELECT COUNT(*) FROM tasks WHERE typeof(created_by) = 'text' AND created_by NOT GLOB '[0-9]*'", 0),
+
+    ("analysis_have_decision",
+     "SELECT COUNT(*) FROM analysis_history WHERE trade_decision IS NULL OR trade_decision = ''", 0),
+
+    ("invites_used_by_valid",
+     """SELECT COUNT(*) FROM invite_codes
+        WHERE used_by IS NOT NULL
+          AND used_by NOT IN (SELECT id FROM users)""", 0),
+
+    ("task_events_user_valid",
+     """SELECT COUNT(*) FROM task_events
+        WHERE user_id NOT IN (SELECT id FROM users)""", 0),
+
+    ("paper_events_session_valid",
+     """SELECT COUNT(*) FROM paper_trade_strategy_events
+        WHERE session_id NOT IN (SELECT id FROM paper_trade_sessions)""", 0),
+
+    ("no_regex_literal_in_plans",
+     "SELECT COUNT(*) FROM paper_trade_plans WHERE thesis = 'regex 解析'", 0),
+]
+
+
+def run_invariants(db_path: str) -> dict:
+    conn = sqlite3.connect(db_path)
+    results = {"pass": [], "fail": [], "skipped": []}
+
+    for name, sql, expected in INVARIANTS:
+        try:
+            actual = conn.execute(sql).fetchone()[0]
+            if actual == expected:
+                results["pass"].append({"name": name, "expected": expected, "actual": actual})
+            else:
+                results["fail"].append({"name": name, "expected": expected, "actual": actual, "sql": sql})
+        except Exception as e:
+            results["skipped"].append({"name": name, "error": str(e)})
+
+    conn.close()
+    results["go"] = len(results["fail"]) == 0
+    results["checked_at"] = datetime.utcnow().isoformat() + "Z"
+    return results
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Run business invariant checks")
+    parser.add_argument("--db-path", default=None)
+    parser.add_argument("--out", default=None)
+    args = parser.parse_args()
+
+    if args.db_path:
+        db_path = args.db_path
+    else:
+        from stock_trading_system.config import get_config
+        db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
+
+    results = run_invariants(db_path)
+
+    print(f"\n{'='*60}")
+    print(f"INVARIANTS: {'✅ ALL PASS' if results['go'] else '❌ FAILURES DETECTED'}")
+    print(f"  Pass: {len(results['pass'])}")
+    print(f"  Fail: {len(results['fail'])}")
+    print(f"  Skipped: {len(results['skipped'])}")
+
+    for f in results["fail"]:
+        print(f"  ❌ {f['name']}: expected {f['expected']}, got {f['actual']}")
+    for s in results["skipped"]:
+        print(f"  ⚠ {s['name']}: {s['error']}")
+
+    if args.out:
+        Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.out).write_text(json.dumps(results, indent=2, default=str))
+
+    if not results["go"]:
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
