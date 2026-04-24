@@ -1,0 +1,133 @@
+{
+  "started_at": "2026-04-24T15:02:51.370075Z",
+  "finished_at": "2026-04-24T15:02:51.386640Z",
+  "db_path": "data/portfolio.db",
+  "levels": {
+    "L0_smoke": {
+      "level": "L0_smoke",
+      "pass": 4,
+      "fail": 0,
+      "duration_sec": 0.0,
+      "details": {
+        "pass": [
+          "users table exists",
+          "positions table exists",
+          "tasks table exists",
+          "task_events table exists"
+        ],
+        "fail": []
+      }
+    },
+    "L4_data": {
+      "level": "L4_data",
+      "pass": 6,
+      "fail": 3,
+      "duration_sec": 0.0,
+      "details": {
+        "pass": [
+          {
+            "name": "positions_have_owner",
+            "expected": 0,
+            "actual": 0
+          },
+          {
+            "name": "alerts_have_owner",
+            "expected": 0,
+            "actual": 0
+          },
+          {
+            "name": "paper_sessions_have_owner",
+            "expected": 0,
+            "actual": 0
+          },
+          {
+            "name": "analysis_have_decision",
+            "expected": 0,
+            "actual": 0
+          },
+          {
+            "name": "invites_used_by_valid",
+            "expected": 0,
+            "actual": 0
+          },
+          {
+            "name": "paper_events_session_valid",
+            "expected": 0,
+            "actual": 0
+          }
+        ],
+        "fail": [
+          {
+            "name": "tasks_created_by_not_string",
+            "expected": 0,
+            "actual": 16,
+            "sql": "SELECT COUNT(*) FROM tasks WHERE typeof(created_by) = 'text' AND created_by NOT GLOB '[0-9]*'"
+          },
+          {
+            "name": "task_events_user_valid",
+            "expected": 0,
+            "actual": 140,
+            "sql": "SELECT COUNT(*) FROM task_events\n        WHERE user_id NOT IN (SELECT id FROM users)"
+          },
+          {
+            "name": "no_regex_literal_in_plans",
+            "expected": 0,
+            "actual": 37,
+            "sql": "SELECT COUNT(*) FROM paper_trade_plans WHERE thesis = 'regex \u89e3\u6790'"
+          }
+        ],
+        "skipped": [
+          {
+            "name": "plans_have_fingerprint",
+            "error": "no such column: fingerprint"
+          }
+        ],
+        "go": false,
+        "checked_at": "2026-04-24T15:02:51.386555Z"
+      }
+    },
+    "L1_basic": {
+      "level": "L1_basic",
+      "pass": 0,
+      "fail": 0,
+      "duration_sec": 0,
+      "status": "manual_required"
+    },
+    "L2_functional": {
+      "level": "L2_functional",
+      "pass": 0,
+      "fail": 0,
+      "duration_sec": 0,
+      "status": "manual_required"
+    },
+    "L3_integration": {
+      "level": "L3_integration",
+      "pass": 0,
+      "fail": 0,
+      "duration_sec": 0,
+      "status": "manual_required"
+    },
+    "L5_adversarial": {
+      "level": "L5_adversarial",
+      "pass": 0,
+      "fail": 0,
+      "duration_sec": 0,
+      "status": "manual_required"
+    }
+  },
+  "failures": [
+    {
+      "level": "L4_data",
+      "detail": "tasks_created_by_not_string"
+    },
+    {
+      "level": "L4_data",
+      "detail": "task_events_user_valid"
+    },
+    {
+      "level": "L4_data",
+      "detail": "no_regex_literal_in_plans"
+    }
+  ],
+  "go_no_go": "NO_GO"
+}
