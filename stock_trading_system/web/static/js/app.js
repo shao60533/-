@@ -4885,3 +4885,16 @@ if (typeof socket !== 'undefined' && socket) {
         if (btn) btn.disabled = false;
     });
 }
+
+// ── Hash routing for /app#<tab> ─────────────────────────────────────────
+// When legacy SPA is loaded at /app#analysis, auto-switch to that tab.
+(function() {
+  const hash = window.location.hash.replace('#', '');
+  if (hash && typeof switchTab === 'function') {
+    switchTab(hash);
+  }
+  window.addEventListener('hashchange', function() {
+    const h = window.location.hash.replace('#', '');
+    if (h && typeof switchTab === 'function') switchTab(h);
+  });
+})();
