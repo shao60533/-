@@ -902,6 +902,9 @@ v2.0 会沉淀出 v1.0 没覆盖到的模式：
 
 ### 15.3 每页规格
 
+> **详细施工图**见独立文档 [ui-react-island-pages.md](./ui-react-island-pages.md) v1.0。
+> 本节为简要概览，实施时以 pages 文档为准。
+
 #### 15.3.1 Portfolio（持仓管理）
 
 **路径**：`/portfolio`
