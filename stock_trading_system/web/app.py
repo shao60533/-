@@ -542,6 +542,37 @@ def create_app(config_path=None):
     def tasks_v2_redirect(task_id=None):
         return redirect(f"/tasks/{task_id}" if task_id else "/tasks")
 
+    @app.route("/portfolio")
+    def portfolio_page():
+        return render_template("islands/portfolio.html", vite_assets=vite_assets)
+
+    @app.route("/history")
+    def history_page():
+        return render_template("islands/history.html", vite_assets=vite_assets)
+
+    @app.route("/alerts")
+    def alerts_page():
+        return render_template("islands/alerts.html", vite_assets=vite_assets)
+
+    @app.route("/analysis")
+    @app.route("/analysis/<int:analysis_id>")
+    def analysis_page(analysis_id=None):
+        return render_template("islands/analysis.html", vite_assets=vite_assets)
+
+    @app.route("/backtest-v2")
+    @app.route("/backtest-v2/<int:backtest_id>")
+    def backtest_page(backtest_id=None):
+        return render_template("islands/backtest.html", vite_assets=vite_assets)
+
+    @app.route("/reports")
+    def reports_page():
+        return render_template("islands/reports.html", vite_assets=vite_assets)
+
+    @app.route("/settings")
+    @app.route("/settings/<section>")
+    def settings_page(section=None):
+        return render_template("islands/settings.html", vite_assets=vite_assets)
+
     # ── Health Check ────────────────────────────────────────────────────
     # Lightweight probe used by Railway / Render / k8s liveness checks.
     # Intentionally avoids touching the DB, data sources, or any lazily
@@ -609,6 +640,26 @@ def create_app(config_path=None):
     @app.route("/api/portfolio/allocation")
     def api_allocation():
         return jsonify(_get_portfolio_mgr().get_allocation())
+
+    @app.route("/api/portfolio/summary")
+    def api_portfolio_summary():
+        """Aggregated portfolio stats for dashboard/portfolio page."""
+        pm = _get_portfolio_mgr()
+        pnl = pm.get_pnl()
+        holdings = pm.get_holdings()
+        return jsonify({
+            "total_value": pnl.get("total_value", 0),
+            "today_pnl": pnl.get("total_pnl", 0),
+            "today_pnl_pct": pnl.get("total_pnl_pct", 0),
+            "holdings_count": len(holdings),
+        })
+
+    @app.route("/api/portfolio/<ticker>", methods=["DELETE"])
+    def api_portfolio_delete(ticker):
+        """Remove a position entirely."""
+        pm = _get_portfolio_mgr()
+        pm.remove_position(ticker.upper())
+        return jsonify({"ok": True})
 
     @app.route("/api/portfolio/history")
     def api_history():

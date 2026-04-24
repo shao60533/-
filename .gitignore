@@ -18,6 +18,9 @@ eval_results/
 # Env / secrets
 .env
 .env.local
+*_token.json
+schwab_*.json
+.schwab_creds
 
 # Python build artifacts
 *.egg-info/
