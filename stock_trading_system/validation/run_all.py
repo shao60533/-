@@ -62,6 +62,43 @@ def _run_l4_data(db_path: str) -> dict:
     }
 
 
+def _run_pytest_suite(level_name: str, test_path: str) -> dict:
+    """Run a pytest suite and return pass/fail counts."""
+    import subprocess
+    start = time.monotonic()
+    try:
+        result = subprocess.run(
+            ["python", "-m", "pytest", test_path, "-v", "--tb=short", "-q"],
+            capture_output=True, text=True, timeout=600,
+        )
+        output = result.stdout + result.stderr
+        # Parse pytest output for pass/fail counts
+        pass_count = fail_count = 0
+        for line in output.splitlines():
+            if "passed" in line:
+                import re
+                m = re.search(r"(\d+) passed", line)
+                if m:
+                    pass_count = int(m.group(1))
+                m2 = re.search(r"(\d+) failed", line)
+                if m2:
+                    fail_count = int(m2.group(1))
+        return {
+            "level": level_name,
+            "pass": pass_count,
+            "fail": fail_count,
+            "duration_sec": round(time.monotonic() - start, 1),
+            "details": {"output_tail": output[-500:] if output else ""},
+        }
+    except Exception as e:
+        return {
+            "level": level_name,
+            "pass": 0, "fail": 1,
+            "duration_sec": round(time.monotonic() - start, 1),
+            "details": {"error": str(e)},
+        }
+
+
 def run_all(level: str, db_path: str, report_path: str | None = None) -> dict:
     started = datetime.utcnow().isoformat() + "Z"
     levels = {}
@@ -71,9 +108,10 @@ def run_all(level: str, db_path: str, report_path: str | None = None) -> dict:
 
     if level == "full":
         levels["L4_data"] = _run_l4_data(db_path)
-        # L1-L3, L5 require browser / manual — report as "not_run"
-        for lv in ["L1_basic", "L2_functional", "L3_integration", "L5_adversarial"]:
-            levels[lv] = {"level": lv, "pass": 0, "fail": 0, "duration_sec": 0, "status": "manual_required"}
+        levels["L1_basic"] = _run_pytest_suite("L1_basic", "tests/validation/test_l1_basic.py")
+        levels["L3_integration"] = _run_pytest_suite("L3_integration", "tests/validation/test_l3_scenarios.py")
+        levels["L5_adversarial"] = _run_pytest_suite("L5_adversarial", "tests/validation/test_l5_security.py")
+        levels["L2_functional"] = _run_pytest_suite("L2_functional", "tests/validation/")
 
     # Determine go/no-go
     total_fail = sum(lv.get("fail", 0) for lv in levels.values())

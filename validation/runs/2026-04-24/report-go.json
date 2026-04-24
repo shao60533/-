@@ -1,0 +1,124 @@
+{
+  "started_at": "2026-04-24T17:20:35.697443Z",
+  "finished_at": "2026-04-24T17:29:16.313217Z",
+  "db_path": "data/portfolio.db",
+  "levels": {
+    "L0_smoke": {
+      "level": "L0_smoke",
+      "pass": 4,
+      "fail": 0,
+      "duration_sec": 0.0,
+      "details": {
+        "pass": [
+          "users table exists",
+          "positions table exists",
+          "tasks table exists",
+          "task_events table exists"
+        ],
+        "fail": []
+      }
+    },
+    "L4_data": {
+      "level": "L4_data",
+      "pass": 10,
+      "fail": 0,
+      "duration_sec": 0.0,
+      "details": {
+        "pass": [
+          {
+            "name": "positions_have_owner",
+            "expected": 0,
+            "actual": 0
+          },
+          {
+            "name": "alerts_have_owner",
+            "expected": 0,
+            "actual": 0
+          },
+          {
+            "name": "paper_sessions_have_owner",
+            "expected": 0,
+            "actual": 0
+          },
+          {
+            "name": "plans_have_fingerprint",
+            "expected": 0,
+            "actual": 0
+          },
+          {
+            "name": "tasks_created_by_not_string",
+            "expected": 0,
+            "actual": 0
+          },
+          {
+            "name": "analysis_have_decision",
+            "expected": 0,
+            "actual": 0
+          },
+          {
+            "name": "invites_used_by_valid",
+            "expected": 0,
+            "actual": 0
+          },
+          {
+            "name": "task_events_user_valid",
+            "expected": 0,
+            "actual": 0
+          },
+          {
+            "name": "paper_events_session_valid",
+            "expected": 0,
+            "actual": 0
+          },
+          {
+            "name": "no_regex_literal_in_plans",
+            "expected": 0,
+            "actual": 0
+          }
+        ],
+        "fail": [],
+        "skipped": [],
+        "go": true,
+        "checked_at": "2026-04-24T17:20:35.705690Z"
+      }
+    },
+    "L1_basic": {
+      "level": "L1_basic",
+      "pass": 31,
+      "fail": 0,
+      "duration_sec": 148.1,
+      "details": {
+        "output_tail": "============================= test session starts ==============================\nplatform darwin -- Python 3.13.2, pytest-9.0.3, pluggy-1.6.0\nrootdir: /Users/zhixingshao/stock-trading-system\nconfigfile: pyproject.toml\nplugins: langsmith-0.7.30, anyio-4.13.0\ncollected 31 items\n\ntests/validation/test_l1_basic.py ...............................        [100%]\n\n======================== 31 passed in 147.05s (0:02:27) ========================\n"
+      }
+    },
+    "L3_integration": {
+      "level": "L3_integration",
+      "pass": 16,
+      "fail": 0,
+      "duration_sec": 84.0,
+      "details": {
+        "output_tail": "============================= test session starts ==============================\nplatform darwin -- Python 3.13.2, pytest-9.0.3, pluggy-1.6.0\nrootdir: /Users/zhixingshao/stock-trading-system\nconfigfile: pyproject.toml\nplugins: langsmith-0.7.30, anyio-4.13.0\ncollected 16 items\n\ntests/validation/test_l3_scenarios.py ................                   [100%]\n\n======================== 16 passed in 82.96s (0:01:22) =========================\n"
+      }
+    },
+    "L5_adversarial": {
+      "level": "L5_adversarial",
+      "pass": 20,
+      "fail": 0,
+      "duration_sec": 1.6,
+      "details": {
+        "output_tail": "============================= test session starts ==============================\nplatform darwin -- Python 3.13.2, pytest-9.0.3, pluggy-1.6.0\nrootdir: /Users/zhixingshao/stock-trading-system\nconfigfile: pyproject.toml\nplugins: langsmith-0.7.30, anyio-4.13.0\ncollected 20 items\n\ntests/validation/test_l5_security.py ....................                [100%]\n\n============================== 20 passed in 0.94s ==============================\n"
+      }
+    },
+    "L2_functional": {
+      "level": "L2_functional",
+      "pass": 87,
+      "fail": 0,
+      "duration_sec": 287.0,
+      "details": {
+        "output_tail": "ingshao/stock-trading-system/stock_trading_system/validation/invariants.py:72: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).\n    results[\"checked_at\"] = datetime.utcnow().isoformat() + \"Z\"\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n================== 87 passed, 5 warnings in 286.07s (0:04:46) ==================\n"
+      }
+    }
+  },
+  "failures": [],
+  "go_no_go": "GO"
+}

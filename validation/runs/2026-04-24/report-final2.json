@@ -1,0 +1,124 @@
+{
+  "started_at": "2026-04-24T15:46:39.238720Z",
+  "finished_at": "2026-04-24T15:58:12.801539Z",
+  "db_path": "data/portfolio.db",
+  "levels": {
+    "L0_smoke": {
+      "level": "L0_smoke",
+      "pass": 4,
+      "fail": 0,
+      "duration_sec": 0.0,
+      "details": {
+        "pass": [
+          "users table exists",
+          "positions table exists",
+          "tasks table exists",
+          "task_events table exists"
+        ],
+        "fail": []
+      }
+    },
+    "L4_data": {
+      "level": "L4_data",
+      "pass": 10,
+      "fail": 0,
+      "duration_sec": 0.0,
+      "details": {
+        "pass": [
+          {
+            "name": "positions_have_owner",
+            "expected": 0,
+            "actual": 0
+          },
+          {
+            "name": "alerts_have_owner",
+            "expected": 0,
+            "actual": 0
+          },
+          {
+            "name": "paper_sessions_have_owner",
+            "expected": 0,
+            "actual": 0
+          },
+          {
+            "name": "plans_have_fingerprint",
+            "expected": 0,
+            "actual": 0
+          },
+          {
+            "name": "tasks_created_by_not_string",
+            "expected": 0,
+            "actual": 0
+          },
+          {
+            "name": "analysis_have_decision",
+            "expected": 0,
+            "actual": 0
+          },
+          {
+            "name": "invites_used_by_valid",
+            "expected": 0,
+            "actual": 0
+          },
+          {
+            "name": "task_events_user_valid",
+            "expected": 0,
+            "actual": 0
+          },
+          {
+            "name": "paper_events_session_valid",
+            "expected": 0,
+            "actual": 0
+          },
+          {
+            "name": "no_regex_literal_in_plans",
+            "expected": 0,
+            "actual": 0
+          }
+        ],
+        "fail": [],
+        "skipped": [],
+        "go": true,
+        "checked_at": "2026-04-24T15:46:39.270653Z"
+      }
+    },
+    "L1_basic": {
+      "level": "L1_basic",
+      "pass": 0,
+      "fail": 1,
+      "duration_sec": 300.0,
+      "details": {
+        "error": "Command '['python', '-m', 'pytest', 'tests/validation/test_l1_basic.py', '-v', '--tb=short', '-q']' timed out after 300 seconds"
+      }
+    },
+    "L3_integration": {
+      "level": "L3_integration",
+      "pass": 16,
+      "fail": 0,
+      "duration_sec": 91.8,
+      "details": {
+        "output_tail": "============================= test session starts ==============================\nplatform darwin -- Python 3.13.2, pytest-9.0.3, pluggy-1.6.0\nrootdir: /Users/zhixingshao/stock-trading-system\nconfigfile: pyproject.toml\nplugins: langsmith-0.7.30, anyio-4.13.0\ncollected 16 items\n\ntests/validation/test_l3_scenarios.py ................                   [100%]\n\n======================== 16 passed in 90.74s (0:01:30) =========================\n"
+      }
+    },
+    "L5_adversarial": {
+      "level": "L5_adversarial",
+      "pass": 19,
+      "fail": 1,
+      "duration_sec": 1.6,
+      "details": {
+        "output_tail": "aths.test_health_accessible ____________________\ntests/validation/test_l5_security.py:109: in test_health_accessible\n    assert resp.status_code == 200\nE   assert 404 == 200\nE    +  where 404 = <WrapperTestResponse streamed [404 NOT FOUND]>.status_code\n=========================== short test summary info ============================\nFAILED tests/validation/test_l5_security.py::TestPublicPaths::test_health_accessible\n========================= 1 failed, 19 passed in 0.97s =========================\n"
+      }
+    },
+    "L2_functional": {
+      "level": "L2_functional",
+      "pass": 0,
+      "fail": 1,
+      "duration_sec": 300.0,
+      "details": {
+        "error": "Command '['python', '-m', 'pytest', 'tests/validation/', '-v', '--tb=short', '-q']' timed out after 300 seconds"
+      }
+    }
+  },
+  "failures": [],
+  "go_no_go": "NO_GO"
+}

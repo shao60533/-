@@ -1,0 +1,131 @@
+{
+  "started_at": "2026-04-24T16:47:59.133219Z",
+  "finished_at": "2026-04-24T16:58:45.355093Z",
+  "db_path": "data/portfolio.db",
+  "levels": {
+    "L0_smoke": {
+      "level": "L0_smoke",
+      "pass": 4,
+      "fail": 0,
+      "duration_sec": 0.0,
+      "details": {
+        "pass": [
+          "users table exists",
+          "positions table exists",
+          "tasks table exists",
+          "task_events table exists"
+        ],
+        "fail": []
+      }
+    },
+    "L4_data": {
+      "level": "L4_data",
+      "pass": 9,
+      "fail": 1,
+      "duration_sec": 0.0,
+      "details": {
+        "pass": [
+          {
+            "name": "alerts_have_owner",
+            "expected": 0,
+            "actual": 0
+          },
+          {
+            "name": "paper_sessions_have_owner",
+            "expected": 0,
+            "actual": 0
+          },
+          {
+            "name": "plans_have_fingerprint",
+            "expected": 0,
+            "actual": 0
+          },
+          {
+            "name": "tasks_created_by_not_string",
+            "expected": 0,
+            "actual": 0
+          },
+          {
+            "name": "analysis_have_decision",
+            "expected": 0,
+            "actual": 0
+          },
+          {
+            "name": "invites_used_by_valid",
+            "expected": 0,
+            "actual": 0
+          },
+          {
+            "name": "task_events_user_valid",
+            "expected": 0,
+            "actual": 0
+          },
+          {
+            "name": "paper_events_session_valid",
+            "expected": 0,
+            "actual": 0
+          },
+          {
+            "name": "no_regex_literal_in_plans",
+            "expected": 0,
+            "actual": 0
+          }
+        ],
+        "fail": [
+          {
+            "name": "positions_have_owner",
+            "expected": 0,
+            "actual": 1,
+            "sql": "SELECT COUNT(*) FROM positions WHERE user_id IS NULL"
+          }
+        ],
+        "skipped": [],
+        "go": false,
+        "checked_at": "2026-04-24T16:47:59.172300Z"
+      }
+    },
+    "L1_basic": {
+      "level": "L1_basic",
+      "pass": 30,
+      "fail": 1,
+      "duration_sec": 142.4,
+      "details": {
+        "output_tail": "----------------------\n2026-04-25 00:50:20 [portfolio.manager] INFO: Added: BUY 1.0 ZZZTEST @ 10.0\n------------------------------ Captured log call -------------------------------\nINFO     portfolio.manager:manager.py:67 Added: BUY 1.0 ZZZTEST @ 10.0\n=========================== short test summary info ============================\nFAILED tests/validation/test_l1_basic.py::TestBasicCRUD::test_portfolio_add_and_remove\n=================== 1 failed, 30 passed in 141.01s (0:02:21) ===================\n"
+      }
+    },
+    "L3_integration": {
+      "level": "L3_integration",
+      "pass": 16,
+      "fail": 0,
+      "duration_sec": 162.8,
+      "details": {
+        "output_tail": "============================= test session starts ==============================\nplatform darwin -- Python 3.13.2, pytest-9.0.3, pluggy-1.6.0\nrootdir: /Users/zhixingshao/stock-trading-system\nconfigfile: pyproject.toml\nplugins: langsmith-0.7.30, anyio-4.13.0\ncollected 16 items\n\ntests/validation/test_l3_scenarios.py ................                   [100%]\n\n======================== 16 passed in 161.81s (0:02:41) ========================\n"
+      }
+    },
+    "L5_adversarial": {
+      "level": "L5_adversarial",
+      "pass": 20,
+      "fail": 0,
+      "duration_sec": 1.6,
+      "details": {
+        "output_tail": "============================= test session starts ==============================\nplatform darwin -- Python 3.13.2, pytest-9.0.3, pluggy-1.6.0\nrootdir: /Users/zhixingshao/stock-trading-system\nconfigfile: pyproject.toml\nplugins: langsmith-0.7.30, anyio-4.13.0\ncollected 20 items\n\ntests/validation/test_l5_security.py ....................                [100%]\n\n============================== 20 passed in 0.93s ==============================\n"
+      }
+    },
+    "L2_functional": {
+      "level": "L2_functional",
+      "pass": 86,
+      "fail": 1,
+      "duration_sec": 339.4,
+      "details": {
+        "output_tail": " a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).\n    results[\"checked_at\"] = datetime.utcnow().isoformat() + \"Z\"\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n=========================== short test summary info ============================\nFAILED tests/validation/test_l1_basic.py::TestBasicCRUD::test_portfolio_add_and_remove\n============= 1 failed, 86 passed, 5 warnings in 338.54s (0:05:38) =============\n"
+      }
+    }
+  },
+  "failures": [
+    {
+      "level": "L4_data",
+      "detail": "positions_have_owner"
+    }
+  ],
+  "go_no_go": "NO_GO"
+}
