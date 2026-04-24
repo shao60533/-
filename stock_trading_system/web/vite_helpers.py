@@ -48,8 +48,23 @@ def vite_assets(entry: str) -> dict:
     result: dict = {"js": [f"/static/dist/{item['file']}"], "css": [], "dev": False}
     for css in item.get("css", []):
         result["css"].append(f"/static/dist/{css}")
-    # Imports (chunk split)
+    # Imports (chunk split) — collect both JS and CSS from imported chunks
+    seen = set()
+    def _collect_imports(chunk_key: str) -> None:
+        if chunk_key in seen:
+            return
+        seen.add(chunk_key)
+        chunk = manifest.get(chunk_key)
+        if not chunk:
+            return
+        result["js"].insert(0, f"/static/dist/{chunk['file']}")
+        for css in chunk.get("css", []):
+            css_path = f"/static/dist/{css}"
+            if css_path not in result["css"]:
+                result["css"].append(css_path)
+        for sub in chunk.get("imports", []):
+            _collect_imports(sub)
+
     for imp in item.get("imports", []):
-        if imp in manifest:
-            result["js"].insert(0, f"/static/dist/{manifest[imp]['file']}")
+        _collect_imports(imp)
     return result
