@@ -8,19 +8,37 @@ import { Chip, ChipRow } from "@/components/ui/chip"
 import { Textarea } from "@/components/ui/input"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Avatar } from "@/components/ui/avatar"
-import { GURUS } from "@/data/gurus"
+import { GURUS as STATIC_GURUS } from "@/data/gurus"
 import { cn } from "@/lib/utils"
 
 type Mode = "classic" | "agent" | "agent_rt"
 const CANDIDATES = [10, 20, 30, 50] as const
 
 export function ScreenerV3Page() {
-  const [nl, setNl] = useState("AI 方向，PE<30，负债低")
+  const [nl, setNl] = useState("")
   const [candidateN, setCandidateN] = useState<number>(20)
   const [mode, setMode] = useState<Mode>("agent")
   const [selected, setSelected] = useState<Set<string>>(
     new Set(["buffett", "graham", "munger", "lynch"])
   )
+  const [gurus, setGurus] = useState(STATIC_GURUS)
+
+  // Fetch real guru list from API (fallback to static)
+  useEffect(() => {
+    fetch("/api/screen/v3/gurus", { credentials: "same-origin" })
+      .then(r => r.json())
+      .then(d => {
+        const list = d.gurus || d
+        if (Array.isArray(list) && list.length > 0) {
+          setGurus(list.map((g: any) => ({
+            id: g.name, name: g.display_name,
+            philosophy: g.philosophy, motto: g.motto,
+            color: g.avatar_color, initials: g.avatar_initials,
+          })))
+        }
+      })
+      .catch(() => {})
+  }, [])
 
   const [estimate, setEstimate] = useState({ calls: 0, duration: 0, cost: 0 })
 
@@ -59,7 +77,7 @@ export function ScreenerV3Page() {
       return n
     })
   }
-  const selectAll = () => setSelected(new Set(GURUS.map(g => g.id)))
+  const selectAll = () => setSelected(new Set(gurus.map(g => g.id)))
   const selectNone = () => setSelected(new Set())
   const selectRecommended = () => setSelected(new Set(["buffett", "graham", "munger", "lynch"]))
 
@@ -106,7 +124,7 @@ export function ScreenerV3Page() {
         <Section
           icon={<Users className="h-4 w-4" />}
           title="大师选择"
-          subtitle={`${selected.size} / ${GURUS.length} 位已启用`}
+          subtitle={`${selected.size} / ${gurus.length} 位已启用`}
           action={
             <div className="flex items-center gap-1">
               <Button variant="ghost" size="sm" onClick={selectAll}>全选</Button>
@@ -116,7 +134,7 @@ export function ScreenerV3Page() {
           }
         >
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-            {GURUS.map(g => {
+            {gurus.map(g => {
               const isOn = selected.has(g.id)
               return (
                 <label

@@ -1,273 +1,281 @@
+import { useEffect, useState } from "react"
 import {
-  CheckCircle2, Clock4, TrendingUp,
-  Sparkles, ExternalLink,
+  CheckCircle2, Clock4, TrendingUp, AlertCircle,
+  Sparkles, ExternalLink, XCircle, Loader2,
 } from "lucide-react"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { cn, formatCurrency } from "@/lib/utils"
+import { Chip, ChipRow } from "@/components/ui/chip"
+import { Skeleton } from "@/components/ui/skeleton"
+import { Alert } from "@/components/ui/alert"
+import { apiGet } from "@/lib/api"
+import { cn } from "@/lib/utils"
 
-interface Tier {
-  seq: number
-  label: string
-  target: number        // percent
-  trigger: string
-  triggerDetail: string
-  status: "executed" | "pending" | "expired"
-  executedAt?: string
-  executedAt_extra?: string
+interface PaperPayload {
+  session: { id: number; ticker: string; status: string; start_capital: number } | null
+  active_plan: {
+    id: number; rating: string; thesis: string; analysis_id: number
+    holding_months_min: number | null; holding_months_max: number | null
+    parse_method: string; created_at: string; trade_decision?: string
+  } | null
+  active_orders: Order[]
+  plan_history: Plan[]
+  events: Event[]
+  dailies: Daily[]
+  latest_trade_decision: string | null
+  latest_advice: { action: string; reasoning: string } | null
 }
 
-const tiers: Tier[] = [
-  { seq: 1, label: "初始建仓", target: 12.5, trigger: "立即", triggerDetail: "初始建仓 12.5%", status: "executed", executedAt: "2026-04-15", executedAt_extra: "@ $198.87" },
-  { seq: 2, label: "加仓档", target: 70,   trigger: "突破 $200-$210 后回踩", triggerDetail: "突破并回踩 200.0-210.0 → 加仓至 70%", status: "pending" },
-  { seq: 3, label: "硬性止损", target: 0,  trigger: "价格 ≤ $124.57", triggerDetail: "硬性止损：跌破 124.57", status: "pending" },
-  { seq: 4, label: "跟踪止盈", target: 0,  trigger: "收盘 < MA200", triggerDetail: "跟踪止盈：收盘跌破 MA200", status: "pending" },
-]
+interface Order {
+  id: number; order_type: string; sequence: number; pct_target_total: number
+  trigger_kind: string; trigger_json: string; status: string
+  triggered_date: string | null; triggered_price: number | null; description: string
+}
+
+interface Plan {
+  id: number; rating: string; thesis: string; analysis_id: number
+  created_at: string; status: string; trade_decision?: string; orders: Order[]
+}
+
+interface Event {
+  id: number; event_type: string; analysis_id: number; ticker: string
+  signal: string; created_at: string
+}
+
+interface Daily {
+  date: string; close_price: number; total_value: number; daily_pnl: number
+  cum_pnl_pct: number; drawdown_pct: number
+}
+
+function fmt(n: number) { return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }
+
+const ORDER_LABELS: Record<string, string> = {
+  entry_initial: "初始建仓", entry_add: "加仓档",
+  exit_stop: "硬性止损", exit_target: "止盈档", exit_trailing: "跟踪止盈",
+}
+const STATUS_ICONS: Record<string, React.ReactNode> = {
+  triggered: <CheckCircle2 className="w-4 h-4 text-green-500" />,
+  pending: <Clock4 className="w-4 h-4 text-muted-foreground" />,
+  superseded: <XCircle className="w-4 h-4 text-muted-foreground opacity-50" />,
+  cancelled: <XCircle className="w-4 h-4 text-red-500" />,
+}
 
 export function PaperTradePage() {
+  const ticker = window.location.pathname.split("/").pop()?.toUpperCase() || ""
+  const [data, setData] = useState<PaperPayload | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState("")
+  const [recordView, setRecordView] = useState<"plan" | "event">("plan")
+
+  useEffect(() => {
+    if (!ticker) { setError("未指定股票代码"); setLoading(false); return }
+    apiGet<PaperPayload>(`/api/paper/tickers/${ticker}`)
+      .then(d => { setData(d); setLoading(false) })
+      .catch(e => { setError(e.message || "加载失败"); setLoading(false) })
+  }, [ticker])
+
+  if (loading) return <LoadingSkeleton />
+  if (error) return (
+    <div className="p-6 max-w-3xl mx-auto">
+      <Alert variant="destructive"><AlertCircle className="w-4 h-4" /> {error}</Alert>
+    </div>
+  )
+  if (!data || !data.session) return (
+    <div className="p-6 max-w-3xl mx-auto">
+      <Alert>未找到 {ticker} 的纸面交易会话</Alert>
+    </div>
+  )
+
+  const plan = data.active_plan
+  const orders = data.active_orders || []
+  const sess = data.session
+
   return (
-    <div className="space-y-6 max-w-5xl">
-      {/* Header strip */}
+    <div className="p-4 md:p-6 space-y-6 max-w-5xl mx-auto">
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="font-mono text-2xl font-bold tracking-tight">NVDA</div>
-          <Badge variant="success" className="gap-1.5">
-            <span className="relative flex h-1.5 w-1.5">
-              <span className="absolute inline-flex h-full w-full animate-pulse-dot rounded-full bg-[var(--color-accent-green)]" />
-            </span>
-            live
-          </Badge>
-        </div>
+        <h1 className="text-xl font-bold">{ticker} 纸面交易</h1>
+        <Badge variant={sess.status === "running" ? "default" : "secondary"}>{sess.status}</Badge>
       </div>
 
-      {/* Two-column: strategy overview + holdings */}
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        {/* 核心论点 + 执行总结 */}
-        <Card className="lg:col-span-2">
+      {/* Strategy + Position */}
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        {/* Current Strategy */}
+        <Card>
           <CardHeader>
             <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Sparkles className="h-4 w-4 text-[var(--color-accent-blue)]" />
-                <CardTitle>当前策略</CardTitle>
-                <Badge variant="blue">BUY</Badge>
-              </div>
-              <span className="text-[11px] text-[var(--color-text-muted)]">分析 #25 · 04-19 22:26</span>
+              <CardTitle className="text-sm">当前策略</CardTitle>
+              {plan && <Badge variant={plan.rating === "BUY" || plan.rating === "Buy" ? "buy" : plan.rating === "SELL" ? "sell" : "secondary"}>
+                {plan.rating || "—"}
+              </Badge>}
             </div>
           </CardHeader>
           <CardContent>
-            <div className="space-y-3">
-              <div>
-                <div className="text-[11px] uppercase tracking-wider text-[var(--color-text-muted)] mb-1.5">
-                  执行总结
+            {plan ? (
+              <div className="space-y-2">
+                {plan.thesis && <p className="text-sm">{plan.thesis}</p>}
+                <div className="text-xs text-muted-foreground">
+                  分析 #{plan.analysis_id} · {plan.created_at} · {plan.parse_method}
+                  {plan.holding_months_min && ` · ${plan.holding_months_min}-${plan.holding_months_max || "?"}个月`}
                 </div>
-                <p className="text-sm leading-relaxed text-[var(--color-text-primary)]">
-                  AI 基础设施周期上行，Blackwell 交付加速释放二阶导；
-                  建议右侧介入，突破 $210 回踩加仓至 70%，硬性止损设于 $124.57，
-                  跟踪止盈以收盘跌破 MA200 为准。投资周期 3-6 个月。
-                </p>
               </div>
-              <div className="flex items-center gap-4 text-xs text-[var(--color-text-secondary)]">
-                <span className="inline-flex items-center gap-1">
-                  <Clock4 className="h-3 w-3" />
-                  投资周期 3-6 个月
-                </span>
-                <span>共 4 档 · 1 已执行 · 3 待触发</span>
-              </div>
-            </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">暂无活跃策略</p>
+            )}
           </CardContent>
         </Card>
 
-        {/* 持仓状态 */}
+        {/* Position */}
         <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="flex items-center gap-2">
-              <TrendingUp className="h-4 w-4 text-[var(--color-accent-green)]" />
-              持仓状态
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-2.5">
-            <div>
-              <div className="font-mono text-3xl font-bold tabular-nums leading-none">62.86 <span className="text-sm font-medium text-[var(--color-text-secondary)]">股</span></div>
-              <div className="text-xs text-[var(--color-text-secondary)] mt-1">成本 $198.87 · 现价 $201.68</div>
-            </div>
-            <div className="flex items-baseline gap-2">
-              <span className="font-mono text-xl font-semibold text-[var(--color-accent-green)] tabular-nums">+1.41%</span>
-              <span className="text-xs text-[var(--color-text-muted)]">浮盈 · 持仓 2 天</span>
-            </div>
-            <div className="grid grid-cols-2 gap-2 pt-2 border-t border-[var(--color-border)] text-xs">
-              <Metric k="市值" v={formatCurrency(12676.62)} />
-              <Metric k="现金" v={formatCurrency(87500.00)} />
-              <Metric k="总值" v={formatCurrency(100176.62)} />
-              <Metric k="再确认" v="× 3" />
+          <CardHeader><CardTitle className="text-sm">持仓状态</CardTitle></CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm">
+              <div className="text-muted-foreground">初始资金</div>
+              <div className="font-mono text-right">${fmt(sess.start_capital)}</div>
             </div>
           </CardContent>
         </Card>
       </div>
 
-      {/* 计划档位 */}
+      {/* Order Tiers */}
       <Card>
         <CardHeader>
           <div className="flex items-center justify-between">
-            <CardTitle>计划档位</CardTitle>
-            <Badge variant="muted">已执行 / 待触发</Badge>
+            <CardTitle className="text-sm">计划档位（已执行 / 待触发）</CardTitle>
+            <span className="text-xs text-muted-foreground">
+              {orders.filter(o => o.status === "triggered").length} 触发 · {orders.filter(o => o.status === "pending").length} 待触发
+            </span>
           </div>
         </CardHeader>
-        <CardContent className="px-0 pb-2">
-          {tiers.map((t, i) => (
-            <TierRow key={t.seq} tier={t} isLast={i === tiers.length - 1} />
-          ))}
+        <CardContent>
+          {orders.length === 0 ? (
+            <p className="text-sm text-muted-foreground">无计划档位</p>
+          ) : (
+            <div className="space-y-2">
+              {orders.sort((a, b) => a.sequence - b.sequence).map(o => (
+                <div key={o.id} className={cn(
+                  "flex items-center gap-3 rounded-lg border px-4 py-3",
+                  o.status === "triggered" ? "border-green-500/30 bg-green-500/5" : "border-border",
+                )}>
+                  {STATUS_ICONS[o.status] || <Clock4 className="w-4 h-4" />}
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium">{ORDER_LABELS[o.order_type] || o.order_type}</div>
+                    <div className="text-xs text-muted-foreground">{o.description || o.trigger_kind}</div>
+                  </div>
+                  {o.pct_target_total > 0 && (
+                    <span className="text-xs font-mono">{o.pct_target_total}%</span>
+                  )}
+                  {o.triggered_date && (
+                    <span className="text-xs text-muted-foreground">{o.triggered_date} @ ${o.triggered_price}</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </CardContent>
       </Card>
 
       {/* AI 最终决策 */}
       <Card>
         <CardHeader>
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Sparkles className="h-4 w-4 text-[var(--color-accent-blue)]" />
-              <CardTitle>AI 最终决策</CardTitle>
-            </div>
-            <Button variant="ghost" size="sm" className="gap-1">
-              关联分析 #25 · 04-19 22:26
-              <ExternalLink className="h-3 w-3" />
-            </Button>
+          <div className="flex items-center gap-2">
+            <Sparkles className="w-4 h-4 text-blue-500" />
+            <CardTitle className="text-sm">AI 最终决策</CardTitle>
           </div>
         </CardHeader>
         <CardContent>
-          <div className="prose prose-sm prose-invert max-w-none">
-            <p className="text-sm leading-relaxed text-[var(--color-text-primary)]">
-              <strong className="text-[var(--color-accent-blue)]">Executive Summary</strong>：针对 <code className="px-1.5 py-0.5 rounded bg-[var(--color-bg-secondary)] text-[var(--color-accent-blue)] font-mono text-[12px]">NVDA</code> 的最终交易方案为坚决执行右侧防御与流动性回收。
-              现有持仓须在股价反弹至 <span className="font-mono text-[var(--color-accent-green)]">$201.68</span>（布林带上轨）至 <span className="font-mono">$210</span>（50 日均线）双重阻力区时果断逢高减仓，目标将 NVDA 风险敞口降至 0%。
-              重新评估 NVDA 的硬性门槛为右侧共振信号：股价需带量有效突破并连续站稳 <span className="font-mono">$228.24</span> 两百日均线，且下一财报季必须同步验证营业利润率突破 5%、存货周转率实质性改善及汽车业务亏损显著收窄。
-            </p>
+          {data.latest_trade_decision ? (
+            <div className="text-sm leading-relaxed whitespace-pre-wrap max-h-96 overflow-y-auto">
+              {data.latest_trade_decision}
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">暂无决策原文</p>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* 执行记录（按 Plan / 按 Event） */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-sm">执行记录</CardTitle>
+            <ChipRow>
+              <Chip active={recordView === "plan"} onClick={() => setRecordView("plan")}>按 Plan</Chip>
+              <Chip active={recordView === "event"} onClick={() => setRecordView("event")}>按 Event</Chip>
+            </ChipRow>
           </div>
+        </CardHeader>
+        <CardContent>
+          {recordView === "plan" ? (
+            <PlanHistory plans={data.plan_history || []} />
+          ) : (
+            <EventTimeline events={data.events || []} />
+          )}
         </CardContent>
       </Card>
     </div>
   )
 }
 
-function Metric({ k, v }: { k: string; v: string }) {
+function PlanHistory({ plans }: { plans: Plan[] }) {
+  if (!plans.length) return <p className="text-sm text-muted-foreground">暂无策略记录</p>
   return (
-    <div>
-      <div className="text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">{k}</div>
-      <div className="font-mono tabular-nums text-sm">{v}</div>
+    <div className="space-y-3">
+      {plans.map(p => (
+        <div key={p.id} className={cn(
+          "rounded-lg border p-3",
+          p.status === "active" ? "border-primary/30" : "border-border opacity-70",
+        )}>
+          <div className="flex items-center gap-2 mb-1">
+            <Badge variant={p.status === "active" ? "default" : "secondary"}>
+              {p.rating || "—"}
+            </Badge>
+            <span className="text-xs font-medium">Plan #{p.id}</span>
+            {p.status === "active" && <Badge variant="outline" className="text-[10px]">当前</Badge>}
+            <span className="text-xs text-muted-foreground ml-auto">{p.created_at}</span>
+          </div>
+          {p.thesis && <p className="text-xs text-muted-foreground mb-1">{p.thesis}</p>}
+          {p.trade_decision && (
+            <details className="mt-2">
+              <summary className="text-xs text-primary cursor-pointer">AI 最终决策原文</summary>
+              <div className="text-xs text-muted-foreground mt-1 whitespace-pre-wrap max-h-40 overflow-y-auto">
+                {p.trade_decision}
+              </div>
+            </details>
+          )}
+        </div>
+      ))}
     </div>
   )
 }
 
-function TierRow({ tier, isLast }: { tier: Tier; isLast: boolean }) {
-  const statusConfig = {
-    executed: {
-      color: "text-[var(--color-accent-green)]",
-      bgBar: "bg-[var(--color-accent-green)]",
-      badge: (
-        <Badge variant="success" className="gap-1 shrink-0">
-          <CheckCircle2 className="h-3 w-3" />
-          已执行
-        </Badge>
-      ),
-    },
-    pending: {
-      color: "text-[var(--color-text-secondary)]",
-      bgBar: "bg-[var(--color-border-bright)]",
-      badge: (
-        <Badge variant="blue" className="gap-1 shrink-0">
-          <Clock4 className="h-3 w-3" />
-          待触发
-        </Badge>
-      ),
-    },
-    expired: {
-      color: "text-[var(--color-text-muted)]",
-      bgBar: "bg-[var(--color-border)]",
-      badge: <Badge variant="muted" className="shrink-0">已失效</Badge>,
-    },
-  }[tier.status]
-
+function EventTimeline({ events }: { events: Event[] }) {
+  if (!events.length) return <p className="text-sm text-muted-foreground">暂无事件</p>
   return (
-    <div
-      className={cn(
-        "relative px-4 py-3.5 sm:px-5",
-        !isLast && "border-b border-[var(--color-border)]",
-        tier.status === "pending" && "hover:bg-[var(--color-bg-secondary)] transition-colors"
-      )}
-    >
-      {/* Left rail */}
-      <div className={cn("absolute left-0 top-0 bottom-0 w-0.5", statusConfig.bgBar)} />
-
-      {/* ═══ Mobile layout (<768px): 2-row stack ═══ */}
-      <div className="md:hidden space-y-2">
-        {/* Row 1: seq + label + target + status-badge */}
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2 min-w-0">
-            <span className={cn("font-mono text-xs font-semibold shrink-0", statusConfig.color)}>
-              #{tier.seq}
-            </span>
-            <span className={cn("text-sm font-semibold truncate", statusConfig.color)}>
-              {tier.label}
-            </span>
-            <Badge variant="blue" className="font-mono shrink-0">
-              {tier.target}%
-            </Badge>
-          </div>
-          {statusConfig.badge}
+    <div className="space-y-2">
+      {events.map(e => (
+        <div key={e.id} className="flex items-center gap-3 text-sm border-b border-border/50 pb-2">
+          <Badge variant={e.signal === "BUY" ? "buy" : e.signal === "SELL" ? "sell" : "secondary"} className="text-[10px]">
+            {e.signal}
+          </Badge>
+          <span className="text-xs text-muted-foreground">{e.created_at}</span>
+          <span className="text-xs">{e.event_type}</span>
         </div>
+      ))}
+    </div>
+  )
+}
 
-        {/* Row 2: trigger detail (full-width, wrap) */}
-        <div className="text-xs leading-relaxed">
-          <div className="flex items-baseline gap-1.5 flex-wrap">
-            <span className="text-[10px] uppercase tracking-wider text-[var(--color-text-muted)] shrink-0">
-              触发
-            </span>
-            <span className="font-mono text-[var(--color-accent-blue)] break-all">
-              {tier.trigger}
-            </span>
-          </div>
-          <div className="text-[var(--color-text-secondary)] mt-1">
-            {tier.triggerDetail}
-          </div>
-          {tier.executedAt && (
-            <div className="text-[10px] text-[var(--color-text-muted)] font-mono mt-1.5">
-              {tier.executedAt}{tier.executedAt_extra ? ` · ${tier.executedAt_extra}` : ""}
-            </div>
-          )}
-        </div>
+function LoadingSkeleton() {
+  return (
+    <div className="p-6 space-y-4 max-w-5xl mx-auto">
+      <Skeleton className="h-8 w-48" />
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <Skeleton className="h-40" />
+        <Skeleton className="h-40" />
       </div>
-
-      {/* ═══ Desktop layout (≥768px): 12-col grid ═══ */}
-      <div className="hidden md:grid md:grid-cols-12 items-center gap-3">
-        <div className="col-span-1 flex items-center gap-2">
-          <span className={cn("font-mono text-xs font-semibold", statusConfig.color)}>
-            #{tier.seq}
-          </span>
-        </div>
-        <div className="col-span-2">
-          <div className={cn("text-sm font-semibold", statusConfig.color)}>{tier.label}</div>
-        </div>
-        <div className="col-span-1">
-          <Badge variant="blue" className="font-mono">{tier.target}%</Badge>
-        </div>
-        <div className="col-span-3">
-          <div className="text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">
-            触发条件
-          </div>
-          <div className="text-xs font-mono text-[var(--color-accent-blue)]">{tier.trigger}</div>
-        </div>
-        <div className="col-span-3 text-xs text-[var(--color-text-secondary)]">
-          {tier.triggerDetail}
-        </div>
-        <div className="col-span-2 flex items-center justify-end gap-2">
-          {statusConfig.badge}
-          {tier.executedAt && (
-            <div className="text-[10px] text-[var(--color-text-muted)] font-mono text-right hidden lg:block">
-              {tier.executedAt}
-              {tier.executedAt_extra && <div>{tier.executedAt_extra}</div>}
-            </div>
-          )}
-        </div>
-      </div>
+      <Skeleton className="h-60" />
+      <Skeleton className="h-48" />
     </div>
   )
 }
