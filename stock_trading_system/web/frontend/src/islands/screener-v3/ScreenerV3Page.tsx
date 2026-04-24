@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { Play, Zap, Users, Clock, DollarSign, SlidersHorizontal } from "lucide-react"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -22,17 +22,34 @@ export function ScreenerV3Page() {
     new Set(["buffett", "graham", "munger", "lynch"])
   )
 
-  const estimate = useMemo(() => {
-    if (mode === "classic") {
-      return { calls: 0, duration: 3, cost: 0 }
+  const [estimate, setEstimate] = useState({ calls: 0, duration: 0, cost: 0 })
+
+  useEffect(() => {
+    if (mode === "classic" || selected.size === 0) {
+      setEstimate({ calls: 0, duration: 0, cost: 0 })
+      return
     }
-    const gurus = selected.size
-    const baseCalls = candidateN * gurus
-    const rt = mode === "agent_rt" ? 15 : 0
-    const calls = baseCalls + rt
-    const duration = Math.round((baseCalls / 10) * 5 + (mode === "agent_rt" ? 45 : 0))
-    const cost = calls * 0.02  // ¥0.02/call rough
-    return { calls, duration, cost }
+    const t = setTimeout(async () => {
+      try {
+        const resp = await fetch("/api/screen/v3/estimate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
+          body: JSON.stringify({
+            candidate_n: candidateN,
+            gurus: [...selected],
+            with_roundtable: mode === "agent_rt",
+          }),
+        })
+        const data = await resp.json()
+        setEstimate({
+          calls: data.llm_calls || 0,
+          duration: Math.round(data.duration_sec || 0),
+          cost: data.cost_cny || 0,
+        })
+      } catch { /* ignore */ }
+    }, 500)
+    return () => clearTimeout(t)
   }, [candidateN, selected.size, mode])
 
   const toggle = (id: string) => {
@@ -189,8 +206,25 @@ export function ScreenerV3Page() {
 
         {/* 7. Actions */}
         <div className="flex items-center justify-end gap-2 pt-2">
-          <Button variant="outline">取消</Button>
-          <Button variant="default" size="lg">
+          <Button variant="outline" onClick={() => window.location.href = "/"}>取消</Button>
+          <Button variant="default" size="lg" onClick={async () => {
+            try {
+              const resp = await fetch("/api/screen/v3/trigger", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                credentials: "same-origin",
+                body: JSON.stringify({
+                  nl_query: nl, market: "us", candidate_n: candidateN,
+                  gurus: [...selected], mode,
+                  with_roundtable: mode === "agent_rt",
+                }),
+              })
+              const data = await resp.json()
+              if (data.task_id) {
+                window.location.href = `/tasks/${data.task_id}`
+              }
+            } catch (e) { alert("提交失败") }
+          }}>
             <Play className="h-4 w-4" />
             开始筛选
           </Button>
