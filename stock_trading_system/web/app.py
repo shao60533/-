@@ -505,13 +505,19 @@ def create_app(config_path=None):
 
     # ── Page Routes ─────────────────────────────────────────────────────
 
+    from stock_trading_system.web.vite_helpers import vite_assets
+
     @app.route("/")
+    @app.route("/dashboard")
     def index():
+        return render_template("islands/dashboard.html", vite_assets=vite_assets)
+
+    @app.route("/app")
+    def legacy_spa():
+        """Legacy SPA fallback — all un-migrated pages live here."""
         return render_template("index.html")
 
     # ── React Island Routes ────────────────────────────────────────────
-
-    from stock_trading_system.web.vite_helpers import vite_assets
 
     @app.route("/screener-v3")
     def screener_v3_page():
@@ -521,14 +527,20 @@ def create_app(config_path=None):
     def paper_trade_detail_page(ticker):
         return render_template("islands/paper_trade_detail.html", vite_assets=vite_assets, ticker=ticker)
 
+    @app.route("/tasks")
+    @app.route("/tasks/<task_id>")
+    def tasks_page_react(task_id=None):
+        return render_template("islands/tasks.html", vite_assets=vite_assets)
+
+    # Legacy URL redirects
     @app.route("/dashboard-v2")
-    def dashboard_v2_page():
-        return render_template("islands/dashboard.html", vite_assets=vite_assets)
+    def dashboard_v2_redirect():
+        return redirect("/")
 
     @app.route("/tasks-v2")
     @app.route("/tasks-v2/<task_id>")
-    def tasks_v2_page(task_id=None):
-        return render_template("islands/tasks.html", vite_assets=vite_assets)
+    def tasks_v2_redirect(task_id=None):
+        return redirect(f"/tasks/{task_id}" if task_id else "/tasks")
 
     # ── Health Check ────────────────────────────────────────────────────
     # Lightweight probe used by Railway / Render / k8s liveness checks.
