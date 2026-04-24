@@ -13,6 +13,7 @@
 | 2026-04-20 | [unified-progress.md](unified-progress.md) | v1.0 | 101 | 统一进度系统测试用例：emit_event 单元(8) + task_events 表(5) + ProgressStream 组件(12) + per-user room(7) + 断线续传(8) + 11 task 发射(12) + 5 页面集成(10) + 3 布局视觉(9) + 5 态动画(6) + 移动端(6) + 异常(8) + 性能(5) + 回归(5) | 统一进度系统技术方案 |
 | 2026-04-21 | [ui-react-island.md](ui-react-island.md) | v1.0 | 108 | UI React Island 测试用例：构建管道 Vite+Flask(10) + lib api/socket/auth(12) + shadcn 组件(14) + Screener V3 island(12) + Tasks(10) + Paper-trade(8) + Dashboard(7) + 跨岛集成(6) + 视觉一致性(8) + 非迁移页回归(7) + 性能(5) + 安全 CSRF(5) + 真机部署(4) | UI React Island 技术方案 |
 | 2026-04-21 | [ui-react-island.md](ui-react-island.md) | v2.0 | 74 | 剩余 11 页测试用例：共享组件 AppShell/DataTable/Form/EChartsPanel(12) + Portfolio/History/Alerts/Reports(20) + Backtest/Paper list/Analysis(18) + Settings(7) + Auth Login/Register/Reset(9) + Phase 18 废弃旧代码(5) + v2.0 性能(3) | UI React Island v2.0 技术方案 |
+| 2026-04-24 | [ui-migration-validation.md](ui-migration-validation.md) | v1.0 | 164 | 架构级迁移完整验证测试用例：L0 冒烟 5 + L1 基础 E2E 33 + L2 功能回归矩阵 74 + L3 跨模块集成脚本 20 + L4 数据完整性（row count/抽样/invariant/FK）14 + L5 对抗性（越权 8 + CSRF 3 + session 4 + 并发 3）18 | 迁移验证技术方案 |
 
 ## 用例总数汇总
 
@@ -28,7 +29,8 @@
 | 纸面交易测试用例 | 89 |
 | 统一进度系统测试用例 | 101 |
 | UI React Island 测试用例（v1.0 + v2.0）| 182 |
-| **总计** | **1260** |
+| 迁移验证测试用例 | 164 |
+| **总计** | **1424** |
 
 ## 覆盖状态
 
