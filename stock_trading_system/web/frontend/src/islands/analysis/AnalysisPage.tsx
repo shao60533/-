@@ -7,7 +7,6 @@ import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert"
 import { apiGet, apiPost } from "@/lib/api"
-import { cn } from "@/lib/utils"
 
 interface AnalysisDetail {
   id: string

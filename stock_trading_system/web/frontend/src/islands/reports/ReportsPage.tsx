@@ -1,10 +1,9 @@
 import { useState } from "react"
-import { FileText, Send, Clock, Download } from "lucide-react"
+import { FileText, Send, Clock } from "lucide-react"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
-import { Skeleton } from "@/components/ui/skeleton"
 import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert"
 import {
   Select,

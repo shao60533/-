@@ -26,6 +26,13 @@ export default defineConfig({
         "paper-trade": "src/islands/paper-trade/main.tsx",
         "dashboard":   "src/islands/dashboard/main.tsx",
         "tasks":       "src/islands/tasks/main.tsx",
+        "portfolio":   "src/islands/portfolio/main.tsx",
+        "history":     "src/islands/history/main.tsx",
+        "alerts":      "src/islands/alerts/main.tsx",
+        "analysis":    "src/islands/analysis/main.tsx",
+        "backtest":    "src/islands/backtest/main.tsx",
+        "reports":     "src/islands/reports/main.tsx",
+        "settings":    "src/islands/settings/main.tsx",
       },
       output: {
         manualChunks: {

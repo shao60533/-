@@ -1,12 +1,11 @@
 import { useEffect, useState } from "react"
 import { History, Search, ChevronDown, ChevronRight, TrendingUp } from "lucide-react"
-import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
+import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert"
 import { apiGet } from "@/lib/api"
-import { cn } from "@/lib/utils"
 
 interface AnalysisRecord {
   id: string

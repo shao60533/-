@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react"
 import { Bell, Plus, Trash2, History as HistoryIcon } from "lucide-react"
-import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
+import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
@@ -22,7 +22,6 @@ import {
 } from "@/components/ui/dialog"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { apiGet, apiPost, apiDel } from "@/lib/api"
-import { cn } from "@/lib/utils"
 
 interface AlertRule {
   id: string

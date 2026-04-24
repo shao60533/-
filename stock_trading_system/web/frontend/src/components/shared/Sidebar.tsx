@@ -19,15 +19,15 @@ const NAV_ITEMS: NavItem[] = [
   { label: "智能选股",  href: "/screener-v3",   icon: <Crosshair className="w-4 h-4" /> },
   { label: "任务中心",  href: "/tasks",          icon: <ListChecks className="w-4 h-4" /> },
 
-  // Un-migrated → legacy SPA with hash
-  { label: "AI 分析",   href: "/app#analysis",   icon: <Brain className="w-4 h-4" />,           legacy: true },
-  { label: "分析记录",  href: "/app#history",     icon: <ClockArrowDown className="w-4 h-4" />,   legacy: true },
-  { label: "持仓管理",  href: "/app#portfolio",   icon: <Wallet className="w-4 h-4" />,           legacy: true },
-  { label: "策略回测",  href: "/app#backtest",    icon: <FlaskConical className="w-4 h-4" />,     legacy: true },
-  { label: "纸面交易",  href: "/app#paper",       icon: <TestTube className="w-4 h-4" />,         legacy: true },
-  { label: "预警中心",  href: "/app#alerts",      icon: <Bell className="w-4 h-4" />,             legacy: true },
-  { label: "报告中心",  href: "/app#reports",     icon: <FileText className="w-4 h-4" />,         legacy: true },
-  { label: "设置",      href: "/app#settings",    icon: <Settings className="w-4 h-4" />,         legacy: true },
+  // All pages now React
+  { label: "AI 分析",   href: "/analysis",    icon: <Brain className="w-4 h-4" /> },
+  { label: "分析记录",  href: "/history",     icon: <ClockArrowDown className="w-4 h-4" /> },
+  { label: "持仓管理",  href: "/portfolio",   icon: <Wallet className="w-4 h-4" /> },
+  { label: "策略回测",  href: "/backtest-v2",  icon: <FlaskConical className="w-4 h-4" /> },
+  { label: "纸面交易",  href: "/paper-trade/NVDA", icon: <TestTube className="w-4 h-4" /> },
+  { label: "预警中心",  href: "/alerts",      icon: <Bell className="w-4 h-4" /> },
+  { label: "报告中心",  href: "/reports",     icon: <FileText className="w-4 h-4" /> },
+  { label: "设置",      href: "/settings",    icon: <Settings className="w-4 h-4" /> },
 ]
 
 export function Sidebar() {
@@ -58,7 +58,7 @@ export function Sidebar() {
         ))}
 
         <div className="px-2 py-1.5 mt-3 text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">
-          经典版功能
+          分析 & 交易
         </div>
         {NAV_ITEMS.slice(3).map(item => (
           <NavLink key={item.href} item={item} active={isActive(item.href)} />
