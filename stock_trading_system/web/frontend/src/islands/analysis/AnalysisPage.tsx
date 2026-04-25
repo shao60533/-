@@ -1,5 +1,5 @@
-import { useEffect, useState, useMemo } from "react"
-import { Sparkles, Send, ArrowLeft, Clock } from "lucide-react"
+import { useEffect, useState, useRef } from "react"
+import { Sparkles, Send, ArrowLeft, Clock, Newspaper, BarChart3, Scale } from "lucide-react"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -7,9 +7,8 @@ import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { ChartPanel } from "@/components/shared/ChartPanel"
 import { PipelineDAG } from "@/components/shared/PipelineDAG"
-import type { EChartsOption } from "@/lib/echarts"
+import { TVChart } from "@/components/shared/TVChart"
 import { apiGet, apiPost } from "@/lib/api"
 import Markdown from "react-markdown"
 import remarkGfm from "remark-gfm"
@@ -17,11 +16,13 @@ import remarkGfm from "remark-gfm"
 interface AnalysisDetail {
   id: string; ticker: string; signal: string; date: string
   summary?: string; confidence?: number; risk_level?: string; created_at?: string
-  // 7 report fields
   market_report?: string; sentiment_report?: string; news_report?: string
   fundamentals_report?: string; investment_debate?: string
   risk_assessment?: string; trade_decision?: string
   analysts?: Record<string, string>
+  advice_json?: string
+  // task tracking
+  task_id?: string; task_status?: string
 }
 
 interface OHLCVRow {
@@ -43,7 +44,6 @@ function getIdFromUrl(): string | null {
   return match?.[1] ?? null
 }
 
-// Tab config mapping API field keys to display labels
 const REPORT_TABS = [
   { key: "summary", label: "概览" },
   { key: "Market", label: "技术面" },
@@ -67,8 +67,7 @@ export function AnalysisPage() {
 
   useEffect(() => {
     if (!detailId) return
-    setLoading(true)
-    setError(null)
+    setLoading(true); setError(null)
     apiGet<AnalysisDetail>(`/api/history/${detailId}`)
       .then(setDetail)
       .catch(err => setError(err.message ?? "Failed to load"))
@@ -83,12 +82,12 @@ export function AnalysisPage() {
         type: "analysis", params: { ticker: ticker.toUpperCase(), date },
       })
       setSubmitResult(res)
+      if (res.task_id) setTimeout(() => { window.location.href = `/tasks/${res.task_id}` }, 800)
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "提交失败")
     } finally { setSubmitting(false) }
   }
 
-  // Loading / error / detail / form
   if (detailId && loading) return (
     <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-4">
       <Skeleton className="h-8 w-48" /><Skeleton className="h-6 w-32" /><Skeleton className="h-64" />
@@ -134,21 +133,10 @@ export function AnalysisPage() {
             <Alert variant="success" className="mt-4">
               <AlertTitle>任务已提交</AlertTitle>
               <AlertDescription>
-                任务 ID: <code className="font-mono">{submitResult.task_id}</code>，状态: {submitResult.status}。
-                <a href="/tasks" className="ml-2 text-[var(--color-accent-blue)] hover:underline">查看任务进度</a>
+                任务 ID: <code className="font-mono">{submitResult.task_id}</code>
+                <a href={`/tasks/${submitResult.task_id}`} className="ml-2 text-[var(--color-accent-blue)] hover:underline">查看进度</a>
               </AlertDescription>
             </Alert>
-          )}
-
-          {submitResult?.task_id && (
-            <div className="mt-4">
-              <PipelineDAG
-                taskId={submitResult.task_id}
-                onAllDone={() => {
-                  setTimeout(() => { window.location.href = "/tasks" }, 1500)
-                }}
-              />
-            </div>
           )}
         </CardContent>
       </Card>
@@ -156,10 +144,12 @@ export function AnalysisPage() {
   )
 }
 
-/* ── Analysis Detail with K-line + 7-tab reports ───────────── */
+/* ── Detail view with TVChart K-line + pipeline + quick-info + 7-tab ── */
 
 function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
   const [klineData, setKlineData] = useState<OHLCVRow[]>([])
+  const [activeTab, setActiveTab] = useState("summary")
+  const tabsRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     apiGet<{ data: OHLCVRow[] }>(`/api/chart/${detail.ticker}?period=3mo&interval=1d`)
@@ -167,44 +157,7 @@ function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
       .catch(() => {})
   }, [detail.ticker])
 
-  // K-line chart option
-  const klineOption = useMemo((): EChartsOption | null => {
-    if (klineData.length === 0) return null
-    const dates = klineData.map(r => r.date)
-    const ohlc = klineData.map(r => [r.open, r.close, r.low, r.high])
-    const volumes = klineData.map(r => r.volume)
-
-    return {
-      backgroundColor: "transparent",
-      animation: false,
-      tooltip: { trigger: "axis", backgroundColor: "#1c2128", borderColor: "rgba(56,130,255,0.12)", textStyle: { color: "#e6edf3" } },
-      grid: [{ left: 60, right: 20, top: 30, height: "58%" }, { left: 60, right: 20, top: "76%", height: "16%" }],
-      xAxis: [
-        { type: "category", data: dates, gridIndex: 0, axisLine: { lineStyle: { color: "#444" } } },
-        { type: "category", data: dates, gridIndex: 1, axisLine: { lineStyle: { color: "#444" } } },
-      ],
-      yAxis: [
-        { scale: true, gridIndex: 0, splitLine: { lineStyle: { color: "#222" } } },
-        { scale: true, gridIndex: 1, splitLine: { show: false } },
-      ],
-      series: [
-        {
-          name: "K线", type: "candlestick", data: ohlc,
-          itemStyle: { color: "#00ff88", color0: "#ff3860", borderColor: "#00ff88", borderColor0: "#ff3860" },
-        },
-        {
-          name: "成交量", type: "bar", data: volumes, xAxisIndex: 1, yAxisIndex: 1,
-          itemStyle: { color: (p: any) => {
-            const d = klineData[p.dataIndex]
-            return d && d.close >= d.open ? "rgba(0,255,136,0.4)" : "rgba(255,56,96,0.4)"
-          }},
-        },
-      ],
-      dataZoom: [{ type: "inside", xAxisIndex: [0, 1], start: 60, end: 100 }],
-    }
-  }, [klineData])
-
-  // Build report content map from analysts + direct fields
+  // Build report content map
   const reportContent: Record<string, string> = {}
   if (detail.summary) reportContent["summary"] = detail.summary
   if (detail.analysts) {
@@ -212,6 +165,28 @@ function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
       reportContent[key] = typeof val === "string" ? val : JSON.stringify(val, null, 2)
     }
   }
+
+  // Parse advice_json for fundamentals quick-info
+  let advice: Record<string, unknown> = {}
+  try {
+    advice = detail.advice_json
+      ? (typeof detail.advice_json === "string" ? JSON.parse(detail.advice_json) : detail.advice_json) as Record<string, unknown>
+      : {}
+  } catch { /* ignore */ }
+
+  // Quick-info extractions
+  const newsSnippet = (reportContent["News"] || "").slice(0, 200)
+  const fundSnippet = extractFundamentals(reportContent["Fundamentals"] || "")
+  const debateSnippet = extractDebateCount(reportContent["Investment Debate"] || "")
+
+  const scrollToTab = (tabKey: string) => {
+    setActiveTab(tabKey)
+    tabsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
+  }
+
+  // Detect if analysis is still running (created < 5 min ago, no summary)
+  const isRecent = detail.created_at && (Date.now() - new Date(detail.created_at).getTime()) < 5 * 60 * 1000
+  const isRunning = isRecent && !detail.summary && !!detail.task_id
 
   return (
     <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-6">
@@ -226,6 +201,11 @@ function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
           <span className="text-sm text-muted-foreground">置信度 {(detail.confidence * 100).toFixed(0)}%</span>
         )}
       </div>
+
+      {/* Pipeline DAG (shown for running tasks or as completed timeline) */}
+      {isRunning && detail.task_id && (
+        <PipelineDAG taskId={detail.task_id} onAllDone={() => window.location.reload()} />
+      )}
 
       {/* Stats row */}
       <div className="grid gap-4 md:grid-cols-3 grid-collapse-mobile">
@@ -243,18 +223,40 @@ function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
         </Card>
       </div>
 
-      {/* K-line chart */}
+      {/* Quick-info cards (news / fundamentals / debate) */}
+      <div className="grid gap-4 md:grid-cols-3 grid-collapse-mobile">
+        <QuickInfoCard
+          icon={<Newspaper className="h-4 w-4" />}
+          title="最近新闻"
+          snippet={newsSnippet || "暂无新闻数据"}
+          onClick={() => scrollToTab("News")}
+        />
+        <QuickInfoCard
+          icon={<BarChart3 className="h-4 w-4" />}
+          title="基本面指标"
+          snippet={fundSnippet || "暂无基本面数据"}
+          onClick={() => scrollToTab("Fundamentals")}
+        />
+        <QuickInfoCard
+          icon={<Scale className="h-4 w-4" />}
+          title="多空辩论"
+          snippet={debateSnippet || "暂无辩论数据"}
+          onClick={() => scrollToTab("Investment Debate")}
+        />
+      </div>
+
+      {/* K-line chart (TradingView lightweight-charts) */}
       <Card>
         <CardHeader><CardTitle className="text-sm">K 线走势（近 3 个月）</CardTitle></CardHeader>
         <CardContent>
-          <ChartPanel option={klineOption} height={380} loading={klineData.length === 0} />
+          <TVChart data={klineData} height={380} loading={klineData.length === 0} />
         </CardContent>
       </Card>
 
       {/* 7-tab report */}
-      <Card>
+      <Card ref={tabsRef}>
         <CardContent className="pt-6">
-          <Tabs defaultValue="summary">
+          <Tabs value={activeTab} onValueChange={setActiveTab}>
             <TabsList className="tabs-scrollable w-full justify-start bg-transparent border-b rounded-none pb-0 gap-0">
               {REPORT_TABS.map(tab => (
                 <TabsTrigger key={tab.key} value={tab.key}
@@ -282,4 +284,47 @@ function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
       </Card>
     </div>
   )
+}
+
+/* ── Quick-info card ─────────────────────────────────────── */
+
+function QuickInfoCard({ icon, title, snippet, onClick }: {
+  icon: React.ReactNode; title: string; snippet: string; onClick: () => void
+}) {
+  return (
+    <Card className="cursor-pointer hover:border-primary/30 transition-colors" onClick={onClick}>
+      <CardContent className="pt-4">
+        <div className="flex items-center gap-2 mb-2">
+          <span className="text-[var(--color-accent-blue)]">{icon}</span>
+          <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{title}</span>
+        </div>
+        <p className="text-xs text-[var(--color-text-secondary)] line-clamp-3 leading-relaxed">
+          {snippet}
+        </p>
+        <span className="text-[10px] text-[var(--color-accent-blue)] mt-2 inline-block">查看详情 →</span>
+      </CardContent>
+    </Card>
+  )
+}
+
+/* ── Helpers ──────────────────────────────────────────────── */
+
+function extractFundamentals(text: string): string {
+  // Try to extract PE, ROE, D/E from fundamentals report text
+  const pe = text.match(/PE[^:：]*[:：]\s*([\d.]+)/i)?.[1]
+  const roe = text.match(/ROE[^:：]*[:：]\s*([\d.]+%?)/i)?.[1]
+  const de = text.match(/D\/E[^:：]*[:：]\s*([\d.]+)/i)?.[1]
+  const parts: string[] = []
+  if (pe) parts.push(`PE: ${pe}`)
+  if (roe) parts.push(`ROE: ${roe}`)
+  if (de) parts.push(`D/E: ${de}`)
+  if (parts.length > 0) return parts.join(" · ")
+  return text.slice(0, 150)
+}
+
+function extractDebateCount(text: string): string {
+  const bull = (text.match(/看多|bullish|买入|buy/gi) || []).length
+  const bear = (text.match(/看空|bearish|卖出|sell/gi) || []).length
+  if (bull === 0 && bear === 0) return text.slice(0, 150)
+  return `看多论点 ${bull} 个 · 看空论点 ${bear} 个`
 }
