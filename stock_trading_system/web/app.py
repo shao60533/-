@@ -38,7 +38,7 @@ def _get_portfolio_mgr():
     global _portfolio_mgr
     if _portfolio_mgr is None:
         from stock_trading_system.portfolio.manager import PortfolioManager
-        _portfolio_mgr = PortfolioManager(get_config())
+        _portfolio_mgr = PortfolioManager(get_config(), data_manager=_get_data_manager())
     return _portfolio_mgr
 
 

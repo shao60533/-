@@ -16,11 +16,11 @@ logger = get_logger("portfolio.manager")
 class PortfolioManager:
     """Portfolio manager with manual position entry and real-time P&L."""
 
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, data_manager: DataManager | None = None):
         self._config = config
         db_path = config.get("portfolio", {}).get("db_path", "data/portfolio.db")
         self._db = PortfolioDatabase(db_path)
-        self._data_manager = DataManager(config)
+        self._data_manager = data_manager or DataManager(config)
 
     # ── Manual Entry ─────────────────────────────────────────────────────
 
