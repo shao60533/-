@@ -3,6 +3,8 @@
 Free, no API key required. Covers US and some international stocks.
 """
 
+import threading
+
 import pandas as pd
 
 from stock_trading_system.utils import get_logger
@@ -11,14 +13,38 @@ logger = get_logger("data.yfinance")
 
 
 class YFinanceProvider:
-    """yfinance fallback data provider."""
+    """yfinance fallback data provider.
+
+    Reuses one curl_cffi Session per thread (curl handles are not
+    thread-safe). This eliminates per-call TLS handshakes and prevents
+    CLOSE_WAIT socket leaks under concurrent bundle preparation.
+    """
+
+    def __init__(self):
+        self._tls = threading.local()
+
+    def _session(self):
+        sess = getattr(self._tls, "session", None)
+        if sess is not None:
+            return sess
+        try:
+            from curl_cffi import requests as cffi_requests
+            sess = cffi_requests.Session(impersonate="chrome120")
+        except Exception as e:
+            logger.debug("curl_cffi session unavailable, using yfinance default: %s", e)
+            sess = None
+        self._tls.session = sess
+        return sess
+
+    def _ticker(self, symbol: str):
+        import yfinance as yf
+        sess = self._session()
+        return yf.Ticker(symbol, session=sess) if sess is not None else yf.Ticker(symbol)
 
     def get_stock_price(self, ticker: str) -> dict | None:
         """Get current price for a stock."""
         try:
-            import yfinance as yf
-
-            stock = yf.Ticker(ticker)
+            stock = self._ticker(ticker)
             info = stock.fast_info
 
             return {
@@ -49,9 +75,7 @@ class YFinanceProvider:
             interval: "1m", "5m", "15m", "1h", "1d", "1wk", "1mo"
         """
         try:
-            import yfinance as yf
-
-            stock = yf.Ticker(ticker)
+            stock = self._ticker(ticker)
             df = stock.history(period=period, interval=interval)
 
             if df is None or df.empty:
@@ -67,9 +91,7 @@ class YFinanceProvider:
     def get_fundamentals(self, ticker: str) -> dict | None:
         """Get fundamental data."""
         try:
-            import yfinance as yf
-
-            stock = yf.Ticker(ticker)
+            stock = self._ticker(ticker)
             return stock.info
         except Exception as e:
             logger.error("yfinance get_fundamentals(%s) failed: %s", ticker, e)
@@ -78,19 +100,36 @@ class YFinanceProvider:
     def get_news(self, ticker: str) -> list[dict]:
         """Get recent news."""
         try:
-            import yfinance as yf
-
-            stock = yf.Ticker(ticker)
-            news = stock.news or []
-            return [
-                {
-                    "title": n.get("title", ""),
-                    "url": n.get("link", ""),
-                    "published": str(n.get("providerPublishTime", "")),
-                    "source": n.get("publisher", ""),
-                }
-                for n in news[:20]
-            ]
+            stock = self._ticker(ticker)
+            raw = stock.news or []
+            results = []
+            for n in raw[:20]:
+                # yfinance >= 0.2.36 uses {id, content: {title, ...}}
+                if "content" in n and isinstance(n["content"], dict):
+                    c = n["content"]
+                    url = ""
+                    if "canonicalUrl" in c:
+                        url = c["canonicalUrl"].get("url", "") if isinstance(c["canonicalUrl"], dict) else str(c["canonicalUrl"])
+                    elif "clickThroughUrl" in c:
+                        url = c["clickThroughUrl"].get("url", "") if isinstance(c["clickThroughUrl"], dict) else str(c["clickThroughUrl"])
+                    pub_date = c.get("pubDate", "")
+                    provider = c.get("provider", {})
+                    source = provider.get("displayName", "") if isinstance(provider, dict) else str(provider)
+                    results.append({
+                        "title": c.get("title", ""),
+                        "url": url,
+                        "published": str(pub_date),
+                        "source": source,
+                    })
+                else:
+                    # Legacy format
+                    results.append({
+                        "title": n.get("title", ""),
+                        "url": n.get("link", ""),
+                        "published": str(n.get("providerPublishTime", "")),
+                        "source": n.get("publisher", ""),
+                    })
+            return results
         except Exception as e:
             logger.error("yfinance get_news(%s) failed: %s", ticker, e)
             return []

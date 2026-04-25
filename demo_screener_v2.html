@@ -1,0 +1,964 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>智能选股 V2 - Agent 驱动</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet">
+<link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" rel="stylesheet">
+<style>
+:root {
+    --bg-void: #05080f;
+    --bg-primary: #0a0e1a;
+    --bg-card: #111a2e;
+    --border: rgba(56,130,255,0.12);
+    --border-bright: rgba(56,130,255,0.3);
+    --text-primary: #e8edf5;
+    --text-secondary: #6b7a99;
+    --text-dim: #3d4a66;
+    --blue: #3882ff;
+    --cyan: #00d4ff;
+    --green: #00ff88;
+    --red: #ff3860;
+    --yellow: #ffd000;
+    --purple: #a855f7;
+    --orange: #ff8c00;
+    --font-mono: 'JetBrains Mono', monospace;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+    font-family: 'Inter', 'Noto Sans SC', sans-serif;
+    background: var(--bg-void);
+    color: var(--text-primary);
+    padding: 24px;
+    line-height: 1.5;
+}
+h1 { font-size: 22px; font-weight: 700; margin-bottom: 4px; background: linear-gradient(135deg, #3882ff, #00d4ff); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+.subtitle { color: var(--text-secondary); font-size: 13px; margin-bottom: 24px; }
+.card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; margin-bottom: 16px; overflow: hidden; }
+.card-header {
+    padding: 14px 20px; border-bottom: 1px solid var(--border);
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: 13px; font-weight: 600; color: var(--text-secondary);
+}
+.card-header i { color: var(--blue); margin-right: 6px; }
+.card-body { padding: 20px; }
+
+/* ── SEARCH BAR ── */
+.nl-search-box {
+    background: linear-gradient(135deg, rgba(56,130,255,0.08), rgba(0,212,255,0.04));
+    border: 1px solid var(--border-bright);
+    border-radius: 14px;
+    padding: 16px 20px;
+    display: flex; align-items: center; gap: 12px;
+    margin-bottom: 20px;
+}
+.nl-search-box .search-icon {
+    width: 42px; height: 42px; border-radius: 10px;
+    background: linear-gradient(135deg, var(--blue), var(--cyan));
+    display: flex; align-items: center; justify-content: center;
+    color: #fff; font-size: 16px;
+    box-shadow: 0 4px 16px rgba(56,130,255,0.4);
+}
+.nl-search-input {
+    flex: 1; background: transparent; border: none;
+    color: var(--text-primary); font-size: 15px; outline: none;
+    font-family: inherit;
+}
+.nl-search-input::placeholder { color: var(--text-dim); }
+.search-run-btn {
+    background: linear-gradient(135deg, var(--blue), var(--cyan));
+    color: #fff; border: none; padding: 10px 22px; border-radius: 10px;
+    font-weight: 600; font-size: 13px; cursor: pointer;
+    display: flex; align-items: center; gap: 8px;
+    box-shadow: 0 4px 16px rgba(56,130,255,0.3);
+}
+
+/* ── Preset Strategies ── */
+.preset-chips {
+    display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 20px;
+}
+.chip {
+    padding: 7px 14px; border-radius: 20px;
+    background: var(--bg-card); border: 1px solid var(--border);
+    color: var(--text-secondary); font-size: 12px; font-weight: 500;
+    cursor: pointer; transition: all 0.2s;
+    display: flex; align-items: center; gap: 6px;
+}
+.chip:hover { border-color: var(--border-bright); color: var(--text-primary); }
+.chip.active { background: rgba(56,130,255,0.12); border-color: var(--blue); color: var(--blue); }
+.chip i { font-size: 10px; }
+
+/* ── Strategy Config ── */
+.cfg-row {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px;
+}
+.cfg-field {
+    background: var(--bg-primary); border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px 14px;
+}
+.cfg-label { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 1px; font-weight: 600; }
+.cfg-value { font-size: 14px; color: var(--text-primary); font-family: var(--font-mono); margin-top: 4px; }
+
+/* ── AGENT PIPELINE ── */
+.agent-grid {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px;
+}
+.agent-data-tag {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 9px; padding: 2px 6px; border-radius: 4px;
+    font-family: var(--font-mono); font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.5px;
+    margin-top: 8px;
+}
+.tag-qwen { background: rgba(168,85,247,0.15); color: var(--purple); }
+.tag-yf { background: rgba(0,212,255,0.1); color: var(--cyan); }
+.tag-local { background: rgba(107,122,153,0.15); color: var(--text-secondary); }
+.agent-card {
+    background: var(--bg-primary); border: 1px solid var(--border);
+    border-radius: 10px; padding: 14px; position: relative;
+    transition: all 0.3s;
+}
+.agent-card.running { border-color: rgba(56,130,255,0.4); box-shadow: 0 0 12px rgba(56,130,255,0.1); animation: agent-pulse 2s infinite; }
+.agent-card.done { border-color: rgba(0,255,136,0.3); }
+@keyframes agent-pulse { 0%,100% { box-shadow: 0 0 12px rgba(56,130,255,0.1); } 50% { box-shadow: 0 0 24px rgba(56,130,255,0.25); } }
+
+.agent-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.agent-icon {
+    width: 36px; height: 36px; border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px;
+}
+.agent-name { font-size: 13px; font-weight: 600; }
+.agent-role { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.8px; font-family: var(--font-mono); }
+.agent-status {
+    margin-left: auto; font-size: 11px; padding: 3px 8px;
+    border-radius: 10px; font-family: var(--font-mono); font-weight: 600;
+}
+.agent-status.idle { background: rgba(107,122,153,0.15); color: var(--text-secondary); }
+.agent-status.running { background: rgba(56,130,255,0.15); color: var(--blue); }
+.agent-status.done { background: rgba(0,255,136,0.15); color: var(--green); }
+
+.agent-desc { font-size: 11px; color: var(--text-secondary); line-height: 1.5; }
+.agent-progress {
+    margin-top: 10px; height: 4px; background: rgba(56,130,255,0.06);
+    border-radius: 2px; overflow: hidden;
+}
+.agent-progress-bar {
+    height: 100%; background: linear-gradient(90deg, var(--blue), var(--cyan));
+    transition: width 0.6s ease;
+}
+
+/* ── FUNNEL PROGRESS ── */
+.pipeline-status {
+    display: grid; grid-template-columns: repeat(4, 1fr);
+    gap: 8px; padding: 8px 0;
+}
+.ps-step {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 14px; border-radius: 8px;
+    background: var(--bg-primary); border: 1px solid var(--border);
+}
+.ps-step.done { border-color: rgba(0,255,136,0.3); background: rgba(0,255,136,0.04); }
+.ps-step.active { border-color: rgba(56,130,255,0.3); background: rgba(56,130,255,0.06); }
+
+.ps-icon {
+    width: 28px; height: 28px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px; flex-shrink: 0;
+    background: var(--bg-card); color: var(--text-dim);
+}
+.ps-step.done .ps-icon { background: rgba(0,255,136,0.2); color: var(--green); }
+.ps-step.active .ps-icon { background: rgba(56,130,255,0.2); color: var(--blue); animation: pulse 1.5s infinite; }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+.ps-label { font-size: 11px; color: var(--text-secondary); }
+.ps-count { font-size: 16px; font-weight: 700; font-family: var(--font-mono); }
+.ps-step.done .ps-count { color: var(--green); }
+.ps-step.active .ps-count { color: var(--blue); }
+
+/* ── RESULT CARD (Stock Pick) ── */
+.pick-card {
+    background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: 12px; padding: 18px; margin-bottom: 12px;
+    transition: border-color 0.2s;
+}
+.pick-card:hover { border-color: var(--border-bright); }
+
+.pick-head {
+    display: flex; align-items: center; gap: 14px; margin-bottom: 14px;
+}
+.pick-rank {
+    font-size: 20px; font-weight: 800;
+    color: var(--text-dim); font-family: var(--font-mono);
+    min-width: 36px;
+}
+.pick-ticker { font-size: 20px; font-weight: 700; font-family: var(--font-mono); color: var(--text-primary); }
+.pick-name { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
+
+.pick-conviction {
+    margin-left: auto; display: flex; align-items: center; gap: 16px;
+}
+
+.conv-ring {
+    width: 60px; height: 60px; position: relative;
+}
+.conv-ring svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+.conv-ring .bg { fill: none; stroke: var(--border); stroke-width: 4; }
+.conv-ring .fg { fill: none; stroke-width: 4; stroke-linecap: round; stroke-dasharray: 164; transition: stroke-dashoffset 1s ease; }
+.conv-text {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    font-size: 16px; font-weight: 700; font-family: var(--font-mono);
+}
+
+.pick-meta {
+    display: flex; gap: 12px; font-size: 11px; color: var(--text-secondary);
+    margin-top: 8px; flex-wrap: wrap;
+}
+.pick-meta .meta-item {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px 8px; background: var(--bg-primary);
+    border-radius: 10px; font-family: var(--font-mono);
+}
+.pick-meta .meta-item.horizon { color: var(--cyan); }
+.pick-meta .meta-item.risk-low { color: var(--green); }
+.pick-meta .meta-item.risk-med { color: var(--yellow); }
+.pick-meta .meta-item.risk-high { color: var(--red); }
+
+/* ── AGENT SCORES ── */
+.agent-scores {
+    display: grid; grid-template-columns: repeat(8, 1fr); gap: 6px;
+    margin: 14px 0;
+}
+.score-cell {
+    background: var(--bg-primary); border: 1px solid var(--border);
+    border-radius: 6px; padding: 8px 10px; text-align: center;
+}
+.score-cell .s-agent { font-size: 9px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; font-family: var(--font-mono); }
+.score-cell .s-grade { font-size: 18px; font-weight: 800; font-family: var(--font-mono); margin: 4px 0 2px; }
+.score-cell .s-num { font-size: 10px; color: var(--text-secondary); font-family: var(--font-mono); }
+
+.grade-a { color: var(--green); }
+.grade-b { color: var(--cyan); }
+.grade-c { color: var(--yellow); }
+.grade-d { color: var(--orange); }
+.grade-f { color: var(--red); }
+
+/* ── Thesis ── */
+.pick-thesis {
+    background: var(--bg-primary); border: 1px solid var(--border);
+    border-radius: 8px; padding: 12px 14px; margin-top: 12px;
+    font-size: 13px; color: var(--text-secondary); line-height: 1.7;
+}
+.pick-thesis .label {
+    display: inline-block; font-size: 10px; color: var(--blue);
+    text-transform: uppercase; letter-spacing: 1px; font-weight: 600;
+    margin-bottom: 4px;
+}
+.pick-thesis strong { color: var(--text-primary); }
+
+/* ── Trade Plan ── */
+.trade-plan {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;
+    margin-top: 12px; padding: 12px 14px;
+    background: linear-gradient(135deg, rgba(56,130,255,0.04), transparent);
+    border: 1px solid var(--border); border-radius: 8px;
+}
+.tp-item { text-align: center; }
+.tp-label { font-size: 9px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 1px; font-weight: 600; }
+.tp-value { font-size: 14px; font-weight: 700; font-family: var(--font-mono); margin-top: 4px; }
+.tp-value.entry { color: var(--blue); }
+.tp-value.stop { color: var(--red); }
+.tp-value.target { color: var(--green); }
+.tp-value.rr { color: var(--cyan); }
+
+/* ── Actions ── */
+.pick-actions {
+    display: flex; gap: 8px; margin-top: 14px;
+}
+.pick-actions .btn {
+    padding: 8px 14px; border-radius: 6px; font-size: 12px; font-weight: 500;
+    cursor: pointer; border: 1px solid var(--border); background: transparent;
+    color: var(--text-secondary); font-family: inherit;
+    display: inline-flex; align-items: center; gap: 6px;
+    transition: all 0.2s;
+}
+.pick-actions .btn:hover { border-color: var(--border-bright); color: var(--text-primary); }
+.pick-actions .btn.primary {
+    background: linear-gradient(135deg, var(--blue), var(--cyan));
+    border-color: transparent; color: #fff;
+}
+
+/* ── GURU CARDS ── */
+.guru-card {
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px;
+    transition: all 0.3s;
+    opacity: 0.5;
+}
+.guru-card.active {
+    opacity: 1;
+    border-color: rgba(255,215,0,0.25);
+    background: linear-gradient(135deg, rgba(255,215,0,0.03), var(--bg-primary));
+}
+.guru-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.guru-avatar {
+    width: 36px; height: 36px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-family: var(--font-mono); font-weight: 700; font-size: 12px;
+    color: #fff; flex-shrink: 0;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+}
+.guru-name { font-size: 13px; font-weight: 700; color: var(--text-primary); }
+.guru-tag { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; font-family: var(--font-mono); }
+.guru-switch { margin-left: auto; position: relative; width: 32px; height: 18px; cursor: pointer; }
+.guru-switch input { opacity: 0; width: 0; height: 0; position: absolute; }
+.guru-switch .slider {
+    position: absolute; inset: 0;
+    background: rgba(107,122,153,0.2); border-radius: 18px;
+    transition: 0.3s; cursor: pointer;
+}
+.guru-switch .slider::before {
+    content: ''; position: absolute; left: 2px; top: 2px;
+    width: 14px; height: 14px; background: var(--text-secondary);
+    border-radius: 50%; transition: 0.3s;
+}
+.guru-switch input:checked + .slider { background: rgba(255,215,0,0.3); }
+.guru-switch input:checked + .slider::before { background: #ffd700; transform: translateX(14px); }
+
+.guru-principles {
+    display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 10px;
+}
+.guru-principles .principle {
+    font-size: 10px; padding: 2px 7px;
+    background: rgba(56,130,255,0.06);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+}
+.guru-card.active .guru-principles .principle {
+    background: rgba(255,215,0,0.06);
+    border-color: rgba(255,215,0,0.15);
+    color: var(--text-primary);
+}
+.guru-motto {
+    font-size: 11px;
+    color: var(--text-dim);
+    font-style: italic;
+    line-height: 1.5;
+    padding-top: 8px;
+    border-top: 1px dashed var(--border);
+}
+.guru-card.active .guru-motto { color: #ffd700; opacity: 0.85; }
+
+/* ── REGIME BANNER ── */
+.regime-banner {
+    display: flex; align-items: center; gap: 16px;
+    padding: 14px 20px; border-radius: 12px; margin-bottom: 16px;
+    background: linear-gradient(135deg, rgba(0,255,136,0.06), rgba(0,212,255,0.03));
+    border: 1px solid rgba(0,255,136,0.2);
+}
+.regime-icon {
+    width: 42px; height: 42px; border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px;
+    background: rgba(0,255,136,0.15); color: var(--green);
+}
+.regime-title { font-size: 13px; font-weight: 700; color: var(--green); }
+.regime-desc { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
+.regime-stats {
+    margin-left: auto; display: flex; gap: 16px;
+    font-family: var(--font-mono); font-size: 11px;
+}
+.regime-stats span { color: var(--text-secondary); }
+.regime-stats strong { color: var(--text-primary); font-weight: 700; }
+</style>
+</head>
+<body>
+
+<h1><i class="fas fa-crosshairs" style="-webkit-text-fill-color:#3882ff;"></i> 智能选股 V2</h1>
+<p class="subtitle">Agent 驱动 · 6 专家并行打分 · Qwen 主力数据 + 本地缓存 · 异步任务留痕</p>
+
+<!-- Data source strategy banner -->
+<div style="background:linear-gradient(135deg, rgba(168,85,247,0.08), rgba(0,212,255,0.04)); border:1px solid rgba(168,85,247,0.25); border-radius:10px; padding:12px 16px; margin-bottom:16px; display:flex; align-items:center; gap:16px; font-size:12px;">
+    <div style="width:36px;height:36px;border-radius:8px;background:rgba(168,85,247,0.15);color:#a855f7;display:flex;align-items:center;justify-content:center;"><i class="fas fa-database"></i></div>
+    <div style="flex:1;">
+        <div style="color:#a855f7; font-weight:600; margin-bottom:4px;">数据源策略（对齐架构升级）</div>
+        <div style="color:#6b7a99; line-height:1.6;">
+            <strong style="color:#e8edf5;">Qwen 主力</strong>（单点价/基本面/新闻/选股打分 · 可联网搜索）·
+            <strong style="color:#e8edf5;">yfinance + AkShare 兜底</strong>（Qwen 失败时自动切换）·
+            <strong style="color:#e8edf5;">本地缓存 SQLite</strong>（回测/历史 bars，避免重复拉取）
+        </div>
+    </div>
+    <div style="font-family:var(--font-mono); font-size:10px; color:#6b7a99; text-align:right;">
+        <div>TASK_ID: <span style="color:#00d4ff;">scr_7f3a92...</span></div>
+        <div>触发: 2026-04-15 14:32:18</div>
+    </div>
+</div>
+
+<!-- ═══════ NATURAL LANGUAGE SEARCH ═══════ -->
+<div class="nl-search-box">
+    <div class="search-icon"><i class="fas fa-wand-magic-sparkles"></i></div>
+    <input type="text" class="nl-search-input" placeholder="自然语言查询：如 “帮我找 AI 板块中被低估的成长股，近期有正向盈利修正”" value="">
+    <button class="search-run-btn"><i class="fas fa-bolt"></i> AI 解析并筛选</button>
+</div>
+
+<!-- 预设策略 Chips -->
+<div class="preset-chips">
+    <div class="chip active"><i class="fas fa-rocket"></i> 成长动能</div>
+    <div class="chip"><i class="fas fa-gem"></i> 价值挖掘</div>
+    <div class="chip"><i class="fas fa-wave-square"></i> 均值回归</div>
+    <div class="chip"><i class="fas fa-newspaper"></i> 事件催化</div>
+    <div class="chip"><i class="fas fa-shield-halved"></i> 低波稳健</div>
+    <div class="chip"><i class="fas fa-chart-line"></i> 相对强度</div>
+    <div class="chip"><i class="fas fa-fire"></i> 异动扫描</div>
+</div>
+
+<!-- ═══════ GURU PHILOSOPHY PANEL (NEW) ═══════ -->
+<div class="card">
+    <div class="card-header">
+        <span><i class="fas fa-crown" style="color:#ffd700;"></i> 投资大师哲学（选择生效方法论）</span>
+        <span style="font-family:var(--font-mono);font-size:11px;color:var(--text-dim);">已启用 4 / 8</span>
+    </div>
+    <div class="card-body">
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;">
+            <!-- Buffett -->
+            <div class="guru-card active">
+                <div class="guru-head">
+                    <div class="guru-avatar" style="background:linear-gradient(135deg,#c0a882,#8a7248);">WB</div>
+                    <div>
+                        <div class="guru-name">Warren Buffett</div>
+                        <div class="guru-tag">价值投资 / 护城河</div>
+                    </div>
+                    <label class="guru-switch"><input type="checkbox" checked><span class="slider"></span></label>
+                </div>
+                <div class="guru-principles">
+                    <span class="principle">经济护城河</span>
+                    <span class="principle">ROE &gt; 15%</span>
+                    <span class="principle">低负债</span>
+                    <span class="principle">长期自由现金流</span>
+                </div>
+                <div class="guru-motto">"在别人贪婪时恐惧，在别人恐惧时贪婪"</div>
+            </div>
+
+            <!-- Graham -->
+            <div class="guru-card active">
+                <div class="guru-head">
+                    <div class="guru-avatar" style="background:linear-gradient(135deg,#6b7a99,#3d4a66);">BG</div>
+                    <div>
+                        <div class="guru-name">Benjamin Graham</div>
+                        <div class="guru-tag">深度价值 / 安全边际</div>
+                    </div>
+                    <label class="guru-switch"><input type="checkbox" checked><span class="slider"></span></label>
+                </div>
+                <div class="guru-principles">
+                    <span class="principle">P/B &lt; 1.5</span>
+                    <span class="principle">P/E &lt; 15</span>
+                    <span class="principle">流动比率 &gt; 2</span>
+                    <span class="principle">净资产折价</span>
+                </div>
+                <div class="guru-motto">"市场短期是投票机，长期是称重机"</div>
+            </div>
+
+            <!-- Peter Lynch -->
+            <div class="guru-card active">
+                <div class="guru-head">
+                    <div class="guru-avatar" style="background:linear-gradient(135deg,#3882ff,#1f5bc0);">PL</div>
+                    <div>
+                        <div class="guru-name">Peter Lynch</div>
+                        <div class="guru-tag">GARP / 成长合理价</div>
+                    </div>
+                    <label class="guru-switch"><input type="checkbox" checked><span class="slider"></span></label>
+                </div>
+                <div class="guru-principles">
+                    <span class="principle">PEG &lt; 1</span>
+                    <span class="principle">10-Bagger 潜力</span>
+                    <span class="principle">利润增速 20%+</span>
+                    <span class="principle">行业细分龙头</span>
+                </div>
+                <div class="guru-motto">"买你了解的东西，做功课比听消息重要"</div>
+            </div>
+
+            <!-- William O'Neil -->
+            <div class="guru-card active">
+                <div class="guru-head">
+                    <div class="guru-avatar" style="background:linear-gradient(135deg,#00ff88,#00b35e);">WO</div>
+                    <div>
+                        <div class="guru-name">William O'Neil</div>
+                        <div class="guru-tag">CANSLIM / 动量成长</div>
+                    </div>
+                    <label class="guru-switch"><input type="checkbox" checked><span class="slider"></span></label>
+                </div>
+                <div class="guru-principles">
+                    <span class="principle">EPS 加速增长</span>
+                    <span class="principle">新高突破</span>
+                    <span class="principle">RS Rating 80+</span>
+                    <span class="principle">机构增持</span>
+                </div>
+                <div class="guru-motto">"最赚钱的股票往往是你觉得已经太贵的那只"</div>
+            </div>
+
+            <!-- Munger -->
+            <div class="guru-card">
+                <div class="guru-head">
+                    <div class="guru-avatar" style="background:linear-gradient(135deg,#ff8c00,#c26700);">CM</div>
+                    <div>
+                        <div class="guru-name">Charlie Munger</div>
+                        <div class="guru-tag">质量优先 / 多元模型</div>
+                    </div>
+                    <label class="guru-switch"><input type="checkbox"><span class="slider"></span></label>
+                </div>
+                <div class="guru-principles">
+                    <span class="principle">优秀生意 &gt; 便宜价</span>
+                    <span class="principle">管理层诚信</span>
+                    <span class="principle">心智模型筛选</span>
+                    <span class="principle">避免复杂</span>
+                </div>
+                <div class="guru-motto">"反过来想，总是反过来想"</div>
+            </div>
+
+            <!-- Howard Marks -->
+            <div class="guru-card">
+                <div class="guru-head">
+                    <div class="guru-avatar" style="background:linear-gradient(135deg,#a855f7,#7028c9);">HM</div>
+                    <div>
+                        <div class="guru-name">Howard Marks</div>
+                        <div class="guru-tag">周期思维 / 逆向</div>
+                    </div>
+                    <label class="guru-switch"><input type="checkbox"><span class="slider"></span></label>
+                </div>
+                <div class="guru-principles">
+                    <span class="principle">周期位置</span>
+                    <span class="principle">第二层思维</span>
+                    <span class="principle">风险调整收益</span>
+                    <span class="principle">逆向机会</span>
+                </div>
+                <div class="guru-motto">"你不能预测，但你能准备"</div>
+            </div>
+
+            <!-- Soros -->
+            <div class="guru-card">
+                <div class="guru-head">
+                    <div class="guru-avatar" style="background:linear-gradient(135deg,#ff3860,#c62747);">GS</div>
+                    <div>
+                        <div class="guru-name">George Soros</div>
+                        <div class="guru-tag">反身性 / 宏观</div>
+                    </div>
+                    <label class="guru-switch"><input type="checkbox"><span class="slider"></span></label>
+                </div>
+                <div class="guru-principles">
+                    <span class="principle">反身性循环</span>
+                    <span class="principle">宏观趋势</span>
+                    <span class="principle">情绪极端</span>
+                    <span class="principle">大额高概率</span>
+                </div>
+                <div class="guru-motto">"重要的不是你对错，而是对时赚多少、错时亏多少"</div>
+            </div>
+
+            <!-- Jim Simons -->
+            <div class="guru-card">
+                <div class="guru-head">
+                    <div class="guru-avatar" style="background:linear-gradient(135deg,#00d4ff,#0099cc);">JS</div>
+                    <div>
+                        <div class="guru-name">Jim Simons</div>
+                        <div class="guru-tag">量化 / 统计套利</div>
+                    </div>
+                    <label class="guru-switch"><input type="checkbox"><span class="slider"></span></label>
+                </div>
+                <div class="guru-principles">
+                    <span class="principle">统计异常</span>
+                    <span class="principle">均值回归</span>
+                    <span class="principle">低相关因子</span>
+                    <span class="principle">高频信号</span>
+                </div>
+                <div class="guru-motto">"相信数据，不相信叙事"</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ═══════ REGIME DETECTION ═══════ -->
+<div class="regime-banner">
+    <div class="regime-icon"><i class="fas fa-chart-line"></i></div>
+    <div>
+        <div class="regime-title">当前市场环境：BULL 牛市结构</div>
+        <div class="regime-desc">VIX 14.2 · 市场宽度 67% · 20DMA 上方 · 权重偏向 <strong style="color:var(--green);">动量 / 相对强度</strong></div>
+    </div>
+    <div class="regime-stats">
+        <span>SPY: <strong style="color:var(--green);">+18.7% YTD</strong></span>
+        <span>VIX: <strong>14.2</strong></span>
+        <span>置信: <strong>87%</strong></span>
+    </div>
+</div>
+
+<!-- ═══════ 6 AGENT PIPELINE ═══════ -->
+<div class="card">
+    <div class="card-header">
+        <span><i class="fas fa-diagram-project"></i> 6 Agent 并行评分</span>
+        <span style="font-family:var(--font-mono);font-size:11px;color:var(--text-dim);">已完成 · 耗时 42.8s</span>
+    </div>
+    <div class="card-body">
+        <div class="agent-grid">
+            <!-- Agent 1: Momentum -->
+            <div class="agent-card done">
+                <div class="agent-head">
+                    <div class="agent-icon" style="background:rgba(56,130,255,0.15);color:var(--blue);"><i class="fas fa-rocket"></i></div>
+                    <div>
+                        <div class="agent-name">MomentumAgent</div>
+                        <div class="agent-role">动量专家</div>
+                    </div>
+                    <div class="agent-status done">✅</div>
+                </div>
+                <div class="agent-desc">1/3/6/12M 收益率、MA 排列、52W 新高接近度、成交量趋势</div>
+                <div class="agent-data-tag tag-local"><i class="fas fa-database"></i> Local Cache (bars)</div>
+                <div class="agent-progress"><div class="agent-progress-bar" style="width:100%;"></div></div>
+            </div>
+
+            <!-- Agent 2: Quality/Value -->
+            <div class="agent-card done">
+                <div class="agent-head">
+                    <div class="agent-icon" style="background:rgba(0,255,136,0.15);color:var(--green);"><i class="fas fa-gem"></i></div>
+                    <div>
+                        <div class="agent-name">QualityValueAgent</div>
+                        <div class="agent-role">质量价值</div>
+                    </div>
+                    <div class="agent-status done">✅</div>
+                </div>
+                <div class="agent-desc">ROE、毛利率、自由现金流收益率、PEG、负债/权益比</div>
+                <div class="agent-data-tag tag-qwen"><i class="fas fa-robot"></i> Qwen Fundamentals</div>
+                <div class="agent-progress"><div class="agent-progress-bar" style="width:100%;"></div></div>
+            </div>
+
+            <!-- Agent 3: Catalyst -->
+            <div class="agent-card done">
+                <div class="agent-head">
+                    <div class="agent-icon" style="background:rgba(168,85,247,0.15);color:var(--purple);"><i class="fas fa-bolt"></i></div>
+                    <div>
+                        <div class="agent-name">CatalystAgent</div>
+                        <div class="agent-role">催化剂</div>
+                    </div>
+                    <div class="agent-status done">✅</div>
+                </div>
+                <div class="agent-desc">Qwen 分类催化剂：财报/指引/FDA/M&A/评级/回购/分拆</div>
+                <div class="agent-data-tag tag-qwen"><i class="fas fa-robot"></i> Qwen News</div>
+                <div class="agent-progress"><div class="agent-progress-bar" style="width:100%;"></div></div>
+            </div>
+
+            <!-- Agent 4: Sentiment -->
+            <div class="agent-card done">
+                <div class="agent-head">
+                    <div class="agent-icon" style="background:rgba(255,208,0,0.15);color:var(--yellow);"><i class="fas fa-face-smile"></i></div>
+                    <div>
+                        <div class="agent-name">SentimentAgent</div>
+                        <div class="agent-role">情绪分析</div>
+                    </div>
+                    <div class="agent-status done">✅</div>
+                </div>
+                <div class="agent-desc">新闻情绪极性、分析师评级修正、社交媒体热度、Put/Call 比</div>
+                <div class="agent-data-tag tag-qwen"><i class="fas fa-robot"></i> Qwen Web Search</div>
+                <div class="agent-progress"><div class="agent-progress-bar" style="width:100%;"></div></div>
+            </div>
+
+            <!-- Agent 5: Technical -->
+            <div class="agent-card done">
+                <div class="agent-head">
+                    <div class="agent-icon" style="background:rgba(0,212,255,0.15);color:var(--cyan);"><i class="fas fa-chart-bar"></i></div>
+                    <div>
+                        <div class="agent-name">TechnicalAgent</div>
+                        <div class="agent-role">技术指标</div>
+                    </div>
+                    <div class="agent-status done">✅</div>
+                </div>
+                <div class="agent-desc">RSI/MACD/布林带、放量突破、形态识别（杯柄/旗形/双底）</div>
+                <div class="agent-data-tag tag-local"><i class="fas fa-database"></i> Local Cache (bars)</div>
+                <div class="agent-progress"><div class="agent-progress-bar" style="width:100%;"></div></div>
+            </div>
+
+            <!-- Agent 6: Regime/Relative -->
+            <div class="agent-card done">
+                <div class="agent-head">
+                    <div class="agent-icon" style="background:rgba(255,140,0,0.15);color:var(--orange);"><i class="fas fa-sitemap"></i></div>
+                    <div>
+                        <div class="agent-name">RegimeRelativeAgent</div>
+                        <div class="agent-role">环境/相对强度</div>
+                    </div>
+                    <div class="agent-status done">✅</div>
+                </div>
+                <div class="agent-desc">VIX/市场宽度 → 环境分类，相对 SPY/行业 RS 排名，RRG 象限</div>
+                <div class="agent-data-tag tag-yf"><i class="fas fa-chart-line"></i> yfinance (SPY/ETF)</div>
+                <div class="agent-progress"><div class="agent-progress-bar" style="width:100%;"></div></div>
+            </div>
+
+            <!-- Agent 7: Guru Philosophy (NEW) -->
+            <div class="agent-card done" style="border-color:rgba(255,215,0,0.3);background:linear-gradient(135deg, rgba(255,215,0,0.04), transparent);">
+                <div class="agent-head">
+                    <div class="agent-icon" style="background:rgba(255,215,0,0.15);color:#ffd700;"><i class="fas fa-crown"></i></div>
+                    <div>
+                        <div class="agent-name">GuruAgent</div>
+                        <div class="agent-role">大师哲学</div>
+                    </div>
+                    <div class="agent-status done" style="background:rgba(255,215,0,0.15);color:#ffd700;">✅</div>
+                </div>
+                <div class="agent-desc">Buffett 护城河 · Graham 安全边际 · Lynch 成长合理价 · O'Neil CANSLIM · Munger 质量</div>
+                <div class="agent-data-tag tag-qwen"><i class="fas fa-robot"></i> Qwen + 基本面</div>
+                <div class="agent-progress"><div class="agent-progress-bar" style="width:100%;"></div></div>
+            </div>
+
+            <!-- Agent 8: Risk -->
+            <div class="agent-card done">
+                <div class="agent-head">
+                    <div class="agent-icon" style="background:rgba(255,56,96,0.15);color:var(--red);"><i class="fas fa-shield-halved"></i></div>
+                    <div>
+                        <div class="agent-name">RiskAgent</div>
+                        <div class="agent-role">风险识别</div>
+                    </div>
+                    <div class="agent-status done">✅</div>
+                </div>
+                <div class="agent-desc">Beta、最大回撤、ATR、流动性、做空比、做空挤压预警</div>
+                <div class="agent-data-tag tag-local"><i class="fas fa-database"></i> Local Cache + Qwen</div>
+                <div class="agent-progress"><div class="agent-progress-bar" style="width:100%;"></div></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ═══════ PIPELINE STATUS ═══════ -->
+<div class="card">
+    <div class="card-header"><span><i class="fas fa-filter"></i> 筛选管线</span></div>
+    <div class="card-body">
+        <div class="pipeline-status">
+            <div class="ps-step done">
+                <div class="ps-icon"><i class="fas fa-satellite-dish"></i></div>
+                <div style="flex:1;">
+                    <div class="ps-label">L1 宇宙过滤</div>
+                    <div class="ps-count">200</div>
+                </div>
+            </div>
+            <div class="ps-step done">
+                <div class="ps-icon"><i class="fas fa-flask"></i></div>
+                <div style="flex:1;">
+                    <div class="ps-label">L2 Agent 并行评分</div>
+                    <div class="ps-count">200</div>
+                </div>
+            </div>
+            <div class="ps-step done">
+                <div class="ps-icon"><i class="fas fa-sort-amount-up"></i></div>
+                <div style="flex:1;">
+                    <div class="ps-label">L3 聚合排名</div>
+                    <div class="ps-count">20</div>
+                </div>
+            </div>
+            <div class="ps-step done">
+                <div class="ps-icon"><i class="fas fa-gavel"></i></div>
+                <div style="flex:1;">
+                    <div class="ps-label">L4 多空辩论终审</div>
+                    <div class="ps-count">5</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ═══════ STOCK PICKS ═══════ -->
+<div class="card">
+    <div class="card-header">
+        <span><i class="fas fa-trophy"></i> 最终精选 5 只</span>
+        <span style="font-family:var(--font-mono);font-size:11px;color:var(--text-dim);">按综合置信度排序</span>
+    </div>
+    <div class="card-body" style="padding:14px;">
+
+        <!-- PICK 1: NVDA -->
+        <div class="pick-card" style="border-color:rgba(0,255,136,0.3);">
+            <div class="pick-head">
+                <div class="pick-rank">#1</div>
+                <div>
+                    <div class="pick-ticker">NVDA</div>
+                    <div class="pick-name">NVIDIA Corp · 半导体</div>
+                    <div class="pick-meta">
+                        <span class="meta-item horizon"><i class="fas fa-clock"></i> 3-6 个月</span>
+                        <span class="meta-item risk-med"><i class="fas fa-shield-halved"></i> 中风险</span>
+                        <span class="meta-item" style="color:var(--purple);"><i class="fas fa-bolt"></i> 催化：财报 4/28</span>
+                        <span class="meta-item"><i class="fas fa-users"></i> 6/6 Agent 看多</span>
+                    </div>
+                </div>
+                <div class="pick-conviction">
+                    <div class="conv-ring">
+                        <svg viewBox="0 0 60 60"><circle class="bg" cx="30" cy="30" r="26"/><circle class="fg" cx="30" cy="30" r="26" stroke="#00ff88" stroke-dashoffset="18"/></svg>
+                        <div class="conv-text grade-a">89</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="agent-scores">
+                <div class="score-cell"><div class="s-agent">Momentum</div><div class="s-grade grade-a">A+</div><div class="s-num">94</div></div>
+                <div class="score-cell"><div class="s-agent">Quality</div><div class="s-grade grade-a">A</div><div class="s-num">88</div></div>
+                <div class="score-cell"><div class="s-agent">Catalyst</div><div class="s-grade grade-a">A</div><div class="s-num">91</div></div>
+                <div class="score-cell"><div class="s-agent">Sentiment</div><div class="s-grade grade-b">B+</div><div class="s-num">82</div></div>
+                <div class="score-cell"><div class="s-agent">Technical</div><div class="s-grade grade-a">A</div><div class="s-num">87</div></div>
+                <div class="score-cell"><div class="s-agent">Regime</div><div class="s-grade grade-a">A+</div><div class="s-num">93</div></div>
+                <div class="score-cell" style="border-color:rgba(255,215,0,0.2);"><div class="s-agent" style="color:#ffd700;">Guru</div><div class="s-grade grade-b">B+</div><div class="s-num">80</div></div>
+                <div class="score-cell"><div class="s-agent">Risk</div><div class="s-grade grade-b">B</div><div class="s-num">74</div></div>
+            </div>
+
+            <!-- Guru Match badges -->
+            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;align-items:center;">
+                <span style="font-size:10px;color:#ffd700;text-transform:uppercase;letter-spacing:1px;font-weight:600;"><i class="fas fa-crown"></i> 大师匹配</span>
+                <span style="font-size:11px;padding:3px 10px;border-radius:12px;background:rgba(0,255,136,0.1);border:1px solid rgba(0,255,136,0.2);color:#00ff88;">✓ O'Neil CANSLIM · 92%</span>
+                <span style="font-size:11px;padding:3px 10px;border-radius:12px;background:rgba(56,130,255,0.1);border:1px solid rgba(56,130,255,0.2);color:#3882ff;">✓ Lynch GARP · 76%</span>
+                <span style="font-size:11px;padding:3px 10px;border-radius:12px;background:rgba(107,122,153,0.1);border:1px solid var(--border);color:#6b7a99;">✗ Buffett 护城河 · 61%（估值偏高）</span>
+                <span style="font-size:11px;padding:3px 10px;border-radius:12px;background:rgba(107,122,153,0.1);border:1px solid var(--border);color:#6b7a99;">✗ Graham · 32%（P/B 过高）</span>
+            </div>
+
+            <div class="pick-thesis">
+                <div class="label"><i class="fas fa-lightbulb"></i> Bull 核心观点</div>
+                <strong>AI 资本开支周期远未结束</strong>。Blackwell B200 交付放量，数据中心收入占比 87%。Q4 财报有望超预期 15%+，买方共识上调 2026 EPS 至 $4.80。技术面突破 52 周新高，成交量配合。相对 SOX 半导体指数 RS 排名前 5%。
+                <div style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--border);font-size:12px;color:#ffd700;">
+                    <i class="fas fa-quote-left" style="opacity:0.5;"></i> <strong>O'Neil 视角</strong>：EPS 连续 4 季度加速增长（CAN），行业龙头（L），突破新高（N），机构持续增持（I）— 符合 CANSLIM 4/7 强标准。
+                </div>
+            </div>
+
+            <div class="trade-plan">
+                <div class="tp-item"><div class="tp-label">入场</div><div class="tp-value entry">$892-905</div></div>
+                <div class="tp-item"><div class="tp-label">止损</div><div class="tp-value stop">$840</div></div>
+                <div class="tp-item"><div class="tp-label">目标</div><div class="tp-value target">$1,100</div></div>
+                <div class="tp-item"><div class="tp-label">风险回报比</div><div class="tp-value rr">1 : 3.8</div></div>
+            </div>
+
+            <div class="pick-actions">
+                <button class="btn primary"><i class="fas fa-brain"></i> AI 深度分析</button>
+                <button class="btn"><i class="fas fa-plus"></i> 加入持仓</button>
+                <button class="btn"><i class="fas fa-bell"></i> 设置预警</button>
+                <button class="btn"><i class="fas fa-chart-line"></i> K线图</button>
+            </div>
+        </div>
+
+        <!-- PICK 2: META -->
+        <div class="pick-card">
+            <div class="pick-head">
+                <div class="pick-rank">#2</div>
+                <div>
+                    <div class="pick-ticker">META</div>
+                    <div class="pick-name">Meta Platforms · 互联网</div>
+                    <div class="pick-meta">
+                        <span class="meta-item horizon"><i class="fas fa-clock"></i> 6-12 个月</span>
+                        <span class="meta-item risk-low"><i class="fas fa-shield-halved"></i> 低风险</span>
+                        <span class="meta-item" style="color:var(--purple);"><i class="fas fa-bolt"></i> AI 变现加速</span>
+                        <span class="meta-item"><i class="fas fa-users"></i> 5/6 Agent 看多</span>
+                    </div>
+                </div>
+                <div class="pick-conviction">
+                    <div class="conv-ring">
+                        <svg viewBox="0 0 60 60"><circle class="bg" cx="30" cy="30" r="26"/><circle class="fg" cx="30" cy="30" r="26" stroke="#00d4ff" stroke-dashoffset="32"/></svg>
+                        <div class="conv-text grade-b">81</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="agent-scores">
+                <div class="score-cell"><div class="s-agent">Momentum</div><div class="s-grade grade-b">B+</div><div class="s-num">78</div></div>
+                <div class="score-cell"><div class="s-agent">Quality</div><div class="s-grade grade-a">A+</div><div class="s-num">96</div></div>
+                <div class="score-cell"><div class="s-agent">Catalyst</div><div class="s-grade grade-b">B</div><div class="s-num">75</div></div>
+                <div class="score-cell"><div class="s-agent">Sentiment</div><div class="s-grade grade-a">A</div><div class="s-num">85</div></div>
+                <div class="score-cell"><div class="s-agent">Technical</div><div class="s-grade grade-b">B+</div><div class="s-num">80</div></div>
+                <div class="score-cell"><div class="s-agent">Regime</div><div class="s-grade grade-a">A</div><div class="s-num">88</div></div>
+            </div>
+
+            <div class="pick-thesis">
+                <div class="label"><i class="fas fa-lightbulb"></i> Bull 核心观点</div>
+                <strong>广告 AI 化驱动 ROAS 提升 25%+</strong>。Reels 参与度超 TikTok。Llama 4 开源形成飞轮效应。自由现金流收益率 4.2%，在大市值中稀缺。<strong style="color:var(--red);">⚠ Bear 反驳：</strong>Reality Labs 持续亏损压制估值扩张。
+            </div>
+
+            <div class="trade-plan">
+                <div class="tp-item"><div class="tp-label">入场</div><div class="tp-value entry">$545-560</div></div>
+                <div class="tp-item"><div class="tp-label">止损</div><div class="tp-value stop">$515</div></div>
+                <div class="tp-item"><div class="tp-label">目标</div><div class="tp-value target">$680</div></div>
+                <div class="tp-item"><div class="tp-label">风险回报比</div><div class="tp-value rr">1 : 3.0</div></div>
+            </div>
+
+            <div class="pick-actions">
+                <button class="btn primary"><i class="fas fa-brain"></i> AI 深度分析</button>
+                <button class="btn"><i class="fas fa-plus"></i> 加入持仓</button>
+                <button class="btn"><i class="fas fa-bell"></i> 设置预警</button>
+                <button class="btn"><i class="fas fa-chart-line"></i> K线图</button>
+            </div>
+        </div>
+
+        <!-- PICK 3: PLTR (Catalyst play) -->
+        <div class="pick-card">
+            <div class="pick-head">
+                <div class="pick-rank">#3</div>
+                <div>
+                    <div class="pick-ticker">PLTR</div>
+                    <div class="pick-name">Palantir · 企业软件</div>
+                    <div class="pick-meta">
+                        <span class="meta-item horizon"><i class="fas fa-clock"></i> 1-3 个月</span>
+                        <span class="meta-item risk-high"><i class="fas fa-shield-halved"></i> 高风险</span>
+                        <span class="meta-item" style="color:var(--purple);"><i class="fas fa-bolt"></i> 国防预算落地</span>
+                        <span class="meta-item"><i class="fas fa-users"></i> 4/6 Agent 看多</span>
+                    </div>
+                </div>
+                <div class="pick-conviction">
+                    <div class="conv-ring">
+                        <svg viewBox="0 0 60 60"><circle class="bg" cx="30" cy="30" r="26"/><circle class="fg" cx="30" cy="30" r="26" stroke="#ffd000" stroke-dashoffset="46"/></svg>
+                        <div class="conv-text grade-c">72</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="agent-scores">
+                <div class="score-cell"><div class="s-agent">Momentum</div><div class="s-grade grade-a">A+</div><div class="s-num">92</div></div>
+                <div class="score-cell"><div class="s-agent">Quality</div><div class="s-grade grade-c">C+</div><div class="s-num">62</div></div>
+                <div class="score-cell"><div class="s-agent">Catalyst</div><div class="s-grade grade-a">A</div><div class="s-num">88</div></div>
+                <div class="score-cell"><div class="s-agent">Sentiment</div><div class="s-grade grade-b">B</div><div class="s-num">74</div></div>
+                <div class="score-cell"><div class="s-agent">Technical</div><div class="s-grade grade-a">A</div><div class="s-num">86</div></div>
+                <div class="score-cell"><div class="s-agent">Regime</div><div class="s-grade grade-d">D+</div><div class="s-num">48</div></div>
+            </div>
+
+            <div class="pick-thesis">
+                <div class="label"><i class="fas fa-lightbulb"></i> 综合判断</div>
+                <strong>高动量 + 强催化，但估值昂贵</strong>。AIP 平台政府订单加速，Q1 ACV 增长 50%+。<strong style="color:var(--red);">⚠ 估值风险：</strong>FCF/EV 仅 1.2%，Regime Agent 认为位置过热（D+）。适合短期事件驱动交易，不适合长期持有。<strong>建议仅用 5-8% 仓位参与</strong>。
+            </div>
+
+            <div class="trade-plan">
+                <div class="tp-item"><div class="tp-label">入场</div><div class="tp-value entry">$24.50</div></div>
+                <div class="tp-item"><div class="tp-label">止损</div><div class="tp-value stop">$22.00</div></div>
+                <div class="tp-item"><div class="tp-label">目标</div><div class="tp-value target">$32</div></div>
+                <div class="tp-item"><div class="tp-label">风险回报比</div><div class="tp-value rr">1 : 3.0</div></div>
+            </div>
+
+            <div class="pick-actions">
+                <button class="btn primary"><i class="fas fa-brain"></i> AI 深度分析</button>
+                <button class="btn"><i class="fas fa-plus"></i> 加入持仓</button>
+                <button class="btn"><i class="fas fa-bell"></i> 设置预警</button>
+                <button class="btn"><i class="fas fa-chart-line"></i> K线图</button>
+            </div>
+        </div>
+
+    </div>
+</div>
+
+<!-- 说明 -->
+<div class="card">
+    <div class="card-header"><span><i class="fas fa-info-circle"></i> 架构亮点（对齐新架构升级方案）</span></div>
+    <div class="card-body" style="font-size:13px;line-height:1.8;color:var(--text-secondary);">
+        <ul style="padding-left:20px;">
+            <li><strong style="color:var(--text-primary);">8 专家 Agent 并行</strong>：动量 / 质量价值 / 催化剂 / 情绪 / 技术 / 环境相对 / <span style="color:#ffd700;">大师哲学 Guru</span> / 风险 — asyncio 并发，200 只候选 45 秒完成</li>
+            <li><strong style="color:var(--text-primary);">投资大师哲学打分</strong>：Buffett 护城河、Graham 安全边际、Lynch GARP、O'Neil CANSLIM、Munger 质量、Marks 周期、Soros 反身性、Simons 量化 — 每只股票显示"大师匹配度"</li>
+            <li><strong style="color:var(--text-primary);">数据源分层</strong>：
+                <span style="background:rgba(168,85,247,0.15);color:#a855f7;padding:1px 6px;border-radius:4px;font-family:var(--font-mono);font-size:11px;">Qwen</span> 主力（单点价/基本面/新闻/打分） ·
+                <span style="background:rgba(107,122,153,0.15);color:#6b7a99;padding:1px 6px;border-radius:4px;font-family:var(--font-mono);font-size:11px;">Local Cache</span> 历史 bars ·
+                <span style="background:rgba(0,212,255,0.1);color:#00d4ff;padding:1px 6px;border-radius:4px;font-family:var(--font-mono);font-size:11px;">yfinance</span> 兜底</li>
+            <li><strong style="color:var(--text-primary);">异步任务 + 留痕</strong>：选股走 TaskManager，立即返回 <code style="background:rgba(0,212,255,0.1);color:#00d4ff;padding:1px 6px;border-radius:4px;">task_id</code>，任务中心可回看历史和重试</li>
+            <li><strong style="color:var(--text-primary);">市场环境自适应权重</strong>：牛市（动量+相对强度 0.4）→ 熊市（质量+护城河 0.4）→ 震荡（均值回归 0.3），VIX + 市场宽度自动分类</li>
+            <li><strong style="color:var(--text-primary);">自然语言入口</strong>：Qwen 解析 "AI 板块被低估的成长股" → JSON filter → 执行 + 语义重排</li>
+            <li><strong style="color:var(--text-primary);">透明化评分</strong>：Seeking Alpha 字母等级 + 大师匹配度卡片 + Bull/Bear 双视角，用户能判断"为什么"</li>
+            <li><strong style="color:var(--text-primary);">最终置信度公式</strong>：0.5×Agent 加权均值 + 0.15×Agent 共识度 + 0.2×大师一致性 + 0.15×多空辩论判决</li>
+            <li><strong style="color:var(--text-primary);">集成 TradingAgents</strong>：Top 20 进入多空辩论，输出最终带入场/止损/目标的交易计划</li>
+        </ul>
+    </div>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,21 @@
+{
+  "name": "股票辅助决策系统",
+  "short_name": "StockAI",
+  "description": "AI 驱动的股票分析与投资决策辅助系统",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0d1117",
+  "theme_color": "#0d1117",
+  "icons": [
+    {
+      "src": "/static/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/static/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

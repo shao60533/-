@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN" class="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#0d1117">
+  <meta name="csrf-token" content="{{ csrf_token() if csrf_token is defined else '' }}">
+  <meta name="user-id" content="{{ g.user.id if g.user else '' }}">
+  <meta name="user-display" content="{{ g.user.display_name if g.user else '' }}">
+  <meta name="user-role" content="{{ g.user.role if g.user else '' }}">
+  <title>{% block title %}StockAI Terminal{% endblock %}</title>
+
+  {% set assets = vite_assets(entry) %}
+  {% for css in assets.css %}
+    <link rel="stylesheet" href="{{ css }}">
+  {% endfor %}
+</head>
+<body class="bg-background text-foreground antialiased">
+  <div id="react-root"></div>
+
+  {% for js in assets.js %}
+    <script type="module" src="{{ js }}"></script>
+  {% endfor %}
+</body>
+</html>

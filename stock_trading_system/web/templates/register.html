@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>注册 — StockAI</title>
+    <link href="/static/css/style.css" rel="stylesheet">
+    <style>
+        body { display:flex; align-items:center; justify-content:center; min-height:100vh; background:var(--bg-primary); }
+        .auth-card { background:var(--bg-card); border:1px solid var(--border); border-radius:12px; padding:40px 32px; width:100%; max-width:400px; }
+        .auth-title { font-size:24px; font-weight:700; text-align:center; margin-bottom:24px; color:var(--accent-blue); }
+        .auth-input { width:100%; padding:12px 16px; margin-bottom:16px; background:var(--bg-secondary); color:var(--text-primary); border:1px solid var(--border); border-radius:8px; font-size:14px; }
+        .auth-input:focus { outline:none; border-color:var(--accent-blue); }
+        .auth-btn { width:100%; padding:14px; background:var(--accent-blue); color:#fff; border:none; border-radius:8px; font-size:16px; font-weight:600; cursor:pointer; }
+        .auth-btn:hover { opacity:0.9; }
+        .auth-link { text-align:center; margin-top:16px; font-size:13px; color:var(--text-secondary); }
+        .auth-link a { color:var(--accent-blue); text-decoration:none; }
+        .auth-error { color:var(--accent-red); font-size:13px; text-align:center; margin-bottom:12px; display:none; }
+        .invite-pool { margin-bottom:16px; padding:12px; background:var(--bg-secondary); border:1px solid var(--border); border-radius:8px; }
+        .invite-pool-head { font-size:12px; color:var(--text-secondary); margin-bottom:8px; }
+        .invite-chips { display:flex; flex-wrap:wrap; gap:6px; }
+        .invite-chip { padding:4px 10px; background:var(--bg-card); border:1px solid var(--border); border-radius:12px; font-family:var(--font-mono,ui-monospace); font-size:12px; color:var(--accent-blue); cursor:pointer; transition:all 0.15s; }
+        .invite-chip:hover { background:var(--accent-blue); color:#fff; border-color:var(--accent-blue); }
+        .invite-empty { font-size:12px; color:var(--text-secondary); font-style:italic; }
+    </style>
+</head>
+<body>
+    <div class="auth-card">
+        <div class="auth-title"><i class="fas fa-bolt"></i> StockAI 注册</div>
+        <div class="auth-error" id="reg-error"></div>
+        <div class="invite-pool" id="invite-pool" style="display:none;">
+            <div class="invite-pool-head">可用邀请码（点击选择，<span id="invite-count">0</span> 个剩余）</div>
+            <div class="invite-chips" id="invite-chips"></div>
+        </div>
+        <input type="text" class="auth-input" id="reg-invite" placeholder="邀请码">
+        <input type="email" class="auth-input" id="reg-email" placeholder="邮箱" autocomplete="email">
+        <input type="text" class="auth-input" id="reg-name" placeholder="显示名称（选填）">
+        <input type="password" class="auth-input" id="reg-password" placeholder="密码（至少8位，含字母和数字）" autocomplete="new-password">
+        <button class="auth-btn" onclick="doRegister()">注册</button>
+        <div class="auth-link">已有账号？<a href="/login">登录</a></div>
+    </div>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" rel="stylesheet">
+    <script>
+    async function loadAvailableInvites() {
+        try {
+            const resp = await fetch('/api/auth/invites-available');
+            if (!resp.ok) return;
+            const data = await resp.json();
+            const codes = data.codes || [];
+            const pool = document.getElementById('invite-pool');
+            const chips = document.getElementById('invite-chips');
+            document.getElementById('invite-count').textContent = codes.length;
+            if (codes.length === 0) {
+                pool.style.display = 'block';
+                chips.innerHTML = '<span class="invite-empty">暂无可用邀请码，请联系管理员</span>';
+                return;
+            }
+            pool.style.display = 'block';
+            chips.innerHTML = codes.map(c =>
+                `<span class="invite-chip" onclick="document.getElementById('reg-invite').value='${c}'">${c}</span>`
+            ).join('');
+        } catch (e) { /* silent — user can still type the code manually */ }
+    }
+    loadAvailableInvites();
+
+    async function doRegister() {
+        const invite_code = document.getElementById('reg-invite').value.trim();
+        const email = document.getElementById('reg-email').value.trim();
+        const display_name = document.getElementById('reg-name').value.trim() || undefined;
+        const password = document.getElementById('reg-password').value;
+        const errEl = document.getElementById('reg-error');
+        errEl.style.display = 'none';
+        try {
+            const resp = await fetch('/api/auth/register', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({invite_code, email, password, display_name}),
+            });
+            const data = await resp.json();
+            if (!resp.ok) {
+                errEl.textContent = data.message || '注册失败';
+                errEl.style.display = 'block';
+                return;
+            }
+            location.href = '/';
+        } catch (e) {
+            errEl.textContent = '网络错误';
+            errEl.style.display = 'block';
+        }
+    }
+    </script>
+</body>
+</html>

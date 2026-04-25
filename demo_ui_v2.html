@@ -1,0 +1,1691 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>StockAI V2 - UI 高保真 Demo</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Noto+Sans+SC:wght@300;400;500;700&display=swap" rel="stylesheet">
+<link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" rel="stylesheet">
+<style>
+/* ═══════════════════════════════════════════════════════════════════
+   StockAI V2 — Sci-Fi Trading Terminal Theme
+   ═══════════════════════════════════════════════════════════════════ */
+
+:root {
+    /* Core palette — deep space + neon accents */
+    --bg-void: #05080f;
+    --bg-primary: #0a0e1a;
+    --bg-secondary: #0f1528;
+    --bg-card: #111a2e;
+    --bg-card-hover: #152240;
+    --bg-glass: rgba(15, 25, 50, 0.7);
+
+    /* Borders — soft glow lines */
+    --border: rgba(56, 130, 255, 0.12);
+    --border-bright: rgba(56, 130, 255, 0.3);
+    --border-glow: rgba(56, 130, 255, 0.5);
+
+    /* Text */
+    --text-primary: #e8edf5;
+    --text-secondary: #6b7a99;
+    --text-dim: #3d4a66;
+
+    /* Accent colors — neon spectrum */
+    --neon-blue: #3882ff;
+    --neon-cyan: #00d4ff;
+    --neon-green: #00ff88;
+    --neon-red: #ff3860;
+    --neon-yellow: #ffd000;
+    --neon-purple: #a855f7;
+    --neon-orange: #ff8c00;
+
+    /* Glow shadows */
+    --glow-blue: 0 0 20px rgba(56, 130, 255, 0.15);
+    --glow-green: 0 0 20px rgba(0, 255, 136, 0.15);
+    --glow-red: 0 0 20px rgba(255, 56, 96, 0.15);
+
+    /* Gradients */
+    --grad-blue: linear-gradient(135deg, #3882ff 0%, #00d4ff 100%);
+    --grad-green: linear-gradient(135deg, #00ff88 0%, #00d4ff 100%);
+    --grad-red: linear-gradient(135deg, #ff3860 0%, #ff8c00 100%);
+    --grad-purple: linear-gradient(135deg, #a855f7 0%, #3882ff 100%);
+    --grad-card: linear-gradient(180deg, rgba(56,130,255,0.05) 0%, transparent 100%);
+
+    /* Typography */
+    --font-sans: 'Inter', 'Noto Sans SC', -apple-system, sans-serif;
+    --font-mono: 'JetBrains Mono', 'SF Mono', monospace;
+
+    /* Radius */
+    --radius-sm: 6px;
+    --radius-md: 10px;
+    --radius-lg: 16px;
+    --radius-xl: 20px;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+    font-family: var(--font-sans);
+    background: var(--bg-void);
+    color: var(--text-primary);
+    display: flex;
+    min-height: 100vh;
+    font-size: 14px;
+    line-height: 1.5;
+    overflow: hidden;
+}
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border-bright); border-radius: 4px; }
+
+/* ═══════ SIDEBAR ═══════ */
+.sidebar {
+    width: 240px;
+    background: var(--bg-primary);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+    position: relative;
+    z-index: 10;
+}
+
+.sidebar-header {
+    padding: 20px 20px 16px;
+    border-bottom: 1px solid var(--border);
+}
+
+.sidebar-logo {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.sidebar-logo .logo-icon {
+    width: 36px; height: 36px;
+    background: var(--grad-blue);
+    border-radius: var(--radius-md);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 16px; color: white;
+    box-shadow: var(--glow-blue);
+}
+
+.sidebar-logo .logo-text {
+    font-size: 15px; font-weight: 700;
+    background: var(--grad-blue);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    letter-spacing: -0.3px;
+}
+
+.sidebar-logo .logo-sub {
+    font-size: 10px; color: var(--text-dim);
+    font-family: var(--font-mono);
+    letter-spacing: 1px;
+}
+
+.sidebar-nav { padding: 12px 10px; flex: 1; overflow-y: auto; }
+
+.nav-item {
+    list-style: none;
+    margin-bottom: 2px;
+}
+
+.nav-link {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 14px;
+    color: var(--text-secondary);
+    text-decoration: none;
+    border-radius: var(--radius-sm);
+    font-size: 13px; font-weight: 500;
+    transition: all 0.2s ease;
+    position: relative;
+    cursor: pointer;
+}
+
+.nav-link:hover {
+    color: var(--text-primary);
+    background: rgba(56, 130, 255, 0.08);
+}
+
+.nav-link.active {
+    color: var(--neon-blue);
+    background: rgba(56, 130, 255, 0.12);
+}
+
+.nav-link.active::before {
+    content: '';
+    position: absolute; left: 0; top: 50%;
+    transform: translateY(-50%);
+    width: 3px; height: 20px;
+    background: var(--neon-blue);
+    border-radius: 0 3px 3px 0;
+    box-shadow: 0 0 8px var(--neon-blue);
+}
+
+.nav-link i { width: 18px; text-align: center; font-size: 14px; }
+
+.nav-divider {
+    height: 1px;
+    background: var(--border);
+    margin: 10px 14px;
+}
+
+.nav-group-label {
+    font-size: 10px; text-transform: uppercase;
+    color: var(--text-dim); letter-spacing: 1.5px;
+    padding: 10px 14px 4px; font-weight: 600;
+}
+
+.sidebar-footer {
+    padding: 14px 20px;
+    border-top: 1px solid var(--border);
+    font-size: 11px; color: var(--text-dim);
+    font-family: var(--font-mono);
+}
+
+.status-dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    display: inline-block; margin-right: 6px;
+}
+.status-dot.online { background: var(--neon-green); box-shadow: 0 0 6px var(--neon-green); }
+.status-dot.offline { background: var(--neon-red); }
+
+/* ═══════ MAIN CONTENT ═══════ */
+.main-content {
+    flex: 1;
+    overflow-y: auto;
+    background: var(--bg-void);
+    position: relative;
+}
+
+/* Subtle grid background */
+.main-content::before {
+    content: '';
+    position: fixed; top: 0; left: 240px; right: 0; bottom: 0;
+    background-image:
+        linear-gradient(rgba(56,130,255,0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(56,130,255,0.03) 1px, transparent 1px);
+    background-size: 40px 40px;
+    pointer-events: none;
+    z-index: 0;
+}
+
+/* ── Top Bar ── */
+.top-bar {
+    position: sticky; top: 0; z-index: 5;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 28px;
+    background: rgba(5, 8, 15, 0.85);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+}
+
+.top-bar-left { display: flex; align-items: center; gap: 16px; }
+
+.page-title-bar {
+    font-size: 18px; font-weight: 700;
+    letter-spacing: -0.3px;
+}
+
+.breadcrumb-text {
+    font-size: 12px; color: var(--text-dim);
+    font-family: var(--font-mono);
+}
+
+.search-box {
+    position: relative;
+    width: 280px;
+}
+
+.search-box input {
+    width: 100%; padding: 8px 12px 8px 34px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font-size: 13px; font-family: var(--font-sans);
+    outline: none;
+    transition: border-color 0.2s;
+}
+
+.search-box input:focus { border-color: var(--neon-blue); box-shadow: var(--glow-blue); }
+
+.search-box input::placeholder { color: var(--text-dim); }
+
+.search-box .search-icon {
+    position: absolute; left: 10px; top: 50%; transform: translateY(-50%);
+    color: var(--text-dim); font-size: 12px;
+}
+
+.search-box .search-shortcut {
+    position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
+    font-size: 10px; color: var(--text-dim);
+    background: var(--bg-card); padding: 2px 6px; border-radius: 3px;
+    font-family: var(--font-mono); border: 1px solid var(--border);
+}
+
+.top-bar-right { display: flex; align-items: center; gap: 12px; }
+
+.top-btn {
+    width: 34px; height: 34px;
+    border-radius: var(--radius-sm);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer; font-size: 14px;
+    transition: all 0.2s;
+    position: relative;
+}
+.top-btn:hover { border-color: var(--border-bright); color: var(--text-primary); }
+
+.badge-dot {
+    position: absolute; top: 4px; right: 4px;
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--neon-red);
+    box-shadow: 0 0 6px var(--neon-red);
+}
+
+.clock-text {
+    font-family: var(--font-mono);
+    font-size: 12px; color: var(--text-dim);
+    letter-spacing: 0.5px;
+}
+
+/* ═══════ PAGE CONTENT ═══════ */
+.page-content {
+    padding: 24px 28px;
+    position: relative;
+    z-index: 1;
+}
+
+/* ── Stat Cards ── */
+.stats-row {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+    margin-bottom: 24px;
+}
+
+.stat-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 18px 20px;
+    position: relative;
+    overflow: hidden;
+    transition: all 0.3s ease;
+}
+
+.stat-card::before {
+    content: '';
+    position: absolute; top: 0; left: 0; right: 0;
+    height: 2px;
+    background: var(--grad-blue);
+    opacity: 0;
+    transition: opacity 0.3s;
+}
+
+.stat-card:hover { border-color: var(--border-bright); transform: translateY(-2px); }
+.stat-card:hover::before { opacity: 1; }
+
+.stat-label {
+    font-size: 11px; color: var(--text-dim);
+    text-transform: uppercase; letter-spacing: 1px;
+    font-weight: 600;
+    margin-bottom: 8px;
+    display: flex; align-items: center; gap: 6px;
+}
+
+.stat-label .stat-icon {
+    width: 20px; height: 20px;
+    border-radius: 4px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 10px;
+}
+
+.stat-value {
+    font-size: 26px; font-weight: 700;
+    font-family: var(--font-mono);
+    letter-spacing: -1px;
+    line-height: 1;
+}
+
+.stat-value.up { color: var(--neon-green); }
+.stat-value.down { color: var(--neon-red); }
+
+.stat-change {
+    font-size: 11px; margin-top: 6px;
+    font-family: var(--font-mono);
+}
+.stat-change.up { color: var(--neon-green); }
+.stat-change.down { color: var(--neon-red); }
+
+.stat-sparkline {
+    position: absolute; bottom: 0; right: 0;
+    width: 80px; height: 40px;
+    opacity: 0.3;
+}
+
+/* ── Cards ── */
+.card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    transition: border-color 0.3s;
+}
+.card:hover { border-color: var(--border-bright); }
+
+.card-header {
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px; font-weight: 600;
+    display: flex; align-items: center; justify-content: space-between;
+    color: var(--text-secondary);
+}
+
+.card-header .card-title { display: flex; align-items: center; gap: 8px; }
+.card-header .card-title i { color: var(--neon-blue); font-size: 12px; }
+
+.card-body { padding: 18px 20px; }
+
+/* ── Grid Layouts ── */
+.grid-2 { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; margin-bottom: 24px; }
+.grid-equal { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
+
+/* ── Chart Placeholder ── */
+.chart-box {
+    height: 280px;
+    background: linear-gradient(180deg, rgba(56,130,255,0.03) 0%, transparent 60%);
+    border-radius: var(--radius-sm);
+    position: relative;
+    overflow: hidden;
+}
+
+/* Fake chart line */
+.chart-line {
+    position: absolute; bottom: 40px; left: 20px; right: 20px; height: 160px;
+}
+
+.chart-line svg { width: 100%; height: 100%; }
+
+/* ── Table ── */
+.data-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+.data-table th {
+    text-align: left;
+    padding: 10px 14px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--text-dim);
+    font-weight: 600;
+    border-bottom: 1px solid var(--border);
+}
+
+.data-table td {
+    padding: 12px 14px;
+    border-bottom: 1px solid rgba(56,130,255,0.06);
+    color: var(--text-secondary);
+}
+
+.data-table tr:hover td { background: rgba(56,130,255,0.04); }
+
+.data-table .ticker {
+    font-weight: 600; color: var(--text-primary);
+    font-family: var(--font-mono);
+}
+
+.data-table .mono {
+    font-family: var(--font-mono); font-size: 13px;
+}
+
+.data-table .up { color: var(--neon-green); }
+.data-table .down { color: var(--neon-red); }
+
+/* ── Signal Badge ── */
+.signal-badge {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 3px 10px;
+    border-radius: 20px;
+    font-size: 11px; font-weight: 700;
+    font-family: var(--font-mono);
+    letter-spacing: 0.5px;
+}
+.signal-badge.buy { background: rgba(0,255,136,0.12); color: var(--neon-green); border: 1px solid rgba(0,255,136,0.2); }
+.signal-badge.sell { background: rgba(255,56,96,0.12); color: var(--neon-red); border: 1px solid rgba(255,56,96,0.2); }
+.signal-badge.hold { background: rgba(255,208,0,0.12); color: var(--neon-yellow); border: 1px solid rgba(255,208,0,0.2); }
+
+/* ── Signal Card (Large) ── */
+.signal-card-lg {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 28px;
+    text-align: center;
+    position: relative;
+    overflow: hidden;
+}
+
+.signal-card-lg.buy { border-color: rgba(0,255,136,0.3); }
+.signal-card-lg.sell { border-color: rgba(255,56,96,0.3); }
+
+.signal-card-lg::before {
+    content: '';
+    position: absolute; top: -40px; left: 50%; transform: translateX(-50%);
+    width: 200px; height: 200px;
+    border-radius: 50%;
+    filter: blur(60px);
+}
+.signal-card-lg.buy::before { background: rgba(0,255,136,0.08); }
+.signal-card-lg.sell::before { background: rgba(255,56,96,0.08); }
+
+.signal-label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 2px; font-weight: 600; }
+.signal-text { font-size: 48px; font-weight: 800; font-family: var(--font-mono); margin: 8px 0; letter-spacing: 4px; position: relative; }
+.signal-text.buy { color: var(--neon-green); text-shadow: 0 0 40px rgba(0,255,136,0.3); }
+.signal-text.sell { color: var(--neon-red); text-shadow: 0 0 40px rgba(255,56,96,0.3); }
+.signal-ticker { font-size: 14px; color: var(--text-secondary); font-family: var(--font-mono); }
+
+/* ── Confidence Ring ── */
+.confidence-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 28px;
+    text-align: center;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+}
+
+.confidence-ring {
+    width: 100px; height: 100px;
+    position: relative;
+}
+
+.confidence-ring svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+.confidence-ring .ring-bg { fill: none; stroke: var(--border); stroke-width: 6; }
+.confidence-ring .ring-fill { fill: none; stroke: var(--neon-cyan); stroke-width: 6; stroke-linecap: round; stroke-dasharray: 276; stroke-dashoffset: 60; transition: stroke-dashoffset 1s ease; }
+.confidence-value { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); font-size: 26px; font-weight: 700; font-family: var(--font-mono); color: var(--neon-cyan); }
+
+/* ── Pipeline Progress ── */
+.pipeline {
+    display: flex; align-items: center; gap: 4px;
+    padding: 16px 0;
+}
+
+.pipe-step {
+    flex: 1;
+    display: flex; flex-direction: column; align-items: center;
+    position: relative;
+}
+
+.pipe-node {
+    width: 40px; height: 40px;
+    border-radius: 50%;
+    background: var(--bg-secondary);
+    border: 2px solid var(--border);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px; color: var(--text-dim);
+    transition: all 0.4s ease;
+    position: relative;
+    z-index: 2;
+}
+
+.pipe-step.done .pipe-node {
+    border-color: var(--neon-green);
+    color: var(--neon-green);
+    background: rgba(0,255,136,0.1);
+    box-shadow: 0 0 12px rgba(0,255,136,0.2);
+}
+
+.pipe-step.active .pipe-node {
+    border-color: var(--neon-blue);
+    color: var(--neon-blue);
+    background: rgba(56,130,255,0.1);
+    box-shadow: 0 0 12px rgba(56,130,255,0.3);
+    animation: pipe-pulse 1.5s infinite;
+}
+
+@keyframes pipe-pulse {
+    0%, 100% { box-shadow: 0 0 12px rgba(56,130,255,0.3); }
+    50% { box-shadow: 0 0 24px rgba(56,130,255,0.5); }
+}
+
+.pipe-label {
+    font-size: 10px; margin-top: 6px;
+    color: var(--text-dim); font-weight: 500;
+    white-space: nowrap;
+}
+.pipe-step.done .pipe-label { color: var(--neon-green); }
+.pipe-step.active .pipe-label { color: var(--neon-blue); }
+
+.pipe-line {
+    flex: 0 0 auto;
+    width: 24px; height: 2px;
+    background: var(--border);
+    margin-bottom: 20px;
+}
+.pipe-line.done { background: var(--neon-green); box-shadow: 0 0 6px rgba(0,255,136,0.3); }
+
+/* ── Buttons ── */
+.btn-primary-glow {
+    background: var(--grad-blue);
+    color: white;
+    border: none;
+    padding: 10px 24px;
+    border-radius: var(--radius-sm);
+    font-size: 13px; font-weight: 600;
+    cursor: pointer;
+    box-shadow: 0 4px 16px rgba(56,130,255,0.3);
+    transition: all 0.3s;
+    font-family: var(--font-sans);
+    display: inline-flex; align-items: center; gap: 8px;
+}
+.btn-primary-glow:hover { box-shadow: 0 6px 24px rgba(56,130,255,0.5); transform: translateY(-1px); }
+
+.btn-outline {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    padding: 8px 16px;
+    border-radius: var(--radius-sm);
+    font-size: 12px; font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+    font-family: var(--font-sans);
+}
+.btn-outline:hover { border-color: var(--border-bright); color: var(--text-primary); }
+.btn-outline.active { border-color: var(--neon-blue); color: var(--neon-blue); background: rgba(56,130,255,0.08); }
+
+/* ── Form Controls ── */
+.form-input {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    padding: 10px 14px;
+    font-size: 13px;
+    font-family: var(--font-mono);
+    outline: none;
+    width: 100%;
+    transition: border-color 0.2s;
+}
+.form-input:focus { border-color: var(--neon-blue); box-shadow: 0 0 0 2px rgba(56,130,255,0.15); }
+.form-input::placeholder { color: var(--text-dim); }
+
+.form-label {
+    font-size: 11px; color: var(--text-dim);
+    text-transform: uppercase; letter-spacing: 1px;
+    font-weight: 600; margin-bottom: 6px; display: block;
+}
+
+/* ── Quick Actions ── */
+.quick-actions {
+    display: flex; gap: 10px; flex-wrap: wrap;
+}
+
+.quick-action-btn {
+    display: flex; align-items: center; gap: 8px;
+    padding: 10px 18px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    font-size: 12px; font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+    font-family: var(--font-sans);
+}
+.quick-action-btn:hover { border-color: var(--border-bright); color: var(--text-primary); background: var(--bg-card); }
+.quick-action-btn i { color: var(--neon-blue); }
+
+/* ── Backtest Metrics ── */
+.metrics-grid {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 12px;
+    margin-bottom: 24px;
+}
+
+.metric-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 14px 16px;
+    text-align: center;
+}
+
+.metric-label { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 1px; font-weight: 600; }
+.metric-value { font-size: 20px; font-weight: 700; font-family: var(--font-mono); margin-top: 4px; }
+
+/* ── Funnel (Trapezoid Neon) ── */
+.funnel-v2 {
+    display: flex; flex-direction: column; align-items: center;
+    padding: 20px 0; position: relative;
+    --funnel-max: 520px;
+}
+
+.funnel-stage {
+    position: relative;
+    height: 64px;
+    display: flex; align-items: center; justify-content: center;
+    transition: all 0.5s ease;
+    margin-bottom: -1px;
+}
+
+/* Trapezoid shape via clip-path */
+.funnel-stage .funnel-shape {
+    position: absolute; inset: 0;
+    clip-path: polygon(var(--clip-tl) 0, var(--clip-tr) 0, var(--clip-br) 100%, var(--clip-bl) 100%);
+    border: none;
+    transition: all 0.5s ease;
+}
+
+.funnel-stage:nth-child(1) { width: 100%; --clip-tl: 0%; --clip-tr: 100%; --clip-br: 88%; --clip-bl: 12%; }
+.funnel-stage:nth-child(3) { width: 88%; --clip-tl: 2%; --clip-tr: 98%; --clip-br: 85%; --clip-bl: 15%; }
+.funnel-stage:nth-child(5) { width: 72%; --clip-tl: 4%; --clip-tr: 96%; --clip-br: 80%; --clip-bl: 20%; }
+
+.funnel-shape.pending { background: var(--bg-secondary); }
+.funnel-shape.done { background: linear-gradient(135deg, rgba(0,255,136,0.12) 0%, rgba(0,212,255,0.08) 100%); }
+.funnel-shape.active { background: linear-gradient(135deg, rgba(56,130,255,0.15) 0%, rgba(0,212,255,0.10) 100%); }
+
+/* Neon outline overlay */
+.funnel-stage .funnel-outline {
+    position: absolute; inset: 0;
+    clip-path: inherit;
+    border: none;
+    pointer-events: none;
+}
+
+/* We simulate border via box-shadow on an inner element */
+.funnel-stage::after {
+    content: '';
+    position: absolute; inset: 1px;
+    clip-path: inherit;
+    border: none;
+    background: transparent;
+}
+
+.funnel-stage.done .funnel-shape { box-shadow: inset 0 0 30px rgba(0,255,136,0.06); }
+.funnel-stage.active .funnel-shape { box-shadow: inset 0 0 30px rgba(56,130,255,0.08); }
+
+/* Content */
+.funnel-content {
+    position: relative; z-index: 2;
+    display: flex; align-items: center; gap: 16px;
+    width: 100%; padding: 0 14%;
+    justify-content: space-between;
+}
+
+.funnel-left {
+    display: flex; align-items: center; gap: 10px;
+    font-size: 13px; font-weight: 500;
+}
+
+.funnel-icon {
+    width: 32px; height: 32px;
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px;
+    flex-shrink: 0;
+}
+
+.funnel-stage.done .funnel-icon { background: rgba(0,255,136,0.15); color: var(--neon-green); }
+.funnel-stage.active .funnel-icon { background: rgba(56,130,255,0.15); color: var(--neon-blue); }
+.funnel-stage.pending .funnel-icon { background: rgba(255,255,255,0.05); color: var(--text-dim); }
+
+.funnel-stage.done .funnel-left { color: var(--neon-green); }
+.funnel-stage.active .funnel-left { color: var(--neon-cyan); }
+.funnel-stage.pending .funnel-left { color: var(--text-dim); }
+
+.funnel-right {
+    display: flex; align-items: center; gap: 8px;
+    font-family: var(--font-mono);
+    font-size: 13px; font-weight: 600;
+}
+
+.funnel-count {
+    font-size: 22px; font-weight: 700;
+    font-family: var(--font-mono);
+    min-width: 48px; text-align: right;
+}
+
+.funnel-stage.done .funnel-count { color: var(--neon-green); text-shadow: 0 0 12px rgba(0,255,136,0.4); }
+.funnel-stage.active .funnel-count { color: var(--neon-cyan); text-shadow: 0 0 12px rgba(0,212,255,0.4); }
+.funnel-stage.pending .funnel-count { color: var(--text-dim); }
+
+.funnel-unit { font-size: 11px; color: var(--text-dim); }
+
+/* Connector arrow between stages */
+.funnel-arrow {
+    display: flex; flex-direction: column; align-items: center;
+    height: 24px; position: relative; z-index: 2;
+}
+
+.funnel-arrow::before {
+    content: '';
+    width: 1px; height: 14px;
+    background: var(--border-bright);
+}
+
+.funnel-arrow::after {
+    content: '';
+    width: 0; height: 0;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 5px solid var(--border-bright);
+}
+
+.funnel-arrow.done::before { background: var(--neon-green); box-shadow: 0 0 6px rgba(0,255,136,0.3); }
+.funnel-arrow.done::after { border-top-color: var(--neon-green); }
+
+.funnel-drop {
+    font-size: 10px;
+    font-family: var(--font-mono);
+    color: var(--text-dim);
+    position: absolute; right: -60px; top: 50%; transform: translateY(-50%);
+}
+
+/* Active stage pulse animation */
+.funnel-stage.active .funnel-shape {
+    animation: funnel-glow 2s ease-in-out infinite;
+}
+
+@keyframes funnel-glow {
+    0%, 100% { box-shadow: inset 0 0 30px rgba(56,130,255,0.08); }
+    50% { box-shadow: inset 0 0 50px rgba(56,130,255,0.15); }
+}
+
+/* Flow particles animation on active */
+.funnel-stage.active .funnel-shape::after {
+    content: '';
+    position: absolute; top: 0; left: 0; right: 0; height: 100%;
+    background: linear-gradient(180deg, rgba(0,212,255,0.08) 0%, transparent 50%, transparent 100%);
+    animation: flow-down 2s linear infinite;
+}
+
+@keyframes flow-down {
+    0% { transform: translateY(-100%); }
+    100% { transform: translateY(100%); }
+}
+
+/* ═══════ REPORT TABS & MARKDOWN ═══════ */
+
+/* Report Tabs */
+.report-tabs {
+    display: flex; overflow-x: auto; gap: 0;
+    border-bottom: 1px solid var(--border);
+}
+
+.report-tab {
+    padding: 12px 18px;
+    background: transparent; border: none; border-bottom: 2px solid transparent;
+    color: var(--text-dim); font-size: 12px; font-weight: 500;
+    cursor: pointer; white-space: nowrap;
+    font-family: var(--font-sans);
+    transition: all 0.2s;
+    display: flex; align-items: center; gap: 6px;
+}
+.report-tab:hover { color: var(--text-secondary); background: rgba(56,130,255,0.04); }
+.report-tab.active { color: var(--neon-blue); border-bottom-color: var(--neon-blue); }
+.report-tab i { font-size: 11px; }
+
+/* Report Panel */
+.report-panel { display: none; }
+.report-panel.active { display: block; }
+
+.report-toolbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 24px;
+    background: rgba(56,130,255,0.03);
+    border-bottom: 1px solid var(--border);
+}
+
+.report-meta {
+    font-size: 11px; color: var(--text-dim);
+    font-family: var(--font-mono);
+    display: flex; align-items: center; gap: 6px;
+}
+.report-meta i { color: var(--neon-purple); }
+
+.report-copy-btn {
+    background: var(--bg-secondary); border: 1px solid var(--border);
+    color: var(--text-dim); width: 28px; height: 28px;
+    border-radius: 4px; cursor: pointer; font-size: 12px;
+    display: flex; align-items: center; justify-content: center;
+    transition: all 0.2s;
+}
+.report-copy-btn:hover { color: var(--neon-blue); border-color: var(--border-bright); }
+
+/* ── Markdown Content Styling ── */
+.md-content {
+    padding: 24px;
+    color: #c9d1d9;
+    font-size: 14px;
+    line-height: 1.7;
+    letter-spacing: 0.01em;
+    overflow-wrap: break-word;
+    word-break: break-word;
+    max-height: 500px;
+    overflow-y: auto;
+}
+
+.md-content::selection, .md-content *::selection {
+    background: rgba(56,139,253,0.3);
+}
+
+/* Headings */
+.md-content h1, .md-content h2, .md-content h3, .md-content h4 {
+    color: var(--text-primary);
+    margin-top: 1.2em; margin-bottom: 0.5em;
+    line-height: 1.35;
+    letter-spacing: -0.02em;
+    font-weight: 600;
+}
+.md-content h1 { font-size: 1.5em; }
+.md-content h2 {
+    font-size: 1.25em;
+    padding-bottom: 0.4em;
+    border-bottom: 1px solid var(--border);
+}
+.md-content h3 { font-size: 1.1em; color: var(--neon-cyan); }
+.md-content h4 { font-size: 1em; color: var(--text-secondary); }
+
+.md-content h2:first-child, .md-content h3:first-child { margin-top: 0; }
+
+/* Paragraphs */
+.md-content p { margin: 0.6em 0; }
+
+/* Strong / Bold */
+.md-content strong { color: var(--text-primary); font-weight: 600; }
+
+/* Inline code */
+.md-content code {
+    background: rgba(110,118,129,0.2);
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-family: var(--font-mono);
+    font-size: 0.88em;
+    color: var(--neon-cyan);
+    border: 1px solid rgba(110,118,129,0.15);
+}
+
+/* Code blocks */
+.md-content pre {
+    background: #0d1117;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 14px 18px;
+    overflow-x: auto;
+    margin: 0.8em 0;
+}
+.md-content pre code {
+    background: none; border: none; padding: 0;
+    color: #c9d1d9; font-size: 13px;
+}
+
+/* Blockquote */
+.md-content blockquote {
+    border-left: 3px solid var(--neon-blue);
+    background: rgba(56,139,253,0.05);
+    padding: 12px 18px;
+    margin: 0.8em 0;
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+.md-content blockquote p { margin: 0.3em 0; color: #a2b0c5; }
+
+/* Tables */
+.md-content table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 0.8em 0;
+    font-size: 13px;
+}
+.md-content thead { background: rgba(56,130,255,0.08); }
+.md-content th {
+    text-align: left; padding: 10px 14px;
+    font-size: 11px; text-transform: uppercase;
+    letter-spacing: 0.8px; color: var(--text-dim);
+    font-weight: 600;
+    border-bottom: 1px solid var(--border);
+}
+.md-content td {
+    padding: 10px 14px;
+    border-bottom: 1px solid rgba(56,130,255,0.06);
+    color: var(--text-secondary);
+    transition: background 0.15s;
+}
+.md-content tr:hover td { background: rgba(56,130,255,0.04); }
+.md-content tbody tr:nth-child(odd) td { background: rgba(255,255,255,0.01); }
+.md-content tbody tr:nth-child(odd):hover td { background: rgba(56,130,255,0.04); }
+
+/* Lists */
+.md-content ul, .md-content ol { padding-left: 1.5em; margin: 0.6em 0; }
+.md-content li { margin: 0.25em 0; }
+.md-content li::marker { color: var(--neon-blue); }
+.md-content ul li::marker { content: '▸ '; }
+
+/* Collapsible sections */
+.md-content details {
+    margin: 0.8em 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+}
+.md-content details[open] { border-color: var(--border-bright); }
+
+.md-content summary {
+    padding: 12px 18px;
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 14px;
+    color: var(--text-primary);
+    background: var(--bg-secondary);
+    user-select: none;
+    list-style: none;
+    display: flex; align-items: center; gap: 8px;
+}
+.md-content summary::before {
+    content: '▶';
+    font-size: 10px;
+    color: var(--neon-blue);
+    transition: transform 0.2s;
+}
+.md-content details[open] summary::before { transform: rotate(90deg); }
+.md-content summary::-webkit-details-marker { display: none; }
+
+.md-content details > :not(summary) { padding: 0 18px; }
+.md-content details > p:last-child, .md-content details > ul:last-child,
+.md-content details > ol:last-child, .md-content details > table:last-child { margin-bottom: 14px; }
+
+/* ── Debate Layout ── */
+.debate-layout {
+    display: flex; gap: 0; align-items: stretch;
+}
+
+.debate-side {
+    flex: 1; padding: 20px;
+}
+.debate-side.bull { border-right: 1px solid var(--border); }
+
+.debate-header {
+    display: flex; align-items: center; gap: 10px;
+    margin-bottom: 16px;
+}
+
+.debate-avatar {
+    width: 36px; height: 36px;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px;
+}
+.debate-avatar.bull { background: rgba(0,255,136,0.12); color: var(--neon-green); border: 1px solid rgba(0,255,136,0.25); }
+.debate-avatar.bear { background: rgba(255,56,96,0.12); color: var(--neon-red); border: 1px solid rgba(255,56,96,0.25); }
+
+.debate-name { font-weight: 600; font-size: 14px; color: var(--text-primary); }
+.debate-role { font-size: 10px; color: var(--text-dim); font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 0.5px; }
+
+.debate-body { font-size: 13px; color: var(--text-secondary); line-height: 1.7; }
+.debate-body h4 { color: var(--text-primary); font-size: 13px; margin: 0 0 8px; }
+.debate-body p { margin: 0.5em 0; }
+.debate-body strong { color: var(--text-primary); }
+.debate-body blockquote { border-left: 2px solid; padding: 8px 12px; margin: 8px 0; font-size: 12px; border-radius: 0 4px 4px 0; }
+.debate-side.bull .debate-body blockquote { border-color: var(--neon-green); background: rgba(0,255,136,0.04); }
+.debate-side.bear .debate-body blockquote { border-color: var(--neon-red); background: rgba(255,56,96,0.04); }
+.debate-body ul { padding-left: 1.2em; margin: 6px 0; }
+.debate-body li { margin: 3px 0; font-size: 12px; }
+.debate-body code { background: rgba(110,118,129,0.15); padding: 1px 5px; border-radius: 3px; font-family: var(--font-mono); font-size: 0.9em; }
+
+.debate-vs {
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 800; color: var(--text-dim);
+    font-family: var(--font-mono); letter-spacing: 2px;
+    width: 40px; flex-shrink: 0;
+    background: linear-gradient(180deg, transparent, rgba(56,130,255,0.06), transparent);
+}
+
+/* ── Demo Page Switcher ── */
+.demo-tabs {
+    position: fixed; bottom: 0; left: 0; right: 0;
+    background: rgba(5,8,15,0.95);
+    backdrop-filter: blur(12px);
+    border-top: 1px solid var(--border);
+    display: flex; justify-content: center;
+    padding: 8px; gap: 4px; z-index: 100;
+}
+.demo-tab {
+    padding: 8px 16px; border-radius: var(--radius-sm);
+    background: transparent; border: 1px solid transparent;
+    color: var(--text-dim); font-size: 12px; font-weight: 500;
+    cursor: pointer; font-family: var(--font-sans);
+    transition: all 0.2s;
+}
+.demo-tab:hover { color: var(--text-secondary); }
+.demo-tab.active { background: rgba(56,130,255,0.1); border-color: rgba(56,130,255,0.3); color: var(--neon-blue); }
+
+.demo-page { display: none; }
+.demo-page.active { display: block; }
+
+/* ── Animations ── */
+@keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+.animate-in { animation: fadeIn 0.5s ease forwards; }
+
+/* ── Settings Row ── */
+.setting-row {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 0;
+    border-bottom: 1px solid rgba(56,130,255,0.06);
+}
+.setting-row:last-child { border-bottom: none; }
+.setting-label { font-size: 13px; color: var(--text-secondary); }
+.setting-value { font-family: var(--font-mono); font-size: 13px; color: var(--text-dim); }
+.setting-value.configured { color: var(--neon-green); }
+
+/* ── Timeline ── */
+.timeline { display: flex; align-items: flex-start; gap: 0; padding: 12px 0; overflow-x: auto; }
+.tl-node { display: flex; flex-direction: column; align-items: center; min-width: 56px; }
+.tl-dot-wrap { position: relative; }
+.tl-dot { width: 14px; height: 14px; border-radius: 50%; border: 2px solid; }
+.tl-dot.buy { border-color: var(--neon-green); background: rgba(0,255,136,0.2); }
+.tl-dot.sell { border-color: var(--neon-red); background: rgba(255,56,96,0.2); }
+.tl-dot.hold { border-color: var(--neon-yellow); background: rgba(255,208,0,0.2); }
+.tl-dot.current { box-shadow: 0 0 0 4px rgba(56,130,255,0.3); }
+.tl-sig { font-size: 9px; font-weight: 700; font-family: var(--font-mono); margin-top: 4px; }
+.tl-date { font-size: 9px; color: var(--text-dim); }
+.tl-conn { width: 20px; height: 2px; background: var(--border); margin-top: 6px; flex-shrink: 0; }
+</style>
+</head>
+<body>
+
+<!-- ═══════ SIDEBAR ═══════ -->
+<nav class="sidebar">
+    <div class="sidebar-header">
+        <div class="sidebar-logo">
+            <div class="logo-icon"><i class="fas fa-bolt"></i></div>
+            <div>
+                <div class="logo-text">StockAI</div>
+                <div class="logo-sub">TRADING TERMINAL</div>
+            </div>
+        </div>
+    </div>
+    <ul class="sidebar-nav">
+        <li class="nav-group-label">Overview</li>
+        <li class="nav-item"><a class="nav-link active" onclick="showPage('dashboard')"><i class="fas fa-th-large"></i> 仪表盘</a></li>
+        <li class="nav-group-label">Analysis</li>
+        <li class="nav-item"><a class="nav-link" onclick="showPage('analysis')"><i class="fas fa-brain"></i> AI 分析</a></li>
+        <li class="nav-item"><a class="nav-link" onclick="showPage('history')"><i class="fas fa-clock-rotate-left"></i> 分析记录</a></li>
+        <li class="nav-item"><a class="nav-link" onclick="showPage('screener')"><i class="fas fa-crosshairs"></i> 智能选股</a></li>
+        <li class="nav-group-label">Portfolio</li>
+        <li class="nav-item"><a class="nav-link" onclick="showPage('portfolio')"><i class="fas fa-wallet"></i> 持仓管理</a></li>
+        <li class="nav-item"><a class="nav-link" onclick="showPage('backtest')"><i class="fas fa-flask"></i> 策略回测</a></li>
+        <li class="nav-group-label">System</li>
+        <li class="nav-item"><a class="nav-link" onclick="showPage('alerts')"><i class="fas fa-bell"></i> 预警中心 <span style="margin-left:auto;"><span class="badge-dot" style="position:static;display:inline-block;"></span></span></a></li>
+        <li class="nav-item"><a class="nav-link" onclick="showPage('reports')"><i class="fas fa-file-lines"></i> 报告中心</a></li>
+        <li class="nav-item"><a class="nav-link" onclick="showPage('settings')"><i class="fas fa-gear"></i> 设置</a></li>
+    </ul>
+    <div class="sidebar-footer">
+        <span class="status-dot online"></span> Qwen 3.6 Plus · <span style="color:var(--neon-green)">在线</span>
+    </div>
+</nav>
+
+<!-- ═══════ MAIN ═══════ -->
+<div class="main-content">
+    <!-- Top Bar -->
+    <div class="top-bar">
+        <div class="top-bar-left">
+            <div>
+                <div class="page-title-bar" id="page-title">仪表盘</div>
+                <div class="breadcrumb-text">HOME / DASHBOARD</div>
+            </div>
+        </div>
+        <div class="search-box">
+            <i class="fas fa-search search-icon"></i>
+            <input type="text" placeholder="搜索股票、分析、预警...">
+            <span class="search-shortcut">/</span>
+        </div>
+        <div class="top-bar-right">
+            <div class="clock-text">2026-04-14 01:30:00</div>
+            <div class="top-btn"><i class="fas fa-bell"></i><span class="badge-dot"></span></div>
+            <div class="top-btn"><i class="fas fa-expand"></i></div>
+        </div>
+    </div>
+
+    <!-- ═══════ PAGE: Dashboard ═══════ -->
+    <div class="page-content demo-page active" id="page-dashboard">
+        <div class="stats-row animate-in">
+            <div class="stat-card">
+                <div class="stat-label"><div class="stat-icon" style="background:rgba(56,130,255,0.15);color:var(--neon-blue);"><i class="fas fa-coins"></i></div> 总市值</div>
+                <div class="stat-value" style="color:var(--text-primary);">$284,520</div>
+                <div class="stat-change up">+$12,430 (4.57%)</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label"><div class="stat-icon" style="background:rgba(0,255,136,0.15);color:var(--neon-green);"><i class="fas fa-arrow-trend-up"></i></div> 总盈亏</div>
+                <div class="stat-value up">+$34,520</div>
+                <div class="stat-change up"><i class="fas fa-caret-up"></i> +13.8%</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label"><div class="stat-icon" style="background:rgba(0,212,255,0.15);color:var(--neon-cyan);"><i class="fas fa-percent"></i></div> 收益率</div>
+                <div class="stat-value up">+13.8%</div>
+                <div class="stat-change" style="color:var(--text-dim);">YTD 基准 S&P +8.2%</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label"><div class="stat-icon" style="background:rgba(255,56,96,0.15);color:var(--neon-red);"><i class="fas fa-bell"></i></div> 活跃预警</div>
+                <div class="stat-value" style="color:var(--neon-yellow);">3</div>
+                <div class="stat-change" style="color:var(--neon-red);">1 条已触发</div>
+            </div>
+        </div>
+
+        <div class="grid-2 animate-in" style="animation-delay:0.1s;">
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title"><i class="fas fa-chart-area"></i> 净值曲线</span>
+                    <div style="display:flex;gap:4px;">
+                        <button class="btn-outline" style="padding:4px 10px;font-size:11px;">7D</button>
+                        <button class="btn-outline active" style="padding:4px 10px;font-size:11px;">1M</button>
+                        <button class="btn-outline" style="padding:4px 10px;font-size:11px;">3M</button>
+                        <button class="btn-outline" style="padding:4px 10px;font-size:11px;">1Y</button>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div class="chart-box">
+                        <div class="chart-line">
+                            <svg viewBox="0 0 500 160" preserveAspectRatio="none">
+                                <defs>
+                                    <linearGradient id="lineGrad" x1="0" y1="0" x2="0" y2="1">
+                                        <stop offset="0%" stop-color="rgba(56,130,255,0.3)"/>
+                                        <stop offset="100%" stop-color="rgba(56,130,255,0)"/>
+                                    </linearGradient>
+                                </defs>
+                                <path d="M0,120 C50,100 80,130 130,80 S200,110 250,60 S320,90 370,40 S420,70 500,30 L500,160 L0,160Z" fill="url(#lineGrad)"/>
+                                <path d="M0,120 C50,100 80,130 130,80 S200,110 250,60 S320,90 370,40 S420,70 500,30" fill="none" stroke="var(--neon-blue)" stroke-width="2"/>
+                            </svg>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-header"><span class="card-title"><i class="fas fa-chart-pie"></i> 仓位分布</span></div>
+                <div class="card-body" style="display:flex;align-items:center;justify-content:center;min-height:280px;">
+                    <svg width="200" height="200" viewBox="0 0 200 200">
+                        <circle cx="100" cy="100" r="70" fill="none" stroke="var(--neon-blue)" stroke-width="30" stroke-dasharray="110 330" stroke-dashoffset="0" opacity="0.8"/>
+                        <circle cx="100" cy="100" r="70" fill="none" stroke="var(--neon-cyan)" stroke-width="30" stroke-dasharray="88 352" stroke-dashoffset="-110" opacity="0.8"/>
+                        <circle cx="100" cy="100" r="70" fill="none" stroke="var(--neon-purple)" stroke-width="30" stroke-dasharray="66 374" stroke-dashoffset="-198" opacity="0.8"/>
+                        <circle cx="100" cy="100" r="70" fill="none" stroke="var(--neon-green)" stroke-width="30" stroke-dasharray="44 396" stroke-dashoffset="-264" opacity="0.8"/>
+                        <circle cx="100" cy="100" r="70" fill="none" stroke="var(--neon-orange)" stroke-width="30" stroke-dasharray="132 308" stroke-dashoffset="-308" opacity="0.8"/>
+                        <text x="100" y="95" text-anchor="middle" fill="var(--text-primary)" font-size="22" font-weight="700" font-family="var(--font-mono)">$284K</text>
+                        <text x="100" y="115" text-anchor="middle" fill="var(--text-dim)" font-size="10">7 只持仓</text>
+                    </svg>
+                </div>
+            </div>
+        </div>
+
+        <div class="card animate-in" style="animation-delay:0.2s;margin-bottom:24px;">
+            <div class="card-header"><span class="card-title"><i class="fas fa-briefcase"></i> 当前持仓</span></div>
+            <div class="card-body" style="padding:0;">
+                <table class="data-table">
+                    <thead><tr><th>股票</th><th>市场</th><th>持仓</th><th>成本</th><th>现价</th><th>盈亏</th><th>收益率</th><th>操作</th></tr></thead>
+                    <tbody>
+                        <tr><td class="ticker">TQQQ</td><td>US</td><td class="mono">400</td><td class="mono">$52.30</td><td class="mono">$58.70</td><td class="mono up">+$2,560</td><td class="up">+12.2%</td><td><button class="btn-outline" style="padding:3px 10px;font-size:11px;"><i class="fas fa-brain"></i> 分析</button></td></tr>
+                        <tr><td class="ticker">GOOG</td><td>US</td><td class="mono">200</td><td class="mono">$168.50</td><td class="mono">$172.30</td><td class="mono up">+$760</td><td class="up">+2.3%</td><td><button class="btn-outline" style="padding:3px 10px;font-size:11px;"><i class="fas fa-brain"></i> 分析</button></td></tr>
+                        <tr><td class="ticker">GBTC</td><td>US</td><td class="mono">300</td><td class="mono">$62.10</td><td class="mono">$57.04</td><td class="mono down">-$1,518</td><td class="down">-8.1%</td><td><button class="btn-outline" style="padding:3px 10px;font-size:11px;"><i class="fas fa-brain"></i> 分析</button></td></tr>
+                        <tr><td class="ticker">META</td><td>US</td><td class="mono">40</td><td class="mono">$520.00</td><td class="mono">$548.20</td><td class="mono up">+$1,128</td><td class="up">+5.4%</td><td><button class="btn-outline" style="padding:3px 10px;font-size:11px;"><i class="fas fa-brain"></i> 分析</button></td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="card animate-in" style="animation-delay:0.3s;">
+            <div class="card-header"><span class="card-title"><i class="fas fa-bolt"></i> 快捷操作</span></div>
+            <div class="card-body">
+                <div class="quick-actions">
+                    <button class="quick-action-btn"><i class="fas fa-brain"></i> AI 分析</button>
+                    <button class="quick-action-btn"><i class="fas fa-crosshairs"></i> 智能选股</button>
+                    <button class="quick-action-btn"><i class="fas fa-file-lines"></i> 生成报告</button>
+                    <button class="quick-action-btn"><i class="fas fa-bell"></i> 预警中心</button>
+                    <button class="quick-action-btn"><i class="fas fa-flask"></i> 策略回测</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══════ PAGE: AI Analysis ═══════ -->
+    <div class="page-content demo-page" id="page-analysis">
+        <div class="card animate-in" style="margin-bottom:24px;">
+            <div class="card-header"><span class="card-title"><i class="fas fa-brain"></i> AI 多Agent 分析</span></div>
+            <div class="card-body">
+                <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;">
+                    <div style="flex:1;min-width:200px;">
+                        <label class="form-label">股票代码</label>
+                        <input class="form-input" value="AAPL" placeholder="输入代码...">
+                    </div>
+                    <div style="flex:0 0 160px;">
+                        <label class="form-label">分析日期</label>
+                        <input class="form-input" type="date" value="2026-04-14">
+                    </div>
+                    <button class="btn-primary-glow"><i class="fas fa-rocket"></i> 开始分析</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="card animate-in" style="animation-delay:0.1s;margin-bottom:24px;">
+            <div class="card-header"><span class="card-title"><i class="fas fa-diagram-project"></i> 分析管线</span></div>
+            <div class="card-body">
+                <div class="pipeline">
+                    <div class="pipe-step done"><div class="pipe-node"><i class="fas fa-chart-line"></i></div><div class="pipe-label">技术面</div></div>
+                    <div class="pipe-line done"></div>
+                    <div class="pipe-step done"><div class="pipe-node"><i class="fas fa-building"></i></div><div class="pipe-label">基本面</div></div>
+                    <div class="pipe-line done"></div>
+                    <div class="pipe-step done"><div class="pipe-node"><i class="fas fa-comments"></i></div><div class="pipe-label">情绪</div></div>
+                    <div class="pipe-line done"></div>
+                    <div class="pipe-step done"><div class="pipe-node"><i class="fas fa-newspaper"></i></div><div class="pipe-label">新闻</div></div>
+                    <div class="pipe-line done"></div>
+                    <div class="pipe-step done"><div class="pipe-node"><i class="fas fa-scale-balanced"></i></div><div class="pipe-label">辩论</div></div>
+                    <div class="pipe-line"></div>
+                    <div class="pipe-step active"><div class="pipe-node"><i class="fas fa-shield-halved"></i></div><div class="pipe-label">风险</div></div>
+                    <div class="pipe-line"></div>
+                    <div class="pipe-step"><div class="pipe-node"><i class="fas fa-gavel"></i></div><div class="pipe-label">决策</div></div>
+                </div>
+            </div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr 2fr;gap:16px;margin-bottom:24px;" class="animate-in" style="animation-delay:0.2s;">
+            <div class="signal-card-lg sell">
+                <div class="signal-label">AI 信号</div>
+                <div class="signal-text sell">SELL</div>
+                <div class="signal-ticker">AAPL · Apple Inc.</div>
+            </div>
+            <div class="confidence-card">
+                <div class="signal-label" style="margin-bottom:12px;">置信度</div>
+                <div class="confidence-ring">
+                    <svg viewBox="0 0 100 100">
+                        <circle class="ring-bg" cx="50" cy="50" r="44"/>
+                        <circle class="ring-fill" cx="50" cy="50" r="44"/>
+                    </svg>
+                    <div class="confidence-value">78%</div>
+                </div>
+                <div style="margin-top:8px;font-size:12px;color:var(--text-dim);">HIGH CONFIDENCE</div>
+            </div>
+            <div class="card">
+                <div class="card-header"><span class="card-title"><i class="fas fa-lightbulb"></i> 策略建议</span></div>
+                <div class="card-body" style="font-size:13px;">
+                    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">
+                        <div><span style="color:var(--text-dim);font-size:11px;">操作</span><br><span style="color:var(--neon-red);font-weight:600;">SELL</span></div>
+                        <div><span style="color:var(--text-dim);font-size:11px;">建议仓位</span><br><span style="font-family:var(--font-mono);">0%</span></div>
+                        <div><span style="color:var(--text-dim);font-size:11px;">止损</span><br><span style="color:var(--neon-red);font-family:var(--font-mono);">$245.00</span></div>
+                        <div><span style="color:var(--text-dim);font-size:11px;">入场区间</span><br><span style="font-family:var(--font-mono);">$256 - $258</span></div>
+                        <div><span style="color:var(--text-dim);font-size:11px;">止盈</span><br><span style="color:var(--neon-green);font-family:var(--font-mono);">$280.00</span></div>
+                        <div><span style="color:var(--text-dim);font-size:11px;">信心度</span><br><span style="font-family:var(--font-mono);">78%</span></div>
+                    </div>
+                    <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);color:var(--neon-yellow);font-size:12px;">
+                        <i class="fas fa-triangle-exclamation"></i> 风险提示：阶梯式减仓，反弹至 260-262 减持 50%
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Report Tabs -->
+        <div class="card animate-in" style="animation-delay:0.3s;margin-bottom:24px;">
+            <div class="card-header" style="padding:0;border-bottom:none;">
+                <div class="report-tabs">
+                    <button class="report-tab active" onclick="switchReport(this,'rpt-tech')"><i class="fas fa-chart-bar"></i> 技术面</button>
+                    <button class="report-tab" onclick="switchReport(this,'rpt-fund')"><i class="fas fa-building-columns"></i> 基本面</button>
+                    <button class="report-tab" onclick="switchReport(this,'rpt-sent')"><i class="fas fa-face-smile"></i> 情绪</button>
+                    <button class="report-tab" onclick="switchReport(this,'rpt-news')"><i class="fas fa-newspaper"></i> 新闻</button>
+                    <button class="report-tab" onclick="switchReport(this,'rpt-debate')"><i class="fas fa-scale-balanced"></i> 多空辩论</button>
+                    <button class="report-tab" onclick="switchReport(this,'rpt-risk')"><i class="fas fa-shield-halved"></i> 风险</button>
+                    <button class="report-tab" onclick="switchReport(this,'rpt-decision')"><i class="fas fa-gavel"></i> 最终决策</button>
+                </div>
+            </div>
+            <div class="card-body" style="padding:0;">
+                <!-- Tech Report -->
+                <div class="report-panel active" id="rpt-tech">
+                    <div class="report-toolbar">
+                        <span class="report-meta"><i class="fas fa-robot"></i> Market Analyst · 2026-04-14 01:25:00 · 耗时 48s</span>
+                        <button class="report-copy-btn" title="复制"><i class="fas fa-copy"></i></button>
+                    </div>
+                    <div class="md-content">
+                        <h2>AAPL 技术面分析报告</h2>
+                        <h3>一、趋势判断：短期震荡偏空</h3>
+                        <p>AAPL 当前交易价格为 <code>$260.48</code>，处于 50 日均线（$258.9）上方但接近关键阻力区间 $262-$265。MACD 指标在零轴下方形成死叉，显示<strong>短期动能衰减</strong>。</p>
+
+                        <blockquote>
+                            <p>综合来看，技术面呈现"<strong>高位震荡、动能转弱</strong>"的格局，建议关注 $256 支撑位的有效性。</p>
+                        </blockquote>
+
+                        <h3>二、关键指标汇总</h3>
+                        <table>
+                            <thead>
+                                <tr><th>指标</th><th>数值</th><th>信号</th><th>说明</th></tr>
+                            </thead>
+                            <tbody>
+                                <tr><td>RSI(14)</td><td><code>52.3</code></td><td><span style="color:var(--neon-yellow);">中性</span></td><td>未进入超买/超卖区域</td></tr>
+                                <tr><td>MACD</td><td><code style="color:var(--neon-red);">-0.83</code></td><td><span style="color:var(--neon-red);">看空</span></td><td>MACD 线下穿信号线，空头动能增强</td></tr>
+                                <tr><td>布林带</td><td><code>中轨附近</code></td><td><span style="color:var(--neon-yellow);">震荡</span></td><td>价格在 $256.5 - $264.2 区间波动</td></tr>
+                                <tr><td>50 SMA</td><td><code>$258.90</code></td><td><span style="color:var(--neon-green);">支撑</span></td><td>短期均线支撑有效</td></tr>
+                                <tr><td>200 SMA</td><td><code>$251.20</code></td><td><span style="color:var(--neon-green);">多头</span></td><td>价格仍在长期均线上方</td></tr>
+                                <tr><td>ATR(14)</td><td><code>$4.82</code></td><td>—</td><td>日均波动约 1.9%</td></tr>
+                            </tbody>
+                        </table>
+
+                        <h3>三、支撑与阻力</h3>
+                        <ul>
+                            <li><strong>强支撑</strong>：$256.50（布林下轨）→ $251.20（200 日均线）</li>
+                            <li><strong>弱支撑</strong>：$258.90（50 日均线）</li>
+                            <li><strong>阻力</strong>：$262.00 → $264.20（布林上轨）→ $268.50（前高）</li>
+                        </ul>
+
+                        <h3>四、操作建议</h3>
+                        <ol>
+                            <li>若跌破 $256.50，建议<strong>止损出场</strong>，下一支撑 $251</li>
+                            <li>若站稳 $262 以上且 MACD 翻正，可<strong>轻仓试多</strong></li>
+                            <li>当前以<strong>观望为主</strong>，等待方向明确</li>
+                        </ol>
+                    </div>
+                </div>
+
+                <!-- Debate Report -->
+                <div class="report-panel" id="rpt-debate">
+                    <div class="report-toolbar">
+                        <span class="report-meta"><i class="fas fa-robot"></i> Bull vs Bear Debate · 3 轮辩论 · 耗时 2m 15s</span>
+                        <button class="report-copy-btn" title="复制"><i class="fas fa-copy"></i></button>
+                    </div>
+                    <div class="md-content">
+                        <div class="debate-layout">
+                            <div class="debate-side bull">
+                                <div class="debate-header">
+                                    <div class="debate-avatar bull"><i class="fas fa-arrow-trend-up"></i></div>
+                                    <div>
+                                        <div class="debate-name">多方分析师</div>
+                                        <div class="debate-role">Bull Researcher</div>
+                                    </div>
+                                </div>
+                                <div class="debate-body">
+                                    <h4>核心论点</h4>
+                                    <p>Apple 的<strong>服务业务</strong>（App Store、Apple Music、iCloud）收入持续增长，Q1 2026 同比增长 15.3%，毛利率高达 71%。这为公司提供了稳定的高利润现金流支撑。</p>
+                                    <blockquote><p>AI 战略布局方面，Apple Intelligence 已覆盖 20 亿活跃设备，形成了<strong>不可替代的生态护城河</strong>。</p></blockquote>
+                                    <ul>
+                                        <li>服务收入 Q1 同比 <code>+15.3%</code></li>
+                                        <li>自由现金流创历史新高</li>
+                                        <li>回购计划持续 → EPS 上行</li>
+                                    </ul>
+                                </div>
+                            </div>
+                            <div class="debate-vs">VS</div>
+                            <div class="debate-side bear">
+                                <div class="debate-header">
+                                    <div class="debate-avatar bear"><i class="fas fa-arrow-trend-down"></i></div>
+                                    <div>
+                                        <div class="debate-name">空方分析师</div>
+                                        <div class="debate-role">Bear Researcher</div>
+                                    </div>
+                                </div>
+                                <div class="debate-body">
+                                    <h4>核心论点</h4>
+                                    <p>iPhone 出货量面临<strong>中国市场竞争压力</strong>，华为 Mate 70 系列和小米 SU7 对高端市场的蚕食不容忽视。Q1 大中华区收入同比下降 2.1%。</p>
+                                    <blockquote><p>当前 P/E 30.5x 处于<strong>历史 85 分位</strong>，估值已充分反映乐观预期，下行风险大于上行空间。</p></blockquote>
+                                    <ul>
+                                        <li>大中华区收入 <code>-2.1%</code> YoY</li>
+                                        <li>P/E 30.5x → 历史 85 分位</li>
+                                        <li>AI 变现路径尚不清晰</li>
+                                    </ul>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Decision Report -->
+                <div class="report-panel" id="rpt-decision">
+                    <div class="report-toolbar">
+                        <span class="report-meta"><i class="fas fa-robot"></i> Portfolio Manager · Final Decision · 耗时 1m 32s</span>
+                        <button class="report-copy-btn" title="复制"><i class="fas fa-copy"></i></button>
+                    </div>
+                    <div class="md-content">
+                        <h2>最终交易决策</h2>
+                        <details open>
+                            <summary>1. Rating: <strong style="color:var(--neon-red);">SELL</strong></summary>
+                            <p>综合技术面震荡偏空信号、估值高位压力以及中国市场竞争风险，建议<strong>卖出</strong> AAPL 持仓。</p>
+                        </details>
+
+                        <details open>
+                            <summary>2. 执行策略</summary>
+                            <p>采用<strong>阶梯式减仓</strong>方案：</p>
+                            <table>
+                                <thead><tr><th>批次</th><th>条件</th><th>操作</th><th>目标价</th></tr></thead>
+                                <tbody>
+                                    <tr><td>第一批 50%</td><td>反弹至阻力区</td><td>市价卖出</td><td><code>$260-262</code></td></tr>
+                                    <tr><td>第二批 50%</td><td>跌破支撑位</td><td>止损卖出</td><td><code>&lt;$256</code></td></tr>
+                                </tbody>
+                            </table>
+                        </details>
+
+                        <details>
+                            <summary>3. 风险提示</summary>
+                            <ul>
+                                <li><strong>上行风险</strong>：Q2 财报超预期 → 突破 $268 前高</li>
+                                <li><strong>下行风险</strong>：关税政策升级 → 快速跌破 $251</li>
+                                <li><strong>止损位</strong>：<code style="color:var(--neon-red);">$251.00</code>（200 日均线，硬止损）</li>
+                            </ul>
+                        </details>
+                    </div>
+                </div>
+
+                <!-- Placeholder for other tabs -->
+                <div class="report-panel" id="rpt-fund"><div class="report-toolbar"><span class="report-meta"><i class="fas fa-robot"></i> Fundamentals Analyst</span></div><div class="md-content"><h2>基本面分析</h2><p>基本面报告内容区域，样式与技术面一致...</p></div></div>
+                <div class="report-panel" id="rpt-sent"><div class="report-toolbar"><span class="report-meta"><i class="fas fa-robot"></i> Sentiment Analyst</span></div><div class="md-content"><h2>情绪分析</h2><p>社交媒体情绪报告内容区域...</p></div></div>
+                <div class="report-panel" id="rpt-news"><div class="report-toolbar"><span class="report-meta"><i class="fas fa-robot"></i> News Analyst</span></div><div class="md-content"><h2>新闻分析</h2><p>近期新闻分析报告内容区域...</p></div></div>
+                <div class="report-panel" id="rpt-risk"><div class="report-toolbar"><span class="report-meta"><i class="fas fa-robot"></i> Risk Manager</span></div><div class="md-content"><h2>风险评估</h2><p>三方风险辩论（激进/保守/中性）报告区域...</p></div></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══════ PAGE: Backtest ═══════ -->
+    <div class="page-content demo-page" id="page-backtest">
+        <div class="card animate-in" style="margin-bottom:24px;">
+            <div class="card-header"><span class="card-title"><i class="fas fa-flask"></i> 回测参数</span></div>
+            <div class="card-body">
+                <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;">
+                    <div><label class="form-label">股票</label><input class="form-input" value="AAPL" style="width:120px;"></div>
+                    <div><label class="form-label">策略</label><select class="form-input" style="width:180px;"><option>均线交叉策略</option><option>RSI 均值回归</option><option>买入持有</option></select></div>
+                    <div><label class="form-label">开始</label><input class="form-input" type="date" value="2025-01-01" style="width:150px;"></div>
+                    <div><label class="form-label">结束</label><input class="form-input" type="date" value="2026-04-01" style="width:150px;"></div>
+                    <div><label class="form-label">初始资金</label><input class="form-input" value="100,000" style="width:130px;"></div>
+                    <button class="btn-primary-glow"><i class="fas fa-play"></i> 运行回测</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="metrics-grid animate-in" style="animation-delay:0.1s;">
+            <div class="metric-card"><div class="metric-label">总收益率</div><div class="metric-value" style="color:var(--neon-green);">+18.7%</div></div>
+            <div class="metric-card"><div class="metric-label">年化收益</div><div class="metric-value" style="color:var(--neon-green);">+14.9%</div></div>
+            <div class="metric-card"><div class="metric-label">最大回撤</div><div class="metric-value" style="color:var(--neon-red);">-12.3%</div></div>
+            <div class="metric-card"><div class="metric-label">胜率</div><div class="metric-value" style="color:var(--neon-yellow);">62.5%</div></div>
+            <div class="metric-card"><div class="metric-label">交易次数</div><div class="metric-value">16</div></div>
+            <div class="metric-card"><div class="metric-label">夏普比率</div><div class="metric-value" style="color:var(--neon-cyan);">1.42</div></div>
+        </div>
+
+        <div class="card animate-in" style="animation-delay:0.2s;margin-bottom:24px;">
+            <div class="card-header"><span class="card-title"><i class="fas fa-chart-area"></i> 权益曲线</span></div>
+            <div class="card-body">
+                <div class="chart-box" style="height:300px;">
+                    <div class="chart-line" style="bottom:30px;">
+                        <svg viewBox="0 0 500 200" preserveAspectRatio="none">
+                            <defs>
+                                <linearGradient id="btGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="rgba(56,130,255,0.2)"/><stop offset="100%" stop-color="transparent"/></linearGradient>
+                            </defs>
+                            <path d="M0,150 C40,140 80,160 120,120 S180,140 220,100 S280,80 320,70 S380,90 420,50 S460,60 500,40 L500,200 L0,200Z" fill="url(#btGrad)"/>
+                            <path d="M0,150 C40,140 80,160 120,120 S180,140 220,100 S280,80 320,70 S380,90 420,50 S460,60 500,40" fill="none" stroke="var(--neon-blue)" stroke-width="2"/>
+                            <path d="M0,150 C40,145 80,155 120,130 S180,120 220,110 S280,100 320,90 S380,85 420,75 S460,70 500,60" fill="none" stroke="var(--text-dim)" stroke-width="1" stroke-dasharray="4"/>
+                            <text x="490" y="35" fill="var(--neon-blue)" font-size="10" text-anchor="end" font-family="var(--font-mono)">策略 +18.7%</text>
+                            <text x="490" y="55" fill="var(--text-dim)" font-size="10" text-anchor="end" font-family="var(--font-mono)">基线 +8.2%</text>
+                        </svg>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══════ PAGE: Screener ═══════ -->
+    <div class="page-content demo-page" id="page-screener">
+        <div class="card animate-in" style="margin-bottom:24px;">
+            <div class="card-header">
+                <span class="card-title"><i class="fas fa-crosshairs"></i> 三层智能筛选管线</span>
+                <span style="font-family:var(--font-mono);font-size:11px;color:var(--text-dim);">US / GROWTH · 耗时 3m 42s</span>
+            </div>
+            <div class="card-body">
+                <div class="funnel-v2" style="max-width:520px;margin:0 auto;">
+                    <div class="funnel-stage done">
+                        <div class="funnel-shape done"></div>
+                        <div class="funnel-content">
+                            <div class="funnel-left">
+                                <div class="funnel-icon"><i class="fas fa-satellite-dish"></i></div>
+                                <div>
+                                    <div style="font-weight:600;">IB Scanner 粗筛</div>
+                                    <div style="font-size:10px;color:var(--text-dim);margin-top:1px;">涨幅/成交量/市值过滤</div>
+                                </div>
+                            </div>
+                            <div class="funnel-right">
+                                <div class="funnel-count">200</div>
+                                <div class="funnel-unit">只</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="funnel-arrow done"></div>
+
+                    <div class="funnel-stage done">
+                        <div class="funnel-shape done"></div>
+                        <div class="funnel-content">
+                            <div class="funnel-left">
+                                <div class="funnel-icon"><i class="fas fa-flask-vial"></i></div>
+                                <div>
+                                    <div style="font-weight:600;">Finviz 基本面过滤</div>
+                                    <div style="font-size:10px;color:var(--text-dim);margin-top:1px;">PE/PB/ROE/市值筛选</div>
+                                </div>
+                            </div>
+                            <div class="funnel-right">
+                                <div class="funnel-count">42</div>
+                                <div class="funnel-unit">只</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="funnel-arrow done"></div>
+
+                    <div class="funnel-stage active">
+                        <div class="funnel-shape active"></div>
+                        <div class="funnel-content">
+                            <div class="funnel-left">
+                                <div class="funnel-icon"><i class="fas fa-brain"></i></div>
+                                <div>
+                                    <div style="font-weight:600;">Qwen AI 智能评估</div>
+                                    <div style="font-size:10px;color:var(--text-dim);margin-top:1px;">多 Agent 深度分析打分</div>
+                                </div>
+                            </div>
+                            <div class="funnel-right">
+                                <div class="funnel-count">10</div>
+                                <div class="funnel-unit">只 <i class="fas fa-spinner fa-spin" style="font-size:10px;color:var(--neon-cyan);"></i></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div style="text-align:center;margin-top:16px;padding-top:12px;border-top:1px solid var(--border);">
+                    <span style="font-family:var(--font-mono);font-size:12px;color:var(--text-dim);">
+                        200 → 42 → <span style="color:var(--neon-cyan);font-weight:600;">10</span> &nbsp;
+                        淘汰率 <span style="color:var(--neon-yellow);">95%</span>
+                    </span>
+                </div>
+            </div>
+        </div>
+        <div class="card animate-in" style="animation-delay:0.1s;">
+            <div class="card-header"><span class="card-title"><i class="fas fa-trophy"></i> 筛选结果</span><span class="signal-badge buy" style="font-size:10px;">US / GROWTH</span></div>
+            <div class="card-body" style="padding:0;">
+                <table class="data-table">
+                    <thead><tr><th>#</th><th>代码</th><th>名称</th><th>价格</th><th>AI 信号</th><th>操作</th></tr></thead>
+                    <tbody>
+                        <tr><td>1</td><td class="ticker">NVDA</td><td>NVIDIA Corp</td><td class="mono">$892.40</td><td><span class="signal-badge buy">BUY</span></td><td><button class="btn-outline" style="padding:3px 10px;font-size:11px;"><i class="fas fa-brain"></i></button></td></tr>
+                        <tr><td>2</td><td class="ticker">GOOGL</td><td>Alphabet Inc</td><td class="mono">$172.30</td><td><span class="signal-badge buy">BUY</span></td><td><button class="btn-outline" style="padding:3px 10px;font-size:11px;"><i class="fas fa-brain"></i></button></td></tr>
+                        <tr><td>3</td><td class="ticker">MSFT</td><td>Microsoft</td><td class="mono">$416.80</td><td><span class="signal-badge hold">HOLD</span></td><td><button class="btn-outline" style="padding:3px 10px;font-size:11px;"><i class="fas fa-brain"></i></button></td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══════ PAGE: History ═══════ -->
+    <div class="page-content demo-page" id="page-history">
+        <div class="card animate-in" style="margin-bottom:24px;">
+            <div class="card-header"><span class="card-title"><i class="fas fa-clock-rotate-left"></i> 分析记录</span></div>
+            <div class="card-body" style="padding:0;">
+                <table class="data-table">
+                    <thead><tr><th>日期</th><th>股票</th><th>信号</th><th>决策摘要</th></tr></thead>
+                    <tbody>
+                        <tr style="cursor:pointer;"><td class="mono">2026-04-14</td><td class="ticker">AAPL</td><td><span class="signal-badge sell">SELL</span></td><td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">阶梯式减仓，反弹至 260-262 减持 50%</td></tr>
+                        <tr style="cursor:pointer;"><td class="mono">2026-04-12</td><td class="ticker">GOOG</td><td><span class="signal-badge buy">BUY</span></td><td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">分批建仓、硬损护航、阶梯兑现</td></tr>
+                        <tr style="cursor:pointer;"><td class="mono">2026-04-12</td><td class="ticker">GBTC</td><td><span class="signal-badge sell">SELL</span></td><td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">立即清仓 ~$57.04，布林上轨分批卖出</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        <div class="card animate-in" style="animation-delay:0.1s;">
+            <div class="card-header"><span class="card-title"><i class="fas fa-timeline"></i> AAPL 信号时间线</span></div>
+            <div class="card-body">
+                <div class="timeline">
+                    <div class="tl-node"><div class="tl-dot-wrap"><div class="tl-dot buy"></div></div><div class="tl-sig" style="color:var(--neon-green);">BUY</div><div class="tl-date">03-28</div></div>
+                    <div class="tl-conn"></div>
+                    <div class="tl-node"><div class="tl-dot-wrap"><div class="tl-dot hold"></div></div><div class="tl-sig" style="color:var(--neon-yellow);">HOLD</div><div class="tl-date">04-05</div></div>
+                    <div class="tl-conn"></div>
+                    <div class="tl-node"><div class="tl-dot-wrap"><div class="tl-dot buy"></div></div><div class="tl-sig" style="color:var(--neon-green);">BUY</div><div class="tl-date">04-12</div></div>
+                    <div class="tl-conn"></div>
+                    <div class="tl-node"><div class="tl-dot-wrap"><div class="tl-dot sell current"></div></div><div class="tl-sig" style="color:var(--neon-red);">SELL</div><div class="tl-date">04-14</div></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Placeholder pages -->
+    <div class="page-content demo-page" id="page-portfolio"><div class="card"><div class="card-header"><span class="card-title"><i class="fas fa-wallet"></i> 持仓管理</span></div><div class="card-body" style="color:var(--text-dim);text-align:center;padding:60px;">与仪表盘持仓表格同风格，另含买入/卖出表单 + 交易记录</div></div></div>
+    <div class="page-content demo-page" id="page-alerts"><div class="card"><div class="card-header"><span class="card-title"><i class="fas fa-bell"></i> 预警中心</span></div><div class="card-body" style="color:var(--text-dim);text-align:center;padding:60px;">预警创建表单 + 活跃预警列表 + 触发历史时间线</div></div></div>
+    <div class="page-content demo-page" id="page-reports"><div class="card"><div class="card-header"><span class="card-title"><i class="fas fa-file-lines"></i> 报告中心</span></div><div class="card-body" style="color:var(--text-dim);text-align:center;padding:60px;">报告类型选择 + Markdown 渲染区域</div></div></div>
+    <div class="page-content demo-page" id="page-settings"><div class="card"><div class="card-header"><span class="card-title"><i class="fas fa-gear"></i> 设置</span></div><div class="card-body"><div class="setting-row"><span class="setting-label">Qwen API Key</span><span class="setting-value configured">****82b4 <i class="fas fa-pen" style="color:var(--neon-blue);font-size:10px;cursor:pointer;margin-left:8px;"></i></span></div><div class="setting-row"><span class="setting-label">Qwen 模型</span><span class="setting-value" style="color:var(--text-primary);">qwen3.6-plus</span></div><div class="setting-row"><span class="setting-label">Gemini API Key</span><span class="setting-value configured">****T4Sk</span></div><div class="setting-row"><span class="setting-label">IB TWS</span><span class="setting-value configured"><span class="status-dot online"></span> 127.0.0.1:7496 已连接</span></div><div class="setting-row"><span class="setting-label">Telegram Bot</span><span class="setting-value configured"><span class="status-dot online"></span> 已配置</span></div></div></div></div>
+</div>
+
+<!-- Demo page switcher (底部) -->
+<div class="demo-tabs">
+    <button class="demo-tab active" onclick="showPage('dashboard')">仪表盘</button>
+    <button class="demo-tab" onclick="showPage('analysis')">AI 分析</button>
+    <button class="demo-tab" onclick="showPage('history')">分析记录</button>
+    <button class="demo-tab" onclick="showPage('screener')">智能选股</button>
+    <button class="demo-tab" onclick="showPage('backtest')">策略回测</button>
+    <button class="demo-tab" onclick="showPage('settings')">设置</button>
+</div>
+
+<script>
+function switchReport(btn, id) {
+    document.querySelectorAll('.report-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.report-panel').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById(id).classList.add('active');
+}
+
+function showPage(id) {
+    document.querySelectorAll('.demo-page').forEach(p => p.classList.remove('active'));
+    document.getElementById('page-' + id).classList.add('active');
+    document.querySelectorAll('.demo-tab').forEach(t => t.classList.remove('active'));
+    event.target.classList.add('active');
+    document.querySelectorAll('.nav-link').forEach(n => n.classList.remove('active'));
+    document.querySelector(`.nav-link[onclick="showPage('${id}')"]`)?.classList.add('active');
+
+    const titles = { dashboard:'仪表盘', analysis:'AI 分析', history:'分析记录', screener:'智能选股', backtest:'策略回测', portfolio:'持仓管理', alerts:'预警中心', reports:'报告中心', settings:'设置' };
+    document.getElementById('page-title').textContent = titles[id] || id;
+}
+</script>
+</body>
+</html>

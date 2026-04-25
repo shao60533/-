@@ -13,9 +13,10 @@ Data is fetched automatically by TradingAgents (yfinance + Alpha Vantage).
 """
 
 import os
+import threading
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from stock_trading_system.utils import get_logger
 
@@ -75,38 +76,114 @@ class StockAnalyzer:
     def __init__(self, config: dict):
         self._config = config
         self._graph = None
+        self._graphs: dict[str, Any] = {}
+        self._graph_lock = threading.Lock()
+
+    @staticmethod
+    def _patch_tradingagents_qwen():
+        """Monkey-patch TradingAgents factory to accept 'qwen'/'dashscope' providers.
+
+        The upstream factory only knows openai/anthropic/google/xai/ollama/openrouter.
+        DashScope uses an OpenAI-compatible endpoint, so we register it as a custom
+        provider in the same OpenAIClient, but WITHOUT use_responses_api.
+        Idempotent — safe to call multiple times.
+        """
+        _MAINLAND_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        try:
+            from tradingagents.llm_clients import factory as _factory
+            from tradingagents.llm_clients import openai_client as _oc
+            existing = getattr(_oc, "_PROVIDER_CONFIG", {}).get("qwen")
+            if existing == (_MAINLAND_URL, "DASHSCOPE_API_KEY"):
+                return
+            _oc._PROVIDER_CONFIG["qwen"] = (_MAINLAND_URL, "DASHSCOPE_API_KEY")
+            _oc._PROVIDER_CONFIG["dashscope"] = (_MAINLAND_URL, "DASHSCOPE_API_KEY")
+            _orig = _factory.create_llm_client
+
+            def _patched(provider, model, base_url=None, **kwargs):
+                if provider.lower() in ("qwen", "dashscope"):
+                    return _oc.OpenAIClient(model, base_url, provider=provider.lower(), **kwargs)
+                return _orig(provider, model, base_url, **kwargs)
+
+            _factory.create_llm_client = _patched
+            logger.info("Patched TradingAgents factory for Qwen/DashScope")
+        except Exception as e:
+            logger.warning("Failed to patch TradingAgents for Qwen: %s", e)
 
     def _init_graph(self):
-        """Lazy-init TradingAgents graph."""
-        if self._graph is not None:
-            return
+        """Lazy-init TradingAgents graph, cached per provider."""
+        from stock_trading_system.llm.router import get_active_provider
 
-        from tradingagents.graph.trading_graph import TradingAgentsGraph
-        from tradingagents.default_config import DEFAULT_CONFIG
+        provider = get_active_provider(self._config)
 
+        with self._graph_lock:
+            if provider in self._graphs:
+                self._graph = self._graphs[provider]
+                return
+
+            self._patch_tradingagents_qwen()
+
+            from tradingagents.graph.trading_graph import TradingAgentsGraph
+            from tradingagents.default_config import DEFAULT_CONFIG
+
+            ta_config = DEFAULT_CONFIG.copy()
+            ta_config["output_language"] = "Chinese"
+            ta_config["llm_timeout"] = 120
+
+            if provider == "qwen":
+                self._configure_qwen(ta_config)
+            else:
+                self._configure_gemini(ta_config)
+
+            # Inject active prompt overrides from prompt_store (iteration phase 2)
+            if self._iteration_enabled:
+                agent_prompts = self._load_active_prompts()
+                if agent_prompts:
+                    ta_config["agent_prompts"] = agent_prompts
+
+            graph = TradingAgentsGraph(
+                selected_analysts=["market", "social", "news", "fundamentals"],
+                debug=True,
+                config=ta_config,
+            )
+            self._graphs[provider] = graph
+            self._graph = graph
+            logger.info("TradingAgents graph initialized with %s", provider)
+
+    @property
+    def _iteration_enabled(self) -> bool:
+        return self._config.get("iteration", {}).get("enabled", False)
+
+    def _configure_qwen(self, ta_config: dict) -> None:
+        qwen_config = self._config.get("qwen", {})
+        qwen_key = qwen_config.get("api_key", "")
+        if not qwen_key:
+            raise RuntimeError("llm_provider=qwen but qwen.api_key is empty")
+        os.environ["DASHSCOPE_API_KEY"] = qwen_key
+        model = qwen_config.get("model", "qwen-plus")
+        ta_config["llm_provider"] = "qwen"
+        ta_config["deep_think_llm"] = qwen_config.get("deep_think_model", model)
+        ta_config["quick_think_llm"] = model
+        ta_config["backend_url"] = qwen_config.get(
+            "base_url", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+        ta_config["llm_deep_kwargs"] = {"extra_body": {"enable_thinking": True}, "timeout": 600}
+        ta_config["llm_quick_kwargs"] = {"extra_body": {"enable_thinking": False}, "timeout": 120}
+
+    def _configure_gemini(self, ta_config: dict) -> None:
         gemini_config = self._config.get("gemini", {})
-
-        # Set API key in environment BEFORE creating the graph
-        api_key = gemini_config.get("api_key", "")
-        if api_key:
-            os.environ["GOOGLE_API_KEY"] = api_key
-            os.environ["GEMINI_API_KEY"] = api_key
-
-        ta_config = DEFAULT_CONFIG.copy()
+        gemini_key = gemini_config.get("api_key", "")
+        if not gemini_key:
+            raise RuntimeError("llm_provider=gemini but gemini.api_key is empty")
+        os.environ["GOOGLE_API_KEY"] = gemini_key
+        os.environ["GEMINI_API_KEY"] = gemini_key
+        import httpx as _httpx
+        ta_config["llm_client_args"] = {"http2": False, "transport": _httpx.HTTPTransport(retries=3)}
+        for _var in ("https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY", "all_proxy", "ALL_PROXY"):
+            os.environ.pop(_var, None)
         ta_config["llm_provider"] = "google"
-        ta_config["deep_think_llm"] = gemini_config.get("deep_think_model", "gemini-3.1-pro-preview")
+        ta_config["deep_think_llm"] = gemini_config.get("deep_think_model", "gemini-2.5-flash")
         ta_config["quick_think_llm"] = gemini_config.get("model", "gemini-2.5-flash")
-        ta_config["google_thinking_level"] = gemini_config.get("thinking_level", "high")
-        ta_config["output_language"] = "Chinese"
-        # Remove OpenAI backend_url default — let Google client use its own default endpoint
+        ta_config["google_thinking_level"] = gemini_config.get("thinking_level", "low")
         ta_config["backend_url"] = None
-
-        self._graph = TradingAgentsGraph(
-            selected_analysts=["market", "social", "news", "fundamentals"],
-            debug=True,
-            config=ta_config,
-        )
-        logger.info("TradingAgents graph initialized with Gemini")
 
     def analyze(
         self,
@@ -164,6 +241,47 @@ class StockAnalyzer:
         })
 
         try:
+            # Iteration mode: delegate to _run_with_weights which handles
+            # Darwinian weight-context injection + prompt overrides. Skips the
+            # streaming progress view but still emits pipeline_done.
+            if self._iteration_enabled:
+                final_state, signal = self._run_with_weights(ticker, date)
+                # Mark all steps done in a single bulk emit so the UI gets a
+                # best-effort completion view.
+                now = time.monotonic()
+                for idx, (sid, label, state_key) in enumerate(PIPELINE_STEPS):
+                    if _is_step_done(final_state, state_key):
+                        step_status[sid]["status"] = "done"
+                        step_status[sid]["duration_ms"] = 0
+                        emit({
+                            "type": "step_done",
+                            "step": sid,
+                            "label": label,
+                            "index": idx,
+                            "total": total,
+                            "duration_ms": 0,
+                        })
+                result = AnalysisResult(
+                    ticker=ticker,
+                    signal=str(signal),
+                    market_report=final_state.get("market_report", ""),
+                    sentiment_report=final_state.get("sentiment_report", ""),
+                    news_report=final_state.get("news_report", ""),
+                    fundamentals_report=final_state.get("fundamentals_report", ""),
+                    investment_debate=final_state.get("investment_debate_state", {}),
+                    risk_assessment=final_state.get("risk_debate_state", {}),
+                    trade_decision=final_state.get("final_trade_decision", {}),
+                    steps=list(step_status.values()),
+                )
+                emit({
+                    "type": "pipeline_done",
+                    "ticker": ticker,
+                    "steps": result.steps,
+                    "signal": result.signal,
+                })
+                logger.info("Analysis complete (iteration) for %s: signal=%s", ticker, signal)
+                return result
+
             # Replicate TradingAgents.propagate()'s streaming loop so we can
             # peek at intermediate state between chunks and push progress to
             # the UI in real time.
@@ -262,6 +380,79 @@ class StockAnalyzer:
         })
         logger.info("Analysis complete for %s: signal=%s", ticker, signal)
         return result
+
+    def _run_with_weights(
+        self, ticker: str, date: str,
+    ) -> tuple[dict[str, Any], Any]:
+        """Bypass propagate() to inject weight context into init_state."""
+        from stock_trading_system.agents.iterative.config import load_iteration_config
+
+        iter_config = load_iteration_config(self._config.get("iteration", {}))
+
+        # Build initial state via the propagator
+        init_state = self._graph.propagator.create_initial_state(ticker, date)
+
+        # Inject weight context if a scorer is available
+        if iter_config.darwinian.enabled:
+            weight_text = self._get_weight_context()
+            if weight_text:
+                init_state["messages"].insert(0, ("system", weight_text))
+
+        # Run graph (preserve debug stream behaviour)
+        args = self._graph.propagator.get_graph_args()
+        if self._graph.debug:
+            trace: list[dict] = []
+            for chunk in self._graph.graph.stream(init_state, **args):
+                if chunk.get("messages"):
+                    chunk["messages"][-1].pretty_print()
+                trace.append(chunk)
+            final_state = trace[-1] if trace else {}
+        else:
+            final_state = self._graph.graph.invoke(init_state, **args)
+
+        signal = self._graph.process_signal(
+            final_state.get("final_trade_decision", "")
+        )
+        return final_state, signal
+
+    def _get_weight_context(self) -> str:
+        """Return formatted weight context from the scorer singleton, if any."""
+        try:
+            from stock_trading_system.agents.iterative.darwinian import format_weight_context
+            from stock_trading_system.agents.iterative.agent_scorer import AgentScorer
+            from stock_trading_system.agents.iterative.config import load_iteration_config
+
+            iter_config = load_iteration_config(self._config.get("iteration", {}))
+            db_path = self._config.get("portfolio", {}).get("db_path", "data/portfolio.db")
+            scorer = AgentScorer(db_path, iter_config)
+            return format_weight_context(scorer)
+        except Exception as e:
+            logger.warning("Could not load weight context: %s", e)
+            return ""
+
+    def _load_active_prompts(self) -> dict[str, dict[str, str]]:
+        """Load active prompt overrides from the prompt_versions table.
+
+        Returns a dict suitable for ta_config["agent_prompts"]:
+          {agent_id: {"system_prompt": ...} | {"prompt_prefix": ...}}
+        """
+        try:
+            from stock_trading_system.agents.iterative.prompt_store import PromptStore
+
+            db_path = self._config.get("portfolio", {}).get("db_path", "data/portfolio.db")
+            store = PromptStore(db_path)
+            active = store.get_all_active_prompts()
+            if not active:
+                return {}
+
+            result: dict[str, dict[str, str]] = {}
+            for agent_id, row in active.items():
+                prompt_type = row.get("prompt_type", "system_prompt")
+                result[agent_id] = {prompt_type: row["prompt_text"]}
+            return result
+        except Exception as e:
+            logger.warning("Could not load active prompts: %s", e)
+            return {}
 
     def quick_screen(self, ticker: str, date: str) -> str:
         """Quick analysis returning just the signal (for batch screening).

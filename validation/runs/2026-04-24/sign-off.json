@@ -1,0 +1,36 @@
+{
+  "signed_at": "2026-04-25T08:02:47.120477+00:00",
+  "signer": "admin@local",
+  "report_file": "validation/runs/2026-04-24/report-go.json",
+  "report_hash_sha256": "381076b22b9879bdd4f3b3ee9d615917e9e69c9d739216993ba3b104553ceb45",
+  "go_no_go": "GO",
+  "note": "L0-L5 全绿 168/168 GO",
+  "levels_summary": {
+    "L0_smoke": {
+      "pass": 4,
+      "fail": 0
+    },
+    "L4_data": {
+      "pass": 10,
+      "fail": 0
+    },
+    "L1_basic": {
+      "pass": 31,
+      "fail": 0
+    },
+    "L3_integration": {
+      "pass": 16,
+      "fail": 0
+    },
+    "L5_adversarial": {
+      "pass": 20,
+      "fail": 0
+    },
+    "L2_functional": {
+      "pass": 87,
+      "fail": 0
+    }
+  },
+  "total_pass": 168,
+  "total_fail": 0
+}

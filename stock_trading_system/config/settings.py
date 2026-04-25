@@ -169,6 +169,36 @@ def _coerce_value(path: str, value):
     return "" if value is None else str(value)
 
 
+def save_config(updates: dict) -> dict:
+    """Merge *updates* into the user config YAML and reload.
+
+    Simple top-level key merge (used by LLM provider switch API).
+    """
+    import tempfile, shutil
+
+    _USER_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+
+    if _USER_CONFIG.exists():
+        with open(_USER_CONFIG) as f:
+            user_cfg = yaml.safe_load(f) or {}
+    else:
+        user_cfg = {}
+
+    merged = _deep_merge(user_cfg, updates)
+
+    fd, tmp = tempfile.mkstemp(dir=_USER_CONFIG_DIR, suffix=".yaml")
+    try:
+        with os.fdopen(fd, "w") as f:
+            yaml.dump(merged, f, default_flow_style=False, allow_unicode=True)
+        shutil.move(tmp, _USER_CONFIG)
+    except Exception:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+
+    return load_config()
+
+
 def update_user_config(updates: dict) -> dict:
     """Write a sub-tree of settings to the user config file.
 

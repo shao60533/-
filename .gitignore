@@ -1,9 +1,40 @@
 __pycache__/
 *.pyc
 *.pyo
-data/portfolio.db
+
+# Local data (per-user, never commit) — root-only, do not catch stock_trading_system/data/
+/data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
 reports_output/
+eval_results/
+
+# Auto-generated rollback snapshots
+.rollback_backup_*/
+
+# Env / secrets
 .env
+.env.local
+*_token.json
+schwab_*.json
+.schwab_creds
+
+# Python build artifacts
 *.egg-info/
 dist/
 build/
+.venv/
+venv/
+
+# Pytest / test caches
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editor
+.idea/
+*.swp
+.DS_Store

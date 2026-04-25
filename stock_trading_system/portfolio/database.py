@@ -103,6 +103,55 @@ class PortfolioDatabase:
                     steps_json TEXT
                 );
 
+                CREATE TABLE IF NOT EXISTS alert_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    alert_id INTEGER,
+                    ticker TEXT NOT NULL,
+                    condition TEXT NOT NULL,
+                    threshold REAL NOT NULL,
+                    current_price REAL,
+                    triggered_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS agent_scorecards (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    analysis_id INTEGER NOT NULL,
+                    agent_id TEXT NOT NULL,
+                    ticker TEXT NOT NULL,
+                    date TEXT NOT NULL,
+                    signal TEXT NOT NULL,
+                    price_at_call REAL,
+                    return_5d REAL,
+                    hit_5d INTEGER,
+                    return_20d REAL,
+                    hit_20d INTEGER,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_sc_agent_date
+                    ON agent_scorecards(agent_id, date DESC);
+                CREATE INDEX IF NOT EXISTS idx_sc_backfill
+                    ON agent_scorecards(date)
+                    WHERE return_5d IS NULL AND price_at_call IS NOT NULL;
+
+                CREATE TABLE IF NOT EXISTS prompt_versions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    agent_id TEXT NOT NULL,
+                    prompt_text TEXT NOT NULL,
+                    prompt_type TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    reasoning TEXT,
+                    status TEXT DEFAULT 'candidate',
+                    ab_session_id INTEGER,
+                    baseline_session_id INTEGER,
+                    sharpe_before REAL,
+                    sharpe_after REAL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_pv_agent_status
+                    ON prompt_versions(agent_id, status);
+
                 CREATE INDEX IF NOT EXISTS idx_analysis_ticker_time
                     ON analysis_history(ticker, created_at DESC);
             """)
@@ -258,6 +307,30 @@ class PortfolioDatabase:
         with self._get_conn() as conn:
             conn.execute("DELETE FROM alerts WHERE id = ?", (alert_id,))
 
+    def save_alert_trigger(self, alert_id: int, ticker: str, condition: str,
+                           threshold: float, current_price: float | None = None):
+        from datetime import datetime
+        with self._get_conn() as conn:
+            conn.execute(
+                """INSERT INTO alert_history (alert_id, ticker, condition, threshold, current_price, triggered_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (alert_id, ticker, condition, threshold, current_price,
+                 datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+            )
+
+    def get_alert_history(self, ticker: str | None = None, limit: int = 50) -> list[dict]:
+        with self._get_conn() as conn:
+            if ticker:
+                rows = conn.execute(
+                    "SELECT * FROM alert_history WHERE ticker = ? ORDER BY id DESC LIMIT ?",
+                    (ticker, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM alert_history ORDER BY id DESC LIMIT ?", (limit,)
+                ).fetchall()
+            return [dict(r) for r in rows]
+
     # ── Analysis History ────────────────────────────────────────────────
 
     def save_analysis(self, data: dict) -> int:
@@ -306,7 +379,7 @@ class PortfolioDatabase:
                     steps_raw,
                 ),
             )
-            return cur.lastrowid
+            return int(cur.lastrowid)
 
     def get_analysis_history(self, ticker: str | None = None, limit: int = 50) -> list[dict]:
         with self._get_conn() as conn:

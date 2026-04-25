@@ -1,0 +1,116 @@
+{
+  "started_at": "2026-04-24T15:09:23.970525Z",
+  "finished_at": "2026-04-24T15:09:23.988760Z",
+  "db_path": "data/portfolio.db",
+  "levels": {
+    "L0_smoke": {
+      "level": "L0_smoke",
+      "pass": 4,
+      "fail": 0,
+      "duration_sec": 0.0,
+      "details": {
+        "pass": [
+          "users table exists",
+          "positions table exists",
+          "tasks table exists",
+          "task_events table exists"
+        ],
+        "fail": []
+      }
+    },
+    "L4_data": {
+      "level": "L4_data",
+      "pass": 9,
+      "fail": 0,
+      "duration_sec": 0.0,
+      "details": {
+        "pass": [
+          {
+            "name": "positions_have_owner",
+            "expected": 0,
+            "actual": 0
+          },
+          {
+            "name": "alerts_have_owner",
+            "expected": 0,
+            "actual": 0
+          },
+          {
+            "name": "paper_sessions_have_owner",
+            "expected": 0,
+            "actual": 0
+          },
+          {
+            "name": "tasks_created_by_not_string",
+            "expected": 0,
+            "actual": 0
+          },
+          {
+            "name": "analysis_have_decision",
+            "expected": 0,
+            "actual": 0
+          },
+          {
+            "name": "invites_used_by_valid",
+            "expected": 0,
+            "actual": 0
+          },
+          {
+            "name": "task_events_user_valid",
+            "expected": 0,
+            "actual": 0
+          },
+          {
+            "name": "paper_events_session_valid",
+            "expected": 0,
+            "actual": 0
+          },
+          {
+            "name": "no_regex_literal_in_plans",
+            "expected": 0,
+            "actual": 0
+          }
+        ],
+        "fail": [],
+        "skipped": [
+          {
+            "name": "plans_have_fingerprint",
+            "error": "no such column: fingerprint"
+          }
+        ],
+        "go": true,
+        "checked_at": "2026-04-24T15:09:23.988612Z"
+      }
+    },
+    "L1_basic": {
+      "level": "L1_basic",
+      "pass": 0,
+      "fail": 0,
+      "duration_sec": 0,
+      "status": "manual_required"
+    },
+    "L2_functional": {
+      "level": "L2_functional",
+      "pass": 0,
+      "fail": 0,
+      "duration_sec": 0,
+      "status": "manual_required"
+    },
+    "L3_integration": {
+      "level": "L3_integration",
+      "pass": 0,
+      "fail": 0,
+      "duration_sec": 0,
+      "status": "manual_required"
+    },
+    "L5_adversarial": {
+      "level": "L5_adversarial",
+      "pass": 0,
+      "fail": 0,
+      "duration_sec": 0,
+      "status": "manual_required"
+    }
+  },
+  "failures": [],
+  "go_no_go": "GO"
+}

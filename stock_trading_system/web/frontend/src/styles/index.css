@@ -1,0 +1,166 @@
+@import "tailwindcss";
+
+/* Dark-mode class strategy: apply `.dark` on <html> */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ═══════════════════════════════════════════════════════════════
+   Design Tokens — aligned with stock-trading-system dark theme
+   Ported from style.css and mobile-optimization tokens.
+   Uses oklch for modern color space + better perceptual consistency.
+   ═══════════════════════════════════════════════════════════════ */
+@theme {
+  /* Typography */
+  --font-sans: "Inter", "SF Pro Text", -apple-system, BlinkMacSystemFont, "Helvetica Neue", "PingFang SC", sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", "Menlo", monospace;
+
+  /* Responsive type scale via clamp() (from mobile-optimization.md) */
+  --text-xs:   clamp(10px, 2.4vw, 11px);
+  --text-sm:   clamp(12px, 3.2vw, 13px);
+  --text-base: clamp(13px, 3.6vw, 14px);
+  --text-md:   clamp(14px, 4vw, 16px);
+  --text-lg:   clamp(16px, 4.8vw, 18px);
+  --text-xl:   clamp(18px, 5.6vw, 22px);
+  --text-2xl:  clamp(22px, 7vw, 40px);
+
+  /* Core palette (dark-first) */
+  --color-bg-primary:      oklch(10% 0.015 260);
+  --color-bg-secondary:    oklch(14% 0.02 260);
+  --color-bg-card:         oklch(16% 0.023 260);
+  --color-bg-elevated:     oklch(18% 0.025 260);
+
+  --color-border:          oklch(25% 0.03 255);
+  --color-border-bright:   oklch(35% 0.04 255);
+
+  --color-text-primary:    oklch(96% 0.01 255);
+  --color-text-secondary:  oklch(70% 0.02 255);
+  --color-text-muted:      oklch(55% 0.02 255);
+
+  --color-accent-blue:     oklch(68% 0.18 250);
+  --color-accent-green:    oklch(70% 0.17 150);
+  --color-accent-red:      oklch(65% 0.22 25);
+  --color-accent-yellow:   oklch(82% 0.16 85);
+
+  --color-signal-buy:      oklch(70% 0.17 150);
+  --color-signal-sell:     oklch(65% 0.22 25);
+  --color-signal-hold:     oklch(72% 0.13 95);
+
+  /* shadcn-ish semantic tokens */
+  --color-background:      var(--color-bg-primary);
+  --color-foreground:      var(--color-text-primary);
+  --color-card:            var(--color-bg-card);
+  --color-card-foreground: var(--color-text-primary);
+  --color-popover:         var(--color-bg-elevated);
+  --color-popover-foreground: var(--color-text-primary);
+  --color-primary:         var(--color-accent-blue);
+  --color-primary-foreground: oklch(98% 0.01 255);
+  --color-secondary:       var(--color-bg-secondary);
+  --color-secondary-foreground: var(--color-text-primary);
+  --color-muted:           var(--color-bg-secondary);
+  --color-muted-foreground: var(--color-text-secondary);
+  --color-destructive:     var(--color-accent-red);
+  --color-destructive-foreground: oklch(98% 0.01 255);
+  --color-input:           oklch(20% 0.025 255);
+  --color-ring:            var(--color-accent-blue);
+
+  /* Radius */
+  --radius-sm:  4px;
+  --radius-md:  8px;
+  --radius-lg:  12px;
+  --radius-xl:  16px;
+}
+
+/* Global base */
+html, body, #root {
+  height: 100%;
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body { margin: 0; font-size: var(--text-base); }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 10px; }
+::-webkit-scrollbar-thumb:hover { background: var(--color-border-bright); }
+
+/* Focus visible (a11y) */
+*:focus-visible {
+  outline: 2px solid var(--color-ring);
+  outline-offset: 2px;
+}
+
+/* Selection */
+::selection {
+  background: color-mix(in oklch, var(--color-accent-blue) 40%, transparent);
+  color: var(--color-text-primary);
+}
+
+/* Subtle grid bg */
+.bg-grid {
+  background-image:
+    linear-gradient(to right, color-mix(in oklch, var(--color-border) 40%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in oklch, var(--color-border) 40%, transparent) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+/* Animations */
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.55; transform: scale(1.15); }
+}
+.animate-pulse-dot { animation: pulse-dot 1.8s ease-in-out infinite; }
+
+@keyframes slide-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.animate-slide-up { animation: slide-up 280ms ease-out; }
+
+/* ═══ Mobile Tokens (from mobile-optimization.md) ═══ */
+:root {
+  --fs-stat: clamp(16px, 4.6vw, 22px);
+  --fs-hero: clamp(22px, 7vw, 40px);
+  --touch-min: 44px;
+  --page-pad-mobile: 12px;
+}
+
+/* ═══ Form row mobile: single-column at ≤575.98px ═══ */
+@media (max-width: 575.98px) {
+  .form-row-mobile {
+    flex-direction: column !important;
+    align-items: stretch !important;
+    gap: 12px !important;
+  }
+  .form-row-mobile > * {
+    width: 100% !important;
+    flex: none !important;
+  }
+  .form-row-mobile button,
+  .form-row-mobile input,
+  .form-row-mobile select {
+    min-height: var(--touch-min);
+  }
+}
+
+/* ═══ Grid single-column collapse at ≤575.98px ═══ */
+@media (max-width: 575.98px) {
+  .grid-collapse-mobile {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+/* ═══ Tabs scrollable (horizontal scroll for many tabs) ═══ */
+.tabs-scrollable {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scroll-snap-type: x proximity;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+.tabs-scrollable::-webkit-scrollbar { display: none; }

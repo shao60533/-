@@ -371,7 +371,11 @@ def monitor():
 @click.option("--debug", is_flag=True, help="Enable debug mode")
 def web(host, port, debug):
     """Start web dashboard server."""
+    import os
     from stock_trading_system.web.app import run_app
+
+    if port is None:
+        port = int(os.environ.get("PORT", 5000))
 
     console.print(f"[bold cyan]Starting web dashboard at http://{host}:{port}[/bold cyan]")
     run_app(host=host, port=port, debug=debug)

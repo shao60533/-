@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>登录 — StockAI</title>
+    <link href="/static/css/style.css" rel="stylesheet">
+    <style>
+        body { display:flex; align-items:center; justify-content:center; min-height:100vh; background:var(--bg-primary); }
+        .auth-card { background:var(--bg-card); border:1px solid var(--border); border-radius:12px; padding:40px 32px; width:100%; max-width:400px; }
+        .auth-title { font-size:24px; font-weight:700; text-align:center; margin-bottom:24px; color:var(--accent-blue); }
+        .auth-input { width:100%; padding:12px 16px; margin-bottom:16px; background:var(--bg-secondary); color:var(--text-primary); border:1px solid var(--border); border-radius:8px; font-size:14px; }
+        .auth-input:focus { outline:none; border-color:var(--accent-blue); }
+        .auth-btn { width:100%; padding:14px; background:var(--accent-blue); color:#fff; border:none; border-radius:8px; font-size:16px; font-weight:600; cursor:pointer; }
+        .auth-btn:hover { opacity:0.9; }
+        .auth-link { text-align:center; margin-top:16px; font-size:13px; color:var(--text-secondary); }
+        .auth-link a { color:var(--accent-blue); text-decoration:none; }
+        .auth-error { color:var(--accent-red); font-size:13px; text-align:center; margin-bottom:12px; display:none; }
+    </style>
+</head>
+<body>
+    <div class="auth-card">
+        <div class="auth-title"><i class="fas fa-bolt"></i> StockAI 登录</div>
+        <div class="auth-error" id="login-error"></div>
+        <input type="email" class="auth-input" id="login-email" placeholder="邮箱" autocomplete="email">
+        <input type="password" class="auth-input" id="login-password" placeholder="密码" autocomplete="current-password">
+        <button class="auth-btn" onclick="doLogin()">登录</button>
+        <div class="auth-link">没有账号？<a href="/register">注册</a></div>
+    </div>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" rel="stylesheet">
+    <script>
+    async function doLogin() {
+        const email = document.getElementById('login-email').value.trim();
+        const password = document.getElementById('login-password').value;
+        const errEl = document.getElementById('login-error');
+        errEl.style.display = 'none';
+        try {
+            const resp = await fetch('/api/auth/login', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({email, password}),
+            });
+            const data = await resp.json();
+            if (!resp.ok) {
+                errEl.textContent = data.message || '登录失败';
+                errEl.style.display = 'block';
+                return;
+            }
+            const params = new URLSearchParams(location.search);
+            location.href = params.get('next') || '/';
+        } catch (e) {
+            errEl.textContent = '网络错误';
+            errEl.style.display = 'block';
+        }
+    }
+    document.getElementById('login-password').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+    </script>
+</body>
+</html>

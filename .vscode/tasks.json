@@ -1,0 +1,39 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Web: run (no debugger)",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python",
+      "args": [
+        "-m", "stock_trading_system.main", "web",
+        "--host", "0.0.0.0", "--port", "5000", "--debug"
+      ],
+      "problemMatcher": [],
+      "group": { "kind": "build", "isDefault": true },
+      "presentation": {
+        "panel": "dedicated",
+        "reveal": "always",
+        "clear": true
+      }
+    },
+    {
+      "label": "Tests: all",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python",
+      "args": ["-m", "pytest", "tests/", "-v"],
+      "problemMatcher": [],
+      "group": { "kind": "test", "isDefault": true },
+      "presentation": { "panel": "dedicated", "reveal": "always" }
+    },
+    {
+      "label": "Tests: frontend (Node)",
+      "type": "shell",
+      "command": "node",
+      "args": ["tests/frontend/test_tv_symbol.js"],
+      "problemMatcher": [],
+      "group": "test",
+      "presentation": { "panel": "dedicated", "reveal": "always" }
+    }
+  ]
+}

@@ -1,0 +1,92 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug Web (Flask + Socket.IO)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "stock_trading_system.main",
+      "args": ["web", "--host", "0.0.0.0", "--port", "5000"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "env": {
+        "PYTHONUNBUFFERED": "1",
+        "FLASK_DEBUG": "0"
+      },
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "presentation": {
+        "group": "10_app",
+        "order": 1
+      }
+    },
+    {
+      "name": "Debug Web (with --debug flag, no debugger)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "stock_trading_system.main",
+      "args": ["web", "--host", "0.0.0.0", "--port", "5000", "--debug"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "presentation": {
+        "group": "10_app",
+        "order": 2
+      }
+    },
+    {
+      "name": "Debug: Current Test File",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": ["${file}", "-v", "-s"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "presentation": {
+        "group": "20_test",
+        "order": 1
+      }
+    },
+    {
+      "name": "Debug: All Tests",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": ["tests/", "-v"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "presentation": {
+        "group": "20_test",
+        "order": 2
+      }
+    },
+    {
+      "name": "Debug: CLI analyze <ticker>",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "stock_trading_system.main",
+      "args": ["analyze", "${input:ticker}"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "presentation": {
+        "group": "30_cli",
+        "order": 1
+      }
+    }
+  ],
+  "inputs": [
+    {
+      "id": "ticker",
+      "type": "promptString",
+      "description": "Stock ticker (e.g. AAPL, 600519)",
+      "default": "AAPL"
+    }
+  ]
+}

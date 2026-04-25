@@ -1,0 +1,153 @@
+# 工程原则（Engineering Principles）
+
+| 项 | 值 |
+|---|---|
+| 版本 | v1.0 |
+| 日期 | 2026-04-19 |
+| 适用范围 | 本仓库所有新增技术方案（[docs/design/](design/)）和实施代码 |
+
+## 1. 核心原则：复用优先
+
+> **"能复用就复用，能从项目中克隆成熟代码就克隆，自己写的越少越好。"**
+
+自写代码是**最后手段**，不是起点。每一行自写代码都有持续维护成本：bug、文档、测试、安全补丁。
+
+## 2. 优先级阶梯
+
+新增功能前，按以下顺序考察可用方案，**停在最上层可用的那一级**：
+
+| 级别 | 形式 | 成本 | 适用情形 |
+|---|---|---|---|
+| **L0** | **直接调用项目内已有模块** | 最低 | 功能已在本仓库某处实现；只需 import |
+| **L1** | **直接使用依赖库** | 低 | 有成熟 pip/npm 包，license 兼容，活跃维护 |
+| **L2** | **Vendor / fork 成熟开源项目** | 中 | 项目契合度高、license 允许、需要本地化 |
+| **L3** | **clean-room 重写** | 高 | 参考开源项目的设计但 license 不允许直接复制 |
+| **L4** | **自写** | 最高 | 以上均不可行，或需求极度定制 |
+
+## 3. 应用规则
+
+### 3.1 任何新设计必须回答
+
+- **L0 复用**：本项目哪些模块可以直接/稍改 import？（至少列 3 个检查点）
+- **L1 库**：有哪些成熟库能省掉我这段代码？（明确列出，哪怕最后选 L4 也要说明为何弃用）
+- **L2/L3 开源参考**：有哪些开源项目解决了 80%？license 如何？
+- **L4 自写部分**：剩下必须自写的是哪些不可避免的胶水/业务逻辑？
+
+### 3.2 技术方案文档约束
+
+每份 [docs/design/](design/) 文档的正文中**必须**有一节 `§ 复用 / Reuse` 明确列出：
+
+```markdown
+## § 复用 / Reuse
+
+### L0 项目内复用
+- [existing/module.py](../../path) — 用于 X 场景
+
+### L1 依赖库
+- `library-name>=X` — 替代自写 Y
+
+### L2/L3 开源参考
+- [repo/url](https://...) — license Z；采取 vendor / clean-room / 仅思路
+
+### L4 自写（必要 & 无替代）
+- 具体功能 + 行数估算 + 无替代的理由
+```
+
+### 3.3 Code review 检查
+
+PR diff 超过 **200 行纯新增代码**时，reviewer 必须问：
+
+> "这 200 行有没有 60% 可以被 L0/L1/L2 替代？"
+
+若答不出清晰理由，PR 退回。
+
+## 4. 反模式
+
+以下写法均视为**违反本原则**：
+
+- ❌ "顺手重写一个简单的 retry 装饰器"（→ `tenacity`）
+- ❌ "自己封一个 JSON schema 验证"（→ `pydantic` / `jsonschema`）
+- ❌ "写个轻量 HTTP 客户端"（→ `httpx` / `requests`）
+- ❌ "实现个简单的任务队列"（→ 现有 `task_manager` / Celery / RQ）
+- ❌ "手动解析 LLM JSON 输出"（→ `model.with_structured_output(Schema)`）
+- ❌ "写个简单的表格换卡片视图组件"（先看 Bootstrap utility）
+- ❌ "新建个配置加载器"（→ 已有 [settings.py](../stock_trading_system/config/settings.py)）
+
+## 5. 审计矩阵（2026-04-19 截止）
+
+对最近 4 份设计文档的复用检查：
+
+### 5.1 [screener-v3.md](design/screener-v3.md) —— 需要修订（重点）
+
+| 原方案（自写） | L0/L1 可替代项 | 节省 | 状态 |
+|---|---|---|---|
+| 自写 `_llm_reason` 逐 agent 手动解析 JSON | **`ChatOpenAI.with_structured_output(GuruSignal)`**（LangChain 原生 + Pydantic 2）| 每大师 ~30 LOC × 14 = **~420 LOC** | ⚠️ **必改** |
+| 自写 `concurrency.py` 指数退避重试 | **`tenacity`**（`@retry(stop=stop_after_attempt(3), wait=wait_exponential())`）| ~30 LOC | ⚠️ **必改** |
+| 自写 `roundtable.py` 双大师 2 轮辩论 | **复用 [TradingAgents bull_researcher.py + bear_researcher.py + conservative_debator.py + reflection.py](/opt/anaconda3/lib/python3.12/site-packages/tradingagents/agents/)** 作辩论基底，仅替换角色身份 prompt | ~150 LOC | ⚠️ **必改** |
+| 自写 `GuruDataBundle` dataclass | 扩展现有 [v2/data_helper.py](../stock_trading_system/screener/v2/data_helper.py)，不另建 | 小 | 建议改 |
+| 自写 `stream.py` WebSocket 广播 | 复用现有任务中心的 WebSocket 推送路径（[tasks/workers.py](../stock_trading_system/tasks/workers.py) 已有进度推送）| 中 | 建议改 |
+| 14 大师 clean-room 重写 | 尝试 L2：[KRSHH/ritadel](https://github.com/KRSHH/ritadel) MIT（包含 7 位大师）—— **但其 MIT 对从 virattt copy 来的代码无法合法授予**，法律风险仍在；保留 clean-room | 不变 | 保留 |
+
+**结论**：screener-v3.md 必须更新 §4.1 / §4.3 / §4.9 三节，把三项"自写"降级为复用。预计自写代码从 ~1200 LOC 降到 ~700 LOC（-40%）。
+
+### 5.2 [multi-tenant.md](design/multi-tenant.md) —— 基本合理，小改进
+
+| 原方案 | 可替代项 | 状态 |
+|---|---|---|
+| 自写 auth 模块（session/decorators） | 考虑过 **Flask-Login**，因规模小拒绝 | 明示 tradeoff，保留 |
+| `bcrypt` | 已用 L1 | ✓ |
+| `Flask-WTF` CSRF | 已用 L1 | ✓ |
+| 邀请码用 `secrets.token_urlsafe` | L1 标准库 | ✓ |
+| 邮箱格式校验未明确 | 建议 L1 `email-validator` | 小改 |
+| 迁移脚本自写 sqlite3 | Alembic 通常 overkill（项目非 SQLAlchemy）| 保留 |
+
+**结论**：基本合理。补充 `email-validator` 到依赖即可，不出正式修订。
+
+### 5.3 [mobile-optimization.md](design/mobile-optimization.md) —— 合理，记录 tradeoff
+
+| 原方案 | 可替代 | 状态 |
+|---|---|---|
+| `.form-row-mobile` | Bootstrap 5 `col-12 col-md-*` | 现有 markup 用 `col-6`，不改 markup 只加 media query → 合理 |
+| `.table-to-cards` | Bootstrap `.table-responsive`（横滑）| 不等价（要卡片化降级），保留 |
+| `.tabs-scrollable` | Bootstrap Nav 无 scroll-snap | 保留 |
+| `.collapse-row` | Bootstrap `data-bs-toggle="collapse"` | **可以改用 Bootstrap collapse API 承载，省~20 LOC JS** | 建议改 |
+| `.chip-row` | Badge + flex-wrap | 需水平滚动 snap，保留 |
+| `.btn-group-wrap` | Bootstrap `.btn-group` + `flex-wrap` utility | **可用 Bootstrap `d-flex flex-wrap`** | 建议改 |
+| `.num-responsive` | 纯 CSS `clamp()` | 标准，保留 |
+
+**结论**：`.collapse-row` 和 `.btn-group-wrap` 两处可降级为 Bootstrap 原生。非阻塞性，可在实施时顺手调整。
+
+### 5.4 [model-switch.md](design/model-switch.md) —— 保留，注明理由
+
+| 原方案 | 可替代 | 状态 |
+|---|---|---|
+| 自写 `llm/router.py` | **LangChain `init_chat_model("qwen/qwen-plus")`** 支持 provider-string init | 本项目调用点最终 delegate 到 TradingAgents factory，LangChain init 帮不上；**保留**，但若未来脱离 TradingAgents 可重构 |
+| `QwenTextClient` / `GeminiTextClient` | `langchain_openai.ChatOpenAI` / `langchain_google_genai.ChatGoogleGenerativeAI` | 其实这两个类就是 L0 —— 我们可以让 `QwenTextClient` 内部直接持有 `ChatOpenAI` 而不是新起 OpenAI client | 小改 |
+
+**结论**：主体合理，但 client.py 内部可以更薄（直接持有 LangChain 的 ChatOpenAI 实例）。作为实施阶段的优化项。
+
+## 6. 本次审计产生的修订动作
+
+| 文档 | 动作 | 优先级 |
+|---|---|---|
+| [design/screener-v3.md](design/screener-v3.md) | 新增 §13 "复用 / Reuse"；修订 §4.1（with_structured_output）/ §4.3（tenacity）/ §4.9（TradingAgents 辩论图复用）| **P0** |
+| [design/mobile-optimization.md](design/mobile-optimization.md) | 实施时优先尝试 Bootstrap collapse / flex utility；不改文档 | P2 |
+| [design/multi-tenant.md](design/multi-tenant.md) | requirements.txt 加 `email-validator`；不改文档 | P2 |
+| [design/model-switch.md](design/model-switch.md) | 实施优化项；不改文档 | P2 |
+
+## 7. 未来文档作者检查清单
+
+创建新 `docs/design/*.md` 时自检：
+
+- [ ] 文档正文含 `§ 复用 / Reuse` 小节，四级全部列出
+- [ ] L0 至少列 3 个本仓库检查位置
+- [ ] L1 列出至少 5 个候选库（哪怕最后不用）
+- [ ] L2/L3 至少一条开源项目检索证据（"找过、没合适" 也算）
+- [ ] 自写部分每块说明"为何不能用上面任何一级"
+- [ ] changelog 条目最后一列含 "复用比例：N%"（可选但推荐）
+
+## 8. 版本历史
+
+| 版本 | 日期 | 变更 |
+|---|---|---|
+| v1.0 | 2026-04-19 | 初版：复用优先原则 + 4 级阶梯 + 最近 4 份设计审计矩阵 + 对 screener-v3 产生 3 处 P0 修订 |

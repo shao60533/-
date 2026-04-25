@@ -1,10 +1,14 @@
 """Flask web application with API routes and WebSocket support."""
 
+import json
+import os
 import threading
-from flask import Flask, render_template, jsonify, request
+from pathlib import Path
+
+from flask import Flask, render_template, jsonify, request, redirect, g
 from flask_socketio import SocketIO
 
-from stock_trading_system.config import load_config, get_config
+from stock_trading_system.config import load_config, get_config, save_config
 from stock_trading_system.config.settings import update_user_config, WRITABLE_SETTING_PATHS
 from stock_trading_system.utils import get_logger
 
@@ -22,6 +26,12 @@ _report_gen = None
 _strategy_engine = None
 _scheduler = None
 _scheduler_thread = None
+_paper_store = None
+_task_store = None
+_task_manager = None
+_local_cache = None
+_data_router = None
+_cleanup_scheduler = None
 
 
 def _get_portfolio_mgr():
@@ -127,19 +137,448 @@ def _reset_config_dependent_singletons(paths: list[str]):
     _strategy_engine = None
 
 
+def _get_paper_store():
+    global _paper_store
+    if _paper_store is None:
+        from stock_trading_system.strategy.paper_trader import PaperTradeStore
+        cfg = get_config()
+        db_path = cfg.get("portfolio", {}).get("db_path", "data/portfolio.db")
+        _paper_store = PaperTradeStore(db_path)
+    return _paper_store
+
+
+def _get_task_store():
+    global _task_store
+    if _task_store is None:
+        from stock_trading_system.tasks.task_store import TaskStore
+        cfg = get_config()
+        db_path = cfg.get("portfolio", {}).get("db_path", "data/portfolio.db")
+        _task_store = TaskStore(db_path)
+    return _task_store
+
+
+def _get_task_manager():
+    """Singleton TaskManager. Workers are registered on first access."""
+    global _task_manager
+    if _task_manager is None:
+        from stock_trading_system.tasks.task_manager import TaskManager
+        cfg = get_config()
+        tasks_cfg = cfg.get("tasks", {}) or {}
+        _task_manager = TaskManager(
+            _get_task_store(),
+            socketio=socketio,
+            max_workers=int(tasks_cfg.get("max_workers", 3)),
+            default_idempotency_window=int(tasks_cfg.get("idempotency_window", 60)),
+        )
+        _register_default_workers(_task_manager)
+    return _task_manager
+
+
+def _register_default_workers(tm):
+    """Register worker functions for all known task types."""
+    from stock_trading_system.tasks.workers import (
+        WorkerDeps, register_default_workers,
+    )
+    deps = WorkerDeps(
+        get_analyzer=_get_analyzer,
+        get_screener=_get_screener,
+        get_report_gen=_get_report_gen,
+        get_strategy_engine=_get_strategy_engine,
+        get_portfolio=_get_portfolio_mgr,
+        get_router=_get_data_router,
+        socketio=socketio,
+    )
+    register_default_workers(tm, deps)
+
+
+def _get_local_cache():
+    global _local_cache
+    if _local_cache is None:
+        from stock_trading_system.data.local_cache import LocalCache
+        cfg = get_config()
+        db_path = cfg.get("portfolio", {}).get("db_path", "data/portfolio.db")
+        cache_path = db_path.replace("portfolio.db", "cache.db")
+        _local_cache = LocalCache(cache_path, config=cfg)
+    return _local_cache
+
+
+def _get_data_router():
+    """Lazy singleton DataRouter (Qwen-first with LocalCache)."""
+    global _data_router
+    if _data_router is None:
+        from stock_trading_system.data.data_router import DataRouter
+        _data_router = DataRouter(get_config(), cache=_get_local_cache())
+    return _data_router
+
+
+def _get_cleanup_scheduler():
+    """Lazy singleton task+cache cleanup scheduler."""
+    global _cleanup_scheduler
+    if _cleanup_scheduler is None:
+        from stock_trading_system.tasks.cleanup import TaskCleanupScheduler
+        cfg = get_config()
+        tasks_cfg = cfg.get("tasks", {}) or {}
+        _cleanup_scheduler = TaskCleanupScheduler(
+            store=_get_task_store(),
+            retention_days=int(tasks_cfg.get("retention_days", 30)),
+            interval_seconds=int(tasks_cfg.get("cleanup_interval", 6 * 3600)),
+            cache=_get_local_cache(),
+        )
+    return _cleanup_scheduler
+
+
+def _probe_providers() -> dict:
+    """Quick reachability check for each enabled provider."""
+    import time as _time
+    cfg = get_config()
+    providers = cfg.get("providers", {}) or {}
+    results: dict = {}
+
+    def _probe(name, fn):
+        start = _time.perf_counter()
+        try:
+            ok = bool(fn())
+            return {"ok": ok,
+                    "latency_ms": int((_time.perf_counter() - start) * 1000),
+                    "error": None if ok else "no data"}
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False,
+                    "latency_ms": int((_time.perf_counter() - start) * 1000),
+                    "error": str(e)[:200]}
+
+    try:
+        router = _get_data_router()
+        if router.qwen.enabled:
+            results["qwen"] = _probe("qwen", lambda: router.qwen.get_stock_price("AAPL"))
+    except Exception:
+        pass
+
+    if providers.get("yfinance_enabled", True):
+        try:
+            from stock_trading_system.data.yfinance_provider import YFinanceProvider
+            yf = YFinanceProvider()
+            results["yfinance"] = _probe("yfinance", lambda: yf.get_stock_price("AAPL"))
+        except Exception as e:
+            results["yfinance"] = {"ok": False, "error": str(e)[:200]}
+
+    if providers.get("akshare_enabled", True):
+        try:
+            from stock_trading_system.data.akshare_provider import AkShareProvider
+            ak = AkShareProvider()
+            results["akshare"] = _probe("akshare", lambda: ak.get_stock_price("600519"))
+        except Exception as e:
+            results["akshare"] = {"ok": False, "error": str(e)[:200]}
+
+    if providers.get("polygon_enabled", False):
+        try:
+            from stock_trading_system.data.polygon_provider import PolygonProvider
+            pg = PolygonProvider(cfg)
+            results["polygon"] = _probe("polygon", lambda: pg.get_stock_price("AAPL"))
+        except Exception as e:
+            results["polygon"] = {"ok": False, "error": str(e)[:200]}
+
+    if providers.get("ib_enabled", False):
+        ib_cfg = cfg.get("ib", {}) or {}
+        results["ib"] = {
+            "ok": False, "latency_ms": 0,
+            "error": "IB requires local TWS; not testable from a cloud probe.",
+            "host": ib_cfg.get("host"), "port": ib_cfg.get("port"),
+        }
+    return results
+
+
+def _resolve_secret_key() -> str:
+    """Resolve Flask SECRET_KEY: env > file > auto-generate.
+
+    Priority:
+        1. FLASK_SECRET_KEY env var
+        2. ~/.stock_trading/flask_secret.key file
+        3. Auto-generate + persist to file (first-run)
+    """
+    env_key = os.environ.get("FLASK_SECRET_KEY", "").strip()
+    if env_key:
+        return env_key
+
+    key_path = Path.home() / ".stock_trading" / "flask_secret.key"
+    if key_path.exists():
+        stored = key_path.read_text().strip()
+        if stored:
+            return stored
+
+    # Auto-generate on first run
+    import secrets
+    new_key = secrets.token_hex(32)
+    key_path.parent.mkdir(parents=True, exist_ok=True)
+    key_path.write_text(new_key)
+    key_path.chmod(0o600)
+    logger.info(
+        "Generated Flask SECRET_KEY → %s (chmod 600). "
+        "Back this up or set FLASK_SECRET_KEY env var.",
+        key_path,
+    )
+    return new_key
+
+
 def create_app(config_path=None):
     """Create and configure the Flask application."""
     app = Flask(__name__)
-    app.config["SECRET_KEY"] = "stock-trading-system-secret"
+    app.config["SECRET_KEY"] = _resolve_secret_key()
+    app.config["SESSION_COOKIE_HTTPONLY"] = True
+    app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+    app.config["SESSION_COOKIE_SECURE"] = not app.debug
+
+    from datetime import timedelta
+    app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=30)
 
     load_config(config_path)
     socketio.init_app(app, cors_allowed_origins="*", async_mode="threading")
 
+    # ── Auth setup ─────────────────────────────────────────────────────
+
+    cfg = get_config()
+    db_path = cfg.get("portfolio", {}).get("db_path", "data/portfolio.db")
+
+    from stock_trading_system.auth.repository import UserRepository
+    from stock_trading_system.auth.session import load_current_user, login_user, logout_user
+    from stock_trading_system.auth.password import verify_password, validate_password_strength
+    from stock_trading_system.auth.invite import InviteCodeManager
+    from stock_trading_system.auth.bootstrap import ensure_multi_tenant_ready
+
+    _user_repo = UserRepository(db_path)
+    _invite_mgr = InviteCodeManager(db_path)
+    _multi_tenant_ready = ensure_multi_tenant_ready(db_path)
+
+    # Public paths that don't require authentication
+    PUBLIC_PREFIXES = ("/static/", "/login", "/register", "/reset",
+                       "/api/auth/login", "/api/auth/register", "/api/auth/reset",
+                       "/api/auth/invites-available",
+                       "/health", "/api/health", "/api/seed")
+
+    @app.before_request
+    def enforce_auth():
+        """Load current user and enforce authentication."""
+        if _multi_tenant_ready:
+            load_current_user(_user_repo)
+        else:
+            # Single-user fallback: no users table yet
+            from flask import g
+            g.user = None
+            return  # allow all access in non-migrated mode
+
+        from flask import g
+        path = request.path
+        if any(path.startswith(p) for p in PUBLIC_PREFIXES):
+            return
+        if g.user is None:
+            if path.startswith("/api/"):
+                return jsonify({"error": "unauthorized"}), 401
+            return redirect("/login?next=" + path)
+
+    # ── Auth API Routes ────────────────────────────────────────────────
+
+    @app.route("/login")
+    def login_page():
+        return render_template("login.html")
+
+    @app.route("/register")
+    def register_page():
+        return render_template("register.html")
+
+    @app.route("/api/auth/login", methods=["POST"])
+    def api_login():
+        body = request.get_json(silent=True) or {}
+        email = (body.get("email") or "").strip().lower()
+        password = body.get("password") or ""
+        if not email or not password:
+            return jsonify({"error": "invalid_credentials", "message": "请输入邮箱和密码"}), 401
+
+        user = _user_repo.find_by_email(email)
+        if not user or not verify_password(password, user.password_hash):
+            return jsonify({"error": "invalid_credentials", "message": "邮箱或密码错误"}), 401
+
+        login_user(user.id)
+        _user_repo.update_last_login(user.id)
+        return jsonify({"user": {"id": user.id, "email": user.email,
+                                  "display_name": user.display_name, "role": user.role}})
+
+    @app.route("/api/auth/register", methods=["POST"])
+    def api_register():
+        body = request.get_json(silent=True) or {}
+        invite_code = body.get("invite_code") or ""
+        email = (body.get("email") or "").strip().lower()
+        password = body.get("password") or ""
+        display_name = body.get("display_name")
+
+        # Validate invite code
+        err = _invite_mgr.validate(invite_code)
+        if err:
+            return jsonify({"error": err, "message": f"邀请码无效: {err}"}), 400
+
+        # Validate email
+        if not email or "@" not in email:
+            return jsonify({"error": "invalid_email", "message": "请输入有效邮箱"}), 400
+        if _user_repo.find_by_email(email):
+            return jsonify({"error": "email_taken", "message": "该邮箱已注册"}), 400
+
+        # Validate password
+        pwd_err = validate_password_strength(password)
+        if pwd_err:
+            return jsonify({"error": "password_weak", "message": pwd_err}), 400
+
+        # Create user + redeem invite
+        user = _user_repo.create(email, password, display_name)
+        _invite_mgr.redeem(invite_code, user.id)
+        login_user(user.id)
+
+        return jsonify({"user": {"id": user.id, "email": user.email,
+                                  "display_name": user.display_name, "role": user.role}})
+
+    @app.route("/api/auth/logout", methods=["POST"])
+    def api_logout():
+        logout_user()
+        return jsonify({"ok": True})
+
+    @app.route("/api/auth/me")
+    def api_auth_me():
+        from flask import g
+        u = g.get("user")
+        if u is None:
+            return jsonify({"user": None})
+        return jsonify({"user": {"id": u.id, "email": u.email,
+                                  "display_name": u.display_name, "role": u.role}})
+
+    @app.route("/api/auth/invites-available")
+    def api_invites_available():
+        """Public list of currently redeemable invite codes (for the register page)."""
+        return jsonify({"codes": _invite_mgr.list_available(limit=50)})
+
+    @app.route("/api/auth/change-password", methods=["POST"])
+    def api_change_password():
+        from flask import g
+        u = g.get("user")
+        if u is None:
+            return jsonify({"error": "unauthorized"}), 401
+        body = request.get_json(silent=True) or {}
+        old = body.get("old_password") or ""
+        new = body.get("new_password") or ""
+        if not verify_password(old, u.password_hash):
+            return jsonify({"error": "wrong_password", "message": "当前密码错误"}), 401
+        pwd_err = validate_password_strength(new)
+        if pwd_err:
+            return jsonify({"error": "password_weak", "message": pwd_err}), 400
+        _user_repo.update_password(u.id, new)
+        return jsonify({"ok": True})
+
+    # ── Admin Routes ───────────────────────────────────────────────────
+
+    from stock_trading_system.auth.decorators import admin_required
+
+    @app.route("/api/admin/invites", methods=["GET"])
+    @admin_required
+    def api_admin_invites_list():
+        return jsonify({"invites": _invite_mgr.list_all()})
+
+    @app.route("/api/admin/invites", methods=["POST"])
+    @admin_required
+    def api_admin_invites_create():
+        from flask import g
+        body = request.get_json(silent=True) or {}
+        days = int(body.get("expires_in_days", 7))
+        code = _invite_mgr.generate(g.user.id, expires_in_days=days)
+        return jsonify({"code": code})
+
+    @app.route("/api/admin/invites/<code>", methods=["DELETE"])
+    @admin_required
+    def api_admin_invites_revoke(code):
+        ok = _invite_mgr.revoke(code)
+        return jsonify({"ok": ok})
+
+    @app.route("/api/admin/users")
+    @admin_required
+    def api_admin_users():
+        users = _user_repo.list_all()
+        return jsonify({"users": [
+            {"id": u.id, "email": u.email, "display_name": u.display_name,
+             "role": u.role, "status": u.status, "created_at": u.created_at,
+             "last_login_at": u.last_login_at}
+            for u in users
+        ]})
+
     # ── Page Routes ─────────────────────────────────────────────────────
 
+    from stock_trading_system.web.vite_helpers import vite_assets
+
     @app.route("/")
+    @app.route("/dashboard")
     def index():
+        return render_template("islands/dashboard.html", vite_assets=vite_assets)
+
+    @app.route("/app")
+    def legacy_spa():
+        """Legacy SPA fallback — all un-migrated pages live here."""
         return render_template("index.html")
+
+    # ── React Island Routes ────────────────────────────────────────────
+
+    @app.route("/screener-v3")
+    def screener_v3_page():
+        return render_template("islands/screener_v3.html", vite_assets=vite_assets)
+
+    @app.route("/paper-trade")
+    def paper_trade_list_page():
+        return render_template("islands/paper_trade_list.html", vite_assets=vite_assets)
+
+    @app.route("/paper-trade/<ticker>")
+    def paper_trade_detail_page(ticker):
+        return render_template("islands/paper_trade_detail.html", vite_assets=vite_assets, ticker=ticker)
+
+    @app.route("/tasks")
+    @app.route("/tasks/<task_id>")
+    def tasks_page_react(task_id=None):
+        return render_template("islands/tasks.html", vite_assets=vite_assets)
+
+    # Legacy URL redirects
+    @app.route("/dashboard-v2")
+    def dashboard_v2_redirect():
+        return redirect("/")
+
+    @app.route("/tasks-v2")
+    @app.route("/tasks-v2/<task_id>")
+    def tasks_v2_redirect(task_id=None):
+        return redirect(f"/tasks/{task_id}" if task_id else "/tasks")
+
+    @app.route("/portfolio")
+    def portfolio_page():
+        return render_template("islands/portfolio.html", vite_assets=vite_assets)
+
+    @app.route("/history")
+    def history_page():
+        return render_template("islands/history.html", vite_assets=vite_assets)
+
+    @app.route("/alerts")
+    def alerts_page():
+        return render_template("islands/alerts.html", vite_assets=vite_assets)
+
+    @app.route("/analysis")
+    @app.route("/analysis/<analysis_id>")
+    def analysis_page(analysis_id=None):
+        return render_template("islands/analysis.html", vite_assets=vite_assets)
+
+    @app.route("/backtest")
+    @app.route("/backtest-v2")
+    @app.route("/backtest/<backtest_id>")
+    @app.route("/backtest-v2/<int:backtest_id>")
+    def backtest_page(backtest_id=None):
+        return render_template("islands/backtest.html", vite_assets=vite_assets)
+
+    @app.route("/reports")
+    def reports_page():
+        return render_template("islands/reports.html", vite_assets=vite_assets)
+
+    @app.route("/settings")
+    @app.route("/settings/<section>")
+    def settings_page(section=None):
+        return render_template("islands/settings.html", vite_assets=vite_assets)
 
     # ── Health Check ────────────────────────────────────────────────────
     # Lightweight probe used by Railway / Render / k8s liveness checks.
@@ -209,6 +648,26 @@ def create_app(config_path=None):
     def api_allocation():
         return jsonify(_get_portfolio_mgr().get_allocation())
 
+    @app.route("/api/portfolio/summary")
+    def api_portfolio_summary():
+        """Aggregated portfolio stats for dashboard/portfolio page."""
+        pm = _get_portfolio_mgr()
+        pnl = pm.get_pnl()
+        holdings = pm.get_holdings()
+        return jsonify({
+            "total_value": pnl.get("total_value", 0),
+            "today_pnl": pnl.get("total_pnl", 0),
+            "today_pnl_pct": pnl.get("total_pnl_pct", 0),
+            "holdings_count": len(holdings),
+        })
+
+    @app.route("/api/portfolio/<ticker>", methods=["DELETE"])
+    def api_portfolio_delete(ticker):
+        """Remove a position entirely."""
+        pm = _get_portfolio_mgr()
+        pm.remove_position(ticker.upper())
+        return jsonify({"ok": True})
+
     @app.route("/api/portfolio/history")
     def api_history():
         days = request.args.get("days", 30, type=int)
@@ -231,10 +690,14 @@ def create_app(config_path=None):
                 socketio.emit("analysis_status", {"ticker": ticker, "status": "running"})
 
                 def _progress(event: dict):
-                    # Forward pipeline events verbatim, adding ticker for the UI
-                    # to filter out stale updates if multiple runs overlap.
                     payload = {"ticker": ticker, **event}
-                    socketio.emit("analysis_pipeline", payload)
+                    # Use emit_event for persistence + per-user room broadcast
+                    from stock_trading_system.tasks.event_emitter import emit_event as _emit_ev
+                    _task_id = locals().get('_current_task_id', '')
+                    if _task_id:
+                        _emit_ev(_task_id, "analysis_pipeline", payload)
+                    else:
+                        socketio.emit("analysis_pipeline", payload)
 
                 analyzer = _get_analyzer()
                 result = analyzer.analyze(ticker, date, progress_cb=_progress)
@@ -355,6 +818,15 @@ def create_app(config_path=None):
         triggered = _get_alert_monitor().check_alerts()
         return jsonify({"triggered": triggered})
 
+    @app.route("/api/alerts/history")
+    def api_alert_history():
+        from stock_trading_system.portfolio.database import PortfolioDatabase
+        db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
+        db = PortfolioDatabase(db_path)
+        ticker = request.args.get("ticker")
+        limit = int(request.args.get("limit", 50))
+        return jsonify(db.get_alert_history(ticker=ticker, limit=limit))
+
     # ── Analysis History API ──────────────────────────────────────────────
 
     @app.route("/api/history")
@@ -372,9 +844,34 @@ def create_app(config_path=None):
         db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
         db = PortfolioDatabase(db_path)
         record = db.get_analysis_by_id(analysis_id)
-        if record:
-            return jsonify(record)
-        return jsonify({"error": "Not found"}), 404
+        if not record:
+            return jsonify({"error": "Not found"}), 404
+
+        # Map DB columns to frontend-expected fields
+        conf_str = (record.get("confidence") or "").lower()
+        conf_map = {"high": 0.85, "medium": 0.5, "low": 0.25}
+        confidence_num = conf_map.get(conf_str)
+
+        advice = {}
+        if record.get("advice_json"):
+            try:
+                advice = json.loads(record["advice_json"]) if isinstance(record["advice_json"], str) else record["advice_json"]
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        analysts = {}
+        for key in ("market_report", "sentiment_report", "news_report",
+                     "fundamentals_report", "investment_debate", "risk_assessment"):
+            if record.get(key):
+                analysts[key.replace("_report", "").replace("_", " ").title()] = record[key]
+
+        record["summary"] = record.get("executive_summary") or record.get("trade_decision") or ""
+        record["recommendation"] = record.get("trade_decision") or ""
+        record["confidence"] = confidence_num
+        record["risk_level"] = advice.get("risk_level") or conf_str or "-"
+        record["analysts"] = analysts
+
+        return jsonify(record)
 
     @app.route("/api/history/compare")
     def api_analysis_compare():
@@ -842,6 +1339,616 @@ def create_app(config_path=None):
             "alerts": alerts_out,
         })
 
+    # ── LLM Provider Switch ──────────────────────────────────────────
+
+    @app.route("/api/settings/llm-provider", methods=["GET"])
+    def get_llm_provider():
+        from stock_trading_system.llm.router import (
+            get_active_provider, has_provider_key, is_provider_locked_by_env,
+        )
+        cfg = get_config()
+        return jsonify({
+            "active": get_active_provider(cfg),
+            "has_qwen_key": has_provider_key(cfg, "qwen"),
+            "has_gemini_key": has_provider_key(cfg, "gemini"),
+            "locked_by_env": is_provider_locked_by_env(),
+        })
+
+    @app.route("/api/settings/llm-provider", methods=["POST"])
+    def set_llm_provider():
+        from stock_trading_system.llm.router import is_provider_locked_by_env, has_provider_key
+        from stock_trading_system.llm.constants import VALID_PROVIDERS
+        if is_provider_locked_by_env():
+            return jsonify({"reason": "locked_by_env", "message": "LLM_PROVIDER 已由环境变量锁定"}), 409
+        body = request.get_json(silent=True) or {}
+        provider = (body.get("provider") or "").strip().lower()
+        if provider not in VALID_PROVIDERS:
+            return jsonify({"reason": "invalid_provider", "message": f"provider 必须是 {sorted(VALID_PROVIDERS)} 之一"}), 400
+        cfg = get_config()
+        if not has_provider_key(cfg, provider):
+            label = "Qwen" if provider == "qwen" else "Gemini"
+            return jsonify({"reason": "missing_api_key", "message": f"{label} 未配置 API key"}), 400
+        save_config({"llm_provider": provider})
+        return jsonify({"active": provider, "source": "user_config"})
+
+    # ── Screen V2 (async task-based) ────────────────────────────────────
+
+    @app.route("/api/screen/v2/submit", methods=["POST"])
+    def api_screen_v2_submit():
+        """Submit V2 screening task. Returns {task_id}."""
+        data = request.json or {}
+        params = {
+            "market": data.get("market", "us"),
+            "strategy": data.get("strategy", "growth"),
+            "enabled_gurus": data.get("enabled_gurus") or ["buffett", "graham", "lynch", "oneil"],
+            "nl_query": data.get("nl_query") or None,
+            "final_count": int(data.get("final_count", 5)),
+            "max_universe": int(data.get("max_universe", 100)),
+        }
+        try:
+            tm = _get_task_manager()
+            task = tm.submit("screen_v2", params)
+            return jsonify({"ok": True, "task_id": task["id"], "task": task})
+        except Exception as e:
+            logger.error("Screen V2 submit failed: %s", e)
+            return jsonify({"ok": False, "error": str(e)}), 500
+
+    @app.route("/api/screen/v2/result/<int:result_id>")
+    def api_screen_v2_result(result_id: int):
+        store = _get_task_store()
+        result = store.get_screen_v2_result(result_id)
+        if not result:
+            return jsonify({"error": "Not found"}), 404
+        return jsonify(result)
+
+    @app.route("/api/screen/v2/result/by_task/<task_id>")
+    def api_screen_v2_result_by_task(task_id: str):
+        store = _get_task_store()
+        task = store.get(task_id)
+        if not task:
+            return jsonify({"error": "Task not found"}), 404
+        ref = task.get("result_ref") or ""
+        if not ref.startswith("screen_results_v2:"):
+            return jsonify({"error": "Result not yet available", "task": task}), 202
+        try:
+            sid = int(ref.split(":", 1)[1])
+        except Exception:
+            return jsonify({"error": "Bad result_ref", "task": task}), 500
+        result = store.get_screen_v2_result(sid)
+        if not result:
+            return jsonify({"error": "Result row missing"}), 404
+        return jsonify(result)
+
+    @app.route("/api/screen/v2/history")
+    def api_screen_v2_history():
+        limit = int(request.args.get("limit", 50))
+        store = _get_task_store()
+        return jsonify(store.list_screen_v2_history(limit=limit))
+
+    @app.route("/api/screen/v2/gurus")
+    def api_screen_v2_gurus():
+        from stock_trading_system.screener.v2 import all_guru_metadata
+        return jsonify(all_guru_metadata())
+
+    # ── Paper Trade API ─────────────────────────────────────────────────
+
+    @app.route("/api/paper/sessions", methods=["POST"])
+    def api_paper_create_session():
+        data = request.json or {}
+        try:
+            name = data.get("name") or f"Session {__import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M')}"
+            mode = data.get("mode", "replay")
+            if mode not in ("replay", "live"):
+                return jsonify({"ok": False, "error": "mode must be replay|live"}), 400
+            start_capital = float(data.get("start_capital", 100000))
+            start_date = data.get("start_date")
+            end_date = data.get("end_date")
+            if not start_date:
+                return jsonify({"ok": False, "error": "start_date required"}), 400
+            if mode == "replay" and not end_date:
+                return jsonify({"ok": False, "error": "end_date required for replay"}), 400
+            cfg = {
+                "filters": data.get("filters") or {},
+                "sizing": data.get("sizing") or {},
+                "exit_rules": data.get("exit_rules") or {},
+                "cost": data.get("cost") or {},
+                "benchmark": data.get("benchmark", "SPY"),
+            }
+            store = _get_paper_store()
+            sid = store.create_session(
+                name=name, mode=mode,
+                start_capital=start_capital,
+                start_date=start_date, end_date=end_date,
+                config=cfg, auto_track=bool(data.get("auto_track", False)),
+            )
+            return jsonify({"ok": True, "session_id": sid, "session": store.get_session(sid)})
+        except Exception as e:
+            logger.error("Create paper session failed: %s", e)
+            return jsonify({"ok": False, "error": str(e)}), 500
+
+    @app.route("/api/paper/sessions/<int:session_id>/run", methods=["POST"])
+    def api_paper_run(session_id: int):
+        try:
+            tm = _get_task_manager()
+            task = tm.submit("paper_trade", {"session_id": session_id})
+            return jsonify({"ok": True, "task_id": task["id"], "task": task})
+        except Exception as e:
+            logger.error("Paper run submit failed: %s", e)
+            return jsonify({"ok": False, "error": str(e)}), 500
+
+    @app.route("/api/paper/sessions")
+    def api_paper_list_sessions():
+        store = _get_paper_store()
+        return jsonify(store.list_sessions(limit=int(request.args.get("limit", 100))))
+
+    @app.route("/api/paper/sessions/<int:session_id>")
+    def api_paper_session_detail(session_id: int):
+        store = _get_paper_store()
+        sess = store.get_session(session_id)
+        if not sess:
+            return jsonify({"error": "Not found"}), 404
+        return jsonify(sess)
+
+    @app.route("/api/paper/sessions/<int:session_id>/equity")
+    def api_paper_equity(session_id: int):
+        store = _get_paper_store()
+        return jsonify(store.list_equity(session_id))
+
+    @app.route("/api/paper/sessions/<int:session_id>/trades")
+    def api_paper_trades(session_id: int):
+        store = _get_paper_store()
+        limit = int(request.args.get("limit", 500))
+        return jsonify(store.list_trades(session_id, limit=limit))
+
+    @app.route("/api/paper/sessions/<int:session_id>/tracked")
+    def api_paper_session_tracked(session_id: int):
+        store = _get_paper_store()
+        status = request.args.get("status")
+        return jsonify(store.list_tracked_by_session(session_id, status=status,
+                                                     limit=int(request.args.get("limit", 500))))
+
+    @app.route("/api/paper/sessions/<int:session_id>", methods=["DELETE"])
+    def api_paper_delete_session(session_id: int):
+        store = _get_paper_store()
+        ok = store.delete_session(session_id)
+        if not ok:
+            return jsonify({"ok": False, "error": "Cannot delete (system session or missing)"}), 400
+        return jsonify({"ok": True})
+
+    @app.route("/api/paper/track", methods=["POST"])
+    def api_paper_track_create():
+        data = request.json or {}
+        analysis_id = data.get("analysis_id")
+        session_id = data.get("session_id")
+        if not analysis_id or not session_id:
+            return jsonify({"ok": False, "error": "analysis_id + session_id required"}), 400
+        from stock_trading_system.portfolio.database import PortfolioDatabase
+        db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
+        db = PortfolioDatabase(db_path)
+        ana = db.get_analysis_by_id(analysis_id)
+        if not ana:
+            return jsonify({"ok": False, "error": "Analysis not found"}), 404
+        store = _get_paper_store()
+        from stock_trading_system.strategy.paper_trader import manual_track
+        tid = manual_track(store, analysis_id=analysis_id, ticker=ana["ticker"],
+                           session_id=int(session_id), notes=data.get("notes"))
+        if tid is None:
+            return jsonify({"ok": False, "error": "Failed to create tracking record"}), 500
+        return jsonify({"ok": True, "tracked_id": tid})
+
+    @app.route("/api/paper/track/<int:tracked_id>", methods=["DELETE"])
+    def api_paper_track_delete(tracked_id: int):
+        store = _get_paper_store()
+        ok = store.delete_tracked(tracked_id)
+        if not ok:
+            return jsonify({"ok": False, "error": "Only pending records can be cancelled"}), 400
+        return jsonify({"ok": True})
+
+    @app.route("/api/paper/track/by_analysis/<int:analysis_id>")
+    def api_paper_track_by_analysis(analysis_id: int):
+        store = _get_paper_store()
+        return jsonify(store.list_tracked_by_analysis(analysis_id))
+
+    @app.route("/api/paper/track/by_ticker/<ticker>")
+    def api_paper_track_by_ticker(ticker: str):
+        store = _get_paper_store()
+        from stock_trading_system.strategy.paper_trader import ticker_summary
+        return jsonify(ticker_summary(store, ticker))
+
+    @app.route("/api/paper/tickers")
+    def api_paper_tickers():
+        store = _get_paper_store()
+        sessions = store.list_ticker_sessions()
+        out = []
+        for s in sessions:
+            sid = int(s["id"])
+            last = store.last_daily_stat(sid)
+            latest_evt = store.latest_strategy_event(sid)
+            events = store.list_strategy_events(sid)
+            dailies = store.list_daily_stats(sid, limit=1000)
+            spark = [float(d["total_value"]) for d in dailies[-30:]]
+            buys = [e for e in events
+                    if (e.get("new_signal") or "").upper() in ("BUY", "OVERWEIGHT")]
+            hits, total = 0, 0
+            for e in buys:
+                fwd = [d for d in dailies if d["date"] > e["event_date"]][:5]
+                if len(fwd) >= 1 and e.get("price"):
+                    total += 1
+                    if fwd[-1]["close_price"] > e["price"]:
+                        hits += 1
+            out.append({
+                "id": sid,
+                "ticker": s["ticker"],
+                "status": s["status"],
+                "start_date": s["start_date"],
+                "last_eod": s.get("last_eod_date"),
+                "current_signal": latest_evt["new_signal"] if latest_evt else None,
+                "current_action": latest_evt["action"] if latest_evt else None,
+                "total_value": float(last["total_value"]) if last else float(s["start_capital"]),
+                "cum_pnl_pct": float(last["cum_pnl_pct"]) if last else 0,
+                "position_shares": float(last["position_shares"]) if last else 0,
+                "close_price": float(last["close_price"]) if last and last.get("close_price") else None,
+                "num_events": len(events),
+                "hit_rate": (hits / total) if total else None,
+                "hit_pretty": f"{hits}/{total}" if total else "—",
+                "sparkline": spark,
+            })
+        return jsonify(out)
+
+    @app.route("/api/paper/tickers/<ticker>")
+    def api_paper_ticker_detail(ticker: str):
+        store = _get_paper_store()
+        sess = store.find_session_by_ticker(ticker.upper())
+        if not sess:
+            return jsonify({"error": "No session for ticker"}), 404
+        sid = int(sess["id"])
+        events = store.list_strategy_events(sid)
+        dailies = store.list_daily_stats(sid, limit=1000)
+        trades = store.list_trades(sid, limit=500)
+        active_plan = store.get_active_plan(sid)
+        all_plans = store.list_plans(sid)
+        active_orders = []
+        if active_plan:
+            active_orders = store.list_orders(plan_id=active_plan["id"])
+        plan_history = []
+        from stock_trading_system.portfolio.database import PortfolioDatabase as _PDB
+        _db = _PDB(get_config().get("portfolio", {}).get("db_path", "data/portfolio.db"))
+        for p in all_plans:
+            p_orders = store.list_orders(plan_id=p["id"])
+            entry = {**p, "orders": p_orders}
+            # Attach trade_decision text from the linked analysis
+            if p.get("analysis_id"):
+                try:
+                    _ana = _db.get_analysis_by_id(p["analysis_id"])
+                    entry["trade_decision"] = (_ana or {}).get("trade_decision") or ""
+                except Exception:
+                    entry["trade_decision"] = ""
+            plan_history.append(entry)
+        latest = events[0] if events else None
+        latest_advice = None
+        latest_trade_decision = None
+        if latest:
+            try:
+                from stock_trading_system.portfolio.database import PortfolioDatabase
+                db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
+                ana = PortfolioDatabase(db_path).get_analysis_by_id(latest["analysis_id"])
+                if ana:
+                    latest_trade_decision = ana.get("trade_decision") or ""
+                    if ana.get("advice_json"):
+                        import json as _j
+                        try:
+                            latest_advice = _j.loads(ana["advice_json"])
+                        except Exception:
+                            latest_advice = None
+            except Exception:
+                pass
+        return jsonify({
+            "session": sess,
+            "events": events,
+            "dailies": dailies,
+            "trades": trades,
+            "latest_advice": latest_advice,
+            "latest_trade_decision": latest_trade_decision,
+            "active_plan": active_plan,
+            "active_orders": active_orders,
+            "plan_history": plan_history,
+        })
+
+    @app.route("/api/paper/tickers/<ticker>/eod", methods=["POST"])
+    def api_paper_ticker_eod(ticker: str):
+        store = _get_paper_store()
+        sess = store.find_session_by_ticker(ticker.upper())
+        if not sess:
+            return jsonify({"ok": False, "error": "Not found"}), 404
+        try:
+            from stock_trading_system.strategy.paper_trader import DailyUpdater
+            updater = DailyUpdater(get_config(), store)
+            rows = updater.update_session(int(sess["id"]))
+            return jsonify({"ok": True, "new_rows": len(rows)})
+        except Exception as e:
+            logger.error("Manual EOD failed for %s: %s", ticker, e)
+            return jsonify({"ok": False, "error": str(e)}), 500
+
+    @app.route("/api/paper/backfill", methods=["POST"])
+    def api_paper_backfill():
+        try:
+            tm = _get_task_manager()
+            task = tm.submit("paper_backfill", {})
+            return jsonify({"ok": True, "task_id": task["id"], "task": task})
+        except Exception as e:
+            logger.error("Backfill submit failed: %s", e)
+            return jsonify({"ok": False, "error": str(e)}), 500
+
+    # ── Tasks API ───────────────────────────────────────────────────────
+
+    @app.route("/api/tasks/submit", methods=["POST"])
+    def api_task_submit():
+        data = request.json or {}
+        task_type = (data.get("type") or "").strip()
+        params = data.get("params") or {}
+        title = data.get("title")
+        if not task_type:
+            return jsonify({"error": "Missing task type"}), 400
+        tm = _get_task_manager()
+        if task_type not in tm.registered_types():
+            return jsonify({
+                "error": f"Unknown task type: {task_type}",
+                "registered": tm.registered_types(),
+            }), 400
+        try:
+            task = tm.submit(task_type, params, title=title)
+        except Exception as e:  # noqa: BLE001
+            logger.exception("Failed to submit task")
+            return jsonify({"error": str(e)}), 500
+        return jsonify(task)
+
+    @app.route("/api/tasks", methods=["GET"])
+    def api_tasks_list():
+        tm = _get_task_manager()
+        task_type = request.args.get("type")
+        status = request.args.get("status")
+        limit = min(int(request.args.get("limit", 50)), 200)
+        offset = max(int(request.args.get("offset", 0)), 0)
+        items = tm.list(task_type=task_type, status=status,
+                        limit=limit, offset=offset)
+        total = tm.count(task_type=task_type, status=status) if hasattr(tm, "count") else len(items)
+        return jsonify({
+            "tasks": items,
+            "items": items,  # backward compat
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        })
+
+    @app.route("/api/tasks/<task_id>", methods=["GET"])
+    def api_task_detail(task_id):
+        tm = _get_task_manager()
+        task = tm.get(task_id)
+        if not task:
+            return jsonify({"error": "Task not found"}), 404
+        return jsonify(task)
+
+    @app.route("/api/tasks/<task_id>/result", methods=["GET"])
+    def api_task_result(task_id):
+        tm = _get_task_manager()
+        task = tm.get(task_id)
+        if not task:
+            return jsonify({"error": "Task not found"}), 404
+        if task["status"] != "success" or not task.get("result_ref"):
+            return jsonify({"status": task["status"], "message": "Result not ready"}), 404
+        result = tm.get_result(task_id)
+        if result is None:
+            return jsonify({"error": "Result unavailable"}), 404
+        return jsonify({"task": task, "result": result})
+
+    @app.route("/api/tasks/<task_id>/retry", methods=["POST"])
+    def api_task_retry(task_id):
+        tm = _get_task_manager()
+        try:
+            new_task = tm.retry(task_id)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 404
+        return jsonify(new_task)
+
+    @app.route("/api/tasks/<task_id>/cancel", methods=["POST"])
+    def api_task_cancel(task_id):
+        tm = _get_task_manager()
+        task = tm.get(task_id)
+        if not task:
+            return jsonify({"error": "Task not found"}), 404
+        if task["status"] not in ("pending", "running"):
+            return jsonify({"error": f"Cannot cancel task in status '{task['status']}'"}), 409
+        ok = tm.cancel(task_id)
+        return jsonify({"ok": bool(ok)})
+
+    @app.route("/api/tasks/<task_id>", methods=["DELETE"])
+    def api_task_delete(task_id):
+        tm = _get_task_manager()
+        ok = tm.delete(task_id)
+        if not ok:
+            return jsonify({"error": "Task not found"}), 404
+        return jsonify({"ok": True})
+
+    @app.route("/api/tasks/stats", methods=["GET"])
+    def api_task_stats():
+        store = _get_task_store()
+        return jsonify({
+            "by_status": store.count_by_status(),
+            "registered_types": _get_task_manager().registered_types(),
+        })
+
+    @app.route("/api/tasks/cleanup", methods=["POST"])
+    def api_tasks_cleanup():
+        sched = _get_cleanup_scheduler()
+        return jsonify(sched.run_once())
+
+    # ── Diagnostics ─────────────────────────────────────────────────────
+
+    @app.route("/api/diagnostics/providers", methods=["GET"])
+    def api_diag_providers():
+        """Quick reachability check for each enabled data provider."""
+        results = _probe_providers()
+        ok = all(r.get("ok") for r in results.values())
+        try:
+            routing = _get_data_router().routing_summary()
+        except Exception:
+            routing = {}
+        return jsonify({
+            "ok": ok,
+            "providers": results,
+            "routing": routing,
+        }), (200 if ok else 207)
+
+    # ── Iteration / Agent Evolution ─────────────────────────────────────
+
+    @app.route("/api/iteration/agents", methods=["GET"])
+    def api_iteration_agents():
+        try:
+            from stock_trading_system.agents.iterative.config import load_iteration_config
+            from stock_trading_system.agents.iterative.agent_scorer import AgentScorer
+            cfg = get_config()
+            iter_config = load_iteration_config(cfg.get("iteration", {}))
+            db_path = cfg.get("portfolio", {}).get("db_path", "data/portfolio.db")
+            scorer = AgentScorer(db_path, iter_config)
+            metrics = scorer.get_all_agent_metrics()
+            weights = scorer.get_all_weights()
+            agents = []
+            for agent_id in metrics:
+                agents.append({
+                    "agent_id": agent_id,
+                    "sharpe": metrics[agent_id]["sharpe"],
+                    "hit_rate": metrics[agent_id]["hit_rate"],
+                    "weight": weights.get(agent_id, 1.0),
+                })
+            agents.sort(key=lambda a: a["sharpe"], reverse=True)
+            return jsonify({
+                "enabled": iter_config.enabled,
+                "agents": agents,
+            })
+        except Exception as e:
+            logger.error("Failed to load iteration agents: %s", e)
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/iteration/meta/run", methods=["POST"])
+    def api_iteration_meta_run():
+        try:
+            from stock_trading_system.agents.iterative.config import load_iteration_config
+            from stock_trading_system.agents.iterative.agent_scorer import AgentScorer
+            from stock_trading_system.agents.iterative.prompt_store import PromptStore
+            from stock_trading_system.agents.iterative.meta_agent import MetaAgent
+            cfg = get_config()
+            iter_config = load_iteration_config(cfg.get("iteration", {}))
+            db_path = cfg.get("portfolio", {}).get("db_path", "data/portfolio.db")
+            scorer = AgentScorer(db_path, iter_config)
+            prompt_store = PromptStore(db_path)
+            session_store = None
+            try:
+                from stock_trading_system.strategy.paper_trader.session_store import SessionStore
+                session_store = SessionStore(db_path)
+            except Exception:
+                pass
+            meta = MetaAgent(
+                scorer=scorer, prompt_store=prompt_store,
+                config=iter_config, session_store=session_store,
+            )
+            data = request.get_json(silent=True) or {}
+            action = data.get("action", "mutate")
+            if action == "settle":
+                results = meta.settle_ab_tests()
+                return jsonify({"action": "settle", "results": results})
+            result = meta.run_weekly()
+            return jsonify(result)
+        except Exception as e:
+            logger.error("Meta agent run failed: %s", e)
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/iteration/prompts", methods=["GET"])
+    def api_iteration_prompts():
+        try:
+            from stock_trading_system.agents.iterative.prompt_store import PromptStore
+            cfg = get_config()
+            db_path = cfg.get("portfolio", {}).get("db_path", "data/portfolio.db")
+            store = PromptStore(db_path)
+            agent_id = request.args.get("agent_id")
+            history = store.get_history(agent_id=agent_id, limit=50)
+            return jsonify({"prompts": history})
+        except Exception as e:
+            logger.error("Failed to load prompt history: %s", e)
+            return jsonify({"error": str(e)}), 500
+
+    # ── Screener V3 API ──────────────────────────────────────────────
+
+    @app.route("/api/screen/v3/gurus")
+    def api_screen_v3_gurus():
+        """Return metadata for all 14 guru agents (config panel)."""
+        from stock_trading_system.screener.v3.pipeline import get_all_guru_metas
+        return jsonify({"gurus": get_all_guru_metas()})
+
+    @app.route("/api/screen/v3/estimate", methods=["POST"])
+    def api_screen_v3_estimate():
+        """Estimate cost and duration for a V3 screening run."""
+        from stock_trading_system.screener.v3.estimator import estimate
+        from stock_trading_system.llm.router import get_active_provider
+        from flask import g
+
+        body = request.get_json(silent=True) or {}
+        cfg = get_config()
+        user_id = getattr(g, "user", None) and g.user.id
+        provider = get_active_provider(cfg, user_id=user_id)
+
+        result = estimate(
+            num_candidates=int(body.get("candidate_n", 20)),
+            num_gurus=len(body.get("gurus", ["buffett", "graham", "munger", "lynch"])),
+            with_roundtable=bool(body.get("with_roundtable", False)),
+            provider=provider,
+        )
+        return jsonify(result)
+
+    @app.route("/api/screen/v3/trigger", methods=["POST"])
+    def api_screen_v3_trigger():
+        """Trigger a V3 screening task."""
+        from flask import g
+        from stock_trading_system.llm.router import get_active_provider
+
+        body = request.get_json(silent=True) or {}
+        cfg = get_config()
+        user_id = getattr(g, "user", None) and g.user.id
+        provider = get_active_provider(cfg, user_id=user_id)
+
+        params = {
+            "nl_query": body.get("nl_query", ""),
+            "market": body.get("market", "us"),
+            "candidate_n": int(body.get("candidate_n", 20)),
+            "gurus": body.get("gurus", ["buffett", "graham", "munger", "lynch"]),
+            "mode": body.get("mode", "agent"),
+            "with_roundtable": bool(body.get("with_roundtable", False)),
+            "user_id": user_id,
+            "provider": provider,
+        }
+
+        tm = _get_task_manager()
+        task = tm.submit(
+            task_type="screen_v3",
+            params=params,
+            title=f"V3 选股: {params['nl_query'][:30] or '默认'}",
+        )
+        return jsonify({"task_id": task["id"], "estimated": params})
+
+    @app.route("/api/screen/v3/results/<result_id>")
+    def api_screen_v3_result(result_id):
+        """Return full V3 screening result."""
+        try:
+            from stock_trading_system.screener.v2.result_store import ScreenResultStore
+            store = ScreenResultStore(
+                get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
+            )
+            result = store.get_by_id(int(result_id))
+            if not result:
+                return jsonify({"error": "not found"}), 404
+            return jsonify(result)
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
     # ── Seed Data ───────────────────────────────────────────────────────
 
     @app.route("/api/seed", methods=["POST"])
@@ -852,13 +1959,66 @@ def create_app(config_path=None):
 
     # ── WebSocket Events ────────────────────────────────────────────────
 
+    from flask_socketio import join_room
+
     @socketio.on("connect")
     def handle_connect():
-        logger.info("Client connected")
+        from flask import session as _sess
+        # SocketIO connect doesn't go through before_request, so read session directly
+        uid = _sess.get("user_id")
+        if uid is None and _multi_tenant_ready:
+            # Still allow connection — many events are useful pre-login
+            # Just don't join a user room
+            logger.info("WS connect: anonymous (no session)")
+            return  # allow but no room
+        if uid:
+            # Verify user exists
+            user = _user_repo.find_by_id(uid)
+            if user:
+                join_room(f"user:{user.id}")
+                logger.info("Client connected → room user:%d", user.id)
+            else:
+                logger.info("WS connect: stale session uid=%d", uid)
+        else:
+            logger.info("Client connected (pre-migration mode)")
 
     @socketio.on("disconnect")
     def handle_disconnect():
         logger.info("Client disconnected")
+
+    # ── Catch-up API ────────────────────────────────────────────────────
+
+    @app.route("/api/tasks/events")
+    def api_task_events():
+        """Return events for current user since given seq (for reconnect catch-up)."""
+        from stock_trading_system.tasks.event_emitter import get_events_since
+        user = getattr(g, "user", None)
+        if not user:
+            return jsonify({"error": "unauthorized"}), 401
+        task_id = request.args.get("task_id", "")
+        since = int(request.args.get("since", 0))
+        db = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
+        events = get_events_since(db, task_id, user.id, since)
+        return jsonify(events)
+
+    @app.route("/api/tasks/running")
+    def api_tasks_running():
+        """Return currently running tasks for the logged-in user."""
+        user = getattr(g, "user", None)
+        if not user:
+            return jsonify({"error": "unauthorized"}), 401
+        import sqlite3 as _sql
+        db = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
+        conn = _sql.connect(db)
+        conn.row_factory = _sql.Row
+        rows = conn.execute(
+            "SELECT id, type, status, progress, created_at FROM tasks "
+            "WHERE created_by = ? AND status IN ('pending','running') "
+            "ORDER BY created_at DESC",
+            (user.id,),
+        ).fetchall()
+        conn.close()
+        return jsonify([dict(r) for r in rows])
 
     return app
 

@@ -113,6 +113,38 @@ class TaskScheduler:
         except Exception as e:
             logger.error("Post-market tasks failed: %s", e)
 
+        # Paper-trade EOD snapshot (best-effort)
+        try:
+            self._paper_trade_eod()
+        except Exception as e:
+            logger.error("Paper-trade EOD failed: %s", e)
+
+    def _paper_trade_eod(self):
+        """Update daily_stats for every ticker session."""
+        from stock_trading_system.strategy.paper_trader import (
+            PaperTradeStore, DailyUpdater,
+        )
+        db_path = self._config.get("portfolio", {}).get("db_path", "data/portfolio.db")
+        store = PaperTradeStore(db_path)
+        sessions = store.list_ticker_sessions()
+        if not sessions:
+            logger.info("Paper-trade EOD: no ticker sessions")
+            return
+        updater = DailyUpdater(self._config, store)
+        updated = 0
+        for sess in sessions:
+            try:
+                rows = updater.update_session(int(sess["id"]))
+                if rows:
+                    updated += 1
+                    logger.info("Paper-trade EOD %s: +%d daily rows",
+                                sess["ticker"], len(rows))
+            except Exception as e:
+                logger.warning("EOD update failed for %s: %s",
+                               sess.get("ticker"), e)
+        logger.info("Paper-trade EOD complete: %d/%d sessions updated",
+                    updated, len(sessions))
+
     def _weekly_report(self):
         """Generate and send weekly report."""
         logger.info("Generating weekly report...")

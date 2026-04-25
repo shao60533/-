@@ -20,6 +20,9 @@ logger = get_logger("data.manager")
 class DataManager:
     """Unified data manager with automatic market routing and failover."""
 
+    # Consecutive failure threshold — skip provider after N failures
+    _SKIP_THRESHOLD = 1
+
     def __init__(self, config: dict):
         self._config = config
         self._ib = IBProvider(config)
@@ -27,6 +30,21 @@ class DataManager:
         self._akshare = AkShareProvider()
         self._yfinance = YFinanceProvider()
         self._qwen = QwenProvider(config)
+        # Track consecutive failures per provider to skip broken ones.
+        # IB starts skipped (event loop issue in thread pools).
+        # Polygon starts skipped (free tier 429 rate limit makes it
+        # unusable for concurrent batch lookups like get_holdings).
+        # Both auto-reset on first successful call from other code paths.
+        self._fail_count = {"ib": 1, "polygon": 1}
+
+    def _is_skipped(self, provider: str) -> bool:
+        return self._fail_count.get(provider, 0) >= self._SKIP_THRESHOLD
+
+    def _record_fail(self, provider: str):
+        self._fail_count[provider] = self._fail_count.get(provider, 0) + 1
+
+    def _record_success(self, provider: str):
+        self._fail_count[provider] = 0
 
     def get_price(self, ticker: str, market: str | None = None) -> dict | None:
         """Get current price for a stock.
@@ -34,6 +52,9 @@ class DataManager:
         Routing:
           US -> IB -> Polygon -> yfinance -> Qwen
           CN -> AkShare -> Qwen
+
+        Providers that fail consecutively are auto-skipped to avoid
+        slow timeout cascades (e.g. Polygon 429 rate limit).
         """
         market = market or detect_market(ticker)
 
@@ -46,17 +67,29 @@ class DataManager:
                 return self._qwen.get_stock_price(ticker)
             return None
 
-        # US market fallback chain
-        if self._config.get("ib", {}).get("enabled"):
+        providers = self._config.get("providers", {}) or {}
+        ib_master = providers.get("ib_enabled", True)
+        polygon_master = providers.get("polygon_enabled", True)
+
+        # US market fallback chain (with auto-skip for broken providers)
+        if (ib_master and self._config.get("ib", {}).get("enabled")
+                and not self._is_skipped("ib")):
             result = self._ib.get_stock_price(ticker)
             if result:
+                self._record_success("ib")
                 return result
-            logger.info("IB failed for %s, trying Polygon", ticker)
+            self._record_fail("ib")
+            if self._is_skipped("ib"):
+                logger.info("IB skipped (consecutive failures) — falling through to yfinance")
 
-        result = self._polygon.get_stock_price(ticker)
-        if result:
-            return result
-        logger.info("Polygon failed for %s, trying yfinance", ticker)
+        if polygon_master and not self._is_skipped("polygon"):
+            result = self._polygon.get_stock_price(ticker)
+            if result:
+                self._record_success("polygon")
+                return result
+            self._record_fail("polygon")
+            if self._is_skipped("polygon"):
+                logger.info("Polygon skipped (rate limited) — falling through to yfinance")
 
         result = self._yfinance.get_stock_price(ticker)
         if result:
@@ -84,13 +117,14 @@ class DataManager:
             market: "us" or "cn", auto-detected if None
         """
         market = market or detect_market(ticker)
+        providers = self._config.get("providers", {}) or {}
 
         if market == "cn":
             return self._akshare.get_stock_history(ticker)
 
-        # US market fallback chain
-        if self._config.get("ib", {}).get("enabled"):
-            # Convert period format for IB
+        # US market fallback chain (gated by master switches)
+        if (providers.get("ib_enabled", True)
+                and self._config.get("ib", {}).get("enabled")):
             ib_duration = _period_to_ib_duration(period)
             ib_bar = _interval_to_ib_bar(interval)
             result = self._ib.get_stock_history(ticker, duration=ib_duration, bar_size=ib_bar)
@@ -98,10 +132,11 @@ class DataManager:
                 return result
             logger.info("IB history failed for %s, trying Polygon", ticker)
 
-        result = self._polygon.get_stock_history(ticker)
-        if result is not None:
-            return result
-        logger.info("Polygon history failed for %s, trying yfinance", ticker)
+        if providers.get("polygon_enabled", True):
+            result = self._polygon.get_stock_history(ticker)
+            if result is not None:
+                return result
+            logger.info("Polygon history failed for %s, trying yfinance", ticker)
 
         return self._yfinance.get_stock_history(ticker, period=period, interval=interval)
 
