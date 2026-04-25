@@ -286,13 +286,22 @@ def make_screen_v3_worker():
         # Use unified emit_event for all progress events
         from stock_trading_system.tasks.event_emitter import emit_event
         task_id = params.get("__task_id__", "")
+        cancel_event = params.get("__cancel_event__")
 
         def _on_progress(event):
             evt_type = event.get("type", "")
-            if evt_type == "guru_unit_done":
+            if evt_type == "bundle_progress":
+                # Phase: per-ticker data prep (5–25%)
+                done = event.get("done", 0)
+                total = event.get("total", 1)
+                pct = 5 + int(done / max(total, 1) * 20)
+                progress_cb(pct, f"准备数据 {done}/{total}: {event.get('ticker','')}")
+                emit_event(task_id, "bundle_progress", event, user_id=user_id)
+            elif evt_type == "guru_unit_done":
+                # Phase: guru evaluation (25–95%)
                 done = event.get("progress", 0)
                 total = event.get("total", 1)
-                pct = min(95, int(done / total * 90) + 5)
+                pct = 25 + int(done / max(total, 1) * 70)
                 progress_cb(pct, f"{event.get('guru_display','')}: {event.get('ticker','')}")
                 emit_event(task_id, "guru_unit_done", event, user_id=user_id)
             elif evt_type in ("roundtable_start", "roundtable_done"):
@@ -312,12 +321,13 @@ def make_screen_v3_worker():
             provider=provider,
             local_cache=local_cache,
             on_progress=_on_progress,
+            cancel_check=(lambda: cancel_event.is_set()) if cancel_event else None,
         )
 
         progress_cb(5, "启动 V3 大师评估管线")
         result = asyncio.run(pipeline.run(**{
             k: v for k, v in params.items()
-            if k not in ("user_id", "provider", "__task_id__")
+            if k not in ("user_id", "provider", "__task_id__", "__cancel_event__")
         }))
         progress_cb(98, "整理结果")
         return result

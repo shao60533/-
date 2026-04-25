@@ -195,35 +195,76 @@ class ScreenerV3Pipeline:
                          "AMD", "CRM"]
             return defaults[:n]
 
+    _BUNDLE_CONCURRENCY = 5
+
     async def _prepare_data_bundles(self, tickers, market) -> dict[str, dict]:
-        """Prepare GuruDataBundle for each ticker (one-time I/O)."""
-        bundles = {}
-        for ticker in tickers:
-            bundles[ticker] = {
-                "ticker": ticker,
+        """Prepare GuruDataBundle for each ticker (one-time I/O).
+
+        Runs per-ticker fetches concurrently (semaphore-bounded), emits
+        per-ticker progress, and honors cancel_check between tickers.
+        Tickers that fail or are cancelled are dropped from the bundle map;
+        the caller already filters units by `ticker in bundles`.
+        """
+        from stock_trading_system.data.data_router import DataRouter
+
+        # Single shared router — avoids per-ticker construction and reuses cache/session.
+        try:
+            router = DataRouter(self._config, cache=self._cache)
+        except Exception as e:
+            logger.warning("DataRouter init failed, bundles will be empty: %s", e)
+            router = None
+
+        total = len(tickers)
+        sem = asyncio.Semaphore(self._BUNDLE_CONCURRENCY)
+        bundles: dict[str, dict] = {}
+        done_count = 0
+
+        def _fetch_one(t: str) -> dict:
+            if router is None:
+                return {"quote": {}, "fundamentals": {}}
+            try:
+                quote = router.get_price(t) or {}
+            except Exception:
+                quote = {}
+            try:
+                fundamentals = router.get_fundamentals(t) or {}
+            except Exception:
+                fundamentals = {}
+            return {"quote": quote, "fundamentals": fundamentals}
+
+        async def _one(t: str) -> tuple[str, dict] | None:
+            nonlocal done_count
+            if self._cancel_check():
+                return None
+            async with sem:
+                if self._cancel_check():
+                    return None
+                data = await asyncio.to_thread(_fetch_one, t)
+            done_count += 1
+            if self._on_progress:
+                try:
+                    self._on_progress({
+                        "type": "bundle_progress",
+                        "ticker": t,
+                        "done": done_count,
+                        "total": total,
+                    })
+                except Exception:
+                    pass
+            return t, {
+                "ticker": t,
                 "market": market,
-                "quote": self._get_quote(ticker),
-                "fundamentals_current": self._get_fundamentals(ticker),
+                "quote": data["quote"],
+                "fundamentals_current": data["fundamentals"],
                 "fundamentals_history": [],
                 "news_recent": [],
             }
+
+        results = await asyncio.gather(*[_one(t) for t in tickers], return_exceptions=True)
+        for r in results:
+            if isinstance(r, tuple) and len(r) == 2:
+                bundles[r[0]] = r[1]
         return bundles
-
-    def _get_quote(self, ticker) -> dict:
-        try:
-            from stock_trading_system.data.data_router import DataRouter
-            router = DataRouter(self._config, cache=self._cache)
-            return router.get_price(ticker) or {}
-        except Exception:
-            return {}
-
-    def _get_fundamentals(self, ticker) -> dict:
-        try:
-            from stock_trading_system.data.data_router import DataRouter
-            router = DataRouter(self._config, cache=self._cache)
-            return router.get_fundamentals(ticker) or {}
-        except Exception:
-            return {}
 
     async def _run_classic_mode(self, candidates, context) -> dict:
         """Delegate to v2 classic threshold gurus (zero change to v2 code)."""
