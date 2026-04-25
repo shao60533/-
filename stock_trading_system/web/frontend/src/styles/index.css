@@ -119,3 +119,48 @@ body { margin: 0; font-size: var(--text-base); }
   to   { opacity: 1; transform: translateY(0); }
 }
 .animate-slide-up { animation: slide-up 280ms ease-out; }
+
+/* ═══ Mobile Tokens (from mobile-optimization.md) ═══ */
+:root {
+  --fs-stat: clamp(16px, 4.6vw, 22px);
+  --fs-hero: clamp(22px, 7vw, 40px);
+  --touch-min: 44px;
+  --page-pad-mobile: 12px;
+}
+
+/* ═══ Form row mobile: single-column at ≤575.98px ═══ */
+@media (max-width: 575.98px) {
+  .form-row-mobile {
+    flex-direction: column !important;
+    align-items: stretch !important;
+    gap: 12px !important;
+  }
+  .form-row-mobile > * {
+    width: 100% !important;
+    flex: none !important;
+  }
+  .form-row-mobile button,
+  .form-row-mobile input,
+  .form-row-mobile select {
+    min-height: var(--touch-min);
+  }
+}
+
+/* ═══ Grid single-column collapse at ≤575.98px ═══ */
+@media (max-width: 575.98px) {
+  .grid-collapse-mobile {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+/* ═══ Tabs scrollable (horizontal scroll for many tabs) ═══ */
+.tabs-scrollable {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scroll-snap-type: x proximity;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+.tabs-scrollable::-webkit-scrollbar { display: none; }
