@@ -17,7 +17,9 @@ R-1 ~ R-7 commits 已落地（6e583b4..5370863）。审计 22 P0 项实际状态
 | 状态 | 数量 | 项 |
 |---|---|---|
 | ✅ DONE | **19** | Portfolio P-P0-1/2 · Paper-trade PT-P0-1/2/3 · Dashboard D-P0-1~4 · Analysis A-P0-1/2 · Tasks T-P0-1~6 · Menu M-P0-1~3 |
-| ❌ MISSING | **6** | **MS-P0-1~4 整套 LLMSwitcher** · **SE-P0-1 缺 Gemini+Qwen API key** · **A-P0-3 Pipeline DAG** |
+| ❌ MISSING（v1.4 已知）| **6** | **MS-P0-1~4 整套 LLMSwitcher** · **SE-P0-1 缺 Gemini+Qwen API key** · **A-P0-3 Pipeline DAG** |
+| ❌ MISSING（v1.5 实测新增）| **6** | **HE-P0-1 History 跳分析详情 404** · **SV3-P0-1 Screener V3 结果页未建** · **A-P0-4 TradingView K线 widget**（现在 ECharts）· **A-P0-5 新闻+基本面侧卡** · **B-P0-1 Backtest 结果详情页**（只有表单）· **D-P0-5 /backtest-v2 死链** |
+| ⚠ R-6 未真实落地 | 4 | HE-P1-1/2 对比+timeline · AL-P1-2 阈值建议 · SE-P1-1/2 调度器+数据源 · R-P2-12 reports 导出（暂不阻塞 P0 闸门）|
 
 **T-P0-6 任务中心空白 bug 已修复**（实测 2026-04-25）：
 - ✅ 后端 [app.py:1713-1719](../../stock_trading_system/web/app.py) 返回 `{tasks, items, total, limit, offset}` 双字段向后兼容
@@ -625,12 +627,20 @@ P0 = R-1 ~ R-5b（共 ~28h，含菜单重组 + 列表页 + Tasks 改造 + LLMSwi
 
 ### 6.1 R-1.x 收尾批次（P0 余项）
 
-R-1 ~ R-7 落地后实测 22 P0 中 19 ✅ DONE / 3 类 ❌ MISSING（共 6 项）。本批次集中收尾，~5h。**严格不动已完成的 19 项**。
+R-1 ~ R-7 落地后实测，**v1.4 已知 6 项 + v1.5 新发现 6 项 = 共 12 项 P0 未完成**。本批次集中收尾，~12h（v1.4 ~5h + v1.5 新增 ~7h）。**严格不动已完成的 19 项**。
 
-剩余仅 3 个工作单元：
+#### v1.4 已知（5h）：
 - **R-1.1 LLMSwitcher**（4 项 = MS-P0-1~4，~3h）
 - **R-5b Settings keys**（1 项 = SE-P0-1，~10min）
-- **R-5.1 Pipeline DAG**（1 项 = A-P0-3，~2h）
+- **R-5.1 Pipeline DAG**（1 项 = A-P0-3a，~2h）—— 注意 v1.5 已确认 DAG 组件存在但**只在表单视图里**，需移到详情视图
+
+#### v1.5 新增（~7h）：
+- **R-1.2 History → Analysis 链接修复**（HE-P0-1，~30min）
+- **R-1.3 Dashboard 死链修复 backtest-v2**（D-P0-5，~5min）
+- **R-5.2 Analysis 补 News + 基本面 quick-info 侧卡**（A-P0-5，~1h）
+- **R-5.3 Analysis K线换 TradingView widget**（A-P0-4，~1.5h）
+- **R-5b.2 Screener V3 结果页**（SV3-P0-1，~2h）—— 全新建，从 0 到 1
+- **R-6b Backtest 结果详情页**（B-P0-1，~2h）—— 全新建
 
 #### 6.1.1 [R-1.1] LLMSwitcher 组件 + Sidebar 集成（~3h）
 
