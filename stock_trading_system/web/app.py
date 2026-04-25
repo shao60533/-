@@ -1893,12 +1893,28 @@ def create_app(config_path=None):
             return jsonify({"error": "Task not found"}), 404
         return jsonify(task)
 
+    def _check_task_ownership(task, require_owner=False):
+        """Check if current user can mutate a task. Returns error response or None."""
+        from stock_trading_system.tasks.task_store import TaskStore
+        uid = str(g.user.id) if g.user else None
+        is_admin = g.user and g.user.role == "admin"
+        owner = str(task.get("created_by", ""))
+        is_private = task.get("type", "") in TaskStore.PRIVATE_TYPES
+        if require_owner and owner != uid and not is_admin:
+            return jsonify({"error": "forbidden", "message": "Not task owner"}), 403
+        if is_private and owner != uid and not is_admin:
+            return jsonify({"error": "forbidden", "message": "Private task"}), 403
+        return None
+
     @app.route("/api/tasks/<task_id>/result", methods=["GET"])
     def api_task_result(task_id):
         tm = _get_task_manager()
         task = tm.get(task_id)
         if not task:
             return jsonify({"error": "Task not found"}), 404
+        err = _check_task_ownership(task)
+        if err:
+            return err
         if task["status"] != "success" or not task.get("result_ref"):
             return jsonify({"status": task["status"], "message": "Result not ready"}), 404
         result = tm.get_result(task_id)
@@ -1909,6 +1925,12 @@ def create_app(config_path=None):
     @app.route("/api/tasks/<task_id>/retry", methods=["POST"])
     def api_task_retry(task_id):
         tm = _get_task_manager()
+        task = tm.get(task_id)
+        if not task:
+            return jsonify({"error": "Task not found"}), 404
+        err = _check_task_ownership(task, require_owner=True)
+        if err:
+            return err
         try:
             new_task = tm.retry(task_id)
         except ValueError as e:
@@ -1921,6 +1943,9 @@ def create_app(config_path=None):
         task = tm.get(task_id)
         if not task:
             return jsonify({"error": "Task not found"}), 404
+        err = _check_task_ownership(task, require_owner=True)
+        if err:
+            return err
         if task["status"] not in ("pending", "running"):
             return jsonify({"error": f"Cannot cancel task in status '{task['status']}'"}), 409
         ok = tm.cancel(task_id)
@@ -1929,6 +1954,12 @@ def create_app(config_path=None):
     @app.route("/api/tasks/<task_id>", methods=["DELETE"])
     def api_task_delete(task_id):
         tm = _get_task_manager()
+        task = tm.get(task_id)
+        if not task:
+            return jsonify({"error": "Task not found"}), 404
+        err = _check_task_ownership(task, require_owner=True)
+        if err:
+            return err
         ok = tm.delete(task_id)
         if not ok:
             return jsonify({"error": "Task not found"}), 404
