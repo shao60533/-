@@ -1,5 +1,6 @@
 """Flask web application with API routes and WebSocket support."""
 
+import json
 import os
 import threading
 from pathlib import Path
@@ -837,9 +838,34 @@ def create_app(config_path=None):
         db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
         db = PortfolioDatabase(db_path)
         record = db.get_analysis_by_id(analysis_id)
-        if record:
-            return jsonify(record)
-        return jsonify({"error": "Not found"}), 404
+        if not record:
+            return jsonify({"error": "Not found"}), 404
+
+        # Map DB columns to frontend-expected fields
+        conf_str = (record.get("confidence") or "").lower()
+        conf_map = {"high": 0.85, "medium": 0.5, "low": 0.25}
+        confidence_num = conf_map.get(conf_str)
+
+        advice = {}
+        if record.get("advice_json"):
+            try:
+                advice = json.loads(record["advice_json"]) if isinstance(record["advice_json"], str) else record["advice_json"]
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        analysts = {}
+        for key in ("market_report", "sentiment_report", "news_report",
+                     "fundamentals_report", "investment_debate", "risk_assessment"):
+            if record.get(key):
+                analysts[key.replace("_report", "").replace("_", " ").title()] = record[key]
+
+        record["summary"] = record.get("executive_summary") or record.get("trade_decision") or ""
+        record["recommendation"] = record.get("trade_decision") or ""
+        record["confidence"] = confidence_num
+        record["risk_level"] = advice.get("risk_level") or conf_str or "-"
+        record["analysts"] = analysts
+
+        return jsonify(record)
 
     @app.route("/api/history/compare")
     def api_analysis_compare():

@@ -178,38 +178,29 @@ export function AnalysisPage() {
               <CardTitle>分析摘要</CardTitle>
             </CardHeader>
             <CardContent>
-              <p className="text-sm leading-relaxed text-[var(--color-text-secondary)]">
+              <div className="text-sm leading-relaxed text-[var(--color-text-secondary)] whitespace-pre-wrap max-h-96 overflow-y-auto">
                 {detail.summary}
-              </p>
+              </div>
             </CardContent>
           </Card>
         )}
 
-        {detail.recommendation && (
-          <Card>
-            <CardHeader>
-              <CardTitle>投资建议</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-sm leading-relaxed text-[var(--color-text-secondary)]">
-                {detail.recommendation}
-              </p>
-            </CardContent>
-          </Card>
-        )}
-
-        {detail.analysts && Object.keys(detail.analysts).length > 0 && (
-          <Card>
-            <CardHeader>
-              <CardTitle>分析师详情</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <pre className="text-xs bg-[var(--color-bg-secondary)] rounded p-3 overflow-x-auto max-h-80">
-                {JSON.stringify(detail.analysts, null, 2)}
-              </pre>
-            </CardContent>
-          </Card>
-        )}
+        {detail.analysts && Object.keys(detail.analysts).length > 0 &&
+          Object.entries(detail.analysts).map(([title, content]) => (
+            <Card key={title}>
+              <CardHeader>
+                <CardTitle className="text-base">{title}</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="text-sm leading-relaxed text-[var(--color-text-secondary)] whitespace-pre-wrap max-h-80 overflow-y-auto">
+                  {typeof content === "string"
+                    ? content
+                    : JSON.stringify(content, null, 2)}
+                </div>
+              </CardContent>
+            </Card>
+          ))
+        }
       </div>
     )
   }
