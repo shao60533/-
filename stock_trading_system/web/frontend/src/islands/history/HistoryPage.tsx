@@ -145,7 +145,7 @@ export function HistoryPage() {
                           </pre>
                         )}
                         <a
-                          href={`/app/analysis/${r.id}`}
+                          href={`/analysis/${r.id}`}
                           className="inline-flex items-center gap-1 text-xs text-[var(--color-accent-blue)] hover:underline"
                         >
                           <TrendingUp className="h-3 w-3" />

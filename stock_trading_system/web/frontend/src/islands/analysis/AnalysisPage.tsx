@@ -77,6 +77,12 @@ export function AnalysisPage() {
         params: { ticker: ticker.toUpperCase(), date },
       })
       setSubmitResult(res)
+      // Redirect to task center so user can track progress
+      if (res.task_id) {
+        setTimeout(() => {
+          window.location.href = `/tasks`
+        }, 800)
+      }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "提交失败")
     } finally {
@@ -101,7 +107,7 @@ export function AnalysisPage() {
           <AlertTitle>加载失败</AlertTitle>
           <AlertDescription>{error}</AlertDescription>
         </Alert>
-        <Button variant="outline" onClick={() => (window.location.href = "/app/analysis")}>
+        <Button variant="outline" onClick={() => (window.location.href = "/analysis")}>
           <ArrowLeft className="h-4 w-4 mr-1" />
           返回
         </Button>
@@ -116,7 +122,7 @@ export function AnalysisPage() {
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => (window.location.href = "/app/analysis")}
+            onClick={() => (window.location.href = "/analysis")}
           >
             <ArrowLeft className="h-4 w-4" />
           </Button>
