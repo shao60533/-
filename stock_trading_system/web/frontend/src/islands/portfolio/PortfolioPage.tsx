@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react"
 import { Wallet, TrendingUp, Target, Package, Plus, Search, DollarSign, ArrowDownToLine } from "lucide-react"
-import { Card, CardHeader, CardContent } from "@/components/ui/card"
+import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Stat } from "@/components/ui/stat"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import { apiGet, apiPost, apiDel } from "@/lib/api"
 import { cn } from "@/lib/utils"
@@ -12,6 +13,11 @@ import { cn } from "@/lib/utils"
 interface Holding {
   ticker: string; market: string; shares: number; avg_cost: number
   current_price: number; market_value: number; pnl: number; pnl_pct: number
+}
+
+interface Transaction {
+  id: number; ticker: string; action: string; shares: number
+  price: number; timestamp: string; notes: string
 }
 
 interface Summary {
@@ -29,15 +35,18 @@ export function PortfolioPage() {
   const [buyOpen, setBuyOpen] = useState(false)
   const [sellTarget, setSellTarget] = useState<Holding | null>(null)
   const [costTarget, setCostTarget] = useState<Holding | null>(null)
+  const [transactions, setTransactions] = useState<Transaction[]>([])
 
   const load = async () => {
     setLoading(true)
-    const [h, s] = await Promise.all([
+    const [h, s, t] = await Promise.all([
       apiGet<Holding[]>("/api/portfolio/holdings").catch(() => []),
       apiGet<Summary>("/api/portfolio/summary").catch(() => null),
+      apiGet<Transaction[]>("/api/portfolio/transactions").catch(() => []),
     ])
     setHoldings(Array.isArray(h) ? h : [])
     setSummary(s)
+    setTransactions(Array.isArray(t) ? t : [])
     setLoading(false)
   }
 
@@ -82,7 +91,14 @@ export function PortfolioPage() {
         </div>
       )}
 
-      {/* Holdings table */}
+      {/* Holdings + Transactions tabs */}
+      <Tabs defaultValue="holdings">
+        <TabsList>
+          <TabsTrigger value="holdings">持仓 ({holdings.length})</TabsTrigger>
+          <TabsTrigger value="transactions">交易记录 ({transactions.length})</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="holdings">
       <Card>
         <CardHeader>
           <div className="flex items-center gap-3">
@@ -173,6 +189,67 @@ export function PortfolioPage() {
           )}
         </CardContent>
       </Card>
+
+        </TabsContent>
+
+        <TabsContent value="transactions">
+          <Card>
+            <CardContent className="pt-4">
+              {transactions.length === 0 ? (
+                <div className="text-center py-12 text-muted-foreground">暂无交易记录</div>
+              ) : (
+                <>
+                  {/* Desktop table */}
+                  <div className="hidden md:block overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b text-muted-foreground text-xs uppercase">
+                          <th className="text-left py-2 px-2">时间</th>
+                          <th className="text-left py-2 px-2">代码</th>
+                          <th className="text-left py-2 px-2">操作</th>
+                          <th className="text-right py-2 px-2">数量</th>
+                          <th className="text-right py-2 px-2">价格</th>
+                          <th className="text-left py-2 px-2">备注</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {transactions.map(t => (
+                          <tr key={t.id} className="border-b border-border/50 hover:bg-muted/30">
+                            <td className="py-2 px-2 text-xs text-muted-foreground font-mono">{t.timestamp?.slice(0, 16)}</td>
+                            <td className="py-2 px-2 font-mono font-semibold">{t.ticker}</td>
+                            <td className="py-2 px-2">
+                              <span className={cn("text-xs font-medium", t.action === "BUY" ? "text-[var(--color-accent-green)]" : "text-[var(--color-accent-red)]")}>
+                                {t.action}
+                              </span>
+                            </td>
+                            <td className="text-right py-2 px-2 font-mono">{t.shares}</td>
+                            <td className="text-right py-2 px-2 font-mono">${fmt(t.price)}</td>
+                            <td className="py-2 px-2 text-xs text-muted-foreground truncate max-w-[200px]">{t.notes || "-"}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  {/* Mobile cards */}
+                  <div className="md:hidden space-y-2">
+                    {transactions.map(t => (
+                      <div key={t.id} className="border rounded-lg p-3">
+                        <div className="flex justify-between items-center">
+                          <span className="font-mono font-semibold">{t.ticker}</span>
+                          <span className={cn("text-xs font-medium", t.action === "BUY" ? "text-[var(--color-accent-green)]" : "text-[var(--color-accent-red)]")}>
+                            {t.action} {t.shares} @ ${fmt(t.price)}
+                          </span>
+                        </div>
+                        <div className="text-xs text-muted-foreground mt-1">{t.timestamp?.slice(0, 16)}</div>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
 
       {/* Dialogs */}
       <BuyDialog open={buyOpen} onClose={() => setBuyOpen(false)} onSuccess={load} />

@@ -152,7 +152,7 @@ export function ReportsPage() {
                 <code className="font-mono">{submitResult.task_id}</code>
                 ，状态: {submitResult.status}。
                 <a
-                  href="/app/tasks"
+                  href="/tasks"
                   className="ml-2 text-[var(--color-accent-blue)] hover:underline"
                 >
                   查看任务进度

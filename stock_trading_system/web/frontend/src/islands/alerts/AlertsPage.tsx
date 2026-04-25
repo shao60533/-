@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { Bell, Plus, Trash2, History as HistoryIcon } from "lucide-react"
+import { Bell, Plus, Trash2, History as HistoryIcon, Zap } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -21,7 +21,16 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
+import { Chip, ChipRow } from "@/components/ui/chip"
 import { apiGet, apiPost, apiDel } from "@/lib/api"
+
+const ALERT_TEMPLATES = [
+  { label: "向上突破+5%", condition: "pct_change_above", threshold: 5 },
+  { label: "向下跌破-5%", condition: "pct_change_below", threshold: 5 },
+  { label: "止损-10%", condition: "pct_change_below", threshold: 10 },
+  { label: "止盈+20%", condition: "pct_change_above", threshold: 20 },
+  { label: "日内涨跌±3%", condition: "pct_change_above", threshold: 3 },
+] as const
 
 interface AlertRule {
   id: string
@@ -47,6 +56,14 @@ export function AlertsPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [addOpen, setAddOpen] = useState(false)
+  const [prefillCondition, setPrefillCondition] = useState("")
+  const [prefillThreshold, setPrefillThreshold] = useState("")
+
+  const handleTemplate = (tpl: typeof ALERT_TEMPLATES[number]) => {
+    setPrefillCondition(tpl.condition)
+    setPrefillThreshold(String(tpl.threshold))
+    setAddOpen(true)
+  }
 
   const load = async () => {
     setLoading(true)
@@ -123,6 +140,19 @@ export function AlertsPage() {
           <Plus className="w-4 h-4 mr-1" /> 新建警报
         </Button>
       </div>
+
+      <ChipRow>
+        {ALERT_TEMPLATES.map((tpl) => (
+          <Chip
+            key={tpl.label}
+            size="sm"
+            onClick={() => handleTemplate(tpl)}
+          >
+            <Zap className="h-3 w-3" />
+            {tpl.label}
+          </Chip>
+        ))}
+      </ChipRow>
 
       <Tabs defaultValue="active">
         <TabsList>
@@ -219,8 +249,14 @@ export function AlertsPage() {
 
       <AddAlertDialog
         open={addOpen}
-        onClose={() => setAddOpen(false)}
+        onClose={() => {
+          setAddOpen(false)
+          setPrefillCondition("")
+          setPrefillThreshold("")
+        }}
         onSuccess={load}
+        initialCondition={prefillCondition}
+        initialThreshold={prefillThreshold}
       />
     </div>
   )
@@ -230,16 +266,29 @@ function AddAlertDialog({
   open,
   onClose,
   onSuccess,
+  initialCondition,
+  initialThreshold,
 }: {
   open: boolean
   onClose: () => void
   onSuccess: () => void
+  initialCondition?: string
+  initialThreshold?: string
 }) {
   const [ticker, setTicker] = useState("")
   const [condition, setCondition] = useState("price_above")
   const [threshold, setThreshold] = useState("")
   const [submitting, setSubmitting] = useState(false)
   const [formError, setFormError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (open) {
+      setCondition(initialCondition || "price_above")
+      setThreshold(initialThreshold || "")
+      setTicker("")
+      setFormError(null)
+    }
+  }, [open, initialCondition, initialThreshold])
 
   const handleSubmit = async () => {
     if (!ticker || !threshold) return

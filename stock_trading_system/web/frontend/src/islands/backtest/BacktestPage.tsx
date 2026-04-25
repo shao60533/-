@@ -74,6 +74,7 @@ export function BacktestPage() {
         },
       })
       setSubmitResult(res)
+      if (res.task_id) setTimeout(() => { window.location.href = "/tasks" }, 800)
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "提交失败")
     } finally {
@@ -102,7 +103,7 @@ export function BacktestPage() {
           <CardTitle>配置回测参数</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div className="grid gap-4 sm:grid-cols-2 grid-collapse-mobile">
             <div className="space-y-1.5">
               <label className="text-sm text-muted-foreground">股票代码</label>
               <Input
@@ -164,7 +165,7 @@ export function BacktestPage() {
             </div>
           </div>
 
-          <div className="mt-6 flex flex-col gap-3">
+          <div className="mt-6 flex flex-col gap-3 form-row-mobile">
             <Button
               onClick={handleSubmit}
               disabled={submitting || !ticker.trim() || !strategy}
@@ -198,7 +199,7 @@ export function BacktestPage() {
                   <code className="font-mono">{submitResult.task_id}</code>
                   ，状态: {submitResult.status}。
                   <a
-                    href="/app/tasks"
+                    href="/tasks"
                     className="ml-2 text-[var(--color-accent-blue)] hover:underline"
                   >
                     查看任务进度
