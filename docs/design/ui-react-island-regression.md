@@ -20,6 +20,7 @@ R-1 ~ R-7 commits 已落地（6e583b4..5370863）。审计 22 P0 项实际状态
 | ❌ MISSING（v1.4 已知）| **6** | **MS-P0-1~4 整套 LLMSwitcher** · **SE-P0-1 缺 Gemini+Qwen API key** · **A-P0-3 Pipeline DAG** |
 | ❌ MISSING（v1.5 实测新增）| **6** | **HE-P0-1 History 跳分析详情 404** · **SV3-P0-1 Screener V3 结果页未建** · **A-P0-4 TradingView K线 widget**（现在 ECharts）· **A-P0-5 新闻+基本面侧卡** · **B-P0-1 Backtest 结果详情页**（只有表单）· **D-P0-5 /backtest-v2 死链** |
 | ⚠ R-6 未真实落地 | 4 | HE-P1-1/2 对比+timeline · AL-P1-2 阈值建议 · SE-P1-1/2 调度器+数据源 · R-P2-12 reports 导出（暂不阻塞 P0 闸门）|
+| ⚠ 性能问题（v1.6 实测）| 1 | **PERF-P0-1 Dashboard / Portfolio 加载慢**（每次访问 = 2 次全量价格拉取，~3s）|
 
 **T-P0-6 任务中心空白 bug 已修复**（实测 2026-04-25）：
 - ✅ 后端 [app.py:1713-1719](../../stock_trading_system/web/app.py) 返回 `{tasks, items, total, limit, offset}` 双字段向后兼容
