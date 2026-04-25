@@ -352,7 +352,9 @@ def create_app(config_path=None):
     PUBLIC_PREFIXES = ("/static/", "/login", "/register", "/reset",
                        "/api/auth/login", "/api/auth/register", "/api/auth/reset",
                        "/api/auth/invites-available",
-                       "/health", "/api/health", "/api/seed")
+                       "/health", "/api/health", "/api/seed",
+                       # Schwab OAuth — guarded by magic-link secret instead of session
+                       "/oauth/schwab/", "/api/schwab/")
 
     @app.before_request
     def enforce_auth():
