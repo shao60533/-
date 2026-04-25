@@ -10,6 +10,20 @@
 | 关联移动端基线 | [mobile-optimization.md](./mobile-optimization.md) v1.0 |
 | 关联测试 | [../test-cases/ui-react-island-regression.md](../test-cases/ui-react-island-regression.md) |
 
+## 0. 实施进度（v1.4 截止 2026-04-25 晚）
+
+R-1 ~ R-7 commits 已落地（6e583b4..5370863）。审计 22 P0 项实际状态：
+
+| 状态 | 数量 | 项 |
+|---|---|---|
+| ✅ DONE | 18 | Portfolio P-P0-1/2 · Paper-trade PT-P0-1/2/3 · Dashboard D-P0-1~4 · Analysis A-P0-1/2 · Tasks T-P0-1~5 · Menu M-P0-1~3 |
+| ❌ MISSING | 6 | **MS-P0-1~4 整套 LLMSwitcher** · **SE-P0-1 缺 Gemini+Qwen API key** · **A-P0-3 Pipeline DAG** |
+| ⚠ PARTIAL | — | T-P0-6 schema 前端 fallback 加了，但需验证后端是否对齐 `{tasks}` |
+
+→ 余 R-1.x 收尾批次（~5h）见 [§6.1](#61-r-1x-收尾批次p0-余项) 详细合并指令。
+
+完成 R-1.x 后 P0 闸门全绿，可进入 R-6 / R-7（已完成的部分回归测试 + 真实数据跑一遍）。
+
 ## 1. 背景
 
 [ui-react-island](./ui-react-island.md) v1.0 + v2.0 完成了 11 页全部迁移到 React，但实施时**为了赶交付简化了 page 内部的功能实现**，导致两类回归：
@@ -604,6 +618,71 @@ P0 = R-1 ~ R-5b（共 ~28h，含菜单重组 + 列表页 + Tasks 改造 + LLMSwi
 
 **总修复工时 ~57h**。
 
+### 6.1 R-1.x 收尾批次（P0 余项）
+
+R-1 ~ R-7 落地后审计发现 4 项 P0 + 1 项 PARTIAL 未完成。本批次集中收尾，~5h。**严格不动已完成的 18 项**。
+
+#### 6.1.1 [R-1.1] LLMSwitcher 组件 + Sidebar 集成（~3h）
+
+- 新建 `components/shared/LLMSwitcher.tsx`（~150 LOC）
+- 用 shadcn `<DropdownMenu>` + `<DropdownMenuRadioGroup>` 实现切换
+- 接 `GET /api/settings/llm-provider` 拉状态、`POST /api/settings/llm-provider` 切换
+- 4 状态完整：active 切换 / 缺 key 选项灰显（label 加"未配置"）/ env 锁定整下拉禁用 + 🔒 / 切换 loading
+- 错误码 toast 映射：
+  - 400 `missing_api_key` → toast.error 含 "[去设置]" action 跳 `/settings`
+  - 409 `locked_by_env` → toast.error "已被环境变量锁定"
+  - 网络错 → toast.error "切换失败" + 回滚 active state
+- 集成位置：
+  - 桌面 [Sidebar.tsx](../../stock_trading_system/web/frontend/src/components/shared/Sidebar.tsx) Logo 下方
+  - 移动 sheet 顶部（菜单 item 之前）
+- 验收：TC-RG-P0-21, P0-22
+
+#### 6.1.2 [R-5b] Settings 补 2 个 API key 字段（~10min）
+
+- 编辑 [SettingsPage.tsx:227](../../stock_trading_system/web/frontend/src/islands/settings/SettingsPage.tsx) hardcoded API_KEYS 列表追加 2 项 + 改 1 项 label：
+  ```ts
+  { key: "DASHSCOPE_API_KEY",  label: "Qwen API Key (DashScope)" },   // 改 label
+  { key: "GEMINI_API_KEY",     label: "Gemini API Key" },             // 新增
+  { key: "QWEN_API_KEY",       label: "Qwen API Key (备用)" },        // 新增
+  ```
+- 验收：TC-RG-P0-20
+
+#### 6.1.3 [R-5.1] Pipeline DAG 可视化（~2h）
+
+- 新建 `components/shared/PipelineDAG.tsx`
+- 数据：`subscribeTaskStream` 监听 `event=='agent_stage_done'` 事件
+- 9 个固定阶段（按 TradingAgents 顺序）：
+  ```
+  market_agent → sentiment_agent → news_agent → fundamentals_agent
+   → bull_researcher → bear_researcher → judge → risk_manager → trader
+  ```
+- 节点状态机：pending（灰）/ running（蓝色脉冲）/ done（绿✓）/ failed（红✗）
+- 桌面横向流 + 连线箭头；移动端 ≤575.98px 改纵向流
+- 点击节点 popover 展示该阶段简要 reasoning（若 payload 含）
+- 集成：[AnalysisPage.tsx](../../stock_trading_system/web/frontend/src/islands/analysis/AnalysisPage.tsx) status='running' 时在结果区上方插入
+- 验收：TC-RG-P0-8
+
+#### 6.1.4 [R-3b.1] Tasks schema 后端验证（~5min + 看情况修）
+
+- 实测访问 `/tasks`：若仍空白 → 排查
+  - 方案 A（推荐）：[app.py](../../stock_trading_system/web/app.py) `api_tasks_list` 改返回 `{tasks: [...], total, limit, offset}`
+  - 方案 B：[TasksPage.tsx:67](../../stock_trading_system/web/frontend/src/islands/tasks/TasksPage.tsx) fallback 链补 `items`：
+    ```ts
+    const list = (data as any).tasks || (data as any).items || (Array.isArray(data) ? data : [])
+    ```
+- 验收：TC-RG-P0-13, P0-18
+
+### 6.2 R-1.x 完成后
+
+P0 闸门全绿，可签字进入 R-6 / R-7 已完成部分的回归 + 真实数据跑一遍。最终 sign-off：
+
+```bash
+python -m stock_trading_system.validation.sign_off \
+  --report validation/runs/<date>/regression-final.json \
+  --signer admin@local \
+  --note "P0 全 22 项 + R-1.x 收尾全绿"
+```
+
 ## 7. 验证
 
 每 Phase 结束跑：
@@ -652,3 +731,4 @@ P0 = R-1 ~ R-5b（共 ~28h，含菜单重组 + 列表页 + Tasks 改造 + LLMSwi
 | v1.1 | 2026-04-25 | 补充：(1) 升级 paper-trade 列表页（PT-P0-2）从 P1 → P0 CRITICAL，因实测发现 `/paper-trade` 路由不存在，整个入口缺失；(2) 新增 §4.12 菜单重组方案，6 大组（概览/分析/选股/持仓/纸面交易/系统）+ 11 叶子，含 Sidebar 分组组件 + MobileTabbar 5+更多 sheet 设计；(3) 总工时 ~42h → ~49h |
 | v1.2 | 2026-04-25 | 补充：升级 Tasks 4 项从 P1/P2 → P0 CRITICAL（T-P0-1~5）：(1) 历史无分页 → 无限滚动 + offset；(2) 无类型过滤 → 新增类型 chip-row（AI 分析/批量/选股 V3/回测/报告/纸面交易/其他）；(3) 无 scope 过滤 → 加 我的/全部 tab；(4) 无跳转结果落地页 → 新建 `lib/tasks.ts::getTaskResultUrl(task)` 9 类 task → URL 映射表，整卡可点 + 显式 [查看结果 →] 按钮；(5) 详情页操作齐全（删除/重试/取消/查看结果）。总工时 ~49h → ~53h；Tasks CRITICAL 0 → 5 |
 | v1.3 | 2026-04-25 | 补充实测发现的 4 个新 P0：(1) PT-P0-3 paper-trade `<ticker>` 详情空白 bug（pathname.split 末尾斜杠 → 空），(2) T-P0-6 任务中心空白 bug（后端返回 `items` 字段，前端期望 `tasks`，schema 不匹配）；(3) SE-P0-1 设置页缺 GEMINI_API_KEY + QWEN_API_KEY 字段（硬编码列表遗漏）；(4) MS-P0-1~4 整个 Model-Switch UI 缺失（后端 100% 已就绪，前端 0 组件）—— 新增 §4.13 LLMSwitcher 详细规格，挂 NavTopbar 桌面 + 移动 sheet。新增 R-5b Phase（Settings keys 1h）+ R-1 包含 LLMSwitcher（新增 ~3h）；总工时 ~53h → ~57h；CRITICAL 14 → 22 |
+| v1.4 | 2026-04-25 | 实施进度审计：R-1~R-7 commits 落地后实测 22 P0 中 18 项 ✅ DONE / 6 项 ❌ MISSING（MS-P0-1~4 LLMSwitcher 全套未建 + SE-P0-1 Settings 仍缺 Gemini+Qwen key + A-P0-3 Pipeline DAG 未实装）+ 1 项 ⚠ PARTIAL（T-P0-6 前端 fallback 加但后端 schema 待验证）。新增 §0 实施进度章节 + §6.1 R-1.x 收尾批次合并指令（共 ~5h，含 LLMSwitcher 3h + Settings keys 10min + Pipeline DAG 2h + Tasks schema 验证 5min）。完成 R-1.x 后 P0 才闸门绿 |

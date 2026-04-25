@@ -9,6 +9,7 @@ import { getCurrentUser } from "@/lib/auth"
 import {
   Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription,
 } from "@/components/ui/sheet"
+import { LLMSwitcher } from "./LLMSwitcher"
 
 interface NavItem {
   label: string
@@ -76,11 +77,12 @@ export function Sidebar() {
 
   return (
     <aside className="hidden md:flex flex-col w-56 min-h-screen bg-card border-r border-border">
-      {/* Logo */}
-      <div className="p-4 border-b border-border">
+      {/* Logo + LLM Switcher */}
+      <div className="p-4 border-b border-border space-y-2">
         <a href="/" className="text-sm font-bold text-primary flex items-center gap-2">
           ⚡ StockAI Terminal
         </a>
+        <LLMSwitcher />
       </div>
 
       {/* Nav groups */}
@@ -176,6 +178,9 @@ export function MobileTabbar() {
             <SheetTitle>更多功能</SheetTitle>
             <SheetDescription>快速导航到其他页面</SheetDescription>
           </SheetHeader>
+          <div className="mb-3 border-b border-border pb-3">
+            <LLMSwitcher />
+          </div>
           <div className="grid grid-cols-4 gap-3 mt-2">
             {MOBILE_MORE.map((item) => (
               <a

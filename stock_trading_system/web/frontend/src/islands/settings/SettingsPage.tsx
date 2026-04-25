@@ -224,11 +224,17 @@ export function SettingsPage() {
         </CardHeader>
         <CardContent>
           <div className="space-y-3">
-            {["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY", "DASHSCOPE_API_KEY"].map(
-              (keyName) => (
+            {[
+              { key: "OPENAI_API_KEY",     label: "OpenAI API Key" },
+              { key: "ANTHROPIC_API_KEY",  label: "Anthropic API Key" },
+              { key: "DEEPSEEK_API_KEY",   label: "DeepSeek API Key" },
+              { key: "DASHSCOPE_API_KEY",  label: "Qwen API Key (DashScope)" },
+              { key: "GEMINI_API_KEY",     label: "Gemini API Key" },
+              { key: "QWEN_API_KEY",       label: "Qwen API Key (备用)" },
+            ].map(({ key: keyName, label }) => (
                 <div key={keyName} className="space-y-1.5">
                   <label className="text-xs font-mono text-muted-foreground">
-                    {keyName}
+                    {label}
                   </label>
                   <Input
                     type={showKeys ? "text" : "password"}
