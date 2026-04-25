@@ -203,7 +203,7 @@ export function ScreenerV3Page() {
 
         {/* 6. Cost Estimate */}
         <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] p-4">
-          <div className="grid grid-cols-3 gap-4">
+          <div className="grid grid-cols-3 gap-4 grid-collapse-mobile">
             <EstimateCell
               icon={<Zap className="h-3.5 w-3.5" />}
               label="LLM 调用"

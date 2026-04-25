@@ -1,5 +1,7 @@
 import { useState } from "react"
 import { FileText, Send, Clock } from "lucide-react"
+import Markdown from "react-markdown"
+import remarkGfm from "remark-gfm"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -89,7 +91,7 @@ export function ReportsPage() {
           <CardTitle>生成报告</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-end">
+          <div className="flex flex-col gap-4 form-row-mobile sm:flex-row sm:items-end">
             <div className="flex-1 space-y-1.5">
               <label className="text-sm text-muted-foreground">报告类型</label>
               <Select value={reportType} onValueChange={setReportType}>
@@ -177,10 +179,8 @@ export function ReportsPage() {
           </CardHeader>
           <CardContent>
             {report.content && (
-              <div className="prose prose-sm prose-invert max-w-none">
-                <div className="whitespace-pre-wrap text-sm text-[var(--color-text-secondary)] leading-relaxed">
-                  {report.content}
-                </div>
+              <div className="prose prose-sm prose-invert max-w-none text-[var(--color-text-secondary)]">
+                <Markdown remarkPlugins={[remarkGfm]}>{report.content}</Markdown>
               </div>
             )}
             {report.sections?.map((section, idx) => (

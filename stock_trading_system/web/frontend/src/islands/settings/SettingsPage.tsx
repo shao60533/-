@@ -171,7 +171,7 @@ export function SettingsPage() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div className="grid gap-4 sm:grid-cols-2 grid-collapse-mobile">
             <div className="space-y-1.5">
               <label className="text-sm text-muted-foreground">提供商</label>
               <Select value={provider} onValueChange={setProvider}>
