@@ -43,10 +43,10 @@
 | Alerts | 0 | 2 模板 chips + 阈值建议 | 3 | 0 | MEDIUM grid + row 不堆叠 |
 | Reports | 0 | 0 | 1 | 0 | MEDIUM form sm vs 576 不一致 |
 | Backtest | 0 | 3 结果页 + 净值图 + 明细表 | 1 | 0 | MEDIUM 5 字段挤 + 日期 picker |
-| **Paper-trade** | **1** 🚨 权益曲线图缺失 | 2 日度 tab + ticker grid | 3 | 0 | LOW |
+| **Paper-trade** | **2** 🚨🚨 权益曲线图缺失 + 列表页完全不存在 | 1 日度 tab | 3 | 0 | LOW |
 | Settings | 0 | 2 调度器 + 数据源卡 | 1 | 0 | MEDIUM provider grid 窄 |
 | Tasks | 0 | 1 modal→页面 | 2 | 0 | LOW |
-| **总计** | **8** | **20** | **23** | **1** | 6 项移动端独立问题 |
+| **总计** | **9** | **19** | **23** | **1** | 6 项移动端独立问题 |
 
 ### 2.2 五大共性根因
 
@@ -64,11 +64,11 @@
 
 | 阶段 | 范围 | 阈值 | 估时 |
 |---|---|---|---|
-| **P0 紧急修复** | 8 CRITICAL + Dashboard stat 移动端溢出 | 上线前必完 | ~12h |
-| **P1 高优先恢复** | 20 HIGH + 移动端 form/grid 标准化（6 处） | 第 1 周内 | ~16h |
+| **P0 紧急修复** | 9 CRITICAL（含 paper-trade 列表页 + Dashboard stat 溢出）+ 菜单重组 | 上线前必完 | ~19h |
+| **P1 高优先恢复** | 19 HIGH + 移动端 form/grid 标准化（6 处） | 第 1 周内 | ~16h |
 | **P2 完善** | 23 MEDIUM + 1 LOW + 测试覆盖 | 第 2-3 周 | ~14h |
 
-总修复工时 ~42h。
+总修复工时 ~49h。
 
 ### 3.2 移动端规范统一（横切要求）
 
@@ -189,14 +189,47 @@ P0/P1 阶段所有改动必须遵守 [mobile-optimization.md](./mobile-optimizat
 - 动态参数区（不同策略不同参数）
 - 移动端 5 字段 grid 单列；日期 picker 聚焦时 `scrollIntoView({block:'center'})` 防键盘遮挡
 
-### 4.9 Paper-trade 🚨
+### 4.9 Paper-trade 🚨🚨
+
+**当前状态**（实测 2026-04-25）：
+- ✅ `/paper-trade/<ticker>` 路由存在，可看单 ticker 详情（但缺日度图，见 PT-P0-1）
+- ❌ **`/paper-trade` 路由根本不存在**，[Flask app.py:527](../../stock_trading_system/web/app.py) 只注册了 `/paper-trade/<ticker>`
+- ❌ **没有 paper-trade-list island**，[islands/paper-trade/](../../stock_trading_system/web/frontend/src/islands/paper-trade/) 只有 detail 一个 entry
+- ❌ 用户从导航点"纸面交易"或访问 `/paper-trade` → 报错或 404；只能直接敲 ticker URL 才能看
+
+→ **整个入口都没有，比 v1.3 PT-P1-2 描述更严重，升级 CRITICAL P0**。
 
 **P0**：
 - [PT-P0-1] 🚨 **权益曲线图（盈利趋势 chart-ptv-equity）完全缺失** → 补"日度数据"tab 内的 ECharts area chart，对应 v1.3 F4 已设计的双 grid + drawdown markArea 配置（见 [paper-trade.md §27.2 F4](./paper-trade.md)）
 
+- [PT-P0-2] 🚨 **`/paper-trade` 列表页完全不存在** → 新建 island `islands/paper-trade-list/`：
+  - Flask 路由 `@app.route("/paper-trade")` → `render_template("islands/paper_trade_list.html")`
+  - React 入口 `islands/paper-trade-list/main.tsx` + `PaperTradeListPage.tsx`
+  - 数据：`GET /api/paper/sessions?scope=my`（已有 API）
+  - 布局参考 [ui-react-island-pages.md §4.5](./ui-react-island-pages.md)：
+    ```
+    ┌─ 默认 session ★ 突出卡（系统追踪・全量自动）──────────┐
+    │  总值 / Sharpe / 持仓天数 / [进入详情]                 │
+    └────────────────────────────────────────────────────────┘
+    ┌─ 工具栏 ──────────────────────────────────────────────┐
+    │ [+ 新建 session]  [搜索]  [Tab: 我的 | 全部]           │
+    │ [刷新所有日度数据]（恢复 old paper-ticker-grid 顶部按钮）│
+    └────────────────────────────────────────────────────────┘
+    ┌─ 会话卡 grid（响应式：桌面 3 列 / 平板 2 / 移动 1）────┐
+    │ ┌──────┐ ┌──────┐ ┌──────┐                            │
+    │ │ NVDA │ │ AAPL │ │ AI 实盘│                            │
+    │ │ +5.2% │ │ -1.8%│ │ +12.4%│                            │
+    │ │8 笔   │ │3 笔  │ │25 笔  │                            │
+    │ │Sharpe │ │失效  │ │live  │                            │
+    │ └──────┘ └──────┘ └──────┘                            │
+    └────────────────────────────────────────────────────────┘
+    ```
+  - 卡片整卡可点 → 跳 `/paper-trade/<ticker>`
+  - 卡右上 ⋯ 菜单：重命名 / 删除 / 导出
+  - 移动端 ≤575.98px 单列，每张卡内 stat 应用 `--fs-stat` clamp
+
 **P1**：
 - [PT-P1-1] 日度数据 tab 整个缺失 → 补 stat cards + 权益图 + 日度明细表（9 列）
-- [PT-P1-2] Ticker Grid（所有 session 列表）缺失（如果用户访问 `/paper-trade` 没参数时应该显示列表）
 
 **P2**：
 - 日度指标卡数字
@@ -222,6 +255,143 @@ P0/P1 阶段所有改动必须遵守 [mobile-optimization.md](./mobile-optimizat
 
 **P2**：
 - 跨页面导航兼容：`/#paper` 老书签 redirect 到 `/paper-trade`
+
+## 4.12 菜单重组（Sidebar / Mobile Tabbar 信息架构）
+
+### 4.12.1 当前问题
+
+现状 `<AppShell>` 的 Sidebar 是 **平铺 11 项**：
+
+```
+仪表盘 / AI 分析 / 分析记录 / 智能选股 / 持仓管理 / 预警中心
+报告中心 / 策略回测 / 纸面交易 / 任务中心 / 设置
+```
+
+问题：
+- 11 项一字排开 → 桌面侧栏滚动、移动 tabbar 无法容纳
+- 项目类别混乱：分析 / 选股 / 持仓 / 系统 都平铺在一起
+- 老 Jinja 没有这个问题（用 Bootstrap dropdown 收起一部分），React 直接平铺反而退化
+
+### 4.12.2 新分类（6 大组 + 11 叶子）
+
+```
+═══ 概览 ═══
+  · 仪表盘                  /
+
+═══ 分析 ═══
+  · AI 分析                 /analysis
+  · 分析记录                /history
+  · 报告中心                /reports
+
+═══ 选股 ═══
+  · 智能选股 V3             /screener-v3
+  · 策略回测                /backtest
+
+═══ 持仓 ═══
+  · 持仓管理                /portfolio
+  · 预警中心                /alerts
+
+═══ 纸面交易 ═══
+  · 全部会话                /paper-trade            ← 新建（PT-P0-2）
+  · （单 ticker 通过列表点入 /paper-trade/<ticker>）
+
+═══ 系统 ═══
+  · 任务中心                /tasks
+  · 设置                    /settings
+```
+
+**分组依据**：
+- **概览**：单项，全局综合视图
+- **分析**：从一个 ticker 触发 → 看历史 → 出报告，是一条信息流
+- **选股**：从市场宽度发现机会 + 验证（screener + backtest）
+- **持仓**：实盘持仓 + 围绕实盘的预警，强绑定
+- **纸面交易**：模拟仓 + 全 session 列表，独立成组
+- **系统**：基础设施（任务 / 设置）
+
+### 4.12.3 桌面 Sidebar 设计
+
+```tsx
+// frontend/src/components/shared/Sidebar.tsx
+<Sidebar>
+  <SidebarGroup label="概览">
+    <SidebarItem href="/" icon={<LayoutDashboard/>} label="仪表盘" />
+  </SidebarGroup>
+
+  <SidebarGroup label="分析">
+    <SidebarItem href="/analysis" icon={<Brain/>} label="AI 分析" />
+    <SidebarItem href="/history"  icon={<History/>} label="分析记录" />
+    <SidebarItem href="/reports"  icon={<FileText/>} label="报告中心" />
+  </SidebarGroup>
+
+  <SidebarGroup label="选股">
+    <SidebarItem href="/screener-v3" icon={<Target/>} label="智能选股" />
+    <SidebarItem href="/backtest"     icon={<Beaker/>} label="策略回测" />
+  </SidebarGroup>
+
+  <SidebarGroup label="持仓">
+    <SidebarItem href="/portfolio" icon={<Wallet/>} label="持仓管理" />
+    <SidebarItem href="/alerts"    icon={<Bell/>}   label="预警中心" />
+  </SidebarGroup>
+
+  <SidebarGroup label="纸面交易">
+    <SidebarItem href="/paper-trade" icon={<LineChart/>} label="全部会话" />
+  </SidebarGroup>
+
+  <SidebarGroup label="系统">
+    <SidebarItem href="/tasks"    icon={<ListChecks/>} label="任务中心" />
+    <SidebarItem href="/settings" icon={<Settings/>}   label="设置" />
+  </SidebarGroup>
+</Sidebar>
+```
+
+**视觉规范**：
+- Group label：`text-[10px] uppercase tracking-wider text-muted-foreground` + 顶部 8px padding
+- Group 之间 `<Separator>` 分隔（细线，opacity 0.15）
+- Item active：左侧 2px accent-blue 竖条 + 背景 `--accent-blue 12%` 填色
+- Item hover：背景 `--bg-secondary`
+- Item 高度 36px，gap 6px
+
+### 4.12.4 移动端 MobileTabbar 重组
+
+旧 mobile-tabbar 显示 5 项（仪表盘/分析/选股/持仓/更多），点"更多"弹 sheet 显示其他。
+
+新方案沿用此模式 + 调整内容：
+
+**底部固定 5 项（≤768px 显示）**：
+1. 仪表盘 `/`
+2. 分析 `/analysis`
+3. 选股 `/screener-v3`
+4. 持仓 `/portfolio`
+5. 更多（点开 sheet）
+
+**"更多" sheet 内（4×2 grid）**：
+- 分析记录 / 报告中心 / 策略回测
+- 预警中心 / 纸面交易 / 任务中心
+- 设置
+
+复用 [mobile-optimization.md §3.6](./mobile-optimization.md) `more-sheet` 组件结构。
+
+### 4.12.5 实施细节
+
+**P0**：
+- [M-P0-1] Sidebar 组件改造为分组结构（数据驱动 + `<SidebarGroup>` 抽象）
+- [M-P0-2] MobileTabbar 5 主项 + 更多 sheet
+- [M-P0-3] 与 PT-P0-2 联动：纸面交易组的"全部会话"指向新建的列表页
+
+**P1**：
+- [M-P1-1] Sidebar 折叠/展开（持久化 localStorage）
+- [M-P1-2] 当前页面所在组自动展开 + active 高亮
+- [M-P1-3] Group 名国际化预留（虽然 v1.0 只中文）
+
+**P2**：
+- 顶部面包屑显示当前 group › 当前 page
+- ⌘K 命令面板内按 group 分组列出导航
+
+### 4.12.6 兼容性
+
+旧 hash 路由（`/#data-page=portfolio` 等）已在主方案废弃。本菜单重组**不影响**任何 URL，仅改 Sidebar 组件结构。
+
+---
 
 ## 5. 共享改动（横切）
 
@@ -281,15 +451,17 @@ Portfolio 持仓表 + 交易记录表、Alerts 规则表、Backtest 交易明细
 
 | Phase | 内容 | 估时 |
 |---|---|---|
-| **R-1** | 共享：升级 Stat 组件应用 `--fs-stat` clamp + 新建 ChartPanel 组件 + form-row-mobile 工具类 | 3h |
+| **R-1** | 共享：升级 Stat 组件应用 `--fs-stat` clamp + 新建 ChartPanel 组件 + form-row-mobile 工具类 + Sidebar 分组重组 + MobileTabbar 5+更多 | 5h |
 | **R-2** | Portfolio CRITICAL：卖出表单 + 修正成本 modal | 2h |
-| **R-3** | Paper-trade CRITICAL：权益曲线 + 日度 tab | 3h |
+| **R-3** | Paper-trade CRITICAL：**新建列表页 island /paper-trade** + 权益曲线 + 日度 tab | 5h |
 | **R-4** | Dashboard CRITICAL：净值图 + 分布饼图 + 移动塌陷 | 2h |
 | **R-5** | Analysis CRITICAL：K 线 + 7-tab 报告 + Pipeline DAG | 5h |
 | **R-6** | HIGH 批次（约 20 项）：history 对比 / portfolio 交易表 / alerts 模板 / backtest 结果 / settings 调度器+数据源 | 16h |
 | **R-7** | MEDIUM + 移动端兜底：所有页 grid `≤575.98px` 单列规范化 + form-row-mobile 套接 + tabs-scrollable + 表格卡片降级 | 11h |
 
-P0 = R-1 ~ R-5（共 ~15h），P1 = R-6（~16h），P2 = R-7（~11h）。
+P0 = R-1 ~ R-5（共 ~19h，其中菜单重组 + 列表页新增多 4h），P1 = R-6（~16h），P2 = R-7（~11h）。
+
+**总修复工时 ~46h**（原 ~42h + 菜单重组 2h + 列表页 2h）。
 
 ## 7. 验证
 
@@ -336,3 +508,4 @@ P0 = R-1 ~ R-5（共 ~15h），P1 = R-6（~16h），P2 = R-7（~11h）。
 | 版本 | 日期 | 变更 |
 |---|---|---|
 | v1.0 | 2026-04-25 | 初版：合并功能回归 59 项 + 移动端适配 15 项 = 74 项 backlog；按 11 页 × P0/P1/P2 拆解；R-1~R-7 七 Phase 实施计划 ~42h；横切组件升级（Stat / ChartPanel / form-row-mobile / tabs-scrollable / 表格→卡片）；明确"只补不改"约束 |
+| v1.1 | 2026-04-25 | 补充：(1) 升级 paper-trade 列表页（PT-P0-2）从 P1 → P0 CRITICAL，因实测发现 `/paper-trade` 路由不存在，整个入口缺失；(2) 新增 §4.12 菜单重组方案，6 大组（概览/分析/选股/持仓/纸面交易/系统）+ 11 叶子，含 Sidebar 分组组件 + MobileTabbar 5+更多 sheet 设计；(3) 总工时 ~42h → ~49h |

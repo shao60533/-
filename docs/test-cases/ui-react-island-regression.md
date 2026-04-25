@@ -11,13 +11,13 @@
 
 | 分类 | 用例数 |
 |---|---|
-| P0 CRITICAL（功能恢复 8 项 + 移动溢出 1 项） | 9 |
+| P0 CRITICAL（功能恢复 8 项 + 移动溢出 1 项 + paper-trade 列表 1 + 菜单重组 3） | 13 |
 | P1 HIGH（功能恢复 20 项 + 移动表单/grid 6 项） | 26 |
 | P2 MEDIUM/LOW + 视觉对比 | 24 |
 | 横切：Stat / ChartPanel / form-row-mobile | 8 |
 | Playwright E2E（关键流程） | 12 |
 | 视觉回归（4 断点 × 11 页 = 44，每页 1 条计） | 11 |
-| **总计** | **90** |
+| **总计** | **94** |
 
 ---
 
@@ -28,9 +28,17 @@
 - **TC-RG-P0-1**：访问 `/portfolio` → 持仓行下方有 "卖出" 按钮 / Dialog；提交 `POST /api/portfolio/sell` 4 字段（ticker / shares / price / notes）成功后持仓更新
 - **TC-RG-P0-2**：点击持仓行 → 修正成本价 modal 弹出；提交后持仓 avg_cost 字段更新
 
-### 1.2 Paper-trade 权益曲线（1）
+### 1.2 Paper-trade 权益曲线 + 列表页（2）
 
 - **TC-RG-P0-3**：访问 `/paper-trade/<ticker>` → "日度数据" tab → ECharts 净值曲线 + drawdown 阴影渲染；横屏切换 ResizeObserver 触发 resize
+
+- **TC-RG-P0-3b**：访问 `/paper-trade`（无 ticker）→ 列表页正常渲染：
+  - 顶部默认 session ★ 突出卡（含 Sharpe / 总值 / 持仓天数）
+  - 工具栏：[+ 新建 session] / 搜索框 / [我的 / 全部] tab / [刷新所有日度数据]
+  - 会话卡 grid 桌面 3 列 / 平板 2 / 移动 1
+  - 整卡点击跳 `/paper-trade/<ticker>`
+  - 右上 ⋯ 菜单（重命名 / 删除 / 导出）
+  - 移动端 ≤575.98px 单列 + stat clamp 不溢出
 
 ### 1.3 Dashboard 图表（2）
 
@@ -46,6 +54,12 @@
 ### 1.5 Dashboard stat-value 移动溢出（1）
 
 - **TC-RG-P0-9**：375px 视口下，`$200,466.40` 这种大数字在 stat 卡内不溢出（`overflow-hidden` + `text-overflow:ellipsis` 生效）；同时 `<= 575.98px` stat grid 单列塌陷
+
+### 1.6 菜单重组（3）
+
+- **TC-RG-P0-10**：桌面 Sidebar 渲染 6 大组（概览 / 分析 / 选股 / 持仓 / 纸面交易 / 系统），每组顶部有 label + Separator
+- **TC-RG-P0-11**：当前路径对应的 group + item 都激活高亮（左侧 2px 竖条 + 背景色）
+- **TC-RG-P0-12**：移动 Tabbar 5 主项（仪表盘 / 分析 / 选股 / 持仓 / 更多）；点"更多"打开 sheet 显示其他 6 项 4×2 grid
 
 ---
 
@@ -252,3 +266,4 @@ npx playwright test tests/regression/legacy/ --update-snapshots
 | 版本 | 日期 | 用例数 | 变更 |
 |---|---|---|---|
 | v1.0 | 2026-04-25 | 90 | 初版：P0 9 + P1 26 + P2 24 + 共享组件 8 + E2E 12 + 视觉 11；P0 闸门强约束 |
+| v1.1 | 2026-04-25 | 94 | 补充：P0 新增 paper-trade 列表页用例（TC-RG-P0-3b）+ 菜单重组 3 条（TC-RG-P0-10~12，含 Sidebar 6 组渲染 / active 高亮 / Mobile Tabbar 5+更多 sheet） |
