@@ -11,13 +11,13 @@
 
 | 分类 | 用例数 |
 |---|---|
-| P0 CRITICAL（功能恢复 8 项 + 移动溢出 1 项 + paper-trade 列表 1 + 菜单重组 3） | 13 |
-| P1 HIGH（功能恢复 20 项 + 移动表单/grid 6 项） | 26 |
+| P0 CRITICAL（8 + 移动溢出 1 + paper-trade 列表 1 + 菜单重组 3 + Tasks 5 = 18） | 18 |
+| P1 HIGH（功能恢复 18 项 + 移动表单/grid 6 项 - Tasks 升级 2） | 24 |
 | P2 MEDIUM/LOW + 视觉对比 | 24 |
 | 横切：Stat / ChartPanel / form-row-mobile | 8 |
 | Playwright E2E（关键流程） | 12 |
 | 视觉回归（4 断点 × 11 页 = 44，每页 1 条计） | 11 |
-| **总计** | **94** |
+| **总计** | **97** |
 
 ---
 
@@ -60,6 +60,22 @@
 - **TC-RG-P0-10**：桌面 Sidebar 渲染 6 大组（概览 / 分析 / 选股 / 持仓 / 纸面交易 / 系统），每组顶部有 label + Separator
 - **TC-RG-P0-11**：当前路径对应的 group + item 都激活高亮（左侧 2px 竖条 + 背景色）
 - **TC-RG-P0-12**：移动 Tabbar 5 主项（仪表盘 / 分析 / 选股 / 持仓 / 更多）；点"更多"打开 sheet 显示其他 6 项 4×2 grid
+
+### 1.7 任务中心 5 项（5）
+
+- **TC-RG-P0-13**：列表加载更多 / 无限滚动正常工作；连续滚动到底加载第 2/3/4 批数据；底部显示 "已加载 N / 共 M"
+- **TC-RG-P0-14**：类型 chip-row 渲染 8 个 chip（全部 / AI 分析 / 批量分析 / 选股 V3 / 回测 / 报告 / 纸面交易 / 其他）；多选生效（选 AI 分析 + 选股 V3 → 同时显示两类）
+- **TC-RG-P0-15**：scope tab "我的 / 全部" 切换 → 重新 fetch（multi-tenant 后端已就绪）
+- **TC-RG-P0-16**：每行尾部 [查看结果] 按钮（success 时显示）；按 task type 跳到对应落地页：
+  - analysis → `/analysis/<analysis_id>`
+  - screen_v3 → `/screener-v3?result=<task_id>`
+  - backtest → `/backtest/<result_id>`
+  - report → `/reports?id=<id>`
+  - paper_trade → `/paper-trade/<ticker>`
+  - paper_backfill → `/paper-trade`
+  - qwen_fundamentals / qwen_news → `/analysis?ticker=<x>`
+  - 其他 → `/tasks/<id>` 兜底
+- **TC-RG-P0-17**：任务详情页操作按钮齐全：删除 / 重试（failed/cancelled）/ 取消（running/pending）/ 查看结果（success）；各按钮调用对应 API 成功
 
 ---
 
@@ -106,11 +122,9 @@
 - **TC-RG-P1-19**：定时调度器卡（启动 / 停止 / 刷新 + status 显示）
 - **TC-RG-P1-20**：数据源状态卡（列表 + 各源状态徽章）
 
-### 2.8 Tasks（3）
+### 2.8 Tasks（已升级到 P0，本组只剩 1 项）
 
-- **TC-RG-P1-21**：列表分页加载更多正常工作
-- **TC-RG-P1-22**：详情页操作按钮齐全：删除 / 重试 / 取消 / 查看结果
-- **TC-RG-P1-23**：详情页有"返回列表"按钮
+- **TC-RG-P1-23**：详情页有"返回列表"按钮（其余 P1-21/22 已升级到 P0-13/17）
 
 ### 2.9 横切移动端（3）
 
@@ -267,3 +281,4 @@ npx playwright test tests/regression/legacy/ --update-snapshots
 |---|---|---|---|
 | v1.0 | 2026-04-25 | 90 | 初版：P0 9 + P1 26 + P2 24 + 共享组件 8 + E2E 12 + 视觉 11；P0 闸门强约束 |
 | v1.1 | 2026-04-25 | 94 | 补充：P0 新增 paper-trade 列表页用例（TC-RG-P0-3b）+ 菜单重组 3 条（TC-RG-P0-10~12，含 Sidebar 6 组渲染 / active 高亮 / Mobile Tabbar 5+更多 sheet） |
+| v1.2 | 2026-04-25 | 97 | 补充：P0 新增 Tasks 5 项（TC-RG-P0-13 分页 / P0-14 类型 chip / P0-15 scope tab / P0-16 跳转结果落地页 9 类映射 / P0-17 详情操作齐全）；P1 Tasks 由 3 → 1（其他 2 升级 P0） |

@@ -45,8 +45,8 @@
 | Backtest | 0 | 3 结果页 + 净值图 + 明细表 | 1 | 0 | MEDIUM 5 字段挤 + 日期 picker |
 | **Paper-trade** | **2** 🚨🚨 权益曲线图缺失 + 列表页完全不存在 | 1 日度 tab | 3 | 0 | LOW |
 | Settings | 0 | 2 调度器 + 数据源卡 | 1 | 0 | MEDIUM provider grid 窄 |
-| Tasks | 0 | 1 modal→页面 | 2 | 0 | LOW |
-| **总计** | **9** | **19** | **23** | **1** | 6 项移动端独立问题 |
+| **Tasks** | **5** 🚨 历史无分页 / 无类型 + scope 过滤 / 无跳转落地页 / 详情操作不全 | 0 | 2 | 0 | LOW |
+| **总计** | **14** | **18** | **23** | **1** | 6 项移动端独立问题 |
 
 ### 2.2 五大共性根因
 
@@ -64,11 +64,11 @@
 
 | 阶段 | 范围 | 阈值 | 估时 |
 |---|---|---|---|
-| **P0 紧急修复** | 9 CRITICAL（含 paper-trade 列表页 + Dashboard stat 溢出）+ 菜单重组 | 上线前必完 | ~19h |
-| **P1 高优先恢复** | 19 HIGH + 移动端 form/grid 标准化（6 处） | 第 1 周内 | ~16h |
+| **P0 紧急修复** | 14 CRITICAL（含 paper-trade 列表 + Tasks 历史/过滤/跳转/详情 + Dashboard stat 溢出）+ 菜单重组 | 上线前必完 | ~24h |
+| **P1 高优先恢复** | 18 HIGH + 移动端 form/grid 标准化（6 处） | 第 1 周内 | ~15h |
 | **P2 完善** | 23 MEDIUM + 1 LOW + 测试覆盖 | 第 2-3 周 | ~14h |
 
-总修复工时 ~49h。
+总修复工时 ~53h。
 
 ### 3.2 移动端规范统一（横切要求）
 
@@ -246,15 +246,60 @@ P0/P1 阶段所有改动必须遵守 [mobile-optimization.md](./mobile-optimizat
 - footer 敏感字段说明
 - 移动端 provider grid 单列塌陷
 
-### 4.11 Tasks
+### 4.11 Tasks 🚨
+
+**当前状态**（实测 2026-04-25，[TasksPage.tsx](../../stock_trading_system/web/frontend/src/islands/tasks/TasksPage.tsx)）：
+- ✅ 列表 + 状态过滤 chip 可用
+- ❌ 只取 `?limit=50&offset=0`，**没有加载更多 / 无限滚动 / 翻页** → 用户看不到历史任务
+- ❌ **无类型过滤**（analysis / screen / backtest / report / paper_trade / batch_analysis ... 全混在一起）
+- ❌ **无 `scope=my|all` tab** —— 多租户场景下无法区分自己 vs 全体
+- ❌ **无"查看结果"按钮 / 无跳转到对应落地页** —— 点卡片只跳 `/tasks/<id>` 详情，用户想看结果还得手动跳到对应页面
+
+→ "历史任务 list 没了 + 跳转有问题" 复合问题，**升级为 P0 CRITICAL**。
+
+**P0**：
+- [T-P0-1] 🚨 **列表无法看历史任务** → 补无限滚动（IntersectionObserver）或 [加载更多] 按钮：
+  - `apiGet("/api/tasks?limit=20&offset=<n>&scope=<my|all>&type=<any|analysis|screen_v3|...>")`
+  - 移动端用无限滚动；桌面也优先无限滚动
+  - 滚到底显示"已加载 N 个 · 共 M 个"
+
+- [T-P0-2] 🚨 **新增类型过滤 chip-row** → 与状态 chip-row 并列两行：
+  ```
+  状态: [全部] [运行中] [等待中] [已完成] [失败] [已取消]
+  类型: [全部] [AI 分析] [批量分析] [选股 V3] [回测] [报告] [纸面交易] [其他]
+  ```
+  - "其他"包含 qwen_fundamentals / qwen_news / agent_score_update / meta_evolution / paper_backfill / echo 等
+  - 类型 chip 多选：选了"AI 分析 + 选股 V3"则同时显示两类
+
+- [T-P0-3] 🚨 **新增 scope tab（我的 / 全部）** → 复用 [multi-tenant](./multi-tenant.md) 已实装的 `scope=my|all` 后端能力。我的（默认）= 仅自己；全部 = 含他人（admin 可见，普通用户也可见以做 transparency）
+
+- [T-P0-4] 🚨 **每个任务行尾必须有"查看结果"按钮** + 整卡可点也跳到结果落地页（不是详情页）：
+  按 task type 路由到对应 React 页面：
+
+  | task.type | 落地页 URL（任务完成时） | 任务运行中点击行为 |
+  |---|---|---|
+  | `analysis` | `/analysis/<analysis_id>`（从 task.result_ref 取 id）| 跳 `/tasks/<id>` 详情看进度 |
+  | `batch_analysis` | `/history?batch_id=<id>` 或 `/portfolio?from_batch=<id>` | 同上 |
+  | `screen` / `screen_v2` / `screen_v3` | `/screener-v3?result=<task_id>` | 同上 |
+  | `backtest` | `/backtest/<result_id>` | 同上 |
+  | `report` | `/reports?id=<id>` | 同上 |
+  | `paper_trade` | `/paper-trade/<ticker>`（从 params_json 取 ticker） | 同上 |
+  | `paper_backfill` | `/paper-trade`（列表页）| 同上 |
+  | `qwen_fundamentals` / `qwen_news` | `/analysis?ticker=<x>` | 同上 |
+  | `agent_score_update` / `meta_evolution` / `echo` | `/tasks/<id>`（无业务落地页） | 同上 |
+
+  实现：抽出 `getTaskResultUrl(task)` 函数（[lib/tasks.ts](../../stock_trading_system/web/frontend/src/lib/tasks.ts) 新增），列表行整卡 onClick 用之；额外加显式 `[查看结果 →]` 按钮（任务 success 时显示）
+
+- [T-P0-5] 🚨 **详情页操作按钮齐全**：删除 / 重试 / 取消（仅 running/pending）/ 查看结果（success 时）
 
 **P1**：
-- [T-P1-1] 任务详情 modal 改为独立页面跳转 → 评估是否回退为 modal（更顺滑），或保留页面+加返回按钮 + 历史记录
-- [T-P1-2] 列表分页 `loadMoreTasks` 缺失 → 补无限滚动或加载更多按钮
-- [T-P1-3] 详情页操作按钮缺失：删除 / 重试 / 取消 / 查看结果 → 全部补回
+- [T-P1-1] 任务详情 modal vs 页面 → 保留页面（已实装），但加"返回任务列表"按钮（顶部 breadcrumb）
 
 **P2**：
 - 跨页面导航兼容：`/#paper` 老书签 redirect 到 `/paper-trade`
+- 任务卡片显示 task type icon（分析 / 选股 / 回测 等不同图标）
+- 任务持续时间显示（"已运行 2m 35s"）
+- 任务详情页加 `<ProgressStream>` 实时进度（若已实装则跳过）
 
 ## 4.12 菜单重组（Sidebar / Mobile Tabbar 信息架构）
 
@@ -451,17 +496,18 @@ Portfolio 持仓表 + 交易记录表、Alerts 规则表、Backtest 交易明细
 
 | Phase | 内容 | 估时 |
 |---|---|---|
-| **R-1** | 共享：升级 Stat 组件应用 `--fs-stat` clamp + 新建 ChartPanel 组件 + form-row-mobile 工具类 + Sidebar 分组重组 + MobileTabbar 5+更多 | 5h |
+| **R-1** | 共享：升级 Stat 组件应用 `--fs-stat` clamp + 新建 ChartPanel 组件 + form-row-mobile 工具类 + Sidebar 分组重组 + MobileTabbar 5+更多 + 新建 `lib/tasks.ts` 含 `getTaskResultUrl(task)` 路由表 | 5h |
 | **R-2** | Portfolio CRITICAL：卖出表单 + 修正成本 modal | 2h |
 | **R-3** | Paper-trade CRITICAL：**新建列表页 island /paper-trade** + 权益曲线 + 日度 tab | 5h |
+| **R-3b** | **Tasks CRITICAL：分页/无限滚动 + 类型 chip-row + scope tab + 整卡跳转结果落地页 + 详情操作完整** | 4h |
 | **R-4** | Dashboard CRITICAL：净值图 + 分布饼图 + 移动塌陷 | 2h |
 | **R-5** | Analysis CRITICAL：K 线 + 7-tab 报告 + Pipeline DAG | 5h |
-| **R-6** | HIGH 批次（约 20 项）：history 对比 / portfolio 交易表 / alerts 模板 / backtest 结果 / settings 调度器+数据源 | 16h |
+| **R-6** | HIGH 批次（约 18 项）：history 对比 / portfolio 交易表 / alerts 模板 / backtest 结果 / settings 调度器+数据源 | 15h |
 | **R-7** | MEDIUM + 移动端兜底：所有页 grid `≤575.98px` 单列规范化 + form-row-mobile 套接 + tabs-scrollable + 表格卡片降级 | 11h |
 
-P0 = R-1 ~ R-5（共 ~19h，其中菜单重组 + 列表页新增多 4h），P1 = R-6（~16h），P2 = R-7（~11h）。
+P0 = R-1 ~ R-5（共 ~23h，含菜单重组 + 列表页 + Tasks 改造），P1 = R-6（~15h），P2 = R-7（~11h）。
 
-**总修复工时 ~46h**（原 ~42h + 菜单重组 2h + 列表页 2h）。
+**总修复工时 ~53h**。
 
 ## 7. 验证
 
@@ -509,3 +555,4 @@ P0 = R-1 ~ R-5（共 ~19h，其中菜单重组 + 列表页新增多 4h），P1 =
 |---|---|---|
 | v1.0 | 2026-04-25 | 初版：合并功能回归 59 项 + 移动端适配 15 项 = 74 项 backlog；按 11 页 × P0/P1/P2 拆解；R-1~R-7 七 Phase 实施计划 ~42h；横切组件升级（Stat / ChartPanel / form-row-mobile / tabs-scrollable / 表格→卡片）；明确"只补不改"约束 |
 | v1.1 | 2026-04-25 | 补充：(1) 升级 paper-trade 列表页（PT-P0-2）从 P1 → P0 CRITICAL，因实测发现 `/paper-trade` 路由不存在，整个入口缺失；(2) 新增 §4.12 菜单重组方案，6 大组（概览/分析/选股/持仓/纸面交易/系统）+ 11 叶子，含 Sidebar 分组组件 + MobileTabbar 5+更多 sheet 设计；(3) 总工时 ~42h → ~49h |
+| v1.2 | 2026-04-25 | 补充：升级 Tasks 4 项从 P1/P2 → P0 CRITICAL（T-P0-1~5）：(1) 历史无分页 → 无限滚动 + offset；(2) 无类型过滤 → 新增类型 chip-row（AI 分析/批量/选股 V3/回测/报告/纸面交易/其他）；(3) 无 scope 过滤 → 加 我的/全部 tab；(4) 无跳转结果落地页 → 新建 `lib/tasks.ts::getTaskResultUrl(task)` 9 类 task → URL 映射表，整卡可点 + 显式 [查看结果 →] 按钮；(5) 详情页操作齐全（删除/重试/取消/查看结果）。总工时 ~49h → ~53h；Tasks CRITICAL 0 → 5 |
