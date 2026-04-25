@@ -126,17 +126,21 @@ def migrate(db_path: str, dry_run: bool = False) -> dict:
     if "model" not in ana_cols:
         if not dry_run:
             conn.execute("ALTER TABLE analysis_history ADD COLUMN model TEXT")
-    # Backfill created_by
-    ana_null = conn.execute(
-        "SELECT COUNT(*) FROM analysis_history WHERE created_by IS NULL"
-    ).fetchone()[0]
-    if ana_null > 0:
-        changes.append(f"analysis_history: backfill {ana_null} rows created_by={admin_id}")
-        if not dry_run:
-            conn.execute(
-                "UPDATE analysis_history SET created_by = ? WHERE created_by IS NULL",
-                (admin_id,),
-            )
+    # Backfill created_by (only if column now exists)
+    ana_cols_now = [r[1] for r in conn.execute("PRAGMA table_info(analysis_history)").fetchall()]
+    if "created_by" in ana_cols_now:
+        ana_null = conn.execute(
+            "SELECT COUNT(*) FROM analysis_history WHERE created_by IS NULL"
+        ).fetchone()[0]
+        if ana_null > 0:
+            changes.append(f"analysis_history: backfill {ana_null} rows created_by={admin_id}")
+            if not dry_run:
+                conn.execute(
+                    "UPDATE analysis_history SET created_by = ? WHERE created_by IS NULL",
+                    (admin_id,),
+                )
+    else:
+        changes.append("analysis_history: created_by column will be added (dry-run preview)")
 
     # ── 4. Create user_analysis_advice table ──────────────────────────
     tables = [r[0] for r in conn.execute(
