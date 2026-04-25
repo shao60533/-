@@ -72,8 +72,10 @@ def migrate(db_path: str, dry_run: bool = False) -> dict:
             conn.execute("ALTER TABLE alert_history ADD COLUMN user_id INTEGER")
             conn.commit()
         ah_cols.append("user_id")
+    # Re-check columns after potential ALTER
+    ah_cols_now = [r[1] for r in conn.execute("PRAGMA table_info(alert_history)").fetchall()]
     ah_null = 0
-    if "user_id" in ah_cols:
+    if "user_id" in ah_cols_now:
         ah_null = conn.execute(
             "SELECT COUNT(*) FROM alert_history WHERE user_id IS NULL"
         ).fetchone()[0]
