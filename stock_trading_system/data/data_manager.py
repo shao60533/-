@@ -1,6 +1,6 @@
 """Unified data interface with automatic routing and failover.
 
-- US stocks: IB TWS (primary) -> Polygon.io (backup) -> yfinance -> Qwen (last resort)
+- US stocks: Schwab -> IB TWS -> Polygon.io -> yfinance -> Qwen (last resort)
 - A-shares: AkShare -> Qwen (last resort)
 """
 
@@ -11,6 +11,7 @@ from stock_trading_system.data.polygon_provider import PolygonProvider
 from stock_trading_system.data.akshare_provider import AkShareProvider
 from stock_trading_system.data.yfinance_provider import YFinanceProvider
 from stock_trading_system.data.qwen_provider import QwenProvider
+from stock_trading_system.data.schwab_provider import SchwabProvider
 from stock_trading_system.utils import get_logger
 from stock_trading_system.utils.helpers import detect_market
 
@@ -31,12 +32,13 @@ class DataManager:
         self._akshare = AkShareProvider()
         self._yfinance = YFinanceProvider()
         self._qwen = QwenProvider(config)
+        self._schwab = SchwabProvider(config)
         # Track consecutive failures per provider to skip broken ones.
         # IB starts skipped (event loop issue in thread pools).
         # Polygon starts skipped (free tier 429 rate limit makes it
         # unusable for concurrent batch lookups like get_holdings).
-        # Both auto-reset on first successful call from other code paths.
-        self._fail_count = {"ib": 1, "polygon": 1}
+        # Schwab starts at 0 — only auto-skips on real failures.
+        self._fail_count = {"ib": 1, "polygon": 1, "schwab": 0}
 
     def _is_skipped(self, provider: str) -> bool:
         return self._fail_count.get(provider, 0) >= self._SKIP_THRESHOLD
@@ -87,6 +89,18 @@ class DataManager:
         providers = self._config.get("providers", {}) or {}
         ib_master = providers.get("ib_enabled", True)
         polygon_master = providers.get("polygon_enabled", True)
+        schwab_master = providers.get("schwab_enabled", True)
+
+        # Schwab first — preferred when configured (real-time NBBO, cloud-friendly)
+        if (schwab_master and self._schwab.enabled
+                and not self._is_skipped("schwab")):
+            result = self._schwab.get_stock_price(ticker)
+            if result:
+                self._record_success("schwab")
+                return result
+            self._record_fail("schwab")
+            if self._is_skipped("schwab"):
+                logger.info("Schwab skipped (consecutive failures) — falling through")
 
         # US market fallback chain (with auto-skip for broken providers)
         if (ib_master and self._config.get("ib", {}).get("enabled")
@@ -139,6 +153,15 @@ class DataManager:
         if market == "cn":
             return self._akshare.get_stock_history(ticker)
 
+        # Schwab first for US history when configured
+        if (providers.get("schwab_enabled", True) and self._schwab.enabled):
+            result = self._schwab.get_stock_history(
+                ticker, period=period, interval=interval,
+            )
+            if result is not None and not result.empty:
+                return result
+            logger.info("Schwab history failed for %s, trying IB/Polygon", ticker)
+
         # US market fallback chain (gated by master switches)
         if (providers.get("ib_enabled", True)
                 and self._config.get("ib", {}).get("enabled")):
@@ -187,6 +210,29 @@ class DataManager:
             return news
         return self._yfinance.get_news(ticker)
 
+    def get_prices_batch(
+        self, tickers: list[str], market: str = "us",
+    ) -> dict[str, dict]:
+        """Batch quote for many tickers — Schwab when available, else None per row.
+
+        Used by PortfolioManager.get_holdings to avoid N serial single-quote calls.
+        Falls back per-ticker via :meth:`get_price` only for tickers Schwab missed.
+        Returns ``{ticker: quote_dict}`` for resolved tickers; missing tickers are
+        omitted, callers must merge with their own request set.
+        """
+        if not tickers:
+            return {}
+        if market != "us":
+            return {}  # CN batch not supported by Schwab; caller falls back
+        if not (self._schwab.enabled and not self._is_skipped("schwab")):
+            return {}
+        try:
+            return self._schwab.get_stock_price_batch(tickers)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Schwab batch quote failed: %s", e)
+            self._record_fail("schwab")
+            return {}
+
     def get_ib_provider(self) -> IBProvider:
         """Get IB provider directly (for scanner, subscriptions, etc.)."""
         return self._ib
@@ -194,6 +240,10 @@ class DataManager:
     def get_qwen_provider(self) -> QwenProvider:
         """Get Qwen provider directly (for AI-powered screening)."""
         return self._qwen
+
+    def get_schwab_provider(self) -> SchwabProvider:
+        """Get Schwab provider directly (for OAuth & diagnostics)."""
+        return self._schwab
 
     def disconnect(self):
         """Disconnect all providers."""
