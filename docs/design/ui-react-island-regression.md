@@ -643,6 +643,77 @@ R-1 ~ R-7 落地后实测，**v1.4 已知 6 项 + v1.5 新发现 6 项 = 共 12 
 - **R-5b.2 Screener V3 结果页**（SV3-P0-1，~2h）—— 全新建，从 0 到 1
 - **R-6b Backtest 结果详情页**（B-P0-1，~2h）—— 全新建
 
+#### v1.6 新增（~1.5h）：
+- **R-perf 后端价格层缓存 + request-scoped memoize**（PERF-P0-1，~1.5h）
+
+##### R-perf · 性能优化详细规格
+
+**根因**（实测 2026-04-25 晚）：
+- [app.py:594-604](../../stock_trading_system/web/app.py) `/api/dashboard` 调 `get_pnl()` + `get_history()`，**`get_pnl()` 内部又调 `get_holdings()` 拉所有股票实时价**
+- [app.py:646](../../stock_trading_system/web/app.py) `/api/portfolio/allocation` 调 `get_allocation()` → 内部又调 `get_holdings()` 拉一次实时价
+- [app.py:610](../../stock_trading_system/web/app.py) `/api/portfolio/holdings` → 拉一次实时价
+- [PortfolioPage.tsx:42-46](../../stock_trading_system/web/frontend/src/islands/portfolio/PortfolioPage.tsx) Promise.all 调 holdings + summary（summary 内部又调 get_pnl → get_holdings）
+
+**单页加载实测**：
+- Dashboard: `/api/dashboard` + `/api/portfolio/allocation` = **2 次全量价格拉取**
+- Portfolio: `/api/portfolio/holdings` + `/api/portfolio/summary` = **2 次全量价格拉取**
+
+**单股价格拉取**：[data_manager.py](../../stock_trading_system/data/data_manager.py) `get_price()` 走 yfinance/Qwen/AkShare 网络 API，~200-800ms/股
+**总耗时**：8 股并发 8 ≈ 800ms × 2 批 = **1.6-3 秒**
+
+**修法（A + B 双管齐下，~1.5h）**：
+
+##### Layer A · request-scoped memoize（~30min）
+
+[stock_trading_system/portfolio/manager.py:112](../../stock_trading_system/portfolio/manager.py) `PortfolioManager.get_holdings()` 加 Flask `g` 级别缓存：
+
+```python
+def get_holdings(self) -> list[dict]:
+    from flask import g, has_request_context
+    if has_request_context() and hasattr(g, "_holdings_cache"):
+        return g._holdings_cache
+    # ... existing logic ...
+    result = [...]
+    if has_request_context():
+        g._holdings_cache = result
+    return result
+```
+
+收益：单次 HTTP request 内 get_holdings 仅一次实际拉价；同 request 内多次调用直接 hit cache。
+
+Dashboard / Portfolio 各省 1 次价格拉取 → ~3s → ~1.5s（**砍半**）。
+
+##### Layer B · 价格层 30s TTL 缓存（~1h）
+
+[data_manager.py](../../stock_trading_system/data/data_manager.py) `get_price()` 复用现有 [data/local_cache.py](../../stock_trading_system/data/local_cache.py) 的 `LocalCache`：
+
+```python
+def get_price(self, ticker: str, market: str = "US") -> dict:
+    cache_key = f"price:{ticker}:{market}"
+    cached = LocalCache.get(category="quote", key=cache_key, max_age=30)  # 30s TTL
+    if cached is not None:
+        return cached
+    # ... existing fetch logic ...
+    LocalCache.set(category="quote", key=cache_key, value=data, ttl=30)
+    return data
+```
+
+收益：30 秒内复访任意页面 0 网络拉取；首次访问仍走网络但第二次几乎即时。
+
+##### 验收
+
+- 第一次访问 `/`：< 1.5s（含全部图表）
+- 30 秒内复访 `/portfolio` / `/`：< 200ms
+- F5 刷新 5 次连续：第 1 次稍慢，第 2-5 次都 < 200ms
+- 单次 request log 中 `data_manager.get_price` 调用次数 = 持仓股数（不是 2× 或 3×）
+- Network 面板 `/api/dashboard` 响应 ≤ 1s（首次）/ ≤ 50ms（缓存命中）
+
+##### 风险
+
+- LocalCache 写并发安全：已自带（基于 SQLite WAL）
+- 价格 30s 内可能略滞后：可接受（K 线 / 实时图本来就有延迟）
+- 用户主动刷新需即时新数据：可加 `?fresh=1` 参数旁路缓存（v1.7 议题，本期不做）
+
 #### 6.1.1 [R-1.1] LLMSwitcher 组件 + Sidebar 集成（~3h）
 
 - 新建 `components/shared/LLMSwitcher.tsx`（~150 LOC）
@@ -757,3 +828,4 @@ python -m stock_trading_system.validation.sign_off \
 | v1.4 | 2026-04-25 | 实施进度审计：R-1~R-7 commits 落地后实测 22 P0 中 18 项 ✅ DONE / 6 项 ❌ MISSING（MS-P0-1~4 LLMSwitcher 全套未建 + SE-P0-1 Settings 仍缺 Gemini+Qwen key + A-P0-3 Pipeline DAG 未实装）+ 1 项 ⚠ PARTIAL（T-P0-6 前端 fallback 加但后端 schema 待验证）。新增 §0 实施进度章节 + §6.1 R-1.x 收尾批次合并指令（共 ~5h，含 LLMSwitcher 3h + Settings keys 10min + Pipeline DAG 2h + Tasks schema 验证 5min）。完成 R-1.x 后 P0 才闸门绿 |
 | v1.4.1 | 2026-04-25 | 修订：T-P0-6 实测确认前后端均已对齐（app.py:1713-1719 返回双字段 + TasksPage.tsx:70 fallback 已含 items），实际状态由 ⚠ PARTIAL 升级 ✅ DONE，DONE 总数 18 → 19；§6.1.4 R-3b.1 标 NO-OP，余下排查只需查 DB 数据/过滤态/scope 默认值（运行时问题，不在修复 backlog 内） |
 | v1.5 | 2026-04-25 | 实测发现 R-1~R-7 还有 6 项 P0 缺失：(1) HE-P0-1 History → analysis 详情 URL 损坏（int vs string id 不匹配 → 404）；(2) SV3-P0-1 Screener V3 结果页**完全没建**（ScreenerV3Page 仅表单）；(3) A-P0-3a Pipeline DAG 位置错误（仅表单视图，详情视图无）；(4) A-P0-4 K线应用 TradingView widget 而非 ECharts；(5) A-P0-5 缺新闻+基本面 side cards；(6) B-P0-1 Backtest 结果详情页未建；(7) D-P0-5 dashboard /backtest-v2 死链。R-6 实际未做的 HIGH 项：HE-P1-1/2 对比+timeline / AL-P1-2 阈值建议 / SE-P1-1/2 调度器+数据源 / R-P2-12 导出（暂不阻塞 P0）。新增 §6.1 v1.5 收尾任务 ~7h；总剩余工作 5h → 12h |
+| v1.6 | 2026-04-25 | 性能问题：实测 Dashboard / Portfolio 加载慢（~3s），根因后端 `get_pnl/get_holdings/get_allocation` 嵌套调用 → **单次访问拉 2 次全量实时价格**。新增 R-perf（PERF-P0-1，~1.5h）：Layer A request-scoped memoize（PortfolioManager.get_holdings 加 Flask g 缓存，~30min，砍半）+ Layer B 价格层 30s TTL LocalCache（~1h，复访 < 200ms）。总剩余工作 12h → 13.5h。同时 doc-first 工作流约定固化：以后所有修复必须先写 doc + changelog 再出 Code 指令 |
