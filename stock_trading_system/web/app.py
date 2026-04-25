@@ -589,6 +589,135 @@ def create_app(config_path=None):
     def api_health():
         return jsonify({"status": "ok", "service": "stock-trading-system"})
 
+    # ── Schwab OAuth bootstrap (one-time per 7-day refresh window) ──────
+    # /oauth/schwab/start    → redirect to Schwab login (magic-link guarded)
+    # /oauth/schwab/callback → exchange code for token, write to Volume
+    # /api/schwab/diagnose   → smoke-test live API + report token age
+
+    def _schwab_oauth_secret_ok() -> bool:
+        cfg = get_config().get("schwab", {}) or {}
+        expected = (cfg.get("oauth_secret")
+                    or os.environ.get("SCHWAB_OAUTH_SECRET", ""))
+        if not expected:
+            return False  # Endpoint locked when no secret configured
+        return request.args.get("secret") == expected
+
+    @app.route("/oauth/schwab/start")
+    def schwab_oauth_start():
+        if not _schwab_oauth_secret_ok():
+            return jsonify({"error": "forbidden"}), 403
+        cfg = get_config().get("schwab", {}) or {}
+        api_key = cfg.get("app_key") or os.environ.get("SCHWAB_APP_KEY", "")
+        callback_url = (cfg.get("callback_url")
+                        or os.environ.get("SCHWAB_CALLBACK_URL", ""))
+        if not (api_key and callback_url):
+            return jsonify({
+                "error": "schwab not configured",
+                "missing": [k for k, v in [
+                    ("SCHWAB_APP_KEY", api_key),
+                    ("SCHWAB_CALLBACK_URL", callback_url),
+                ] if not v],
+            }), 500
+        from schwab.auth import get_auth_context
+        try:
+            ctx = get_auth_context(api_key, callback_url)
+        except Exception as e:  # noqa: BLE001
+            return jsonify({"error": "auth_context_failed", "detail": str(e)}), 500
+        from flask import session
+        session["schwab_oauth_state"] = ctx.state
+        session["schwab_oauth_callback_url"] = ctx.callback_url
+        logger.info("Schwab OAuth start — redirecting to authorization URL")
+        return redirect(ctx.authorization_url)
+
+    @app.route("/oauth/schwab/callback")
+    def schwab_oauth_callback():
+        from flask import session
+        from schwab.auth import AuthContext, client_from_received_url
+        cfg = get_config().get("schwab", {}) or {}
+        api_key = cfg.get("app_key") or os.environ.get("SCHWAB_APP_KEY", "")
+        app_secret = (cfg.get("app_secret")
+                      or os.environ.get("SCHWAB_APP_SECRET", ""))
+        token_path = (cfg.get("token_path")
+                      or os.environ.get("SCHWAB_TOKEN_PATH",
+                                        "data/schwab_token.json"))
+
+        expected_state = session.pop("schwab_oauth_state", None)
+        callback_url = session.pop("schwab_oauth_callback_url", None) \
+            or cfg.get("callback_url") \
+            or os.environ.get("SCHWAB_CALLBACK_URL", "")
+        received_state = request.args.get("state")
+        if not expected_state or expected_state != received_state:
+            logger.warning("Schwab OAuth state mismatch — rejecting callback")
+            return jsonify({"error": "state_mismatch"}), 400
+
+        Path(token_path).parent.mkdir(parents=True, exist_ok=True)
+        ctx = AuthContext(callback_url=callback_url,
+                          authorization_url="", state=expected_state)
+
+        def _writer(token, *_args, **_kwargs):
+            with open(token_path, "w") as f:
+                json.dump(token, f)
+
+        try:
+            client_from_received_url(
+                api_key=api_key, app_secret=app_secret,
+                auth_context=ctx, received_url=request.url,
+                token_write_func=_writer,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.exception("Schwab OAuth token exchange failed")
+            return jsonify({"error": "token_exchange_failed",
+                            "detail": str(e)[:300]}), 500
+
+        # Reset cached managers so they pick up the new token immediately.
+        global _data_manager, _data_router
+        _data_manager = None
+        _data_router = None
+        logger.info("Schwab OAuth success — token written to %s", token_path)
+        return jsonify({
+            "status": "ok",
+            "message": "Schwab token saved. Re-authorize within 7 days.",
+            "token_path": token_path,
+        })
+
+    @app.route("/api/schwab/diagnose")
+    def api_schwab_diagnose():
+        """Smoke test for Schwab integration. Reports realtime + history + age."""
+        import time as _t
+        if not _schwab_oauth_secret_ok():
+            return jsonify({"error": "forbidden"}), 403
+        sch = _get_data_manager().get_schwab_provider()
+        result: dict = {
+            "enabled": sch.enabled,
+            "token_age_days": sch.token_age_days(),
+        }
+        if not sch.enabled:
+            result["error"] = "schwab provider disabled (missing token / config)"
+            return jsonify(result), 503
+
+        t0 = _t.perf_counter()
+        single = sch.get_stock_price("AAPL")
+        result["single_quote_ok"] = bool(single)
+        result["single_quote_latency_ms"] = int((_t.perf_counter() - t0) * 1000)
+        if single:
+            result["single_quote_sample"] = {
+                k: single.get(k) for k in ("ticker", "last", "close")
+            }
+
+        t0 = _t.perf_counter()
+        batch = sch.get_stock_price_batch(["AAPL", "TSLA", "NVDA", "MSFT", "GOOG"])
+        result["batch_quote_ok"] = len(batch) > 0
+        result["batch_quote_count"] = len(batch)
+        result["batch_quote_latency_ms"] = int((_t.perf_counter() - t0) * 1000)
+
+        t0 = _t.perf_counter()
+        df = sch.get_stock_history("AAPL", period="1mo", interval="1d")
+        result["history_ok"] = df is not None and not df.empty
+        result["history_bars"] = int(len(df)) if df is not None else 0
+        result["history_latency_ms"] = int((_t.perf_counter() - t0) * 1000)
+
+        return jsonify(result)
+
     # ── Dashboard API ───────────────────────────────────────────────────
 
     @app.route("/api/dashboard")
