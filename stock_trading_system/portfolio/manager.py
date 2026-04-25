@@ -112,8 +112,12 @@ class PortfolioManager:
     def get_holdings(self) -> list[dict]:
         """Get all positions with real-time price and P&L.
 
-        Fetches prices concurrently to avoid serial network delays.
-        Uses Flask request-scoped cache (flask.g) to avoid duplicate
+        Fast path: when Schwab is enabled, fetch all US tickers in one batch
+        quote (up to 500 symbols/request). Misses + CN positions fall back to
+        per-ticker concurrent fetch via DataManager (which has provider
+        failover and a 60s LocalCache TTL).
+
+        Also uses Flask request-scoped cache (flask.g) to avoid duplicate
         fetches within a single HTTP request (dashboard calls this twice).
         """
         try:
@@ -129,20 +133,33 @@ class PortfolioManager:
         if not positions:
             return []
 
-        # Fetch all prices in parallel
-        def _fetch_price(pos):
+        # 1) Schwab batch for US tickers — one network call replaces N calls.
+        prices: dict[str, float] = {}
+        us_tickers = [p.ticker for p in positions if p.market == "us"]
+        if us_tickers:
             try:
-                data = self._data_manager.get_price(pos.ticker, market=pos.market)
-                return pos.ticker, (data.get("last") or data.get("close") or 0) if data else 0
-            except Exception:
-                return pos.ticker, 0
+                batch = self._data_manager.get_prices_batch(us_tickers, market="us")
+            except Exception:  # noqa: BLE001
+                batch = {}
+            for ticker, quote in (batch or {}).items():
+                if quote:
+                    prices[ticker] = quote.get("last") or quote.get("close") or 0
 
-        prices = {}
-        with ThreadPoolExecutor(max_workers=min(len(positions), 8)) as pool:
-            futures = {pool.submit(_fetch_price, p): p for p in positions}
-            for f in as_completed(futures):
-                ticker, price = f.result()
-                prices[ticker] = price
+        # 2) Whatever the batch missed (and any CN positions) → per-ticker fallback.
+        missing = [p for p in positions if p.ticker not in prices]
+        if missing:
+            def _fetch_price(pos):
+                try:
+                    data = self._data_manager.get_price(pos.ticker, market=pos.market)
+                    return pos.ticker, (data.get("last") or data.get("close") or 0) if data else 0
+                except Exception:
+                    return pos.ticker, 0
+
+            with ThreadPoolExecutor(max_workers=min(len(missing), 8)) as pool:
+                futures = {pool.submit(_fetch_price, p): p for p in missing}
+                for f in as_completed(futures):
+                    ticker, price = f.result()
+                    prices[ticker] = price
 
         holdings = []
         for pos in positions:
