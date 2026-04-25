@@ -64,9 +64,13 @@ function TaskList() {
       })
       if (statusFilter) params.set("status", statusFilter)
       if (typeFilter) params.set("type", typeFilter)
-      const data = await apiGet<{ tasks: Task[]; total: number } | Task[]>(`/api/tasks?${params}`)
-      const list = Array.isArray(data) ? data : (data as any).tasks || []
-      const t = Array.isArray(data) ? list.length : (data as any).total || list.length
+      const data = await apiGet<Record<string, unknown> | Task[]>(`/api/tasks?${params}`)
+      const list = Array.isArray(data)
+        ? data
+        : ((data as any).tasks || (data as any).items || []) as Task[]
+      const t = Array.isArray(data)
+        ? list.length
+        : ((data as any).total ?? list.length)
       if (append) {
         setTasks(prev => [...prev, ...list])
       } else {

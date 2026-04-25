@@ -1707,9 +1707,13 @@ def create_app(config_path=None):
         status = request.args.get("status")
         limit = min(int(request.args.get("limit", 50)), 200)
         offset = max(int(request.args.get("offset", 0)), 0)
+        items = tm.list(task_type=task_type, status=status,
+                        limit=limit, offset=offset)
+        total = tm.count(task_type=task_type, status=status) if hasattr(tm, "count") else len(items)
         return jsonify({
-            "items": tm.list(task_type=task_type, status=status,
-                             limit=limit, offset=offset),
+            "tasks": items,
+            "items": items,  # backward compat
+            "total": total,
             "limit": limit,
             "offset": offset,
         })

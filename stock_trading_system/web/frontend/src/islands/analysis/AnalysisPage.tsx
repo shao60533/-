@@ -8,6 +8,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ChartPanel } from "@/components/shared/ChartPanel"
+import { PipelineDAG } from "@/components/shared/PipelineDAG"
 import type { EChartsOption } from "@/lib/echarts"
 import { apiGet, apiPost } from "@/lib/api"
 import Markdown from "react-markdown"
@@ -82,7 +83,6 @@ export function AnalysisPage() {
         type: "analysis", params: { ticker: ticker.toUpperCase(), date },
       })
       setSubmitResult(res)
-      if (res.task_id) setTimeout(() => { window.location.href = "/tasks" }, 800)
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "提交失败")
     } finally { setSubmitting(false) }
@@ -138,6 +138,17 @@ export function AnalysisPage() {
                 <a href="/tasks" className="ml-2 text-[var(--color-accent-blue)] hover:underline">查看任务进度</a>
               </AlertDescription>
             </Alert>
+          )}
+
+          {submitResult?.task_id && (
+            <div className="mt-4">
+              <PipelineDAG
+                taskId={submitResult.task_id}
+                onAllDone={() => {
+                  setTimeout(() => { window.location.href = "/tasks" }, 1500)
+                }}
+              />
+            </div>
           )}
         </CardContent>
       </Card>
