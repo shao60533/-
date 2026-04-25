@@ -352,7 +352,8 @@ def create_app(config_path=None):
     PUBLIC_PREFIXES = ("/static/", "/login", "/register", "/reset",
                        "/api/auth/login", "/api/auth/register", "/api/auth/reset",
                        "/api/auth/invites-available",
-                       "/health", "/api/health", "/api/seed")
+                       "/health", "/api/health",
+                       "/oauth/schwab/", "/api/schwab/")
 
     @app.before_request
     def enforce_auth():
@@ -360,10 +361,16 @@ def create_app(config_path=None):
         if _multi_tenant_ready:
             load_current_user(_user_repo)
         else:
-            # Single-user fallback: no users table yet
+            # Uninitialized: only allow public paths + migration trigger
             from flask import g
             g.user = None
-            return  # allow all access in non-migrated mode
+            path = request.path
+            if any(path.startswith(p) for p in PUBLIC_PREFIXES):
+                return
+            if path.startswith("/api/"):
+                return jsonify({"error": "not_initialized",
+                                "message": "System not initialized. Run multi-tenant migration."}), 503
+            return redirect("/login")
 
         from flask import g
         path = request.path
@@ -449,8 +456,9 @@ def create_app(config_path=None):
 
     @app.route("/api/auth/invites-available")
     def api_invites_available():
-        """Public list of currently redeemable invite codes (for the register page)."""
-        return jsonify({"codes": _invite_mgr.list_available(limit=50)})
+        """Public check: are invite codes available for registration?"""
+        codes = _invite_mgr.list_available(limit=1)
+        return jsonify({"available": len(codes) > 0, "count": len(_invite_mgr.list_available(limit=100))})
 
     @app.route("/api/auth/change-password", methods=["POST"])
     def api_change_password():
@@ -1952,6 +1960,7 @@ def create_app(config_path=None):
     # ── Seed Data ───────────────────────────────────────────────────────
 
     @app.route("/api/seed", methods=["POST"])
+    @admin_required
     def api_seed():
         from stock_trading_system.web.seed_data import seed_msft_analysis
         seed_msft_analysis()
