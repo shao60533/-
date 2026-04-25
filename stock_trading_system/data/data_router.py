@@ -42,6 +42,7 @@ import pandas as pd
 from stock_trading_system.data.akshare_provider import AkShareProvider
 from stock_trading_system.data.local_cache import LocalCache
 from stock_trading_system.data.qwen_provider import QwenProvider
+from stock_trading_system.data.schwab_provider import SchwabProvider
 from stock_trading_system.data.validators import (
     validate_fundamentals, validate_news, validate_quote,
 )
@@ -62,18 +63,22 @@ class DataRouter:
         yfinance: YFinanceProvider | None = None,
         akshare: AkShareProvider | None = None,
         cache: LocalCache | None = None,
+        schwab: SchwabProvider | None = None,
     ):
         self._config = config
         routing = (config.get("data_routing") or {})
         self._primary = routing.get("primary", "qwen")
+        self._realtime_primary = routing.get("realtime_primary", "schwab")
         self._enable_cache = bool(routing.get("enable_cache", True))
         providers = (config.get("providers") or {})
         self._yf_enabled = providers.get("yfinance_enabled", True)
         self._akshare_enabled = providers.get("akshare_enabled", True)
+        self._schwab_enabled = providers.get("schwab_enabled", True)
 
         self._qwen = qwen or QwenProvider(config)
         self._yfinance = yfinance or YFinanceProvider()
         self._akshare = akshare or AkShareProvider()
+        self._schwab = schwab or SchwabProvider(config)
         self._cache = cache  # injected from web layer; may be None in tests
 
     # ── Price ────────────────────────────────────────────────────────────

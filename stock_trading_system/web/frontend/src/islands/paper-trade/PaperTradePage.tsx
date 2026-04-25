@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from "react"
+import React, { useEffect, useState, useMemo } from "react"
 import {
   CheckCircle2, Clock4, TrendingUp, AlertCircle,
   Sparkles, ExternalLink, XCircle, Loader2, BarChart3,
@@ -65,7 +65,36 @@ const STATUS_ICONS: Record<string, React.ReactNode> = {
 }
 
 export function PaperTradePage() {
-  const ticker = window.location.pathname.split("/").pop()?.toUpperCase() || ""
+  return (
+    <ErrorBoundary>
+      <PaperTradeContent />
+    </ErrorBoundary>
+  )
+}
+
+function ErrorBoundary({ children }: { children: React.ReactNode }) {
+  const [hasError, setHasError] = useState(false)
+  if (hasError) {
+    return (
+      <div className="p-6 max-w-3xl mx-auto">
+        <Alert><AlertCircle className="w-4 h-4" /> 页面渲染异常，请刷新</Alert>
+        <Button variant="outline" className="mt-4" onClick={() => window.location.reload()}>刷新页面</Button>
+      </div>
+    )
+  }
+  return (
+    <ErrorCatcher onError={() => setHasError(true)}>{children}</ErrorCatcher>
+  )
+}
+
+class ErrorCatcher extends React.Component<{ children: React.ReactNode; onError: () => void }> {
+  componentDidCatch() { this.props.onError() }
+  render() { return this.props.children }
+}
+
+function PaperTradeContent() {
+  const m = window.location.pathname.match(/\/paper-trade\/([^/?#]+)/)
+  const ticker = m?.[1]?.toUpperCase() || ""
   const [data, setData] = useState<PaperPayload | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")

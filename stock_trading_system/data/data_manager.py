@@ -224,6 +224,9 @@ class DataManager:
             return {}
         if market != "us":
             return {}  # CN batch not supported by Schwab; caller falls back
+        providers = self._config.get("providers", {}) or {}
+        if not providers.get("schwab_enabled", True):
+            return {}
         if not (self._schwab.enabled and not self._is_skipped("schwab")):
             return {}
         try:
