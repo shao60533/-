@@ -524,6 +524,10 @@ def create_app(config_path=None):
     def screener_v3_page():
         return render_template("islands/screener_v3.html", vite_assets=vite_assets)
 
+    @app.route("/paper-trade")
+    def paper_trade_list_page():
+        return render_template("islands/paper_trade_list.html", vite_assets=vite_assets)
+
     @app.route("/paper-trade/<ticker>")
     def paper_trade_detail_page(ticker):
         return render_template("islands/paper_trade_detail.html", vite_assets=vite_assets, ticker=ticker)

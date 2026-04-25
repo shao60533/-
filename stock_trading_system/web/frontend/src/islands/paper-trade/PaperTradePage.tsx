@@ -1,14 +1,17 @@
-import { useEffect, useState } from "react"
+import { useEffect, useState, useMemo } from "react"
 import {
   CheckCircle2, Clock4, TrendingUp, AlertCircle,
-  Sparkles, ExternalLink, XCircle, Loader2,
+  Sparkles, ExternalLink, XCircle, Loader2, BarChart3,
 } from "lucide-react"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Chip, ChipRow } from "@/components/ui/chip"
+import { Stat } from "@/components/ui/stat"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Alert } from "@/components/ui/alert"
+import { ChartPanel } from "@/components/shared/ChartPanel"
+import type { EChartsOption } from "@/lib/echarts"
 import { apiGet } from "@/lib/api"
 import { cn } from "@/lib/utils"
 
@@ -90,6 +93,7 @@ export function PaperTradePage() {
   const plan = data.active_plan
   const orders = data.active_orders || []
   const sess = data.session
+  const [mainTab, setMainTab] = useState<"strategy" | "daily">("strategy")
 
   return (
     <div className="p-4 md:p-6 space-y-6 max-w-5xl mx-auto">
@@ -97,6 +101,20 @@ export function PaperTradePage() {
         <h1 className="text-xl font-bold">{ticker} 纸面交易</h1>
         <Badge variant={sess.status === "running" ? "default" : "secondary"}>{sess.status}</Badge>
       </div>
+
+      {/* Main tab switch */}
+      <ChipRow>
+        <Chip active={mainTab === "strategy"} onClick={() => setMainTab("strategy")}>
+          <Sparkles className="w-3.5 h-3.5 mr-1" />策略
+        </Chip>
+        <Chip active={mainTab === "daily"} onClick={() => setMainTab("daily")}>
+          <BarChart3 className="w-3.5 h-3.5 mr-1" />日度数据
+        </Chip>
+      </ChipRow>
+
+      {mainTab === "daily" && <DailyDataTab dailies={data.dailies || []} startCapital={sess.start_capital} />}
+      {mainTab === "strategy" && (<>
+      {/* BEGIN strategy tab */}
 
       {/* Strategy + Position */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -210,6 +228,154 @@ export function PaperTradePage() {
             <PlanHistory plans={data.plan_history || []} />
           ) : (
             <EventTimeline events={data.events || []} />
+          )}
+        </CardContent>
+      </Card>
+      {/* END strategy tab */}
+      </>)}
+    </div>
+  )
+}
+
+/* ── Daily Data Tab ─────────────────────────────────────────── */
+
+function DailyDataTab({ dailies, startCapital }: { dailies: Daily[]; startCapital: number }) {
+  const latest = dailies.length > 0 ? dailies[dailies.length - 1] : null
+  const maxDrawdown = dailies.length > 0 ? Math.min(...dailies.map(d => d.drawdown_pct)) : 0
+
+  const chartOption = useMemo((): EChartsOption | null => {
+    if (dailies.length === 0) return null
+    const dates = dailies.map(d => d.date)
+    const values = dailies.map(d => d.total_value)
+    const drawdowns = dailies.map(d => d.drawdown_pct)
+
+    // Find drawdown areas (continuous negative drawdown)
+    const markAreas: [{ xAxis: string }, { xAxis: string }][] = []
+    let areaStart: string | null = null
+    for (let i = 0; i < dailies.length; i++) {
+      if (dailies[i].drawdown_pct < -1) {
+        if (!areaStart) areaStart = dailies[i].date
+      } else if (areaStart) {
+        markAreas.push([{ xAxis: areaStart }, { xAxis: dailies[i - 1].date }])
+        areaStart = null
+      }
+    }
+    if (areaStart) markAreas.push([{ xAxis: areaStart }, { xAxis: dailies[dailies.length - 1].date }])
+
+    return {
+      backgroundColor: "transparent",
+      tooltip: { trigger: "axis" },
+      grid: [
+        { left: 60, right: 20, top: 30, height: "55%" },
+        { left: 60, right: 20, top: "75%", height: "18%" },
+      ],
+      xAxis: [
+        { type: "category", data: dates, gridIndex: 0, axisLine: { lineStyle: { color: "#444" } } },
+        { type: "category", data: dates, gridIndex: 1, axisLine: { lineStyle: { color: "#444" } } },
+      ],
+      yAxis: [
+        { type: "value", gridIndex: 0, axisLabel: { formatter: (v: number) => `$${(v/1000).toFixed(0)}k` }, splitLine: { lineStyle: { color: "#222" } } },
+        { type: "value", gridIndex: 1, axisLabel: { formatter: (v: number) => `${v.toFixed(0)}%` }, splitLine: { lineStyle: { color: "#222" } } },
+      ],
+      series: [
+        {
+          name: "权益", type: "line", data: values, smooth: true,
+          lineStyle: { color: "#3882ff", width: 2 },
+          areaStyle: { color: { type: "linear", x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: "rgba(56,130,255,0.25)" }, { offset: 1, color: "rgba(56,130,255,0)" }] } },
+          markArea: markAreas.length > 0 ? {
+            silent: true,
+            itemStyle: { color: "rgba(255,56,96,0.08)" },
+            data: markAreas as any,
+          } : undefined,
+        },
+        {
+          name: "回撤%", type: "bar", data: drawdowns, xAxisIndex: 1, yAxisIndex: 1,
+          itemStyle: { color: "#ff3860" },
+        },
+      ],
+    }
+  }, [dailies])
+
+  return (
+    <div className="space-y-4">
+      {/* Stat cards */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 grid-collapse-mobile">
+        <Stat label="当前净值" value={latest ? `$${fmt(latest.total_value)}` : "-"} />
+        <Stat label="累计收益" value={latest ? `${latest.cum_pnl_pct.toFixed(2)}%` : "-"}
+              delta={latest?.cum_pnl_pct} />
+        <Stat label="最大回撤" value={`${maxDrawdown.toFixed(2)}%`} />
+        <Stat label="交易天数" value={String(dailies.length)} />
+      </div>
+
+      {/* Equity chart */}
+      <Card>
+        <CardHeader><CardTitle className="text-sm">权益曲线</CardTitle></CardHeader>
+        <CardContent>
+          <ChartPanel option={chartOption} height={360} loading={dailies.length === 0} />
+        </CardContent>
+      </Card>
+
+      {/* Daily table / mobile cards */}
+      <Card>
+        <CardHeader><CardTitle className="text-sm">日度明细</CardTitle></CardHeader>
+        <CardContent>
+          {dailies.length === 0 ? (
+            <p className="text-sm text-muted-foreground text-center py-8">暂无日度数据</p>
+          ) : (
+            <>
+              {/* Desktop table */}
+              <div className="hidden md:block overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b text-muted-foreground text-xs uppercase">
+                      <th className="text-left py-2 px-2">日期</th>
+                      <th className="text-right py-2 px-2">收盘</th>
+                      <th className="text-right py-2 px-2">总值</th>
+                      <th className="text-right py-2 px-2">日 PnL</th>
+                      <th className="text-right py-2 px-2">累计%</th>
+                      <th className="text-right py-2 px-2">回撤%</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {[...dailies].reverse().slice(0, 30).map(d => (
+                      <tr key={d.date} className="border-b border-border/50 hover:bg-muted/30">
+                        <td className="py-2 px-2 font-mono text-xs">{d.date}</td>
+                        <td className="text-right py-2 px-2 font-mono">${fmt(d.close_price)}</td>
+                        <td className="text-right py-2 px-2 font-mono">${fmt(d.total_value)}</td>
+                        <td className={cn("text-right py-2 px-2 font-mono", d.daily_pnl >= 0 ? "text-[var(--color-accent-green)]" : "text-[var(--color-accent-red)]")}>
+                          ${fmt(d.daily_pnl)}
+                        </td>
+                        <td className={cn("text-right py-2 px-2 font-mono", d.cum_pnl_pct >= 0 ? "text-[var(--color-accent-green)]" : "text-[var(--color-accent-red)]")}>
+                          {d.cum_pnl_pct.toFixed(2)}%
+                        </td>
+                        <td className="text-right py-2 px-2 font-mono text-[var(--color-accent-red)]">
+                          {d.drawdown_pct.toFixed(2)}%
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Mobile cards */}
+              <div className="md:hidden space-y-2">
+                {[...dailies].reverse().slice(0, 20).map(d => (
+                  <div key={d.date} className="border rounded-lg p-3">
+                    <div className="flex justify-between items-center">
+                      <span className="font-mono text-xs">{d.date}</span>
+                      <span className={cn("font-mono text-sm", d.daily_pnl >= 0 ? "text-[var(--color-accent-green)]" : "text-[var(--color-accent-red)]")}>
+                        ${fmt(d.daily_pnl)}
+                      </span>
+                    </div>
+                    <div className="flex justify-between text-xs text-muted-foreground mt-1">
+                      <span>净值 ${fmt(d.total_value)}</span>
+                      <span>累计 {d.cum_pnl_pct.toFixed(2)}%</span>
+                      <span>回撤 {d.drawdown_pct.toFixed(2)}%</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
           )}
         </CardContent>
       </Card>

@@ -24,6 +24,7 @@ export default defineConfig({
       input: {
         "screener-v3": "src/islands/screener-v3/main.tsx",
         "paper-trade": "src/islands/paper-trade/main.tsx",
+        "paper-trade-list": "src/islands/paper-trade-list/main.tsx",
         "dashboard":   "src/islands/dashboard/main.tsx",
         "tasks":       "src/islands/tasks/main.tsx",
         "portfolio":   "src/islands/portfolio/main.tsx",
@@ -37,6 +38,7 @@ export default defineConfig({
       output: {
         manualChunks: {
           "react-vendor": ["react", "react-dom"],
+          "echarts-vendor": ["echarts/core", "echarts/charts", "echarts/components", "echarts/renderers"],
         },
       },
     },
