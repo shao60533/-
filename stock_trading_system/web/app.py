@@ -284,6 +284,26 @@ def _probe_providers() -> dict:
             "error": "IB requires local TWS; not testable from a cloud probe.",
             "host": ib_cfg.get("host"), "port": ib_cfg.get("port"),
         }
+
+    if providers.get("schwab_enabled", True):
+        try:
+            from stock_trading_system.data.schwab_provider import SchwabProvider
+            sch = SchwabProvider(cfg)
+            if sch.enabled:
+                results["schwab"] = _probe(
+                    "schwab", lambda: sch.get_stock_price("AAPL"),
+                )
+                results["schwab"]["token_age_days"] = sch.token_age_days()
+            else:
+                results["schwab"] = {
+                    "ok": False, "latency_ms": 0,
+                    "error": "schwab not configured "
+                             "(missing token / app_key / disabled)",
+                    "token_age_days": sch.token_age_days(),
+                }
+        except Exception as e:  # noqa: BLE001
+            results["schwab"] = {"ok": False, "error": str(e)[:200]}
+
     return results
 
 
