@@ -110,14 +110,16 @@ class StockAnalyzer:
             logger.warning("Failed to patch TradingAgents for Qwen: %s", e)
 
     def _init_graph(self):
-        """Lazy-init TradingAgents graph, cached per provider."""
+        """Lazy-init TradingAgents graph, cached per (provider, model) key."""
         from stock_trading_system.llm.router import get_active_provider
 
         provider = get_active_provider(self._config)
+        model = self._config.get("llm", {}).get("model", "")
+        cache_key = f"{provider}:{model}"
 
         with self._graph_lock:
-            if provider in self._graphs:
-                self._graph = self._graphs[provider]
+            if cache_key in self._graphs:
+                self._graph = self._graphs[cache_key]
                 return
 
             self._patch_tradingagents_qwen()
@@ -145,9 +147,9 @@ class StockAnalyzer:
                 debug=True,
                 config=ta_config,
             )
-            self._graphs[provider] = graph
+            self._graphs[cache_key] = graph
             self._graph = graph
-            logger.info("TradingAgents graph initialized with %s", provider)
+            logger.info("TradingAgents graph initialized with %s (key=%s)", provider, cache_key)
 
     @property
     def _iteration_enabled(self) -> bool:
