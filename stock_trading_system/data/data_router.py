@@ -93,6 +93,17 @@ class DataRouter:
         if cached is not None:
             return cached
 
+        # Realtime: Schwab first when configured (US only).
+        if (market == "us"
+                and self._realtime_primary == "schwab"
+                and self._schwab_enabled
+                and self._schwab.enabled):
+            q = validate_quote(self._schwab.get_stock_price(ticker))
+            if q:
+                self._cache_set("price_quote", ticker, q)
+                return q
+            logger.info("Schwab miss for %s — falling through", ticker)
+
         # Primary: Qwen
         if self._primary == "qwen" and self._qwen.enabled:
             q = self._qwen.get_stock_price(ticker)
@@ -254,11 +265,18 @@ class DataRouter:
     def qwen(self) -> QwenProvider:
         return self._qwen
 
+    @property
+    def schwab(self) -> SchwabProvider:
+        return self._schwab
+
     def routing_summary(self) -> dict:
         return {
             "primary": self._primary,
+            "realtime_primary": self._realtime_primary,
             "cache_enabled": self._enable_cache,
             "qwen_enabled": self._qwen.enabled,
             "yfinance_enabled": self._yf_enabled,
             "akshare_enabled": self._akshare_enabled,
+            "schwab_enabled": self._schwab_enabled and self._schwab.enabled,
+            "schwab_token_age_days": self._schwab.token_age_days(),
         }

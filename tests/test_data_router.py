@@ -40,12 +40,21 @@ class FakeAkShare:
         self.get_stock_history = MagicMock(return_value=None)
 
 
+class FakeSchwab:
+    def __init__(self, enabled=False):
+        self.enabled = enabled
+        self.get_stock_price = MagicMock(return_value=None)
+        self.get_stock_history = MagicMock(return_value=None)
+        self.token_age_days = MagicMock(return_value=None)
+
+
 def _router(config, cache=None, **overrides):
     return DataRouter(
         config,
         qwen=overrides.get("qwen", FakeQwen()),
         yfinance=overrides.get("yfinance", FakeYFinance()),
         akshare=overrides.get("akshare", FakeAkShare()),
+        schwab=overrides.get("schwab", FakeSchwab()),
         cache=cache,
     )
 

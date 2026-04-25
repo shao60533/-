@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from "react"
-import { Sparkles, Send, ArrowLeft, Clock, Newspaper, BarChart3, Scale } from "lucide-react"
+import { Sparkles, Send, ArrowLeft, Clock, Newspaper, BarChart3, Scale, ExternalLink } from "lucide-react"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -10,6 +10,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { PipelineDAG } from "@/components/shared/PipelineDAG"
 import { TVChart } from "@/components/shared/TVChart"
 import { apiGet, apiPost } from "@/lib/api"
+import { subscribeTaskStream } from "@/lib/socket"
 import Markdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 
@@ -21,8 +22,6 @@ interface AnalysisDetail {
   risk_assessment?: string; trade_decision?: string
   analysts?: Record<string, string>
   advice_json?: string
-  // task tracking
-  task_id?: string; task_status?: string
 }
 
 interface OHLCVRow {
@@ -44,6 +43,11 @@ function getIdFromUrl(): string | null {
   return match?.[1] ?? null
 }
 
+/** UUID-like = task ID (running state); pure digits = analysis_history ID (complete) */
+function isTaskId(id: string): boolean {
+  return id.length > 10 && /[a-f-]/.test(id)
+}
+
 const REPORT_TABS = [
   { key: "summary", label: "概览" },
   { key: "Market", label: "技术面" },
@@ -55,16 +59,26 @@ const REPORT_TABS = [
 ] as const
 
 export function AnalysisPage() {
-  const [detailId] = useState<string | null>(getIdFromUrl)
+  const [urlId] = useState<string | null>(getIdFromUrl)
   const [detail, setDetail] = useState<AnalysisDetail | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  // Running-state: when URL has a task UUID
+  const [taskId, setTaskId] = useState<string | null>(
+    urlId && isTaskId(urlId) ? urlId : null
+  )
+  const [taskTicker, setTaskTicker] = useState<string>("")
+
+  // Form state
   const [ticker, setTicker] = useState("")
   const [date, setDate] = useState(new Date().toISOString().slice(0, 10))
   const [submitting, setSubmitting] = useState(false)
-  const [submitResult, setSubmitResult] = useState<TaskSubmitResult | null>(null)
 
+  // Completed analysis ID (numeric)
+  const detailId = urlId && !isTaskId(urlId) ? urlId : null
+
+  // Load completed analysis
   useEffect(() => {
     if (!detailId) return
     setLoading(true); setError(null)
@@ -74,20 +88,56 @@ export function AnalysisPage() {
       .finally(() => setLoading(false))
   }, [detailId])
 
+  // Running task: fetch task info for ticker name
+  useEffect(() => {
+    if (!taskId) return
+    apiGet<{ type: string; params_json?: string; title?: string }>(`/api/tasks/${taskId}`)
+      .then(t => {
+        try {
+          const p = t.params_json ? JSON.parse(t.params_json) : {}
+          setTaskTicker(p.ticker || "")
+        } catch { /* ignore */ }
+      })
+      .catch(() => {})
+  }, [taskId])
+
   const handleSubmit = async () => {
     if (!ticker.trim()) return
-    setSubmitting(true); setError(null); setSubmitResult(null)
+    setSubmitting(true); setError(null)
     try {
       const res = await apiPost<TaskSubmitResult>("/api/tasks/submit", {
         type: "analysis", params: { ticker: ticker.toUpperCase(), date },
       })
-      setSubmitResult(res)
-      if (res.task_id) setTimeout(() => { window.location.href = `/tasks/${res.task_id}` }, 800)
+      // Navigate to /analysis/<task_id> to show running DAG
+      if (res.task_id) {
+        window.history.replaceState(null, "", `/analysis/${res.task_id}`)
+        setTaskId(res.task_id)
+        setTaskTicker(ticker.toUpperCase())
+      }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "提交失败")
     } finally { setSubmitting(false) }
   }
 
+  // ── Running state: show PipelineDAG ─────────────────────────
+  if (taskId) {
+    return <AnalysisRunningView
+      taskId={taskId}
+      ticker={taskTicker}
+      onComplete={(analysisId) => {
+        // Smoothly transition to detail view
+        window.history.replaceState(null, "", `/analysis/${analysisId}`)
+        setTaskId(null)
+        setLoading(true)
+        apiGet<AnalysisDetail>(`/api/history/${analysisId}`)
+          .then(setDetail)
+          .catch(err => setError(err.message ?? "Failed to load"))
+          .finally(() => setLoading(false))
+      }}
+    />
+  }
+
+  // ── Completed detail ────────────────────────────────────────
   if (detailId && loading) return (
     <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-4">
       <Skeleton className="h-8 w-48" /><Skeleton className="h-6 w-32" /><Skeleton className="h-64" />
@@ -105,7 +155,7 @@ export function AnalysisPage() {
 
   if (detailId && detail) return <AnalysisDetailView detail={detail} />
 
-  // Submit form
+  // ── Submit form ─────────────────────────────────────────────
   return (
     <div className="p-4 md:p-6 max-w-4xl mx-auto space-y-6">
       <div className="flex items-center gap-3">
@@ -129,17 +179,75 @@ export function AnalysisPage() {
             </Button>
           </div>
           {error && <Alert variant="destructive" className="mt-4"><AlertTitle>提交失败</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}
-          {submitResult && (
-            <Alert variant="success" className="mt-4">
-              <AlertTitle>任务已提交</AlertTitle>
-              <AlertDescription>
-                任务 ID: <code className="font-mono">{submitResult.task_id}</code>
-                <a href={`/tasks/${submitResult.task_id}`} className="ml-2 text-[var(--color-accent-blue)] hover:underline">查看进度</a>
-              </AlertDescription>
-            </Alert>
-          )}
         </CardContent>
       </Card>
+    </div>
+  )
+}
+
+/* ── Running view: PipelineDAG + skeleton tabs ─────────────── */
+
+function AnalysisRunningView({ taskId, ticker, onComplete }: {
+  taskId: string; ticker: string
+  onComplete: (analysisId: string) => void
+}) {
+  const [completed, setCompleted] = useState(false)
+
+  useEffect(() => {
+    const sub = subscribeTaskStream({
+      taskIds: [taskId],
+      onEvent: (env) => {
+        if (env.event === "task_completed") {
+          setCompleted(true)
+          // Extract analysis_id from result_ref
+          const ref = (env.payload as any)?.result_ref ?? ""
+          const m = ref.match?.(/(\d+)/)
+          if (m) {
+            setTimeout(() => onComplete(m[1]), 1000)
+          }
+        }
+      },
+      onStatusChange: () => {},
+    })
+    return () => sub.destroy()
+  }, [taskId, onComplete])
+
+  return (
+    <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-6">
+      <div className="flex items-center gap-3 flex-wrap">
+        <Button variant="ghost" size="sm" onClick={() => window.location.href = "/analysis"}>
+          <ArrowLeft className="h-4 w-4" />
+        </Button>
+        <h1 className="text-xl font-bold font-mono">{ticker || "分析中..."}</h1>
+        <Badge variant="default">运行中</Badge>
+      </div>
+
+      <PipelineDAG taskId={taskId} />
+
+      {/* Skeleton placeholders for the tabs */}
+      {!completed && (
+        <Card>
+          <CardContent className="pt-6 space-y-4">
+            <div className="flex gap-2 border-b pb-2">
+              {REPORT_TABS.map(t => <Skeleton key={t.key} className="h-6 w-16" />)}
+            </div>
+            <Skeleton className="h-40" />
+          </CardContent>
+        </Card>
+      )}
+
+      {completed && (
+        <Alert variant="success">
+          <AlertTitle>分析完成</AlertTitle>
+          <AlertDescription>正在加载结果...</AlertDescription>
+        </Alert>
+      )}
+
+      <div className="text-center">
+        <a href={`/tasks/${taskId}`} className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1">
+          <ExternalLink className="h-3 w-3" /> 查看任务详情
+        </a>
+      </div>
     </div>
   )
 }
