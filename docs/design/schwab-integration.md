@@ -1,8 +1,8 @@
 # Schwab Trader API 集成 — 实时行情与账户数据接入
 
-> **版本**: 1.0
-> **日期**: 2026-04-24
-> **状态**: 草稿 — 待评审
+> **版本**: 1.1（OAuth 引导从命令行改为 Web 端点）
+> **日期**: 2026-04-25
+> **状态**: 实施中（P0 + P1 已落地,等 Schwab App 审核完成 callback URL 变更）
 > **原则**: 能复用就复用，L1 直接用 `schwab-py`，不自写 HTTP 客户端
 > **参考**: [engineering-principles.md](../engineering-principles.md) · [architecture-upgrade.md](architecture-upgrade.md)
 
