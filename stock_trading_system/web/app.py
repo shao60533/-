@@ -560,11 +560,13 @@ def create_app(config_path=None):
         return render_template("islands/alerts.html", vite_assets=vite_assets)
 
     @app.route("/analysis")
-    @app.route("/analysis/<int:analysis_id>")
+    @app.route("/analysis/<analysis_id>")
     def analysis_page(analysis_id=None):
         return render_template("islands/analysis.html", vite_assets=vite_assets)
 
+    @app.route("/backtest")
     @app.route("/backtest-v2")
+    @app.route("/backtest/<backtest_id>")
     @app.route("/backtest-v2/<int:backtest_id>")
     def backtest_page(backtest_id=None):
         return render_template("islands/backtest.html", vite_assets=vite_assets)

@@ -41,7 +41,7 @@ const NAV_GROUPS: NavGroup[] = [
     title: "选股",
     items: [
       { label: "智能选股 V3", href: "/screener-v3", icon: <Crosshair className="w-4 h-4" /> },
-      { label: "策略回测",   href: "/backtest-v2", icon: <FlaskConical className="w-4 h-4" /> },
+      { label: "策略回测",   href: "/backtest", icon: <FlaskConical className="w-4 h-4" /> },
     ],
   },
   {
@@ -139,7 +139,7 @@ const MOBILE_PRIMARY: NavItem[] = [
 const MOBILE_MORE: NavItem[] = [
   { label: "分析记录", href: "/history",      icon: <ClockArrowDown className="w-5 h-5" /> },
   { label: "报告中心", href: "/reports",      icon: <FileText className="w-5 h-5" /> },
-  { label: "策略回测", href: "/backtest-v2",  icon: <FlaskConical className="w-5 h-5" /> },
+  { label: "策略回测", href: "/backtest",  icon: <FlaskConical className="w-5 h-5" /> },
   { label: "纸面交易", href: "/paper-trade",  icon: <TestTube className="w-5 h-5" /> },
   { label: "预警中心", href: "/alerts",       icon: <Bell className="w-5 h-5" /> },
   { label: "任务中心", href: "/tasks",        icon: <ListChecks className="w-5 h-5" /> },

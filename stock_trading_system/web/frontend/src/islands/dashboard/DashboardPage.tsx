@@ -234,7 +234,7 @@ export function DashboardPage() {
               <Button variant="outline" size="sm" className="w-full" onClick={() => window.location.href = "/alerts"}>
                 <Bell className="w-3.5 h-3.5 mr-1" /> 预警中心
               </Button>
-              <Button variant="outline" size="sm" className="w-full" onClick={() => window.location.href = "/backtest-v2"}>
+              <Button variant="outline" size="sm" className="w-full" onClick={() => window.location.href = "/backtest"}>
                 <BarChart3 className="w-3.5 h-3.5 mr-1" /> 策略回测
               </Button>
             </CardContent>
