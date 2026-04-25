@@ -261,53 +261,97 @@ data_routing:
 
 ---
 
-## 五、OAuth 首次授权流程
+## 五、OAuth 引导流程（Web 端点版）
 
-Schwab OAuth 设计要求浏览器重定向，**云端部署必须先在本地完成授权**再把 token 文件带到云端。
+**改动原因（v1.1）**：原方案的本地命令行 + 127.0.0.1 监听器在中国本土网络环境下被代理工具(Clash/Surge)劫持 `api.schwabapi.com` 到 198.18.0.0/15 段,SSL 握手超时无法完成。改为 **Web 公网回调**,把 OAuth 引导彻底搬到 Railway:Railway 数据中心直连 Schwab API,不受本地代理影响。
 
-### 5.1 本地授权步骤
+### 5.1 一次性配置
 
-```bash
-# 1. 在 Schwab Developer Portal (https://developer.schwab.com) 创建 App
-#    - Callback URL 填 https://127.0.0.1:8182
-#    - 拿到 App Key + App Secret
+#### Step 1 — Schwab Developer Portal
 
-# 2. 本地运行一次性脚本
-export SCHWAB_APP_KEY=xxx
-export SCHWAB_APP_SECRET=yyy
-python -m stock_trading_system.data.schwab_auth_bootstrap
-# → 自动打开浏览器 → 登录 Schwab → 同意授权
-# → 回调到 127.0.0.1:8182 → schwab-py 拦截并写入 data/schwab_token.json
+在 [developer.schwab.com](https://developer.schwab.com) 创建 Individual Developer App:
 
-# 3. 本地验证
-python -c "from stock_trading_system.data.schwab_provider import SchwabProvider; \
-           import json; cfg = {'schwab': {'enabled': True, 'app_key': '...', \
-           'app_secret': '...', 'token_path': 'data/schwab_token.json'}}; \
-           p = SchwabProvider(cfg); print(p.get_stock_price('AAPL'))"
-```
+- **Callback URL**: `https://<railway-domain>/oauth/schwab/callback`(精确,大小写斜杠)
+- 提交 → 等 Schwab 审核(几小时到 1-2 天) → 状态变 "Ready for Use" → 拿到 `App Key` 和 `App Secret`
 
-### 5.2 云端部署（Railway）
+#### Step 2 — Railway Variables
 
 ```
-本地生成 data/schwab_token.json
-    ↓
-scp / Railway volume upload 到 /data/schwab_token.json
-    ↓
-环境变量: SCHWAB_APP_KEY, SCHWAB_APP_SECRET, SCHWAB_TOKEN_PATH=/data/schwab_token.json
-    ↓
-首次请求 → schwab-py 自动用 refresh-token 刷新 access-token → OK
+SCHWAB_APP_KEY=<App Key>
+SCHWAB_APP_SECRET=<App Secret>
+SCHWAB_CALLBACK_URL=https://<railway-domain>/oauth/schwab/callback
+SCHWAB_OAUTH_SECRET=<openssl rand -hex 16>
+SCHWAB_TOKEN_PATH=/app/data/schwab_token.json
 ```
 
-### 5.3 7 天 refresh-token 过期策略
+#### Step 3 — 浏览器一键授权
 
-| 时机 | 动作 |
-|------|------|
-| token 文件年龄 < 5 天 | 正常运行 |
-| 5-6 天 | `/api/health` 返回 warning，前端 banner 提示 |
-| 6-7 天 | 发邮件/Telegram 告警（复用 [alerts/monitor.py](../../stock_trading_system/alerts/monitor.py)） |
-| > 7 天 | 自动禁用 Schwab（`_is_skipped["schwab"] = 999`），链路回退到 yfinance/Qwen，banner 红色提示必须重授权 |
+部署生效后访问:
 
-**监控实现**：[scheduler/task_scheduler.py](../../stock_trading_system/scheduler/task_scheduler.py) 增加每日一次 `check_schwab_token_age` 任务。
+```
+https://<railway-domain>/oauth/schwab/start?secret=<SCHWAB_OAUTH_SECRET>
+```
+
+流程:
+1. magic-link 校验 `secret` query → ok
+2. `schwab.auth.get_auth_context(api_key, callback_url)` 生成 state + auth URL
+3. state 存 Flask session(签名 cookie)
+4. 302 重定向到 `https://api.schwabapi.com/v1/oauth/authorize?...`
+5. 用户在 Schwab 登录页输账号密码 → Allow
+6. Schwab 把 `?code=xxx&state=xxx` 回调到 `/oauth/schwab/callback`
+7. callback 校验 state,调用 `client_from_received_url` 用 code 换 token
+8. token 写入 `/app/data/schwab_token.json`(Persistent Volume)
+9. 返回 `{"status": "ok", "token_path": "..."}`
+
+### 5.2 验证
+
+```
+GET https://<railway-domain>/api/schwab/diagnose?secret=<SCHWAB_OAUTH_SECRET>
+```
+
+返回:
+```json
+{
+  "enabled": true,
+  "token_age_days": 0.001,
+  "single_quote_ok": true,
+  "single_quote_latency_ms": 230,
+  "single_quote_sample": {"ticker": "AAPL", "last": 175.20, "close": 174.80},
+  "batch_quote_ok": true,
+  "batch_quote_count": 5,
+  "batch_quote_latency_ms": 380,
+  "history_ok": true,
+  "history_bars": 22,
+  "history_latency_ms": 450
+}
+```
+
+### 5.3 7 天 refresh-token 续期策略
+
+Schwab 平台硬性要求 refresh-token 每 7 天人工重新授权(不是 schwab-py 缺陷)。
+
+| 时机 | 监控/动作 |
+|------|----------|
+| token 文件年龄 < 5 天 | 正常运行,access-token 自动 refresh |
+| 5-6 天 | `/api/provider-probe` 返回 `schwab.token_age_days >= 5`,前端 banner 提示 |
+| 6-7 天 | scheduler 触发邮件/Telegram 告警 |
+| > 7 天 | refresh-token 失效 → schwab-py 调用抛错 → SchwabProvider 失败计数 → DataManager 自动跳过 → 链路降级 yfinance/Qwen |
+
+续期 = 重新访问 `/oauth/schwab/start?secret=...` 一次,token.json 被覆盖。
+
+### 5.4 端点清单
+
+| 路由 | 用途 | 鉴权 |
+|------|------|------|
+| `GET /oauth/schwab/start?secret=<S>` | 启动 OAuth,302 到 Schwab | magic-link secret |
+| `GET /oauth/schwab/callback?code=...&state=...` | 接 Schwab 回调,换 token | state 校验 |
+| `GET /api/schwab/diagnose?secret=<S>` | 跑 single + batch + history smoke,报告 token age | magic-link secret |
+| `GET /api/provider-probe` | 包含 schwab 一项,显示 ok / latency / token_age | 普通登录用户(系统页) |
+
+**安全设计**:
+- magic-link `secret` 是 32 字符随机串,放 env 变量,不入 git
+- callback URL 在 Schwab Portal 锁定到 Railway 域名,即便 secret 泄露,攻击者也拿不到 code(Schwab 不会回调到陌生域名)
+- state 参数用 Flask 签名 cookie 存,防 CSRF
 
 ---
 
