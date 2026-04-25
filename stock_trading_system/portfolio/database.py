@@ -290,30 +290,42 @@ class PortfolioDatabase:
                      pnl_pct = excluded.pnl_pct,
                      positions_json = excluded.positions_json""",
                 (snapshot.date, snapshot.total_value, snapshot.total_cost,
-                 snapshot.pnl, snapshot.pnl_pct, snapshot.positions_json),
+                 snapshot.pnl, snapshot.pnl_pct, snapshot.positions_json, snapshot.user_id),
             )
 
-    def get_snapshots(self, days: int = 30) -> list[DailySnapshot]:
+    def get_snapshots(self, days: int = 30, user_id: int | None = None) -> list[DailySnapshot]:
         with self._get_conn() as conn:
-            rows = conn.execute(
-                "SELECT * FROM daily_snapshots ORDER BY date DESC LIMIT ?", (days,)
-            ).fetchall()
+            if user_id is not None:
+                rows = conn.execute(
+                    "SELECT * FROM daily_snapshots WHERE user_id = ? ORDER BY date DESC LIMIT ?",
+                    (user_id, days),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM daily_snapshots ORDER BY date DESC LIMIT ?", (days,)
+                ).fetchall()
             return [DailySnapshot(**dict(r)) for r in rows]
 
     # ── Alerts ───────────────────────────────────────────────────────────
 
-    def add_alert(self, ticker: str, condition: str, threshold: float):
+    def add_alert(self, ticker: str, condition: str, threshold: float, user_id: int | None = None):
         with self._get_conn() as conn:
             conn.execute(
-                "INSERT INTO alerts (ticker, condition, threshold, created) VALUES (?, ?, ?, ?)",
-                (ticker, condition, threshold, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+                "INSERT INTO alerts (ticker, condition, threshold, created, user_id) VALUES (?, ?, ?, ?, ?)",
+                (ticker, condition, threshold, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), user_id),
             )
 
-    def get_active_alerts(self) -> list[dict]:
+    def get_active_alerts(self, user_id: int | None = None) -> list[dict]:
         with self._get_conn() as conn:
-            rows = conn.execute(
-                "SELECT * FROM alerts WHERE triggered = 0 ORDER BY created DESC"
-            ).fetchall()
+            if user_id is not None:
+                rows = conn.execute(
+                    "SELECT * FROM alerts WHERE triggered = 0 AND user_id = ? ORDER BY created DESC",
+                    (user_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM alerts WHERE triggered = 0 ORDER BY created DESC"
+                ).fetchall()
             return [dict(r) for r in rows]
 
     def trigger_alert(self, alert_id: int):
