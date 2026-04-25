@@ -14,6 +14,7 @@
 | 2026-04-21 | [ui-react-island.md](ui-react-island.md) | v1.0 | 108 | UI React Island 测试用例：构建管道 Vite+Flask(10) + lib api/socket/auth(12) + shadcn 组件(14) + Screener V3 island(12) + Tasks(10) + Paper-trade(8) + Dashboard(7) + 跨岛集成(6) + 视觉一致性(8) + 非迁移页回归(7) + 性能(5) + 安全 CSRF(5) + 真机部署(4) | UI React Island 技术方案 |
 | 2026-04-21 | [ui-react-island.md](ui-react-island.md) | v2.0 | 74 | 剩余 11 页测试用例：共享组件 AppShell/DataTable/Form/EChartsPanel(12) + Portfolio/History/Alerts/Reports(20) + Backtest/Paper list/Analysis(18) + Settings(7) + Auth Login/Register/Reset(9) + Phase 18 废弃旧代码(5) + v2.0 性能(3) | UI React Island v2.0 技术方案 |
 | 2026-04-24 | [ui-migration-validation.md](ui-migration-validation.md) | v1.0 | 164 | 架构级迁移完整验证测试用例：L0 冒烟 5 + L1 基础 E2E 33 + L2 功能回归矩阵 74 + L3 跨模块集成脚本 20 + L4 数据完整性（row count/抽样/invariant/FK）14 + L5 对抗性（越权 8 + CSRF 3 + session 4 + 并发 3）18 | 迁移验证技术方案 |
+| 2026-04-25 | [ui-react-island-regression.md](ui-react-island-regression.md) | v1.0 | 90 | 迁移回归修复测试用例：P0 CRITICAL 9 + P1 HIGH 26 + P2 MEDIUM/LOW 24 + 共享组件（Stat/ChartPanel/form-row-mobile）8 + Playwright E2E 12 + 视觉回归 11；P0 闸门强约束 + 老 Jinja baseline 截图归档 | 迁移回归修复技术方案 |
 
 ## 用例总数汇总
 
@@ -30,7 +31,8 @@
 | 统一进度系统测试用例 | 101 |
 | UI React Island 测试用例（v1.0 + v2.0）| 182 |
 | 迁移验证测试用例 | 164 |
-| **总计** | **1424** |
+| 迁移回归修复测试用例 | 90 |
+| **总计** | **1514** |
 
 ## 覆盖状态
 
