@@ -382,10 +382,16 @@ def create_app(config_path=None):
         if _multi_tenant_ready:
             load_current_user(_user_repo)
         else:
-            # Single-user fallback: no users table yet
+            # Uninitialized: only allow public paths + migration trigger
             from flask import g
             g.user = None
-            return  # allow all access in non-migrated mode
+            path = request.path
+            if any(path.startswith(p) for p in PUBLIC_PREFIXES):
+                return
+            if path.startswith("/api/"):
+                return jsonify({"error": "not_initialized",
+                                "message": "System not initialized. Run multi-tenant migration."}), 503
+            return redirect("/login")
 
         from flask import g
         path = request.path
@@ -471,8 +477,9 @@ def create_app(config_path=None):
 
     @app.route("/api/auth/invites-available")
     def api_invites_available():
-        """Public list of currently redeemable invite codes (for the register page)."""
-        return jsonify({"codes": _invite_mgr.list_available(limit=50)})
+        """Public check: are invite codes available for registration?"""
+        codes = _invite_mgr.list_available(limit=1)
+        return jsonify({"available": len(codes) > 0, "count": len(_invite_mgr.list_available(limit=100))})
 
     @app.route("/api/auth/change-password", methods=["POST"])
     def api_change_password():
@@ -1858,11 +1865,18 @@ def create_app(config_path=None):
         tm = _get_task_manager()
         task_type = request.args.get("type")
         status = request.args.get("status")
+        scope = request.args.get("scope", "mine")  # mine | shared_research | all
         limit = min(int(request.args.get("limit", 50)), 200)
         offset = max(int(request.args.get("offset", 0)), 0)
+        uid = g.user.id if g.user else None
+        # Only admin can see 'all'
+        if scope == "all" and (not g.user or g.user.role != "admin"):
+            scope = "shared_research"
         items = tm.list(task_type=task_type, status=status,
-                        limit=limit, offset=offset)
-        total = tm.count(task_type=task_type, status=status) if hasattr(tm, "count") else len(items)
+                        limit=limit, offset=offset,
+                        created_by=uid, scope=scope)
+        total = tm.count(task_type=task_type, status=status,
+                         created_by=uid, scope=scope)
         return jsonify({
             "tasks": items,
             "items": items,  # backward compat
@@ -2103,6 +2117,7 @@ def create_app(config_path=None):
     # ── Seed Data ───────────────────────────────────────────────────────
 
     @app.route("/api/seed", methods=["POST"])
+    @admin_required
     def api_seed():
         from stock_trading_system.web.seed_data import seed_msft_analysis
         seed_msft_analysis()

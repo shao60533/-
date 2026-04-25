@@ -210,53 +210,70 @@ class PortfolioDatabase:
 
     # ── Positions ────────────────────────────────────────────────────────
 
-    def get_position(self, ticker: str) -> Position | None:
+    def get_position(self, ticker: str, user_id: int | None = None) -> Position | None:
         with self._get_conn() as conn:
-            row = conn.execute("SELECT * FROM positions WHERE ticker = ?", (ticker,)).fetchone()
+            if user_id is not None:
+                row = conn.execute(
+                    "SELECT * FROM positions WHERE ticker = ? AND user_id = ?", (ticker, user_id)
+                ).fetchone()
+            else:
+                row = conn.execute("SELECT * FROM positions WHERE ticker = ?", (ticker,)).fetchone()
             if row:
                 return Position(**dict(row))
         return None
 
-    def get_all_positions(self) -> list[Position]:
+    def get_all_positions(self, user_id: int | None = None) -> list[Position]:
         with self._get_conn() as conn:
-            rows = conn.execute("SELECT * FROM positions ORDER BY ticker").fetchall()
+            if user_id is not None:
+                rows = conn.execute(
+                    "SELECT * FROM positions WHERE user_id = ? ORDER BY ticker", (user_id,)
+                ).fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM positions ORDER BY ticker").fetchall()
             return [Position(**dict(r)) for r in rows]
 
     def upsert_position(self, position: Position):
         with self._get_conn() as conn:
             conn.execute(
-                """INSERT INTO positions (ticker, market, shares, avg_cost, added_date)
-                   VALUES (?, ?, ?, ?, ?)
-                   ON CONFLICT(ticker) DO UPDATE SET
+                """INSERT INTO positions (user_id, ticker, market, shares, avg_cost, added_date)
+                   VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(user_id, ticker) DO UPDATE SET
                      shares = excluded.shares,
                      avg_cost = excluded.avg_cost""",
-                (position.ticker, position.market, position.shares, position.avg_cost, position.added_date),
+                (position.user_id, position.ticker, position.market,
+                 position.shares, position.avg_cost, position.added_date),
             )
 
-    def delete_position(self, ticker: str):
+    def delete_position(self, ticker: str, user_id: int | None = None):
         with self._get_conn() as conn:
-            conn.execute("DELETE FROM positions WHERE ticker = ?", (ticker,))
+            if user_id is not None:
+                conn.execute("DELETE FROM positions WHERE ticker = ? AND user_id = ?", (ticker, user_id))
+            else:
+                conn.execute("DELETE FROM positions WHERE ticker = ?", (ticker,))
 
     # ── Transactions ─────────────────────────────────────────────────────
 
     def add_transaction(self, txn: Transaction):
         with self._get_conn() as conn:
             conn.execute(
-                """INSERT INTO transactions (ticker, action, shares, price, timestamp, notes)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (txn.ticker, txn.action, txn.shares, txn.price, txn.timestamp, txn.notes),
+                """INSERT INTO transactions (ticker, action, shares, price, timestamp, notes, user_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (txn.ticker, txn.action, txn.shares, txn.price, txn.timestamp, txn.notes, txn.user_id),
             )
 
-    def get_transactions(self, ticker: str | None = None) -> list[Transaction]:
+    def get_transactions(self, ticker: str | None = None, user_id: int | None = None) -> list[Transaction]:
         with self._get_conn() as conn:
+            clauses, params = [], []
             if ticker:
-                rows = conn.execute(
-                    "SELECT * FROM transactions WHERE ticker = ? ORDER BY timestamp DESC", (ticker,)
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    "SELECT * FROM transactions ORDER BY timestamp DESC"
-                ).fetchall()
+                clauses.append("ticker = ?")
+                params.append(ticker)
+            if user_id is not None:
+                clauses.append("user_id = ?")
+                params.append(user_id)
+            where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+            rows = conn.execute(
+                f"SELECT * FROM transactions{where} ORDER BY timestamp DESC", params
+            ).fetchall()
             return [Transaction(**dict(r)) for r in rows]
 
     # ── Snapshots ────────────────────────────────────────────────────────
@@ -264,8 +281,8 @@ class PortfolioDatabase:
     def save_snapshot(self, snapshot: DailySnapshot):
         with self._get_conn() as conn:
             conn.execute(
-                """INSERT INTO daily_snapshots (date, total_value, total_cost, pnl, pnl_pct, positions_json)
-                   VALUES (?, ?, ?, ?, ?, ?)
+                """INSERT INTO daily_snapshots (date, total_value, total_cost, pnl, pnl_pct, positions_json, user_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(date) DO UPDATE SET
                      total_value = excluded.total_value,
                      total_cost = excluded.total_cost,
@@ -273,30 +290,42 @@ class PortfolioDatabase:
                      pnl_pct = excluded.pnl_pct,
                      positions_json = excluded.positions_json""",
                 (snapshot.date, snapshot.total_value, snapshot.total_cost,
-                 snapshot.pnl, snapshot.pnl_pct, snapshot.positions_json),
+                 snapshot.pnl, snapshot.pnl_pct, snapshot.positions_json, snapshot.user_id),
             )
 
-    def get_snapshots(self, days: int = 30) -> list[DailySnapshot]:
+    def get_snapshots(self, days: int = 30, user_id: int | None = None) -> list[DailySnapshot]:
         with self._get_conn() as conn:
-            rows = conn.execute(
-                "SELECT * FROM daily_snapshots ORDER BY date DESC LIMIT ?", (days,)
-            ).fetchall()
+            if user_id is not None:
+                rows = conn.execute(
+                    "SELECT * FROM daily_snapshots WHERE user_id = ? ORDER BY date DESC LIMIT ?",
+                    (user_id, days),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM daily_snapshots ORDER BY date DESC LIMIT ?", (days,)
+                ).fetchall()
             return [DailySnapshot(**dict(r)) for r in rows]
 
     # ── Alerts ───────────────────────────────────────────────────────────
 
-    def add_alert(self, ticker: str, condition: str, threshold: float):
+    def add_alert(self, ticker: str, condition: str, threshold: float, user_id: int | None = None):
         with self._get_conn() as conn:
             conn.execute(
-                "INSERT INTO alerts (ticker, condition, threshold, created) VALUES (?, ?, ?, ?)",
-                (ticker, condition, threshold, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+                "INSERT INTO alerts (ticker, condition, threshold, created, user_id) VALUES (?, ?, ?, ?, ?)",
+                (ticker, condition, threshold, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), user_id),
             )
 
-    def get_active_alerts(self) -> list[dict]:
+    def get_active_alerts(self, user_id: int | None = None) -> list[dict]:
         with self._get_conn() as conn:
-            rows = conn.execute(
-                "SELECT * FROM alerts WHERE triggered = 0 ORDER BY created DESC"
-            ).fetchall()
+            if user_id is not None:
+                rows = conn.execute(
+                    "SELECT * FROM alerts WHERE triggered = 0 AND user_id = ? ORDER BY created DESC",
+                    (user_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM alerts WHERE triggered = 0 ORDER BY created DESC"
+                ).fetchall()
             return [dict(r) for r in rows]
 
     def trigger_alert(self, alert_id: int):
