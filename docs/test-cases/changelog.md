@@ -17,6 +17,7 @@
 | 2026-04-25 | [ui-react-island-regression.md](ui-react-island-regression.md) | v1.0 | 90 | 迁移回归修复测试用例：P0 CRITICAL 9 + P1 HIGH 26 + P2 MEDIUM/LOW 24 + 共享组件（Stat/ChartPanel/form-row-mobile）8 + Playwright E2E 12 + 视觉回归 11；P0 闸门强约束 + 老 Jinja baseline 截图归档 | 迁移回归修复技术方案 |
 | 2026-04-25 | [ui-react-island-regression.md](ui-react-island-regression.md) | v1.1 | 94 | 补充：P0 新增 paper-trade 列表页 1 条（TC-RG-P0-3b 默认 session 突出卡 + 工具栏 + 卡 grid）+ 菜单重组 3 条（TC-RG-P0-10~12 桌面 Sidebar 6 组 / active 高亮 / Mobile Tabbar 5+更多） | 迁移回归修复 v1.1 |
 | 2026-04-25 | [ui-react-island-regression.md](ui-react-island-regression.md) | v1.2 | 97 | 补充：P0 新增 Tasks 5 项（TC-RG-P0-13~17 分页/类型 chip/scope tab/9 类 task→落地页跳转/详情操作齐全）；P1 Tasks 用例由 3 → 1（升级合并） | 迁移回归修复 v1.2 |
+| 2026-04-25 | [ui-react-island-regression.md](ui-react-island-regression.md) | v1.3 | 102 | 补充实测 P0 5 项：TC-RG-P0-18 Tasks 空白 bug / P0-19 Paper-trade ticker 详情空白 bug / P0-20 Settings 缺 Gemini+Qwen API key 字段 / P0-21~22 LLMSwitcher 4 状态完整 | 迁移回归修复 v1.3 |
 
 ## 用例总数汇总
 
@@ -33,8 +34,8 @@
 | 统一进度系统测试用例 | 101 |
 | UI React Island 测试用例（v1.0 + v2.0）| 182 |
 | 迁移验证测试用例 | 164 |
-| 迁移回归修复测试用例（v1.0 ~ v1.2）| 97 |
-| **总计** | **1521** |
+| 迁移回归修复测试用例（v1.0 ~ v1.3）| 102 |
+| **总计** | **1526** |
 
 ## 覆盖状态
 

@@ -43,10 +43,11 @@
 | Alerts | 0 | 2 模板 chips + 阈值建议 | 3 | 0 | MEDIUM grid + row 不堆叠 |
 | Reports | 0 | 0 | 1 | 0 | MEDIUM form sm vs 576 不一致 |
 | Backtest | 0 | 3 结果页 + 净值图 + 明细表 | 1 | 0 | MEDIUM 5 字段挤 + 日期 picker |
-| **Paper-trade** | **2** 🚨🚨 权益曲线图缺失 + 列表页完全不存在 | 1 日度 tab | 3 | 0 | LOW |
-| Settings | 0 | 2 调度器 + 数据源卡 | 1 | 0 | MEDIUM provider grid 窄 |
-| **Tasks** | **5** 🚨 历史无分页 / 无类型 + scope 过滤 / 无跳转落地页 / 详情操作不全 | 0 | 2 | 0 | LOW |
-| **总计** | **14** | **18** | **23** | **1** | 6 项移动端独立问题 |
+| **Paper-trade** | **3** 🚨🚨 权益曲线 + 列表页 + ticker 详情空白 bug | 1 日度 tab | 3 | 0 | LOW |
+| **Settings** | **1** 🚨 缺 Gemini + Qwen API key 字段 | 2 调度器 + 数据源卡 | 1 | 0 | MEDIUM provider grid 窄 |
+| **Tasks** | **6** 🚨 历史无分页 / 无类型 + scope 过滤 / 无跳转落地页 / 详情操作不全 / **空白 bug**（API schema 不匹配） | 0 | 2 | 0 | LOW |
+| **Model-Switch UI** | **4** 🚨🚨 整个 Nav 下拉组件 + 4 状态处理（active/缺 key/env 锁定/loading）完全缺失 | 0 | 0 | 0 | — |
+| **总计** | **22** | **18** | **23** | **1** | 6 项移动端独立问题 |
 
 ### 2.2 五大共性根因
 
@@ -64,11 +65,11 @@
 
 | 阶段 | 范围 | 阈值 | 估时 |
 |---|---|---|---|
-| **P0 紧急修复** | 14 CRITICAL（含 paper-trade 列表 + Tasks 历史/过滤/跳转/详情 + Dashboard stat 溢出）+ 菜单重组 | 上线前必完 | ~24h |
+| **P0 紧急修复** | 22 CRITICAL（含 paper-trade 列表+ticker bug + Tasks 5+空白 bug + Settings keys + Model-Switch UI 4 + Dashboard stat）+ 菜单重组 | 上线前必完 | ~28h |
 | **P1 高优先恢复** | 18 HIGH + 移动端 form/grid 标准化（6 处） | 第 1 周内 | ~15h |
 | **P2 完善** | 23 MEDIUM + 1 LOW + 测试覆盖 | 第 2-3 周 | ~14h |
 
-总修复工时 ~53h。
+总修复工时 ~57h。
 
 ### 3.2 移动端规范统一（横切要求）
 
@@ -228,6 +229,13 @@ P0/P1 阶段所有改动必须遵守 [mobile-optimization.md](./mobile-optimizat
   - 卡右上 ⋯ 菜单：重命名 / 删除 / 导出
   - 移动端 ≤575.98px 单列，每张卡内 stat 应用 `--fs-stat` clamp
 
+**P0 追补（实测发现）**：
+- [PT-P0-3] 🚨 **`/paper-trade/<ticker>` 进入后数据空白**（实测 2026-04-25）
+  - 根因：[PaperTradePage.tsx:68](../../stock_trading_system/web/frontend/src/islands/paper-trade/PaperTradePage.tsx) `window.location.pathname.split("/").pop()` 在 URL 末尾有 `/` 时返回空字符串，触发 ticker="" 报错"未指定股票代码"
+  - 修法：改用 `pathname.split("/").filter(Boolean).pop()` 或正则 `/paper-trade\/([^/]+)/.exec(pathname)?.[1]`
+  - API 路由 `/api/paper/tickers/<ticker>` 已正确返回数据，仅前端解析 bug
+  - 验收：`/paper-trade/AAPL` 和 `/paper-trade/AAPL/`（带末尾斜杠）都能正确渲染
+
 **P1**：
 - [PT-P1-1] 日度数据 tab 整个缺失 → 补 stat cards + 权益图 + 日度明细表（9 列）
 
@@ -236,6 +244,15 @@ P0/P1 阶段所有改动必须遵守 [mobile-optimization.md](./mobile-optimizat
 - 日度明细表移动端卡片视图
 
 ### 4.10 Settings
+
+**P0 追补（实测发现）**：
+- [SE-P0-1] 🚨 **API key 字段不全 —— 缺 Qwen + Gemini**（实测 2026-04-25）
+  - 根因：[SettingsPage.tsx:227](../../stock_trading_system/web/frontend/src/islands/settings/SettingsPage.tsx) hardcoded 4 个 key：`["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY", "DASHSCOPE_API_KEY"]`，**缺 `GEMINI_API_KEY`**；并且 `DASHSCOPE_API_KEY` 名字虽对但用户认知应为"Qwen API Key"，UI 标签需改善
+  - 老 Jinja [index.html L1113-1162](../../stock_trading_system/web/templates/index.html) 的 settings-config 是动态遍历 config 字段，因此覆盖完整
+  - 修法：
+    - 简单方案：硬编码列表追加 `GEMINI_API_KEY`，`DASHSCOPE_API_KEY` UI label 改"Qwen API Key (DashScope)"，加帮助提示链
+    - 优雅方案：动态从 GET `/api/settings` 响应（含 `gemini.api_key_masked` / `qwen.api_key_masked`）渲染所有可配 key
+  - 关联现有的 [model-switch.md](./model-switch.md) v1.0 + [multi-tenant.md](./multi-tenant.md) `user_settings.llm_provider`：用户级 key 配置写到自己的 user_settings 而非全局 yaml
 
 **P1**：
 - [SE-P1-1] 定时调度器卡完全缺失 → 补 `<SchedulerStatusCard />`（启动 / 停止 / 刷新 + 状态 + 任务列表）
@@ -292,6 +309,13 @@ P0/P1 阶段所有改动必须遵守 [mobile-optimization.md](./mobile-optimizat
 
 - [T-P0-5] 🚨 **详情页操作按钮齐全**：删除 / 重试 / 取消（仅 running/pending）/ 查看结果（success 时）
 
+- [T-P0-6] 🚨 **任务中心完全空白**（实测 2026-04-25）
+  - 根因：后端 [app.py:1710](../../stock_trading_system/web/app.py) `api_tasks_list()` 返回 `{ items: [...], limit, offset }`；前端 [TasksPage.tsx:67-69](../../stock_trading_system/web/frontend/src/islands/tasks/TasksPage.tsx) fallback 链 `Array.isArray(data) ? data : (data as any).tasks || []`，**没匹配 `items` 字段** → 永远降级到空数组 `[]`
+  - 修法（择一）：
+    - **后端方案（推荐）**：API 改返回 `{ tasks: [...], total, limit, offset }` 符合常用约定
+    - 前端方案：兜底链改为 `(data as any).items || (data as any).tasks || []`
+  - 验收：`/tasks` 显示真实历史任务
+
 **P1**：
 - [T-P1-1] 任务详情 modal vs 页面 → 保留页面（已实装），但加"返回任务列表"按钮（顶部 breadcrumb）
 
@@ -300,6 +324,76 @@ P0/P1 阶段所有改动必须遵守 [mobile-optimization.md](./mobile-optimizat
 - 任务卡片显示 task type icon（分析 / 选股 / 回测 等不同图标）
 - 任务持续时间显示（"已运行 2m 35s"）
 - 任务详情页加 `<ProgressStream>` 实时进度（若已实装则跳过）
+
+## 4.13 Model-Switch UI 完全缺失 🚨🚨
+
+### 4.13.1 现状
+
+[docs/design/model-switch.md](./model-switch.md) v1.0 设计了顶部 Nav 模型下拉切换（Qwen ↔ Gemini）。**后端 100% 已实装**：
+
+- [llm/router.py](../../stock_trading_system/llm/router.py) ✅ 优先级链 env > user_settings > yaml > legacy
+- [app.py L1342-1370](../../stock_trading_system/web/app.py) ✅ 路由已注册：
+  - `GET /api/settings/llm-provider` → `{active, has_qwen_key, has_gemini_key, locked_by_env}`
+  - `POST /api/settings/llm-provider {provider}` → 切换并校验
+- analyzer / nl_parser / universe / screener V3 都已用 `get_active_provider(config, user_id)`
+
+**但前端没建任何 UI 组件**。Sidebar / NavTopbar / AppShell 里 grep 不到 `llm-provider` / `LLMSwitcher` / `model-switch`。
+
+→ **整个用户可见层缺失**，model-switch v1.0 设计文档的"Nav 下拉"未交付。CRITICAL P0。
+
+### 4.13.2 设计规格（参考 [model-switch.md §4.7](./model-switch.md)）
+
+**位置**：桌面 NavTopbar 右侧（搜索框旁）；移动端 → 收进 Sidebar/更多 sheet 顶部
+
+**组件**：`components/shared/LLMSwitcher.tsx`
+
+```tsx
+// 桌面态
+<LLMSwitcher>
+  ┌──────────────────────┐
+  │ 模型: [● Qwen ▾]    │   ← 桌面 nav 右上
+  └──────────────────────┘
+       │ 点开
+       ▼
+  ┌──────────────────────────┐
+  │ ● Qwen (通义千问)  ✓     │
+  │ ○ Gemini                  │
+  │ ─────────────────────    │
+  │ 🔒 当前由环境变量锁定     │   ← 仅 locked_by_env=true 时显示
+  └──────────────────────────┘
+</LLMSwitcher>
+```
+
+**初始化逻辑**：
+1. 挂载时 `apiGet("/api/settings/llm-provider")` 拉状态
+2. 渲染 dropdown：当前 active 标 ✓
+3. 缺 key 的选项灰显禁用（hover 提示"未配置 API key，请去设置页"）
+4. `locked_by_env=true` → 整个下拉禁用 + 显示 🔒 + tooltip "由环境变量锁定，UI 不可改"
+
+**切换逻辑**：
+1. 选中另一项 → `apiPost("/api/settings/llm-provider", {provider: "gemini"})`
+2. 成功 → toast.success("已切换到 Gemini，下次分析生效") + 更新本地 active state
+3. 失败：
+   - 400 `missing_api_key` → toast.error + 引导 "去设置页配置 Gemini API key" 的链接
+   - 409 `locked_by_env` → toast.error "已被环境变量锁定"
+4. 状态变化用乐观更新 + 失败回滚
+
+**用户级覆盖**（multi-tenant 已实装）：
+- alice 选 Qwen / bob 选 Gemini → 各自的 user_settings.llm_provider
+- 不影响全局 yaml；env > user > yaml > legacy 优先级链 [router.py](../../stock_trading_system/llm/router.py) 已处理
+
+### 4.13.3 实施
+
+- [MS-P0-1] 🚨 新建 `components/shared/LLMSwitcher.tsx`（~120 LOC）
+- [MS-P0-2] 🚨 集成到 NavTopbar（桌面）+ 移动 sheet 顶部
+- [MS-P0-3] 🚨 处理 4 种状态：active 切换 / 缺 key 禁用 / env 锁定 / 切换中 loading
+- [MS-P0-4] 错误码映射 toast 文案：missing_api_key / locked_by_env / network
+
+### 4.13.4 测试
+
+参见 [docs/test-cases/model-switch.md](../test-cases/model-switch.md) §7（前端 7 条 TC-MS-E1~E7）已设计；本回归只需补 React 实现，测试用例直接复用。
+
+---
 
 ## 4.12 菜单重组（Sidebar / Mobile Tabbar 信息架构）
 
@@ -496,18 +590,19 @@ Portfolio 持仓表 + 交易记录表、Alerts 规则表、Backtest 交易明细
 
 | Phase | 内容 | 估时 |
 |---|---|---|
-| **R-1** | 共享：升级 Stat 组件应用 `--fs-stat` clamp + 新建 ChartPanel 组件 + form-row-mobile 工具类 + Sidebar 分组重组 + MobileTabbar 5+更多 + 新建 `lib/tasks.ts` 含 `getTaskResultUrl(task)` 路由表 | 5h |
+| **R-1** | 共享：升级 Stat 组件应用 `--fs-stat` clamp + 新建 ChartPanel 组件 + form-row-mobile 工具类 + Sidebar 分组重组 + MobileTabbar 5+更多 + 新建 `lib/tasks.ts::getTaskResultUrl(task)` + **新建 `<LLMSwitcher>` 组件挂 NavTopbar**（Model-Switch UI 整体补齐） | 8h |
 | **R-2** | Portfolio CRITICAL：卖出表单 + 修正成本 modal | 2h |
-| **R-3** | Paper-trade CRITICAL：**新建列表页 island /paper-trade** + 权益曲线 + 日度 tab | 5h |
-| **R-3b** | **Tasks CRITICAL：分页/无限滚动 + 类型 chip-row + scope tab + 整卡跳转结果落地页 + 详情操作完整** | 4h |
+| **R-3** | Paper-trade CRITICAL：**新建列表页 island /paper-trade** + 权益曲线 + 日度 tab + **修复 ticker 详情空白 bug**（pathname.split） | 5h |
+| **R-3b** | **Tasks CRITICAL：API schema 修复（items→tasks）+ 分页/无限滚动 + 类型 chip-row + scope tab + 整卡跳转结果落地页 + 详情操作完整** | 5h |
 | **R-4** | Dashboard CRITICAL：净值图 + 分布饼图 + 移动塌陷 | 2h |
 | **R-5** | Analysis CRITICAL：K 线 + 7-tab 报告 + Pipeline DAG | 5h |
+| **R-5b** | Settings P0：补 GEMINI_API_KEY + QWEN_API_KEY 字段（前端硬编码列表追加 + label 改善） | 1h |
 | **R-6** | HIGH 批次（约 18 项）：history 对比 / portfolio 交易表 / alerts 模板 / backtest 结果 / settings 调度器+数据源 | 15h |
 | **R-7** | MEDIUM + 移动端兜底：所有页 grid `≤575.98px` 单列规范化 + form-row-mobile 套接 + tabs-scrollable + 表格卡片降级 | 11h |
 
-P0 = R-1 ~ R-5（共 ~23h，含菜单重组 + 列表页 + Tasks 改造），P1 = R-6（~15h），P2 = R-7（~11h）。
+P0 = R-1 ~ R-5b（共 ~28h，含菜单重组 + 列表页 + Tasks 改造 + LLMSwitcher + Settings keys），P1 = R-6（~15h），P2 = R-7（~14h）。
 
-**总修复工时 ~53h**。
+**总修复工时 ~57h**。
 
 ## 7. 验证
 
@@ -556,3 +651,4 @@ P0 = R-1 ~ R-5（共 ~23h，含菜单重组 + 列表页 + Tasks 改造），P1 =
 | v1.0 | 2026-04-25 | 初版：合并功能回归 59 项 + 移动端适配 15 项 = 74 项 backlog；按 11 页 × P0/P1/P2 拆解；R-1~R-7 七 Phase 实施计划 ~42h；横切组件升级（Stat / ChartPanel / form-row-mobile / tabs-scrollable / 表格→卡片）；明确"只补不改"约束 |
 | v1.1 | 2026-04-25 | 补充：(1) 升级 paper-trade 列表页（PT-P0-2）从 P1 → P0 CRITICAL，因实测发现 `/paper-trade` 路由不存在，整个入口缺失；(2) 新增 §4.12 菜单重组方案，6 大组（概览/分析/选股/持仓/纸面交易/系统）+ 11 叶子，含 Sidebar 分组组件 + MobileTabbar 5+更多 sheet 设计；(3) 总工时 ~42h → ~49h |
 | v1.2 | 2026-04-25 | 补充：升级 Tasks 4 项从 P1/P2 → P0 CRITICAL（T-P0-1~5）：(1) 历史无分页 → 无限滚动 + offset；(2) 无类型过滤 → 新增类型 chip-row（AI 分析/批量/选股 V3/回测/报告/纸面交易/其他）；(3) 无 scope 过滤 → 加 我的/全部 tab；(4) 无跳转结果落地页 → 新建 `lib/tasks.ts::getTaskResultUrl(task)` 9 类 task → URL 映射表，整卡可点 + 显式 [查看结果 →] 按钮；(5) 详情页操作齐全（删除/重试/取消/查看结果）。总工时 ~49h → ~53h；Tasks CRITICAL 0 → 5 |
+| v1.3 | 2026-04-25 | 补充实测发现的 4 个新 P0：(1) PT-P0-3 paper-trade `<ticker>` 详情空白 bug（pathname.split 末尾斜杠 → 空），(2) T-P0-6 任务中心空白 bug（后端返回 `items` 字段，前端期望 `tasks`，schema 不匹配）；(3) SE-P0-1 设置页缺 GEMINI_API_KEY + QWEN_API_KEY 字段（硬编码列表遗漏）；(4) MS-P0-1~4 整个 Model-Switch UI 缺失（后端 100% 已就绪，前端 0 组件）—— 新增 §4.13 LLMSwitcher 详细规格，挂 NavTopbar 桌面 + 移动 sheet。新增 R-5b Phase（Settings keys 1h）+ R-1 包含 LLMSwitcher（新增 ~3h）；总工时 ~53h → ~57h；CRITICAL 14 → 22 |

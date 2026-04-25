@@ -11,13 +11,13 @@
 
 | 分类 | 用例数 |
 |---|---|
-| P0 CRITICAL（8 + 移动溢出 1 + paper-trade 列表 1 + 菜单重组 3 + Tasks 5 = 18） | 18 |
+| P0 CRITICAL（8 + 移动溢出 1 + paper-trade 列表 1 + 菜单重组 3 + Tasks 6 + 实测 P0 4 = 23） | 23 |
 | P1 HIGH（功能恢复 18 项 + 移动表单/grid 6 项 - Tasks 升级 2） | 24 |
 | P2 MEDIUM/LOW + 视觉对比 | 24 |
 | 横切：Stat / ChartPanel / form-row-mobile | 8 |
 | Playwright E2E（关键流程） | 12 |
 | 视觉回归（4 断点 × 11 页 = 44，每页 1 条计） | 11 |
-| **总计** | **97** |
+| **总计** | **102** |
 
 ---
 
@@ -61,7 +61,7 @@
 - **TC-RG-P0-11**：当前路径对应的 group + item 都激活高亮（左侧 2px 竖条 + 背景色）
 - **TC-RG-P0-12**：移动 Tabbar 5 主项（仪表盘 / 分析 / 选股 / 持仓 / 更多）；点"更多"打开 sheet 显示其他 6 项 4×2 grid
 
-### 1.7 任务中心 5 项（5）
+### 1.7 任务中心 6 项（6）
 
 - **TC-RG-P0-13**：列表加载更多 / 无限滚动正常工作；连续滚动到底加载第 2/3/4 批数据；底部显示 "已加载 N / 共 M"
 - **TC-RG-P0-14**：类型 chip-row 渲染 8 个 chip（全部 / AI 分析 / 批量分析 / 选股 V3 / 回测 / 报告 / 纸面交易 / 其他）；多选生效（选 AI 分析 + 选股 V3 → 同时显示两类）
@@ -76,6 +76,19 @@
   - qwen_fundamentals / qwen_news → `/analysis?ticker=<x>`
   - 其他 → `/tasks/<id>` 兜底
 - **TC-RG-P0-17**：任务详情页操作按钮齐全：删除 / 重试（failed/cancelled）/ 取消（running/pending）/ 查看结果（success）；各按钮调用对应 API 成功
+
+- **TC-RG-P0-18**：任务中心**空白 bug 修复**：`/tasks` 真实显示历史任务（不为空白）；后端 `{items}` schema 与前端对齐 → 渲染 ≥1 行任务
+
+### 1.8 实测追加 P0（4 项）
+
+- **TC-RG-P0-19**：Paper-trade 详情**空白 bug 修复**：访问 `/paper-trade/AAPL` 和 `/paper-trade/AAPL/`（带末尾斜杠）都正确解析 ticker 并渲染数据
+- **TC-RG-P0-20**：Settings 页面包含 **GEMINI_API_KEY** 和 **QWEN_API_KEY (DashScope)** 两个字段；Save 后从 GET `/api/settings` 读回 masked 值正确
+- **TC-RG-P0-21**：NavTopbar 含 `<LLMSwitcher>` 组件：渲染当前 active provider；下拉两选项（Qwen / Gemini），active 标 ✓
+- **TC-RG-P0-22**：LLMSwitcher 4 状态：
+  - 缺 key 选项灰显禁用 + tooltip "未配置 API key"
+  - locked_by_env=true → 整下拉禁用 + 🔒 + tooltip "由环境变量锁定"
+  - 切换中 loading state
+  - 切换失败回滚 + toast.error
 
 ---
 
@@ -282,3 +295,4 @@ npx playwright test tests/regression/legacy/ --update-snapshots
 | v1.0 | 2026-04-25 | 90 | 初版：P0 9 + P1 26 + P2 24 + 共享组件 8 + E2E 12 + 视觉 11；P0 闸门强约束 |
 | v1.1 | 2026-04-25 | 94 | 补充：P0 新增 paper-trade 列表页用例（TC-RG-P0-3b）+ 菜单重组 3 条（TC-RG-P0-10~12，含 Sidebar 6 组渲染 / active 高亮 / Mobile Tabbar 5+更多 sheet） |
 | v1.2 | 2026-04-25 | 97 | 补充：P0 新增 Tasks 5 项（TC-RG-P0-13 分页 / P0-14 类型 chip / P0-15 scope tab / P0-16 跳转结果落地页 9 类映射 / P0-17 详情操作齐全）；P1 Tasks 由 3 → 1（其他 2 升级 P0） |
+| v1.3 | 2026-04-25 | 102 | 补充实测 P0 5 项：TC-RG-P0-18 Tasks 空白 bug（API schema 不匹配）/ P0-19 Paper-trade ticker 详情空白 bug（pathname 末尾斜杠）/ P0-20 Settings 缺 Gemini+Qwen API key 字段 / P0-21~22 LLMSwitcher 4 状态完整（active/缺 key/env 锁定/loading） |
