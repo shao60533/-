@@ -317,8 +317,21 @@ class TaskManager:
         status: str | None = None,
         limit: int = 50,
         offset: int = 0,
+        created_by: int | None = None,
+        scope: str | None = None,
     ) -> list[dict]:
-        return self._store.list(task_type, status, limit, offset)
+        return self._store.list(task_type, status, limit, offset,
+                                created_by=created_by, scope=scope)
+
+    def count(
+        self,
+        task_type: str | None = None,
+        status: str | None = None,
+        created_by: int | None = None,
+        scope: str | None = None,
+    ) -> int:
+        return self._store.count(task_type=task_type, status=status,
+                                 created_by=created_by, scope=scope)
 
     def get_result(self, task_id: str) -> dict | None:
         task = self._store.get(task_id)

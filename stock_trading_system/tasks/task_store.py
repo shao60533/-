@@ -174,12 +174,18 @@ class TaskStore:
             cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
             return cur.rowcount > 0
 
+    # Task types whose results are shared (any logged-in user can see)
+    SHARED_TYPES = frozenset(["analysis", "screen", "screen_v2", "screen_v3", "backtest", "report"])
+    PRIVATE_TYPES = frozenset(["portfolio_batch", "personal_advice", "alerts", "paper_trade", "paper_backfill"])
+
     def list(
         self,
         task_type: str | None = None,
         status: str | None = None,
         limit: int = 50,
         offset: int = 0,
+        created_by: int | None = None,
+        scope: str | None = None,
     ) -> list[dict]:
         clauses: list[str] = []
         params: list[Any] = []
@@ -189,6 +195,15 @@ class TaskStore:
         if status:
             clauses.append("status = ?")
             params.append(status)
+        # Scope filtering
+        if scope == "mine" and created_by is not None:
+            clauses.append("created_by = ?")
+            params.append(str(created_by))
+        elif scope == "shared_research":
+            placeholders = ",".join("?" * len(self.SHARED_TYPES))
+            clauses.append(f"type IN ({placeholders})")
+            params.extend(sorted(self.SHARED_TYPES))
+        # scope == "all" → no filter (admin only, checked in web layer)
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         params.extend([int(limit), int(offset)])
         with self._conn() as conn:
@@ -198,6 +213,33 @@ class TaskStore:
                 params,
             ).fetchall()
             return [dict(r) for r in rows]
+
+    def count(
+        self,
+        task_type: str | None = None,
+        status: str | None = None,
+        created_by: int | None = None,
+        scope: str | None = None,
+    ) -> int:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if task_type:
+            clauses.append("type = ?")
+            params.append(task_type)
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        if scope == "mine" and created_by is not None:
+            clauses.append("created_by = ?")
+            params.append(str(created_by))
+        elif scope == "shared_research":
+            placeholders = ",".join("?" * len(self.SHARED_TYPES))
+            clauses.append(f"type IN ({placeholders})")
+            params.extend(sorted(self.SHARED_TYPES))
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        with self._conn() as conn:
+            row = conn.execute(f"SELECT COUNT(*) FROM tasks {where}", params).fetchone()
+            return row[0] if row else 0
 
     # ── Idempotency ──────────────────────────────────────────────────────
 
