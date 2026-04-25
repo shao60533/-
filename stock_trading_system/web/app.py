@@ -54,7 +54,7 @@ def _get_data_manager():
     global _data_manager
     if _data_manager is None:
         from stock_trading_system.data.data_manager import DataManager
-        _data_manager = DataManager(get_config())
+        _data_manager = DataManager(get_config(), cache=_get_local_cache())
     return _data_manager
 
 

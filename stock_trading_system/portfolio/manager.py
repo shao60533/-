@@ -113,7 +113,16 @@ class PortfolioManager:
         """Get all positions with real-time price and P&L.
 
         Fetches prices concurrently to avoid serial network delays.
+        Uses Flask request-scoped cache (flask.g) to avoid duplicate
+        fetches within a single HTTP request (dashboard calls this twice).
         """
+        try:
+            from flask import g, has_request_context
+            if has_request_context() and hasattr(g, "_holdings_cache"):
+                return g._holdings_cache
+        except ImportError:
+            pass
+
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
         positions = self._db.get_all_positions()
@@ -153,6 +162,13 @@ class PortfolioManager:
                 "pnl_pct": pnl_pct,
                 "added_date": pos.added_date,
             })
+
+        try:
+            from flask import g, has_request_context
+            if has_request_context():
+                g._holdings_cache = holdings
+        except ImportError:
+            pass
 
         return holdings
 

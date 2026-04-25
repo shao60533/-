@@ -21,6 +21,7 @@ R-1 ~ R-7 commits 已落地（6e583b4..5370863）。审计 22 P0 项实际状态
 | ❌ MISSING（v1.5 实测新增）| **6** | **HE-P0-1 History 跳分析详情 404** · **SV3-P0-1 Screener V3 结果页未建** · **A-P0-4 TradingView K线 widget**（现在 ECharts）· **A-P0-5 新闻+基本面侧卡** · **B-P0-1 Backtest 结果详情页**（只有表单）· **D-P0-5 /backtest-v2 死链** |
 | ⚠ R-6 未真实落地 | 4 | HE-P1-1/2 对比+timeline · AL-P1-2 阈值建议 · SE-P1-1/2 调度器+数据源 · R-P2-12 reports 导出（暂不阻塞 P0 闸门）|
 | ⚠ 性能问题（v1.6 实测）| 1 | **PERF-P0-1 Dashboard / Portfolio 加载慢**（每次访问 = 2 次全量价格拉取，~3s）|
+| ❌ MISSING（v1.7 实测新增）| 2 | **PT-P0-4 paper-trade ticker 详情页空白**（PT-P0-3 fix 未真实落地，pathname.split 仍是老代码）· **A-P0-7 分析提交后跳 /tasks 不是 /analysis 详情**（用户看不到 DAG 流式进度 + 7-tab 报告流入）|
 
 **T-P0-6 任务中心空白 bug 已修复**（实测 2026-04-25）：
 - ✅ 后端 [app.py:1713-1719](../../stock_trading_system/web/app.py) 返回 `{tasks, items, total, limit, offset}` 双字段向后兼容
@@ -646,6 +647,83 @@ R-1 ~ R-7 落地后实测，**v1.4 已知 6 项 + v1.5 新发现 6 项 = 共 12 
 #### v1.6 新增（~1.5h）：
 - **R-perf 后端价格层缓存 + request-scoped memoize**（PERF-P0-1，~1.5h）
 
+#### v1.7 新增（~1.5h）：
+- **R-3.1 Paper-trade ticker 空白真修**（PT-P0-4，~30min）
+- **R-5.4 分析提交后留在 /analysis 流式显示**（A-P0-7，~1h）
+
+##### R-3.1 · Paper-trade ticker 空白真修
+
+实测 [PaperTradePage.tsx:68](../../stock_trading_system/web/frontend/src/islands/paper-trade/PaperTradePage.tsx)：
+```ts
+const ticker = window.location.pathname.split("/").pop()?.toUpperCase() || ""
+```
+**仍是老代码**！v1.3 PT-P0-3 标"DONE"是误判，前一轮 audit 当时没真验证。需要真改。
+
+修法：
+```ts
+const ticker = window.location.pathname
+  .replace(/\/+$/, "")           // 去末尾斜杠
+  .split("/")
+  .filter(Boolean)
+  .pop()
+  ?.toUpperCase() || ""
+```
+
+或更稳健用 URL match：
+```ts
+const m = window.location.pathname.match(/\/paper-trade\/([^/?#]+)/)
+const ticker = m?.[1]?.toUpperCase() || ""
+```
+
+**额外**：检查"完全空白"是否还有别的根因——
+1. `LoadingSkeleton` 实现是否真渲染（不是返回 null）：现在是 `<LoadingSkeleton />`，确认组件存在；如果 import 路径有问题会渲染空
+2. API `/api/paper/tickers/META` 真实响应：如果 META 没有 paper session，应该返回 `{ session: null }` 而非 500
+3. 加 React error boundary：`<ErrorBoundary fallback={<Alert>页面渲染异常</Alert>}>` 包裹整个 PaperTradePage 内容，避免 JS 抛错时整页空白
+
+验收：
+- `/paper-trade/META` (无 session) 显示 "未找到 META 的纸面交易会话" Alert
+- `/paper-trade/NVDA/`（有末尾斜杠）也正确解析 NVDA
+- JS 抛错也有可见错误，不再纯空白
+
+##### R-5.4 · 分析提交后留在 /analysis 流式显示
+
+实测 [AnalysisPage.tsx:85](../../stock_trading_system/web/frontend/src/islands/analysis/AnalysisPage.tsx)：
+```ts
+if (res.task_id) setTimeout(() => { window.location.href = `/tasks/${res.task_id}` }, 800)
+```
+提交后 800ms 跳 `/tasks/<id>`——**用户看不到分析专属 UI**（Pipeline DAG / 7-tab 流入），跳到通用任务详情页只能看进度条和事件流，体验严重退化。
+
+老 Jinja 行为：提交后留在 `/analysis`，inline 显示 DAG + 阶段流入 + 7 tab 渲染。
+
+修法（需配合 R-5.1 Pipeline DAG 移到详情视图）：
+1. 提交成功后**不跳 `/tasks/<id>`**，改跳 `/analysis/<task_id>`（或 `/analysis?task_id=<id>`）
+2. AnalysisDetailView 顶层判断：
+   - 若有 `task_id`（任务运行中）→ 显示 `<PipelineDAG taskId={task_id}>` + 7 tab 占位 skeleton
+   - 任务完成（task_completed event）→ 取 `result_ref` 解析为 analysis_id → 重定向 `/analysis/<analysis_id>` 或就地把 7 tab 填满（取分析数据）
+   - 若是历史 detailId → 直接显示完整详情
+3. 保留 `[查看任务详情]` 链接给想看通用进度的用户
+
+实施细节：
+- AnalysisPage 顶层路径解析新增中间态：
+  ```ts
+  const path = window.location.pathname  // /analysis/<id>
+  const id = path.startsWith("/analysis/") ? path.split("/")[2] : null
+  // 判断 id 是否是 task_id（UUID）还是 analysis_id（int）
+  // 简单规则：长度 > 10 视为 task_id；纯数字视为 analysis_id
+  const idType = id && id.length > 10 ? 'task' : 'analysis'
+  ```
+- 表单 handleSubmit 改：
+  ```ts
+  if (res.task_id) window.location.href = `/analysis/${res.task_id}`
+  ```
+- 后端 Flask 加路由 `@app.route("/analysis/<id>")` 兼容 task_id（已在 R-1.2 改成无 int 限定）
+
+验收：
+- 点 [开始分析] → 跳 `/analysis/<task_id>` 立即显示 DAG
+- 阶段逐个变绿（market_agent → ... → trader）
+- 完成后自动切 7-tab 报告（或重定向到 `/analysis/<analysis_id>`）
+- 移动端 DAG 纵向流
+
 ##### R-perf · 性能优化详细规格
 
 **根因**（实测 2026-04-25 晚）：
@@ -829,3 +907,4 @@ python -m stock_trading_system.validation.sign_off \
 | v1.4.1 | 2026-04-25 | 修订：T-P0-6 实测确认前后端均已对齐（app.py:1713-1719 返回双字段 + TasksPage.tsx:70 fallback 已含 items），实际状态由 ⚠ PARTIAL 升级 ✅ DONE，DONE 总数 18 → 19；§6.1.4 R-3b.1 标 NO-OP，余下排查只需查 DB 数据/过滤态/scope 默认值（运行时问题，不在修复 backlog 内） |
 | v1.5 | 2026-04-25 | 实测发现 R-1~R-7 还有 6 项 P0 缺失：(1) HE-P0-1 History → analysis 详情 URL 损坏（int vs string id 不匹配 → 404）；(2) SV3-P0-1 Screener V3 结果页**完全没建**（ScreenerV3Page 仅表单）；(3) A-P0-3a Pipeline DAG 位置错误（仅表单视图，详情视图无）；(4) A-P0-4 K线应用 TradingView widget 而非 ECharts；(5) A-P0-5 缺新闻+基本面 side cards；(6) B-P0-1 Backtest 结果详情页未建；(7) D-P0-5 dashboard /backtest-v2 死链。R-6 实际未做的 HIGH 项：HE-P1-1/2 对比+timeline / AL-P1-2 阈值建议 / SE-P1-1/2 调度器+数据源 / R-P2-12 导出（暂不阻塞 P0）。新增 §6.1 v1.5 收尾任务 ~7h；总剩余工作 5h → 12h |
 | v1.6 | 2026-04-25 | 性能问题：实测 Dashboard / Portfolio 加载慢（~3s），根因后端 `get_pnl/get_holdings/get_allocation` 嵌套调用 → **单次访问拉 2 次全量实时价格**。新增 R-perf（PERF-P0-1，~1.5h）：Layer A request-scoped memoize（PortfolioManager.get_holdings 加 Flask g 缓存，~30min，砍半）+ Layer B 价格层 30s TTL LocalCache（~1h，复访 < 200ms）。总剩余工作 12h → 13.5h。同时 doc-first 工作流约定固化：以后所有修复必须先写 doc + changelog 再出 Code 指令 |
+| v1.7 | 2026-04-25 | 实测两个 P0：(1) **PT-P0-4** Paper-trade ticker 详情完全空白（实测发现 PaperTradePage.tsx:68 `pathname.split("/").pop()` 仍是老代码，v1.3 PT-P0-3 标 DONE 是 audit 误判，需真修：用 regex 或 filter(Boolean) + 加 React ErrorBoundary 兜底）；(2) **A-P0-7** AI 分析提交后跳 `/tasks/<id>` 不是 `/analysis/<id>`（用户看不到 Pipeline DAG 实时 + 7-tab 流入），需配合 R-5.1 一起实现"提交→跳 /analysis/<task_id>→显示 DAG→完成后切 7-tab"完整流程。新增 R-3.1（30min）+ R-5.4（1h）；总剩余 13.5h → 15h |

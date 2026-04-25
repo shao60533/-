@@ -23,8 +23,9 @@ class DataManager:
     # Consecutive failure threshold — skip provider after N failures
     _SKIP_THRESHOLD = 1
 
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, cache=None):
         self._config = config
+        self._cache = cache  # Optional LocalCache for price TTL
         self._ib = IBProvider(config)
         self._polygon = PolygonProvider(config)
         self._akshare = AkShareProvider()
@@ -55,9 +56,25 @@ class DataManager:
 
         Providers that fail consecutively are auto-skipped to avoid
         slow timeout cascades (e.g. Polygon 429 rate limit).
+
+        Uses LocalCache (price_quote, 60s TTL) to avoid redundant
+        network calls within a short window.
         """
         market = market or detect_market(ticker)
 
+        # Check cache first (60s TTL via LocalCache.price_quote)
+        if self._cache is not None:
+            cached = self._cache.get_price(ticker)
+            if cached is not None:
+                return cached
+
+        result = self._fetch_price_uncached(ticker, market)
+        if result is not None and self._cache is not None:
+            self._cache.set_price(ticker, result)
+        return result
+
+    def _fetch_price_uncached(self, ticker: str, market: str) -> dict | None:
+        """Internal: fetch price from providers without cache."""
         if market == "cn":
             result = self._akshare.get_stock_price(ticker)
             if result:

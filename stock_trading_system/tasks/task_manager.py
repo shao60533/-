@@ -208,8 +208,10 @@ class TaskManager:
             if cancel_event.is_set():
                 raise _CancelledError("Cancelled before execution")
             # Inject task_id so workers can persist it in result tables (read-only key)
+            # Inject cancel_event so workers can implement cooperative cancellation
             params_with_id = dict(params)
             params_with_id["__task_id__"] = task_id
+            params_with_id["__cancel_event__"] = cancel_event
             result = worker(params_with_id, progress_cb) or {}
             # Persist the result to its business table.
             # Workers may pre-persist and return a result_ref of the form
