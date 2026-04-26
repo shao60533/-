@@ -348,6 +348,9 @@ def create_app(config_path=None):
     _invite_mgr = InviteCodeManager(db_path)
     _multi_tenant_ready = ensure_multi_tenant_ready(db_path)
 
+    from stock_trading_system.tasks.event_emitter import ensure_task_events_table
+    ensure_task_events_table(db_path)
+
     # Public paths that don't require authentication
     PUBLIC_PREFIXES = ("/static/", "/login", "/register", "/reset",
                        "/api/auth/login", "/api/auth/register", "/api/auth/reset",
