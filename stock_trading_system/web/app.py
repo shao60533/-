@@ -1134,6 +1134,70 @@ def create_app(config_path=None):
 
     # ── Chart / Fundamentals / News ─────────────────────────────────────
 
+    def _days_to_period(days: int) -> str:
+        """Map a day window to the closest yfinance/Schwab `period` string."""
+        if days <= 7:
+            return "5d"
+        if days <= 31:
+            return "1mo"
+        if days <= 95:
+            return "3mo"
+        if days <= 190:
+            return "6mo"
+        if days <= 380:
+            return "1y"
+        if days <= 760:
+            return "2y"
+        return "5y"
+
+    def _ohlcv_rows(df) -> list[dict]:
+        df = df.copy()
+        df.columns = [str(c).lower() for c in df.columns]
+        rows: list[dict] = []
+        for idx, row in df.iterrows():
+            try:
+                date_str = idx.strftime("%Y-%m-%d") if hasattr(idx, "strftime") else str(idx)
+            except Exception:
+                date_str = str(idx)
+            rows.append({
+                "date": date_str,
+                "open": float(row.get("open", 0) or 0),
+                "high": float(row.get("high", 0) or 0),
+                "low": float(row.get("low", 0) or 0),
+                "close": float(row.get("close", 0) or 0),
+                "volume": float(row.get("volume", 0) or 0),
+            })
+        return rows
+
+    @app.route("/api/quote/history")
+    def api_quote_history():
+        """OHLCV bars for K-line rendering (TVChart / lightweight-charts).
+
+        Query params:
+            ticker: required, stock symbol
+            days:   rolling window size (default 90); mapped to provider period
+
+        Returns ``{ticker, days, bars: [{date,open,high,low,close,volume}, ...]}``.
+        Empty ``bars`` (rather than 404) lets the frontend show the chart
+        skeleton without tripping its error path.
+        """
+        ticker = (request.args.get("ticker") or "").strip().upper()
+        if not ticker:
+            return jsonify({"error": "ticker required"}), 400
+        try:
+            days = int(request.args.get("days", 90))
+        except (TypeError, ValueError):
+            days = 90
+        days = max(1, min(days, 1825))  # clamp to ~5y
+        period = _days_to_period(days)
+        try:
+            df = _get_data_manager().get_history(ticker, period=period, interval="1d")
+        except Exception as e:  # noqa: BLE001
+            logger.warning("/api/quote/history failed for %s: %s", ticker, e)
+            return jsonify({"ticker": ticker, "days": days, "bars": [], "error": str(e)}), 200
+        bars = _ohlcv_rows(df) if (df is not None and len(df) > 0) else []
+        return jsonify({"ticker": ticker, "days": days, "bars": bars})
+
     @app.route("/api/chart/<ticker>")
     def api_chart(ticker):
         """Return OHLCV data for K-line rendering.

@@ -261,8 +261,25 @@ function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
   const tabsRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    apiGet<{ data: OHLCVRow[] }>(`/api/chart/${detail.ticker}?period=3mo&interval=1d`)
-      .then(r => setKlineData(r.data || []))
+    if (!detail.ticker) return
+    // Primary: /api/quote/history (days-based, dedicated for chart rendering).
+    // Fallback: /api/chart/{ticker} (period-based, predates the days API).
+    apiGet<{ bars?: OHLCVRow[]; data?: OHLCVRow[] }>(
+      `/api/quote/history?ticker=${detail.ticker}&days=90`,
+    )
+      .then(r => {
+        const bars = r.bars ?? []
+        if (bars.length > 0) {
+          setKlineData(bars)
+          return null
+        }
+        return apiGet<{ data: OHLCVRow[] }>(
+          `/api/chart/${detail.ticker}?period=3mo&interval=1d`,
+        )
+      })
+      .then(r => {
+        if (r && Array.isArray(r.data) && r.data.length > 0) setKlineData(r.data)
+      })
       .catch(() => {})
   }, [detail.ticker])
 
