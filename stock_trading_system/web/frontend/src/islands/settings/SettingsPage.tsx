@@ -31,11 +31,8 @@ interface AlertSettings {
 }
 
 const LLM_PROVIDERS = [
-  { value: "openai", label: "OpenAI" },
-  { value: "anthropic", label: "Anthropic" },
-  { value: "qwen", label: "Qwen / Alibaba" },
-  { value: "deepseek", label: "DeepSeek" },
-  { value: "local", label: "Local Model" },
+  { value: "qwen", label: "Qwen (通义千问)" },
+  { value: "gemini", label: "Gemini" },
 ] as const
 
 export function SettingsPage() {

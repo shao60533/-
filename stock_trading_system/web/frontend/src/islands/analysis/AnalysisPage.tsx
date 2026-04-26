@@ -1,5 +1,5 @@
-import { useEffect, useState, useRef } from "react"
-import { Sparkles, Send, ArrowLeft, Clock, Newspaper, BarChart3, Scale } from "lucide-react"
+import { useEffect, useState, useRef, useCallback } from "react"
+import { Sparkles, Send, ArrowLeft, Clock, Newspaper, BarChart3, Scale, ExternalLink } from "lucide-react"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -44,6 +44,11 @@ function getIdFromUrl(): string | null {
   return match?.[1] ?? null
 }
 
+/** UUID-like = task ID (running); pure digits = analysis_history ID (complete) */
+function isTaskId(id: string): boolean {
+  return id.length > 10 && /[a-f-]/.test(id)
+}
+
 const REPORT_TABS = [
   { key: "summary", label: "概览" },
   { key: "Market", label: "技术面" },
@@ -55,16 +60,25 @@ const REPORT_TABS = [
 ] as const
 
 export function AnalysisPage() {
-  const [detailId] = useState<string | null>(getIdFromUrl)
+  const [urlId] = useState<string | null>(getIdFromUrl)
   const [detail, setDetail] = useState<AnalysisDetail | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  // Running state: URL has a task UUID
+  const [runningTaskId, setRunningTaskId] = useState<string | null>(
+    urlId && isTaskId(urlId) ? urlId : null
+  )
+
+  // Completed detail ID (numeric)
+  const detailId = urlId && !isTaskId(urlId) ? urlId : null
+
+  // Form state
   const [ticker, setTicker] = useState("")
   const [date, setDate] = useState(new Date().toISOString().slice(0, 10))
   const [submitting, setSubmitting] = useState(false)
-  const [submitResult, setSubmitResult] = useState<TaskSubmitResult | null>(null)
 
+  // Load completed analysis
   useEffect(() => {
     if (!detailId) return
     setLoading(true); setError(null)
@@ -76,18 +90,71 @@ export function AnalysisPage() {
 
   const handleSubmit = async () => {
     if (!ticker.trim()) return
-    setSubmitting(true); setError(null); setSubmitResult(null)
+    setSubmitting(true); setError(null)
     try {
       const res = await apiPost<TaskSubmitResult>("/api/tasks/submit", {
         type: "analysis", params: { ticker: ticker.toUpperCase(), date },
       })
-      setSubmitResult(res)
-      if (res.task_id) setTimeout(() => { window.location.href = `/tasks/${res.task_id}` }, 800)
+      if (res.task_id) {
+        window.location.href = `/analysis/${res.task_id}`
+      }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "提交失败")
     } finally { setSubmitting(false) }
   }
 
+  const onRunningComplete = useCallback((analysisId: string) => {
+    window.history.replaceState(null, "", `/analysis/${analysisId}`)
+    setRunningTaskId(null)
+    setLoading(true)
+    apiGet<AnalysisDetail>(`/api/history/${analysisId}`)
+      .then(setDetail)
+      .catch(err => setError(err.message ?? "Failed to load"))
+      .finally(() => setLoading(false))
+  }, [])
+
+  // ── Running state: show PipelineDAG ─────────────────────────
+  if (runningTaskId) {
+    return (
+      <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-6">
+        <div className="flex items-center gap-3">
+          <Button variant="ghost" size="sm" onClick={() => window.location.href = "/analysis"}>
+            <ArrowLeft className="h-4 w-4" />
+          </Button>
+          <h1 className="text-xl font-bold">分析运行中...</h1>
+          <Badge variant="default">运行中</Badge>
+        </div>
+        <PipelineDAG taskId={runningTaskId} onAllDone={() => {
+          // Give backend a moment to save result_ref, then try to find the analysis
+          setTimeout(() => {
+            apiGet<{ result_ref?: string }>(`/api/tasks/${runningTaskId}`)
+              .then(t => {
+                const ref = t.result_ref || ""
+                const m = ref.match(/(\d+)/)
+                if (m) onRunningComplete(m[1])
+                else window.location.href = `/tasks/${runningTaskId}`
+              })
+              .catch(() => window.location.href = `/tasks/${runningTaskId}`)
+          }, 1500)
+        }} />
+        <Card>
+          <CardContent className="pt-6 space-y-4">
+            <div className="flex gap-2 border-b pb-2">
+              {REPORT_TABS.map(t => <Skeleton key={t.key} className="h-6 w-16" />)}
+            </div>
+            <Skeleton className="h-40" />
+          </CardContent>
+        </Card>
+        <div className="text-center">
+          <a href={`/tasks/${runningTaskId}`} className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1">
+            <ExternalLink className="h-3 w-3" /> 查看任务详情
+          </a>
+        </div>
+      </div>
+    )
+  }
+
+  // ── Completed detail ────────────────────────────────────────
   if (detailId && loading) return (
     <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-4">
       <Skeleton className="h-8 w-48" /><Skeleton className="h-6 w-32" /><Skeleton className="h-64" />
@@ -105,7 +172,7 @@ export function AnalysisPage() {
 
   if (detailId && detail) return <AnalysisDetailView detail={detail} />
 
-  // Submit form
+  // ── Submit form ─────────────────────────────────────────────
   return (
     <div className="p-4 md:p-6 max-w-4xl mx-auto space-y-6">
       <div className="flex items-center gap-3">
@@ -129,15 +196,6 @@ export function AnalysisPage() {
             </Button>
           </div>
           {error && <Alert variant="destructive" className="mt-4"><AlertTitle>提交失败</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}
-          {submitResult && (
-            <Alert variant="success" className="mt-4">
-              <AlertTitle>任务已提交</AlertTitle>
-              <AlertDescription>
-                任务 ID: <code className="font-mono">{submitResult.task_id}</code>
-                <a href={`/tasks/${submitResult.task_id}`} className="ml-2 text-[var(--color-accent-blue)] hover:underline">查看进度</a>
-              </AlertDescription>
-            </Alert>
-          )}
         </CardContent>
       </Card>
     </div>

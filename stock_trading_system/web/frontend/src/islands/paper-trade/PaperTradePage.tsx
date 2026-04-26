@@ -65,7 +65,8 @@ const STATUS_ICONS: Record<string, React.ReactNode> = {
 }
 
 export function PaperTradePage() {
-  const ticker = window.location.pathname.split("/").pop()?.toUpperCase() || ""
+  const m = window.location.pathname.match(/\/paper-trade\/([^/?#]+)/)
+  const ticker = m?.[1]?.toUpperCase() || ""
   const [data, setData] = useState<PaperPayload | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")

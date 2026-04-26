@@ -23,6 +23,7 @@ R-1 ~ R-7 commits 已落地（6e583b4..5370863）。审计 22 P0 项实际状态
 | ⚠ 性能问题（v1.6 实测）| 1 | **PERF-P0-1 Dashboard / Portfolio 加载慢**（每次访问 = 2 次全量价格拉取，~3s）|
 | ❌ MISSING（v1.7 实测新增）| 2 | **PT-P0-4 paper-trade ticker 详情页空白**（PT-P0-3 fix 未真实落地，pathname.split 仍是老代码）· **A-P0-7 分析提交后跳 /tasks 不是 /analysis 详情**（用户看不到 DAG 流式进度 + 7-tab 报告流入）|
 | ❕ 功能补强（v1.8 新增）| 2 | **D-FEAT-1 仪表盘净值曲线自动回溯**（从最早 snapshot 数据起到今天每日，而非固定 30 天）· **P-FEAT-1 持仓表加盈亏绝对值列**（除百分比外补 PnL 美元值） |
+| ❌ MISSING（v1.9 实测新增）| 1 | **A-P0-8 AI 分析运行中态完全空白**（点开始分析后页面无内容；应该立即显示 K线/新闻/基本面 + Pipeline DAG 实时进度 + 7-tab 占位 skeleton，agent 完成后逐个填充）|
 
 **T-P0-6 任务中心空白 bug 已修复**（实测 2026-04-25）：
 - ✅ 后端 [app.py:1713-1719](../../stock_trading_system/web/app.py) 返回 `{tasks, items, total, limit, offset}` 双字段向后兼容
@@ -844,6 +845,127 @@ if (res.task_id) setTimeout(() => { window.location.href = `/tasks/${res.task_id
 - 长数字（$200,466.40）应用 num-responsive 不溢出
 - 总值卡 "总盈亏" 同步用绝对 $ 显示
 
+#### v1.9 新增（~3h）：
+
+##### A-P0-8 · AI 分析运行中态完整布局（~3h，强化 A-P0-7 + A-P0-3a + A-P0-5 一起做）
+
+**问题**（实测 2026-04-26）：点 [开始分析] 后页面只显示 "任务已提交 任务 ID: ..."，**整页空白**。用户期望看到：
+1. 个股 K 线（即时可见，独立于 AI 分析）
+2. 最近新闻（即时可见）
+3. 基本面指标（即时可见）
+4. AI 分析 Pipeline DAG 实时进度
+5. 7-tab 报告占位 skeleton（agent 完成后逐个填充）
+
+**核心理念**：运行中态本身是个有用的 dashboard，K线/新闻/基本面是 ticker 的"客观数据"——独立于 AI 分析，提交后**立即可拉**。Pipeline DAG 单独负责显示 AI 推理进度。这样用户提交分析后**立刻有内容看**，不用空等 3-5 分钟。
+
+**实施**：
+
+A. AnalysisPage 路径解析升级（与 R-5.4 合并）：
+   - `/analysis` → 表单视图
+   - `/analysis/<id>`（id 长度 > 10 视为 task_id UUID）→ **运行中态**（本节重点）
+   - `/analysis/<id>`（纯数字 analysis_id）→ 完成态（详情视图）
+
+B. handleSubmit 改：
+   原: `window.location.href = '/tasks/' + task_id`
+   改: `window.location.href = '/analysis/' + task_id`
+
+C. 运行中态 `<AnalysisRunningView taskId={task_id} ticker={ticker} date={date}>` 布局（桌面）：
+
+```
+┌─ Header ──────────────────────────────────────────────────┐
+│ {ticker} 分析中  · {date} · 模型: {provider}              │
+│                                          [查看任务详情链接] │
+└────────────────────────────────────────────────────────────┘
+
+┌─ 主图区 ──────────────────────────────────────────────────┐
+│ K 线图（TVChart 或 ECharts，独立拉 /api/quote/history）   │
+│ 高度 ~360px                                                 │
+└────────────────────────────────────────────────────────────┘
+
+┌─ Pipeline DAG ────────────────────────────────────────────┐
+│ market_agent → sentiment → news → fundamentals →           │
+│   bull → bear → judge → risk → trader                      │
+│ 节点状态：pending(灰) / running(蓝脉冲) / done(绿✓) / failed(红×) │
+│ 订阅 subscribeTaskStream 接 agent_stage_done 事件           │
+└────────────────────────────────────────────────────────────┘
+
+┌─ 三列侧卡（桌面 grid-cols-3，≤575.98px 单列）────────────┐
+│ 新闻 quick   │ 基本面 quick │ 多空比快览（占位）           │
+│ 5 条最新新闻  │ PE/ROE/D/E   │ 等 judge 完成              │
+│ + 来源 + 时间 │ 关键 5 指标   │ → 显示 bull/bear count       │
+│ /api/news/<ticker> │ /api/fundamentals/<ticker> │             │
+└──────────────┴──────────────┴──────────────────────────────┘
+
+┌─ 7 Tab 报告占位（Skeleton 逐个填充）──────────────────────┐
+│ [技术面] [基本面] [情绪] [新闻] [多空辩论] [风险] [决策]   │
+│                                                              │
+│ 当前 tab 内容：                                              │
+│   pending → "等待 market_agent 完成..."                     │
+│   running → spinner + "市场分析中（已耗时 12s）"            │
+│   done    → 渲染对应 markdown 内容（react-markdown）        │
+│                                                              │
+│ 监听规则：每个 agent_stage_done 事件 envelope.payload.stage │
+│   = 'market' / 'sentiment' / 'news' / ... 对应填充           │
+└────────────────────────────────────────────────────────────┘
+```
+
+D. 数据获取（运行中态首次挂载并发拉，独立于任务状态）：
+```ts
+useEffect(() => {
+  Promise.all([
+    apiGet(`/api/quote/history?ticker=${ticker}&days=180`).catch(() => null),
+    apiGet(`/api/news/${ticker}?limit=5`).catch(() => []),
+    apiGet(`/api/fundamentals/${ticker}`).catch(() => null),
+  ]).then(([ohlc, news, fund]) => { /* setState */ })
+}, [ticker])
+```
+
+E. SocketIO 订阅：
+```ts
+useEffect(() => {
+  const sub = subscribeTaskStream({
+    taskIds: [taskId],
+    onEvent: (env) => {
+      if (env.event === 'agent_stage_done') {
+        const { stage, content } = env.payload
+        // stage = 'market' / 'sentiment' / ...
+        setReports(prev => ({ ...prev, [stage]: content }))
+        setDagState(prev => ({ ...prev, [stage]: 'done' }))
+      } else if (env.event === 'task_completed') {
+        const m = env.payload.result_ref?.match(/analysis_history:(\d+)/)
+        if (m) {
+          window.history.replaceState(null, '', `/analysis/${m[1]}`)
+          // 切换到完成态视图
+          setMode('completed'); setAnalysisId(parseInt(m[1]))
+        }
+      }
+    }
+  })
+  return () => sub.destroy()
+}, [taskId])
+```
+
+F. 移动端 ≤575.98px 重排：
+   - K 线高度降到 240px
+   - 三侧卡变垂直堆叠
+   - DAG 改为纵向流（一条竖线 + 节点）
+   - 7 tabs 套 tabs-scrollable 横滑
+
+**验收**：
+- 点 [开始分析] 立即跳 `/analysis/<task_id>` 页面**有完整内容**（K线 + 新闻 + 基本面 + DAG + 7-tab 占位）
+- 不再"任务已提交"白屏
+- 第 0 秒：K线/新闻/基本面已渲染（数据 < 1s 拉到）
+- 第 N 秒：DAG 节点逐个变绿，对应 tab 内容流入
+- 完成后：URL 切到 `/analysis/<analysis_id>`，视图变为完成态详情视图
+- 移动端三侧卡垂直堆叠，DAG 纵向流
+
+**复用**：
+- `<TVChart>` 来自 R-5.3
+- `<PipelineDAG>` 来自 R-5.1（移到运行中态）
+- 新闻/基本面 quick card 来自 R-5.2
+
+A-P0-8 实质上把 R-5.1 / R-5.2 / R-5.3 / R-5.4 合并成一个完整的"运行中 dashboard"页，工作量已包含在前面那些子任务里，这里只补**布局组合 + 三个独立数据 fetch + DAG 事件 → tab 填充的桥接逻辑**（~3h）。
+
 ---
 
 ### 6.2 R-1.x 完成后
@@ -911,3 +1033,4 @@ python -m stock_trading_system.validation.sign_off \
 | v1.6 | 2026-04-25 | 性能问题：实测 Dashboard / Portfolio 加载慢（~3s），根因后端 `get_pnl/get_holdings/get_allocation` 嵌套调用 → **单次访问拉 2 次全量实时价格**。新增 R-perf（PERF-P0-1，~1.5h）：Layer A request-scoped memoize（PortfolioManager.get_holdings 加 Flask g 缓存，~30min，砍半）+ Layer B 价格层 30s TTL LocalCache（~1h，复访 < 200ms）。总剩余工作 12h → 13.5h。同时 doc-first 工作流约定固化：以后所有修复必须先写 doc + changelog 再出 Code 指令 |
 | v1.7 | 2026-04-25 | 实测两个 P0：(1) PT-P0-4 paper-trade ticker 详情完全空白（PaperTradePage.tsx:68 pathname.split 仍老代码）；(2) A-P0-7 AI 分析提交后跳 /tasks/<id> 应跳 /analysis/<task_id> 配合 Pipeline DAG。新增 R-3.1（30min）+ R-5.4（1h）；剩余 13.5h → 15h |
 | v1.8 | 2026-04-26 | 功能补强 2 项（用户实测后提的非 bug 改进）：(1) D-FEAT-1 仪表盘净值曲线自动回溯（从最早 daily_snapshot 起到今天，不再固定 30 天，加 range switcher chip 全部/1Y/6M/3M/1M/7D + dataZoom；后端 get_history(days=None) 返全量）；(2) P-FEAT-1 持仓表加"盈亏 $"绝对值列（后端 get_holdings 已计算 pnl 字段，前端补显示，dashboard 持仓概览同步加），移动端 m-card 同步加。剩余 15h → 17h | — |
+| v1.9 | 2026-04-26 | 实测 A-P0-8：点[开始分析]后页面完全空白。新增完整运行中态布局（强化 v1.7 A-P0-7 + R-5.1 DAG + R-5.2 侧卡 + R-5.3 K线，合并成一个 dashboard）：Header / 主图 K 线 / Pipeline DAG / 三列侧卡（新闻+基本面+多空比） / 7-tab 占位 skeleton 逐个填充。提交后立即跳 /analysis/<task_id>，K线和新闻/基本面独立拉（< 1s 显示），DAG 订阅 task_events 实时进度，agent_stage_done 事件 → 对应 tab 填充。完成后 history.replaceState 切到 /analysis/<analysis_id>。新增 ~3h（含在 R-5.x 内）；剩余 17h → 20h | — |
