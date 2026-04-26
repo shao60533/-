@@ -16,11 +16,11 @@ logger = get_logger("portfolio.manager")
 class PortfolioManager:
     """Portfolio manager with manual position entry and real-time P&L."""
 
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, data_manager: DataManager | None = None):
         self._config = config
         db_path = config.get("portfolio", {}).get("db_path", "data/portfolio.db")
         self._db = PortfolioDatabase(db_path)
-        self._data_manager = DataManager(config)
+        self._data_manager = data_manager or DataManager(config)
 
     # ── Manual Entry ─────────────────────────────────────────────────────
 
@@ -113,7 +113,16 @@ class PortfolioManager:
         """Get all positions with real-time price and P&L.
 
         Fetches prices concurrently to avoid serial network delays.
+        Uses Flask request-scoped cache to avoid duplicate fetches
+        within a single HTTP request (dashboard calls this twice).
         """
+        try:
+            from flask import g, has_request_context
+            if has_request_context() and hasattr(g, "_holdings_cache"):
+                return g._holdings_cache
+        except ImportError:
+            pass
+
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
         positions = self._db.get_all_positions()
@@ -153,6 +162,13 @@ class PortfolioManager:
                 "pnl_pct": pnl_pct,
                 "added_date": pos.added_date,
             })
+
+        try:
+            from flask import g, has_request_context
+            if has_request_context():
+                g._holdings_cache = holdings
+        except ImportError:
+            pass
 
         return holdings
 
