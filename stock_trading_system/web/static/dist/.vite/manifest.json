@@ -265,7 +265,7 @@
     ]
   },
   "src/islands/analysis/main.tsx": {
-    "file": "assets/analysis-YCqGMcyM.js",
+    "file": "assets/analysis-CH4VE7oQ.js",
     "name": "analysis",
     "src": "src/islands/analysis/main.tsx",
     "isEntry": true,
@@ -311,7 +311,7 @@
     ]
   },
   "src/islands/dashboard/main.tsx": {
-    "file": "assets/dashboard-COl7rEib.js",
+    "file": "assets/dashboard-BqgzvgAi.js",
     "name": "dashboard",
     "src": "src/islands/dashboard/main.tsx",
     "isEntry": true,
@@ -364,7 +364,7 @@
     ]
   },
   "src/islands/paper-trade/main.tsx": {
-    "file": "assets/paper-trade-DeLefkOZ.js",
+    "file": "assets/paper-trade-DMsPDMpx.js",
     "name": "paper-trade",
     "src": "src/islands/paper-trade/main.tsx",
     "isEntry": true,
