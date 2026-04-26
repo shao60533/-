@@ -122,8 +122,9 @@ def _reset_config_dependent_singletons(paths: list[str]):
     touched_polygon = any(p.startswith("polygon.") for p in paths)
     touched_ib = any(p.startswith("ib.") for p in paths)
     touched_alerts = any(p.startswith("alerts.") for p in paths)
-    # Analyzer uses gemini config.
-    if touched_gemini:
+    touched_llm = any(p.startswith("llm") for p in paths)
+    # Analyzer uses LLM provider config.
+    if touched_gemini or touched_qwen or touched_llm:
         _analyzer = None
     # Data manager fans out to IB/Polygon/Qwen.
     if touched_ib or touched_polygon or touched_qwen:
@@ -1527,6 +1528,8 @@ def create_app(config_path=None):
             label = "Qwen" if provider == "qwen" else "Gemini"
             return jsonify({"reason": "missing_api_key", "message": f"{label} 未配置 API key"}), 400
         save_config({"llm_provider": provider})
+        # Reset analyzer so next analysis uses new provider
+        _invalidate_singletons(["llm_provider"])
         return jsonify({"active": provider, "source": "user_config"})
 
     # ── Screen V2 (async task-based) ────────────────────────────────────
