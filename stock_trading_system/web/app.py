@@ -1856,8 +1856,16 @@ def create_app(config_path=None):
                 "error": f"Unknown task type: {task_type}",
                 "registered": tm.registered_types(),
             }), 400
+        # Inject LLM provider/model into shared research task params for cache dedup
+        if task_type in ("analysis", "screen", "screen_v2", "screen_v3", "backtest"):
+            from stock_trading_system.llm.router import get_active_provider
+            cfg = get_config()
+            params.setdefault("_provider", get_active_provider(cfg))
+            params.setdefault("_model", cfg.get("llm", {}).get("model", ""))
+
+        uid = g.user.id if g.user else None
         try:
-            task = tm.submit(task_type, params, title=title)
+            task = tm.submit(task_type, params, title=title, created_by=uid)
         except Exception as e:  # noqa: BLE001
             logger.exception("Failed to submit task")
             return jsonify({"error": str(e)}), 500
