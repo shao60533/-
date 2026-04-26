@@ -258,40 +258,102 @@ def test_diagnostics_providers_shape(client):
 
 
 # ── Cross-user task isolation ────────────────────────────────────────────────
+#
+# These tests insert task rows directly through TaskStore rather than via
+# /api/tasks/submit. We're verifying the HTTP access-control middleware, so
+# spawning real workers (paper_backfill in particular runs a multi-second
+# DB-backed backfill) just makes the suite slower and adds I/O-on-closed-file
+# noise at pytest teardown.
 
 
-def test_alice_cannot_read_bob_private_task(app_client):
-    """Bob's private (paper_trade) task must be 403 for Alice."""
+def _seed_task_row(app_client, task_type, owner_id, status="success"):
+    """Insert a task owned by ``owner_id`` and return its id."""
+    import json
+    import uuid
+    from stock_trading_system.web import app as app_module
+    store = app_module._get_task_store()
+    task_id = str(uuid.uuid4())
+    store.insert({
+        "id": task_id,
+        "type": task_type,
+        "title": f"seed {task_type}",
+        "params_json": json.dumps({"ticker": "TEST"}),
+        "status": status,
+        "params_hash": "seed-" + task_id[:8],
+        "created_by": owner_id,
+    })
+    return task_id
+
+
+@pytest.mark.parametrize(
+    "ttype",
+    ["meta_evolution", "qwen_fundamentals", "agent_score_update", "echo"],
+)
+def test_alice_cannot_read_bob_unclassified_task(app_client, ttype):
+    """Types that are neither SHARED nor PRIVATE must default to owner-only.
+
+    Without this safeguard, adding a new task type to the codebase would
+    silently expose it across users until somebody remembers to update the
+    private-types list.
+    """
     users = app_client["users"]
-    bob = app_client["make_client"](users.bob_email, users.bob_password)
+    alice = app_client["make_client"](users.alice_email, users.alice_password)
+    bob_task_id = _seed_task_row(app_client, ttype, users.bob.id)
+
+    rv = alice.get(f"/api/tasks/{bob_task_id}")
+    assert rv.status_code == 403, f"{ttype}: expected 403, got {rv.status_code}"
+    assert rv.get_json()["error"] == "forbidden"
+
+
+@pytest.mark.parametrize(
+    "ttype", ["paper_trade", "paper_backfill", "batch_analysis"],
+)
+def test_alice_cannot_read_bob_private_task(app_client, ttype):
+    """Documented PRIVATE types stay owner-only."""
+    users = app_client["users"]
+    alice = app_client["make_client"](users.alice_email, users.alice_password)
+    bob_task_id = _seed_task_row(app_client, ttype, users.bob.id)
+
+    rv = alice.get(f"/api/tasks/{bob_task_id}")
+    assert rv.status_code == 403, f"{ttype}: expected 403, got {rv.status_code}"
+
+
+@pytest.mark.parametrize(
+    "ttype",
+    ["analysis", "screen", "screen_v2", "screen_v3", "backtest", "report"],
+)
+def test_alice_can_read_bob_shared_task(app_client, ttype):
+    """SHARED research types are readable by any logged-in user."""
+    users = app_client["users"]
+    alice = app_client["make_client"](users.alice_email, users.alice_password)
+    bob_task_id = _seed_task_row(app_client, ttype, users.bob.id)
+
+    rv = alice.get(f"/api/tasks/{bob_task_id}")
+    assert rv.status_code == 200, f"{ttype}: expected 200, got {rv.status_code}"
+    body = rv.get_json()
+    assert body["id"] == bob_task_id
+
+
+def test_alice_cannot_mutate_bob_shared_task(app_client):
+    """Even when SHARED is readable, cancel/delete/retry require owner."""
+    users = app_client["users"]
     alice = app_client["make_client"](users.alice_email, users.alice_password)
 
-    # Bob submits a private-typed task. We use the generic submitter and
-    # accept either "task type registered" (200) or "not registered" (400).
-    rv = bob.post("/api/tasks/submit", json={
-        "type": "paper_backfill", "params": {},
-    })
-    if rv.status_code != 200:
-        pytest.skip("paper_backfill worker not registered in this build")
-    bob_task_id = rv.get_json()["id"]
+    # Pending → cancel/delete attempts hit ownership before state check
+    pending_id = _seed_task_row(app_client, "analysis", users.bob.id, status="pending")
+    assert alice.post(f"/api/tasks/{pending_id}/cancel").status_code == 403
+    assert alice.delete(f"/api/tasks/{pending_id}").status_code == 403
 
-    rv2 = alice.get(f"/api/tasks/{bob_task_id}")
-    assert rv2.status_code == 403
+    # Failed → retry attempt
+    failed_id = _seed_task_row(app_client, "analysis", users.bob.id, status="failed")
+    assert alice.post(f"/api/tasks/{failed_id}/retry").status_code == 403
 
 
-def test_alice_cannot_cancel_bob_shared_task(app_client):
-    """Even shared-research tasks: only owner/admin can cancel/delete/retry."""
+def test_admin_can_read_bob_private_task(app_client):
+    """Admin role bypasses the type-based access gate."""
     users = app_client["users"]
-    bob = app_client["make_client"](users.bob_email, users.bob_password)
-    alice = app_client["make_client"](users.alice_email, users.alice_password)
-    rv = bob.post("/api/tasks/submit", json={
-        "type": "echo", "params": {"who": "bob"},
-    })
-    bob_task_id = rv.get_json()["id"]
+    admin = app_client["make_client"](users.admin_email, users.admin_password)
+    bob_task_id = _seed_task_row(app_client, "paper_backfill", users.bob.id)
 
-    cancel = alice.post(f"/api/tasks/{bob_task_id}/cancel")
-    assert cancel.status_code in (403, 409)  # 409 only if echo already done
-    if cancel.status_code == 409:
-        # echo finished too fast — try delete instead
-        delete = alice.delete(f"/api/tasks/{bob_task_id}")
-        assert delete.status_code == 403
+    rv = admin.get(f"/api/tasks/{bob_task_id}")
+    assert rv.status_code == 200
