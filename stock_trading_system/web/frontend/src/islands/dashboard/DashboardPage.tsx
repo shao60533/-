@@ -29,15 +29,15 @@ interface AllocItem { ticker: string; value: number; pct: number }
 function fmt(n: number) { return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }
 function fmtPct(n: number) { return `${n >= 0 ? "+" : ""}${n.toFixed(2)}%` }
 
-type Range = "7D" | "1M" | "3M" | "1Y"
-const RANGE_DAYS: Record<Range, number> = { "7D": 7, "1M": 30, "3M": 90, "1Y": 365 }
+type Range = "ALL" | "1Y" | "6M" | "3M" | "1M" | "7D"
+const RANGE_DAYS: Record<Range, number> = { "ALL": 99999, "1Y": 365, "6M": 180, "3M": 90, "1M": 30, "7D": 7 }
 
 export function DashboardPage() {
   const [data, setData] = useState<DashData | null>(null)
   const [tasks, setTasks] = useState<TaskRow[]>([])
   const [alloc, setAlloc] = useState<AllocItem[]>([])
   const [loading, setLoading] = useState(true)
-  const [range, setRange] = useState<Range>("1M")
+  const [range, setRange] = useState<Range>("ALL")
 
   useEffect(() => {
     Promise.all([
@@ -69,9 +69,10 @@ export function DashboardPage() {
     return {
       backgroundColor: "transparent",
       tooltip: { trigger: "axis", axisPointer: { type: "cross" } },
-      grid: { left: 60, right: 20, top: 20, bottom: 30 },
+      grid: { left: 60, right: 20, top: 20, bottom: filteredHistory.length > 60 ? 50 : 30 },
       xAxis: { type: "category", data: filteredHistory.map(h => h.date), axisLine: { lineStyle: { color: "#444" } } },
       yAxis: { type: "value", axisLabel: { formatter: (v: number) => `$${(v/1000).toFixed(0)}k` }, splitLine: { lineStyle: { color: "#222" } } },
+      dataZoom: filteredHistory.length > 60 ? [{ type: "inside", start: 70, end: 100 }, { type: "slider", height: 20, bottom: 5 }] : [],
       series: [
         {
           name: "净值", type: "line", data: filteredHistory.map(h => h.total_value), smooth: true,
@@ -132,7 +133,7 @@ export function DashboardPage() {
             <div className="flex items-center justify-between">
               <CardTitle className="text-sm">净值曲线</CardTitle>
               <ChipRow>
-                {(["7D", "1M", "3M", "1Y"] as Range[]).map(r => (
+                {(["ALL", "1Y", "6M", "3M", "1M", "7D"] as Range[]).map(r => (
                   <Chip key={r} active={range === r} onClick={() => setRange(r)}>{r}</Chip>
                 ))}
               </ChipRow>

@@ -127,7 +127,8 @@ export function PortfolioPage() {
                       <th className="text-right py-2 px-2">成本</th>
                       <th className="text-right py-2 px-2">现价</th>
                       <th className="text-right py-2 px-2">市值</th>
-                      <th className="text-right py-2 px-2">盈亏</th>
+                      <th className="text-right py-2 px-2">盈亏 $</th>
+                      <th className="text-right py-2 px-2">盈亏 %</th>
                       <th className="text-right py-2 px-2"></th>
                     </tr>
                   </thead>
@@ -141,6 +142,11 @@ export function PortfolioPage() {
                             onClick={() => setCostTarget(h)}>${fmt(h.avg_cost)}</td>
                         <td className="text-right py-2.5 px-2 font-mono">${fmt(h.current_price || 0)}</td>
                         <td className="text-right py-2.5 px-2 font-mono">${fmt(h.market_value || 0)}</td>
+                        <td className={cn("text-right py-2.5 px-2 font-mono truncate",
+                          (h.pnl || 0) > 0 ? "text-[var(--color-accent-green)]" : (h.pnl || 0) < 0 ? "text-[var(--color-accent-red)]" : "text-muted-foreground")}
+                          style={{ fontVariantNumeric: "tabular-nums" }}>
+                          {(h.pnl || 0) >= 0 ? "+" : ""}${fmt(h.pnl || 0)}
+                        </td>
                         <td className={cn("text-right py-2.5 px-2 font-mono",
                           h.pnl_pct >= 0 ? "text-[var(--color-accent-green)]" : "text-[var(--color-accent-red)]")}>
                           {fmtPct(h.pnl_pct)}
@@ -176,6 +182,9 @@ export function PortfolioPage() {
                     </div>
                     <div className="flex justify-between text-xs text-muted-foreground mt-1">
                       <span>成本 ${fmt(h.avg_cost)}</span>
+                      <span className={cn("font-mono", (h.pnl || 0) >= 0 ? "text-[var(--color-accent-green)]" : "text-[var(--color-accent-red)]")}>
+                        盈亏 {(h.pnl || 0) >= 0 ? "+" : ""}${fmt(h.pnl || 0)}
+                      </span>
                       <span>现价 ${fmt(h.current_price || 0)}</span>
                     </div>
                     <div className="flex gap-2 mt-2">

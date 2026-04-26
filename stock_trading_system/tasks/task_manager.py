@@ -114,7 +114,7 @@ class TaskManager:
         params: dict,
         title: str | None = None,
         idempotency_window: int | None = None,
-        created_by: str = "user",
+        created_by: int | str | None = None,
     ) -> dict:
         """Submit a task. Returns the persisted task dict.
 
@@ -123,7 +123,20 @@ class TaskManager:
         that task is returned instead and no new worker runs.
 
         Pass idempotency_window=0 to force a brand-new task.
+
+        Multi-tenant: if caller didn't pass created_by, infer from Flask g.user
+        so per-user task lists work without every route remembering to pass it.
+        Falls back to legacy "user" string in non-request contexts (cron, CLI).
         """
+        if created_by is None:
+            try:
+                from flask import g, has_request_context
+                if has_request_context() and getattr(g, "user", None):
+                    created_by = g.user.id
+            except Exception:
+                pass
+            if created_by is None:
+                created_by = "user"
         window = (
             self._default_window
             if idempotency_window is None
