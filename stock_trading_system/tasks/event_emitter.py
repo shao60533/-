@@ -23,6 +23,34 @@ _seq_lock = threading.Lock()
 _seq_cache: dict[str, int] = {}
 
 
+def ensure_task_events_table(db_path: str) -> None:
+    """Create task_events table + indexes if missing.
+
+    Safe to call at every app startup (idempotent CREATE IF NOT EXISTS).
+    Without this, fresh deployments hit `no such table: task_events` on
+    the first event-history fetch, surfacing as "加载失败" in the UI.
+    """
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.executescript(
+            "CREATE TABLE IF NOT EXISTS task_events ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " task_id TEXT NOT NULL,"
+            " user_id INTEGER NOT NULL,"
+            " seq INTEGER NOT NULL,"
+            " event TEXT NOT NULL,"
+            " payload TEXT NOT NULL,"
+            " emitted_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),"
+            " UNIQUE (task_id, seq));"
+            "CREATE INDEX IF NOT EXISTS ix_task_events_user_seq ON task_events(user_id, id DESC);"
+            "CREATE INDEX IF NOT EXISTS ix_task_events_task_seq ON task_events(task_id, seq);"
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.warning("ensure_task_events_table failed: %s", e)
+
+
 def _now_iso() -> str:
     return datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
