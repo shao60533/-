@@ -114,8 +114,20 @@ class TaskManager:
         params: dict,
         title: str | None = None,
         idempotency_window: int | None = None,
-        created_by: str = "user",
+        created_by: int | str | None = None,
     ) -> dict:
+        # Multi-tenant: if caller didn't pass created_by, infer from Flask g.user
+        # so per-user task lists work without every route remembering to pass it.
+        # Falls back to legacy "user" string in non-request contexts (cron, CLI).
+        if created_by is None:
+            try:
+                from flask import g, has_request_context
+                if has_request_context() and getattr(g, "user", None):
+                    created_by = g.user.id
+            except Exception:
+                pass
+            if created_by is None:
+                created_by = "user"
         """Submit a task. Returns the persisted task dict.
 
         If an identical task (same type + params) exists within
