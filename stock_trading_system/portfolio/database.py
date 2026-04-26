@@ -293,17 +293,34 @@ class PortfolioDatabase:
                  snapshot.pnl, snapshot.pnl_pct, snapshot.positions_json, snapshot.user_id),
             )
 
-    def get_snapshots(self, days: int = 30, user_id: int | None = None) -> list[DailySnapshot]:
+    def get_snapshots(
+        self,
+        days: int | None = 30,
+        user_id: int | None = None,
+    ) -> list[DailySnapshot]:
+        """Return snapshots ordered ascending (oldest → newest) for charting.
+
+        ``days=None`` returns the full series so the dashboard equity curve
+        can render every snapshot since the user's first day. A positive
+        integer restricts to that rolling window (today minus N days).
+        """
+        from datetime import date as _date, timedelta as _td
+
+        clauses: list[str] = []
+        params: list = []
+        if user_id is not None:
+            clauses.append("user_id = ?")
+            params.append(user_id)
+        if days is not None:
+            cutoff = (_date.today() - _td(days=int(days))).strftime("%Y-%m-%d")
+            clauses.append("date >= ?")
+            params.append(cutoff)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         with self._get_conn() as conn:
-            if user_id is not None:
-                rows = conn.execute(
-                    "SELECT * FROM daily_snapshots WHERE user_id = ? ORDER BY date DESC LIMIT ?",
-                    (user_id, days),
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    "SELECT * FROM daily_snapshots ORDER BY date DESC LIMIT ?", (days,)
-                ).fetchall()
+            rows = conn.execute(
+                f"SELECT * FROM daily_snapshots {where} ORDER BY date ASC",
+                params,
+            ).fetchall()
             return [DailySnapshot(**dict(r)) for r in rows]
 
     # ── Alerts ───────────────────────────────────────────────────────────

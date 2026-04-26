@@ -278,8 +278,17 @@ class PortfolioManager:
         self._db.save_snapshot(snapshot)
         logger.info("Snapshot saved for %s (user=%s)", snapshot.date, uid)
 
-    def get_history(self, days: int = 30, user_id: int | None = None) -> list[dict]:
-        """Get historical portfolio snapshots."""
+    def get_history(
+        self,
+        days: int | None = 30,
+        user_id: int | None = None,
+    ) -> list[dict]:
+        """Get historical portfolio snapshots.
+
+        Pass ``days=None`` for the entire series since the user's first
+        snapshot. The result is ordered ascending so consumers can plot it
+        as an equity curve without resorting.
+        """
         uid = self._user_id(user_id)
         snapshots = self._db.get_snapshots(days, user_id=uid)
         return [

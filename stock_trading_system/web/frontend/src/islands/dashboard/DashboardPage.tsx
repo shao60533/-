@@ -40,8 +40,11 @@ export function DashboardPage() {
   const [range, setRange] = useState<Range>("ALL")
 
   useEffect(() => {
+    // history_days=all → backend returns the full daily_snapshots series so
+    // the range chips below can do client-side filtering on the complete
+    // history. Without this the chart would clip to a 30-day window.
     Promise.all([
-      apiGet<DashData>("/api/dashboard").catch(() => null),
+      apiGet<DashData>("/api/dashboard?history_days=all").catch(() => null),
       apiGet<TaskRow[]>("/api/tasks?limit=10&offset=0").catch(() => []),
       apiGet<AllocItem[]>("/api/portfolio/allocation").catch(() => []),
     ]).then(([d, t, a]) => {

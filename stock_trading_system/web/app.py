@@ -759,7 +759,19 @@ def create_app(config_path=None):
         pnl = pm.get_pnl()
         holdings = pm.get_holdings()
         alerts = _get_alert_monitor().list_alerts()
-        history = pm.get_history(days=30)
+        # `history_days=all` returns the full series since the user's first
+        # snapshot; the chart's range chips do client-side filtering on top.
+        # Anything else is parsed as a positive int rolling window.
+        raw_days = (request.args.get("history_days") or "all").strip().lower()
+        if raw_days in ("", "all"):
+            days: int | None = None
+        else:
+            try:
+                parsed = int(raw_days)
+                days = parsed if parsed > 0 else None
+            except ValueError:
+                days = 30
+        history = pm.get_history(days=days)
         return jsonify({
             "pnl": pnl,
             "holdings": holdings,
