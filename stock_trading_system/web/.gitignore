@@ -1,1 +1,3 @@
-static/dist/
+# Vite build artifacts intentionally tracked so Railway gets them
+# (frontend src lives outside this repo; only the dist gets shipped).
+!static/dist/
