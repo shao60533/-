@@ -16,7 +16,11 @@ import { cn } from "@/lib/utils"
 interface DashData {
   pnl: { total_value: number; total_pnl: number; total_pnl_pct: number }
   alerts_count: number
-  holdings: { ticker: string; shares: number; pnl_pct: number; market_value: number; avg_cost: number; current_price: number; market: string }[]
+  holdings: {
+    ticker: string; shares: number
+    pnl: number; pnl_pct: number
+    market_value: number; avg_cost: number; current_price: number; market: string
+  }[]
   history: { date: string; total_value: number; pnl: number }[]
 }
 
@@ -168,23 +172,34 @@ export function DashboardPage() {
               <p className="text-muted-foreground text-sm py-4 text-center">暂无持仓</p>
             ) : (
               <div className="space-y-2">
-                {holdings.map(h => (
-                  <div key={h.ticker} className="flex items-center justify-between text-sm border border-border rounded-lg px-4 py-2.5">
-                    <div className="flex items-center gap-3">
-                      <span className="font-mono font-semibold">{h.ticker}</span>
-                      <span className="text-xs text-muted-foreground">{h.market?.toUpperCase()}</span>
-                      <span className="text-xs text-muted-foreground">{h.shares} 股</span>
+                {holdings.map(h => {
+                  const pnlAbs = h.pnl ?? 0
+                  const pnlClass = pnlAbs > 0
+                    ? "text-[var(--color-accent-green)]"
+                    : pnlAbs < 0
+                      ? "text-[var(--color-accent-red)]"
+                      : "text-muted-foreground"
+                  return (
+                    <div key={h.ticker} className="flex items-center justify-between text-sm border border-border rounded-lg px-4 py-2.5">
+                      <div className="flex items-center gap-3">
+                        <span className="font-mono font-semibold">{h.ticker}</span>
+                        <span className="text-xs text-muted-foreground">{h.market?.toUpperCase()}</span>
+                        <span className="text-xs text-muted-foreground">{h.shares} 股</span>
+                      </div>
+                      <div className="flex items-center gap-4 text-xs">
+                        <span className="text-muted-foreground font-mono hidden md:inline">成本 ${fmt(h.avg_cost || 0)}</span>
+                        <span className="text-muted-foreground font-mono hidden md:inline">现价 ${fmt(h.current_price || 0)}</span>
+                        <span className={cn("font-mono tabular-nums", pnlClass)}>
+                          {pnlAbs >= 0 ? "+" : ""}${fmt(pnlAbs)}
+                        </span>
+                        <span className={cn("font-mono tabular-nums",
+                          h.pnl_pct >= 0 ? "text-[var(--color-accent-green)]" : "text-[var(--color-accent-red)]")}>
+                          {fmtPct(h.pnl_pct)}
+                        </span>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-4 text-xs">
-                      <span className="text-muted-foreground font-mono hidden md:inline">成本 ${fmt(h.avg_cost || 0)}</span>
-                      <span className="text-muted-foreground font-mono hidden md:inline">现价 ${fmt(h.current_price || 0)}</span>
-                      <span className={cn("font-mono tabular-nums",
-                        h.pnl_pct >= 0 ? "text-[var(--color-accent-green)]" : "text-[var(--color-accent-red)]")}>
-                        {fmtPct(h.pnl_pct)}
-                      </span>
-                    </div>
-                  </div>
-                ))}
+                  )
+                })}
               </div>
             )}
             <div className="mt-3 text-right">
