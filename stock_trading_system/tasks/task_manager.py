@@ -410,8 +410,36 @@ class TaskManager:
             pass
         return self._store.get(task_id)
 
-    def shutdown(self, wait: bool = True) -> None:
-        self._executor.shutdown(wait=wait)
+    def cancel_all(self) -> int:
+        """Signal every currently-tracked running task to stop.
+
+        Returns the count of tasks that received the signal. Cooperative —
+        a worker that ignores its ``__cancel_event__`` will keep running
+        until it returns naturally.
+        """
+        with self._lock:
+            ids = list(self._running.keys())
+        signaled = 0
+        for tid in ids:
+            try:
+                if self.cancel(tid):
+                    signaled += 1
+            except Exception:  # pragma: no cover
+                pass
+        return signaled
+
+    def shutdown(self, wait: bool = True, cancel_futures: bool = False) -> None:
+        """Stop the executor.
+
+        ``cancel_futures=True`` (Python 3.9+) cancels queued-but-not-yet-running
+        futures so test teardown doesn't have to wait for the whole backlog.
+        Already-running workers still run to completion when ``wait=True``.
+        """
+        try:
+            self._executor.shutdown(wait=wait, cancel_futures=cancel_futures)
+        except TypeError:
+            # Older Python — fall back to the original signature.
+            self._executor.shutdown(wait=wait)
 
 
 class _CancelledError(Exception):

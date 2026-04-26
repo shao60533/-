@@ -192,10 +192,22 @@ def app_client(tmp_path, isolated_config_dir, monkeypatch):
         "db_path": str(db_path),
     }
 
+    # Drain the task manager BEFORE pytest closes stdout. The earlier
+    # `shutdown(wait=False)` returned immediately, leaving worker threads
+    # running; when they later tried to log they hit a closed file.
+    #
+    # Order:
+    #   1. cancel_all() — signal cancel_event so cooperative workers exit.
+    #   2. shutdown(wait=True, cancel_futures=True) — cancel anything still
+    #      queued and block until in-flight work finishes its last log line.
     tm = getattr(app_module, "_task_manager", None)
     if tm is not None:
         try:
-            tm.shutdown(wait=False)
+            tm.cancel_all()
+        except Exception:
+            pass
+        try:
+            tm.shutdown(wait=True, cancel_futures=True)
         except Exception:
             pass
     _reset_app_singletons()
