@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react"
-import { Settings, Save, RefreshCw, Eye, EyeOff } from "lucide-react"
+import { useCallback, useEffect, useState } from "react"
+import { Settings, Save, RefreshCw, Eye, EyeOff, Trash2 } from "lucide-react"
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -46,6 +46,9 @@ export function SettingsPage() {
   const [saveMsg, setSaveMsg] = useState<string | null>(null)
   const [showKeys, setShowKeys] = useState(false)
   const [snapshot, setSnapshot] = useState<SettingsResponse | null>(null)
+  // Tracks which provider's "清空" button is currently in flight so we can
+  // show a spinner without freezing the rest of the form.
+  const [clearing, setClearing] = useState<"gemini" | "qwen" | null>(null)
 
   // ── LLM section ────────────────────────────────────────────────────────
   const [geminiKey, setGeminiKey] = useState("")
@@ -63,38 +66,74 @@ export function SettingsPage() {
   const [telegramEnabled, setTelegramEnabled] = useState(false)
   const [telegramChatId, setTelegramChatId] = useState("")
 
-  useEffect(() => {
-    setLoading(true)
+  const refreshSnapshot = useCallback(async (initial = false) => {
+    if (initial) setLoading(true)
     setError(null)
-    apiGet<SettingsResponse>("/api/settings")
-      .then((res) => {
-        setSnapshot(res)
-        setGeminiModel(res.gemini?.model ?? "")
-        setQwenEnabled(Boolean(res.qwen?.enabled))
-        setQwenModel(res.qwen?.model ?? "")
-        setQwenBaseUrl(res.qwen?.base_url ?? "")
-        setEmailTo(res.email?.to_address ?? "")
-        setEmailSmtpHost(res.email?.smtp_host ?? "")
-        setEmailUsername(res.email?.username ?? "")
-        setTelegramChatId(res.telegram?.chat_id ?? "")
-      })
-      .catch((err: unknown) =>
-        setError(err instanceof Error ? err.message : "Failed to load settings"),
-      )
-      .finally(() => setLoading(false))
+    try {
+      const res = await apiGet<SettingsResponse>("/api/settings")
+      setSnapshot(res)
+      setGeminiModel(res.gemini?.model ?? "")
+      setQwenEnabled(Boolean(res.qwen?.enabled))
+      setQwenModel(res.qwen?.model ?? "")
+      setQwenBaseUrl(res.qwen?.base_url ?? "")
+      setEmailTo(res.email?.to_address ?? "")
+      setEmailSmtpHost(res.email?.smtp_host ?? "")
+      setEmailUsername(res.email?.username ?? "")
+      setTelegramChatId(res.telegram?.chat_id ?? "")
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to load settings")
+    } finally {
+      if (initial) setLoading(false)
+    }
   }, [])
+
+  useEffect(() => {
+    refreshSnapshot(true)
+  }, [refreshSnapshot])
+
+  const clearProviderKey = async (provider: "gemini" | "qwen") => {
+    const masked = provider === "gemini"
+      ? snapshot?.gemini?.api_key_masked
+      : snapshot?.qwen?.api_key_masked
+    if (!masked) return  // nothing to clear
+    const label = provider === "gemini" ? "Gemini" : "Qwen"
+    if (!window.confirm(`确定清空已保存的 ${label} API Key？此操作会立即生效，下一次分析将无法使用 ${label}。`)) {
+      return
+    }
+    setClearing(provider)
+    setSaveMsg(null)
+    setError(null)
+    try {
+      // Submit the empty string explicitly — backend update_user_config
+      // (config/settings.py) writes the empty string through, which is the
+      // documented way to clear a saved credential.
+      await apiPost("/api/settings", { [`${provider}.api_key`]: "" })
+      // Mirror immediately in local state so the masked indicator vanishes
+      // before the GET resolves.
+      if (provider === "gemini") setGeminiKey("")
+      if (provider === "qwen") setQwenKey("")
+      await refreshSnapshot()
+      setSaveMsg(`${label} API Key 已清空`)
+      setTimeout(() => setSaveMsg(null), 3000)
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : `${label} API Key 清空失败`)
+    } finally {
+      setClearing(null)
+    }
+  }
 
   const handleSave = async () => {
     setSaving(true)
     setSaveMsg(null)
     setError(null)
-    // Only emit dotted-path keys the backend whitelists. Empty strings are
-    // intentional — they let the user clear a bad credential.
+    // Only emit dotted-path keys the backend whitelists. Empty input on the
+    // api_key fields means "leave whatever is on disk alone" — to actually
+    // wipe a saved key, the user clicks the dedicated "清空" button which
+    // POSTs the explicit empty string. We drop the api_key keys here so a
+    // routine save never accidentally overwrites a stored credential.
     const payload: DottedSettingsPayload = {
-      "gemini.api_key": geminiKey,
       "gemini.model": geminiModel,
       "qwen.enabled": qwenEnabled,
-      "qwen.api_key": qwenKey,
       "qwen.model": qwenModel,
       "qwen.base_url": qwenBaseUrl,
       "alerts.email.enabled": emailEnabled,
@@ -104,17 +143,14 @@ export function SettingsPage() {
       "alerts.telegram.enabled": telegramEnabled,
       "alerts.telegram.chat_id": telegramChatId,
     }
-    // Drop unset secrets so we don't overwrite a stored key with empty string
-    // unless the user explicitly typed something. (api_key fields specifically
-    // — model/base_url remain even when blank because the user may want to
-    // reset to defaults.)
-    if (!geminiKey) delete payload["gemini.api_key"]
-    if (!qwenKey) delete payload["qwen.api_key"]
+    if (geminiKey) payload["gemini.api_key"] = geminiKey
+    if (qwenKey) payload["qwen.api_key"] = qwenKey
     try {
       await apiPost("/api/settings", payload)
       setSaveMsg("设置已保存")
       setGeminiKey("")
       setQwenKey("")
+      await refreshSnapshot()
       setTimeout(() => setSaveMsg(null), 3000)
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "保存失败")
@@ -208,14 +244,32 @@ export function SettingsPage() {
               <div className="text-sm font-semibold">Gemini</div>
               <div className="grid gap-3 sm:grid-cols-2 grid-collapse-mobile">
                 <div className="space-y-1.5">
-                  <label className="text-xs text-muted-foreground">
-                    API Key {snapshot?.gemini?.api_key_masked && (
-                      <span className="ml-2 font-mono">已配置 {snapshot.gemini.api_key_masked}</span>
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="text-xs text-muted-foreground">
+                      API Key {snapshot?.gemini?.api_key_masked && (
+                        <span className="ml-2 font-mono">已配置 {snapshot.gemini.api_key_masked}</span>
+                      )}
+                    </label>
+                    {snapshot?.gemini?.api_key_masked && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 px-2 text-[var(--color-accent-red)] hover:text-[var(--color-accent-red)]"
+                        onClick={() => clearProviderKey("gemini")}
+                        disabled={clearing !== null || saving}
+                        aria-label="清空 Gemini API Key"
+                      >
+                        {clearing === "gemini"
+                          ? <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                          : <Trash2 className="h-3.5 w-3.5 mr-1" />}
+                        清空
+                      </Button>
                     )}
-                  </label>
+                  </div>
                   <Input
                     type={showKeys ? "text" : "password"}
-                    placeholder="留空保留现有密钥"
+                    placeholder="留空保留现有密钥（清空请用右上按钮）"
                     value={geminiKey}
                     onChange={(e) => setGeminiKey(e.target.value)}
                   />
@@ -239,14 +293,32 @@ export function SettingsPage() {
               </div>
               <div className="grid gap-3 sm:grid-cols-2 grid-collapse-mobile">
                 <div className="space-y-1.5">
-                  <label className="text-xs text-muted-foreground">
-                    API Key {snapshot?.qwen?.api_key_masked && (
-                      <span className="ml-2 font-mono">已配置 {snapshot.qwen.api_key_masked}</span>
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="text-xs text-muted-foreground">
+                      API Key {snapshot?.qwen?.api_key_masked && (
+                        <span className="ml-2 font-mono">已配置 {snapshot.qwen.api_key_masked}</span>
+                      )}
+                    </label>
+                    {snapshot?.qwen?.api_key_masked && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 px-2 text-[var(--color-accent-red)] hover:text-[var(--color-accent-red)]"
+                        onClick={() => clearProviderKey("qwen")}
+                        disabled={clearing !== null || saving}
+                        aria-label="清空 Qwen API Key"
+                      >
+                        {clearing === "qwen"
+                          ? <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                          : <Trash2 className="h-3.5 w-3.5 mr-1" />}
+                        清空
+                      </Button>
                     )}
-                  </label>
+                  </div>
                   <Input
                     type={showKeys ? "text" : "password"}
-                    placeholder="sk-..."
+                    placeholder="sk-...（留空保留现有，清空请用右上按钮）"
                     value={qwenKey}
                     onChange={(e) => setQwenKey(e.target.value)}
                     disabled={!qwenEnabled}

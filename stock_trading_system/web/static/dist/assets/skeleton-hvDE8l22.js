@@ -1,1 +1,0 @@
-import{j as e,g as n}from"./card-d6mV0Ggq.js";function a({className:r,...o}){return e.jsx("div",{className:n("animate-pulse rounded-md bg-[color-mix(in_oklch,var(--color-border-bright)_60%,transparent)]",r),...o})}export{a as S};
