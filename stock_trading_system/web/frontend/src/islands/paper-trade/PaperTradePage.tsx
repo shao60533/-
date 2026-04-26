@@ -99,6 +99,11 @@ function PaperTradeContent() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")
   const [recordView, setRecordView] = useState<"plan" | "event">("plan")
+  // mainTab MUST be declared before any conditional return — otherwise React
+  // re-renders this component with a different number of hooks, throws
+  // "Rendered more hooks than during the previous render", and the
+  // ErrorBoundary upstream shows "页面渲染异常" instead of the real UI.
+  const [mainTab, setMainTab] = useState<"strategy" | "daily">("strategy")
 
   useEffect(() => {
     if (!ticker) { setError("未指定股票代码"); setLoading(false); return }
@@ -120,9 +125,8 @@ function PaperTradeContent() {
   )
 
   const plan = data.active_plan
-  const orders = data.active_orders || []
+  const orders = data.active_orders ?? []
   const sess = data.session
-  const [mainTab, setMainTab] = useState<"strategy" | "daily">("strategy")
 
   return (
     <div className="p-4 md:p-6 space-y-6 max-w-5xl mx-auto">
@@ -141,7 +145,7 @@ function PaperTradeContent() {
         </Chip>
       </ChipRow>
 
-      {mainTab === "daily" && <DailyDataTab dailies={data.dailies || []} startCapital={sess.start_capital} />}
+      {mainTab === "daily" && <DailyDataTab dailies={data.dailies ?? []} startCapital={sess.start_capital ?? 0} />}
       {mainTab === "strategy" && (<>
       {/* BEGIN strategy tab */}
 
@@ -178,7 +182,7 @@ function PaperTradeContent() {
           <CardContent>
             <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm">
               <div className="text-muted-foreground">初始资金</div>
-              <div className="font-mono text-right">${fmt(sess.start_capital)}</div>
+              <div className="font-mono text-right">${fmt(sess.start_capital ?? 0)}</div>
             </div>
           </CardContent>
         </Card>
@@ -199,24 +203,32 @@ function PaperTradeContent() {
             <p className="text-sm text-muted-foreground">无计划档位</p>
           ) : (
             <div className="space-y-2">
-              {orders.sort((a, b) => a.sequence - b.sequence).map(o => (
-                <div key={o.id} className={cn(
-                  "flex items-center gap-3 rounded-lg border px-4 py-3",
-                  o.status === "triggered" ? "border-green-500/30 bg-green-500/5" : "border-border",
-                )}>
-                  {STATUS_ICONS[o.status] || <Clock4 className="w-4 h-4" />}
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm font-medium">{ORDER_LABELS[o.order_type] || o.order_type}</div>
-                    <div className="text-xs text-muted-foreground">{o.description || o.trigger_kind}</div>
+              {[...orders]
+                .sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0))
+                .map(o => (
+                  <div key={o.id} className={cn(
+                    "flex items-center gap-3 rounded-lg border px-4 py-3",
+                    o.status === "triggered" ? "border-green-500/30 bg-green-500/5" : "border-border",
+                  )}>
+                    {STATUS_ICONS[o.status] ?? <Clock4 className="w-4 h-4" />}
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium">
+                        {ORDER_LABELS[o.order_type] ?? (o.order_type || "—")}
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        {o.description || o.trigger_kind || ""}
+                      </div>
+                    </div>
+                    {(o.pct_target_total ?? 0) > 0 && (
+                      <span className="text-xs font-mono">{o.pct_target_total}%</span>
+                    )}
+                    {o.triggered_date && (
+                      <span className="text-xs text-muted-foreground">
+                        {o.triggered_date} @ ${o.triggered_price ?? "—"}
+                      </span>
+                    )}
                   </div>
-                  {o.pct_target_total > 0 && (
-                    <span className="text-xs font-mono">{o.pct_target_total}%</span>
-                  )}
-                  {o.triggered_date && (
-                    <span className="text-xs text-muted-foreground">{o.triggered_date} @ ${o.triggered_price}</span>
-                  )}
-                </div>
-              ))}
+                ))}
             </div>
           )}
         </CardContent>
