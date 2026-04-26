@@ -174,20 +174,34 @@ class TaskStore:
             cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
             return cur.rowcount > 0
 
-    # Task types whose results are shared (any logged-in user can see).
-    # Covers: AI analysis, all screener variants, backtest, public reports.
+    # Allow-list of task types whose results are shared research artefacts.
+    # Any logged-in user may *read* a task of one of these types created by
+    # another user. Mutations (cancel/delete/retry) still require owner/admin.
+    # Covers: AI analysis, all screener variants, backtests, public reports.
     SHARED_TYPES = frozenset([
         "analysis", "screen", "screen_v2", "screen_v3",
         "backtest", "report",
     ])
-    # Task types tied to a single user's portfolio / alerts / personal advice.
-    # Owner-only; never shown via shared_research scope.
+    # Documented private types — kept for the ``shared_research`` listing
+    # filter and as a reminder of which categories are user-specific. NOTE
+    # that this is **not** the access-check source of truth: the web layer
+    # now default-denies anything that is not in SHARED_TYPES. So new task
+    # types that nobody has classified yet stay owner-only by default.
     PRIVATE_TYPES = frozenset([
         "portfolio_batch", "batch_analysis", "personal_advice",
         "alerts", "paper_trade", "paper_backfill",
     ])
 
     VALID_SCOPES = frozenset({"mine", "shared_research", "all"})
+
+    @classmethod
+    def is_shared_type(cls, task_type: str) -> bool:
+        """Single source of truth for "is this task type cross-user readable?"
+
+        The web ownership check defers to this so adding a new type to
+        ``SHARED_TYPES`` is enough — no parallel allow-list to keep in sync.
+        """
+        return task_type in cls.SHARED_TYPES
 
     def _scope_clause(
         self,

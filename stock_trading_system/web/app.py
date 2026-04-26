@@ -2019,21 +2019,27 @@ def create_app(config_path=None):
     def _check_task_ownership(task, require_owner=False):
         """Check if current user can read/mutate a task. Returns error response or None.
 
-        Rules:
-            * Private task types are visible only to owner / admin.
-            * Shared research task types are visible to all logged-in users.
-            * Mutating actions (cancel/delete/retry) always require owner/admin
-              regardless of task type — pass require_owner=True for those.
+        Rules (default-deny — only ``SHARED_TYPES`` is an allow-list):
+
+            * If ``task.type in TaskStore.SHARED_TYPES`` → any logged-in user
+              may read detail/result. Mutations still require owner/admin.
+            * Otherwise (``PRIVATE_TYPES`` *and* anything not classified yet,
+              e.g. ``qwen_fundamentals``, ``meta_evolution``, ``echo``,
+              future task types we haven't added to either list) → only
+              owner/admin may even read it.
+            * ``require_owner=True`` (cancel/delete/retry) always requires
+              owner/admin, regardless of the type's classification.
         """
         from stock_trading_system.tasks.task_store import TaskStore
         uid = str(g.user.id) if g.user else None
         is_admin = bool(g.user and g.user.role == "admin")
         owner = str(task.get("created_by", ""))
-        is_private = task.get("type", "") in TaskStore.PRIVATE_TYPES
+        ttype = task.get("type", "")
+        is_shared = TaskStore.is_shared_type(ttype)
         is_owner = uid is not None and owner == uid
         if require_owner and not is_owner and not is_admin:
             return jsonify({"error": "forbidden", "message": "Not task owner"}), 403
-        if is_private and not is_owner and not is_admin:
+        if not is_shared and not is_owner and not is_admin:
             return jsonify({"error": "forbidden", "message": "Private task"}), 403
         return None
 
@@ -2056,7 +2062,7 @@ def create_app(config_path=None):
         """Mask sensitive params on shared task detail when viewer is not the owner."""
         from stock_trading_system.tasks.task_store import TaskStore
         ttype = task.get("type", "")
-        if ttype not in TaskStore.SHARED_TYPES:
+        if not TaskStore.is_shared_type(ttype):
             return task
         uid = str(g.user.id) if g.user else None
         owner = str(task.get("created_by", ""))
