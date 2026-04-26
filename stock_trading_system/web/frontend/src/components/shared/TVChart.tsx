@@ -1,5 +1,12 @@
 import { useEffect, useRef } from "react"
-import { createChart, type IChartApi, type ISeriesApi, ColorType } from "lightweight-charts"
+import {
+  createChart,
+  CandlestickSeries,
+  HistogramSeries,
+  ColorType,
+  type IChartApi,
+  type ISeriesApi,
+} from "lightweight-charts"
 import { Skeleton } from "@/components/ui/skeleton"
 
 interface OHLCVRow {
@@ -40,7 +47,7 @@ export function TVChart({ data, height = 380, loading = false, className = "" }:
     })
     chartRef.current = chart
 
-    const candle = chart.addCandlestickSeries({
+    const candle = chart.addSeries(CandlestickSeries, {
       upColor: "#00ff88",
       downColor: "#ff3860",
       borderUpColor: "#00ff88",
@@ -50,7 +57,7 @@ export function TVChart({ data, height = 380, loading = false, className = "" }:
     })
     candleRef.current = candle
 
-    const volume = chart.addHistogramSeries({
+    const volume = chart.addSeries(HistogramSeries, {
       priceFormat: { type: "volume" },
       priceScaleId: "volume",
     })

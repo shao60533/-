@@ -1551,7 +1551,8 @@ def create_app(config_path=None):
         }
         try:
             tm = _get_task_manager()
-            task = tm.submit("screen_v2", params)
+            uid = g.user.id if g.user else None
+            task = tm.submit("screen_v2", params, created_by=uid)
             return jsonify({"ok": True, "task_id": task["id"], "task": task})
         except Exception as e:
             logger.error("Screen V2 submit failed: %s", e)
@@ -1634,7 +1635,8 @@ def create_app(config_path=None):
     def api_paper_run(session_id: int):
         try:
             tm = _get_task_manager()
-            task = tm.submit("paper_trade", {"session_id": session_id})
+            uid = g.user.id if g.user else None
+            task = tm.submit("paper_trade", {"session_id": session_id}, created_by=uid)
             return jsonify({"ok": True, "task_id": task["id"], "task": task})
         except Exception as e:
             logger.error("Paper run submit failed: %s", e)
@@ -1837,7 +1839,8 @@ def create_app(config_path=None):
     def api_paper_backfill():
         try:
             tm = _get_task_manager()
-            task = tm.submit("paper_backfill", {})
+            uid = g.user.id if g.user else None
+            task = tm.submit("paper_backfill", {}, created_by=uid)
             return jsonify({"ok": True, "task_id": task["id"], "task": task})
         except Exception as e:
             logger.error("Backfill submit failed: %s", e)
@@ -1911,20 +1914,75 @@ def create_app(config_path=None):
         task = tm.get(task_id)
         if not task:
             return jsonify({"error": "Task not found"}), 404
-        return jsonify(task)
+        # Enforce ownership: shared_research types are readable by any logged-in
+        # user; private types (paper_trade, alerts, batch_analysis, ...) are
+        # owner-or-admin only. Sensitive params on shared tasks are masked
+        # before returning so we don't leak per-user context (user_id, etc.).
+        err = _check_task_ownership(task)
+        if err:
+            return err
+        return jsonify(_sanitize_shared_task(task))
 
     def _check_task_ownership(task, require_owner=False):
-        """Check if current user can mutate a task. Returns error response or None."""
+        """Check if current user can read/mutate a task. Returns error response or None.
+
+        Rules:
+            * Private task types are visible only to owner / admin.
+            * Shared research task types are visible to all logged-in users.
+            * Mutating actions (cancel/delete/retry) always require owner/admin
+              regardless of task type — pass require_owner=True for those.
+        """
         from stock_trading_system.tasks.task_store import TaskStore
         uid = str(g.user.id) if g.user else None
-        is_admin = g.user and g.user.role == "admin"
+        is_admin = bool(g.user and g.user.role == "admin")
         owner = str(task.get("created_by", ""))
         is_private = task.get("type", "") in TaskStore.PRIVATE_TYPES
-        if require_owner and owner != uid and not is_admin:
+        is_owner = uid is not None and owner == uid
+        if require_owner and not is_owner and not is_admin:
             return jsonify({"error": "forbidden", "message": "Not task owner"}), 403
-        if is_private and owner != uid and not is_admin:
+        if is_private and not is_owner and not is_admin:
             return jsonify({"error": "forbidden", "message": "Private task"}), 403
         return None
+
+    # Per-task-type whitelist of params keys that are safe to expose to other
+    # users on shared research tasks. Anything else is stripped so we don't
+    # leak user_id, internal flags, or per-user context.
+    _SHARED_PARAMS_WHITELIST = {
+        "analysis":  {"ticker", "date", "_provider", "_model"},
+        "screen":    {"market", "strategy", "_provider", "_model"},
+        "screen_v2": {"market", "strategy", "enabled_gurus", "nl_query",
+                      "final_count", "max_universe", "_provider", "_model"},
+        "screen_v3": {"market", "candidate_n", "gurus", "mode",
+                      "with_roundtable", "nl_query", "_provider", "_model"},
+        "backtest":  {"ticker", "strategy_id", "period",
+                      "initial_capital", "params", "_provider", "_model"},
+        "report":    {"type", "_provider", "_model"},
+    }
+
+    def _sanitize_shared_task(task: dict) -> dict:
+        """Mask sensitive params on shared task detail when viewer is not the owner."""
+        from stock_trading_system.tasks.task_store import TaskStore
+        ttype = task.get("type", "")
+        if ttype not in TaskStore.SHARED_TYPES:
+            return task
+        uid = str(g.user.id) if g.user else None
+        owner = str(task.get("created_by", ""))
+        is_admin = bool(g.user and g.user.role == "admin")
+        if owner == uid or is_admin:
+            return task
+        whitelist = _SHARED_PARAMS_WHITELIST.get(ttype)
+        if whitelist is None:
+            return task
+        try:
+            raw = json.loads(task.get("params_json") or "{}")
+        except (TypeError, json.JSONDecodeError):
+            return task
+        if not isinstance(raw, dict):
+            return task
+        filtered = {k: v for k, v in raw.items() if k in whitelist}
+        cleaned = dict(task)
+        cleaned["params_json"] = json.dumps(filtered, ensure_ascii=False)
+        return cleaned
 
     @app.route("/api/tasks/<task_id>/result", methods=["GET"])
     def api_task_result(task_id):
@@ -2147,6 +2205,7 @@ def create_app(config_path=None):
             task_type="screen_v3",
             params=params,
             title=f"V3 选股: {params['nl_query'][:30] or '默认'}",
+            created_by=user_id,
         )
         return jsonify({"task_id": task["id"], "estimated": params})
 

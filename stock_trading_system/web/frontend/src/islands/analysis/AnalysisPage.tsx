@@ -22,6 +22,7 @@ interface AnalysisDetail {
   risk_assessment?: string; trade_decision?: string
   analysts?: Record<string, string>
   advice_json?: string
+  task_id?: string
 }
 
 interface OHLCVRow {
@@ -274,13 +275,14 @@ function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
     }
   }
 
-  // Parse advice_json for fundamentals quick-info
-  let advice: Record<string, unknown> = {}
+  // Parse advice_json so the catch suppresses bad rows. We only need the
+  // side effect of validating it parses; the rendered UI reads structured
+  // fields directly, not this blob.
   try {
-    advice = detail.advice_json
-      ? (typeof detail.advice_json === "string" ? JSON.parse(detail.advice_json) : detail.advice_json) as Record<string, unknown>
-      : {}
-  } catch { /* ignore */ }
+    if (detail.advice_json && typeof detail.advice_json === "string") {
+      JSON.parse(detail.advice_json)
+    }
+  } catch { /* ignore malformed advice payloads */ }
 
   // Quick-info extractions
   const newsSnippet = (reportContent["News"] || "").slice(0, 200)

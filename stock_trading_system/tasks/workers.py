@@ -637,7 +637,10 @@ def echo_worker(params: dict, progress_cb: ProgressCb) -> dict:
     progress_cb(10, "开始")
     progress_cb(50, "处理中")
     progress_cb(90, "即将完成")
-    return {"echoed": params}
+    # Strip TaskManager-injected fields (e.g. __cancel_event__ — a threading.Event
+    # which is not JSON-serializable) so the result can be persisted.
+    safe_params = {k: v for k, v in params.items() if not str(k).startswith("__")}
+    return {"echoed": safe_params}
 
 
 # ── Registration helper ──────────────────────────────────────────────────────

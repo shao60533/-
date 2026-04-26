@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react"
 import { Wallet, TrendingUp, Target, Package, Plus, Search, DollarSign, ArrowDownToLine } from "lucide-react"
-import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
+import { Card, CardHeader, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Stat } from "@/components/ui/stat"

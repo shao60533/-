@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useMemo } from "react"
 import {
-  CheckCircle2, Clock4, TrendingUp, AlertCircle,
-  Sparkles, ExternalLink, XCircle, Loader2, BarChart3,
+  CheckCircle2, Clock4, AlertCircle,
+  Sparkles, XCircle, BarChart3,
 } from "lucide-react"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -128,7 +128,7 @@ function PaperTradeContent() {
     <div className="p-4 md:p-6 space-y-6 max-w-5xl mx-auto">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-bold">{ticker} 纸面交易</h1>
-        <Badge variant={sess.status === "running" ? "default" : "secondary"}>{sess.status}</Badge>
+        <Badge variant={sess.status === "running" ? "default" : "muted"}>{sess.status}</Badge>
       </div>
 
       {/* Main tab switch */}
@@ -152,7 +152,7 @@ function PaperTradeContent() {
           <CardHeader>
             <div className="flex items-center justify-between">
               <CardTitle className="text-sm">当前策略</CardTitle>
-              {plan && <Badge variant={plan.rating === "BUY" || plan.rating === "Buy" ? "buy" : plan.rating === "SELL" ? "sell" : "secondary"}>
+              {plan && <Badge variant={plan.rating === "BUY" || plan.rating === "Buy" ? "buy" : plan.rating === "SELL" ? "sell" : "muted"}>
                 {plan.rating || "—"}
               </Badge>}
             </div>
@@ -268,7 +268,7 @@ function PaperTradeContent() {
 
 /* ── Daily Data Tab ─────────────────────────────────────────── */
 
-function DailyDataTab({ dailies, startCapital }: { dailies: Daily[]; startCapital: number }) {
+function DailyDataTab({ dailies }: { dailies: Daily[]; startCapital: number }) {
   const latest = dailies.length > 0 ? dailies[dailies.length - 1] : null
   const maxDrawdown = dailies.length > 0 ? Math.min(...dailies.map(d => d.drawdown_pct)) : 0
 
@@ -422,7 +422,7 @@ function PlanHistory({ plans }: { plans: Plan[] }) {
           p.status === "active" ? "border-primary/30" : "border-border opacity-70",
         )}>
           <div className="flex items-center gap-2 mb-1">
-            <Badge variant={p.status === "active" ? "default" : "secondary"}>
+            <Badge variant={p.status === "active" ? "default" : "muted"}>
               {p.rating || "—"}
             </Badge>
             <span className="text-xs font-medium">Plan #{p.id}</span>
@@ -450,7 +450,7 @@ function EventTimeline({ events }: { events: Event[] }) {
     <div className="space-y-2">
       {events.map(e => (
         <div key={e.id} className="flex items-center gap-3 text-sm border-b border-border/50 pb-2">
-          <Badge variant={e.signal === "BUY" ? "buy" : e.signal === "SELL" ? "sell" : "secondary"} className="text-[10px]">
+          <Badge variant={e.signal === "BUY" ? "buy" : e.signal === "SELL" ? "sell" : "muted"} className="text-[10px]">
             {e.signal}
           </Badge>
           <span className="text-xs text-muted-foreground">{e.created_at}</span>

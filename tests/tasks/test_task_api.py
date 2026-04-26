@@ -1,7 +1,8 @@
 """Task REST API integration tests — TA-1.3.* from test plan.
 
 Exercises the full Flask + SocketIO + TaskManager pipeline through the
-HTTP routes defined in web/app.py.
+HTTP routes defined in web/app.py. Authenticated as canonical 'alice'
+user via the shared ``app_client`` fixture.
 """
 
 from __future__ import annotations
@@ -10,45 +11,12 @@ import time
 
 import pytest
 
-from stock_trading_system.config import load_config
-from stock_trading_system.web import app as app_module
-
 
 @pytest.fixture
-def client(tmp_path):
-    """Build a fresh Flask test client pointing at an isolated db/cache."""
-    db_path = tmp_path / "portfolio.db"
-
-    # Reset module-level singletons (Flask app is recreated per fixture)
-    for attr in (
-        "_task_manager", "_task_store", "_local_cache",
-        "_portfolio_mgr", "_alert_monitor", "_data_manager",
-        "_analyzer", "_screener", "_report_gen", "_strategy_engine",
-        "_scheduler", "_scheduler_thread",
-    ):
-        if hasattr(app_module, attr):
-            setattr(app_module, attr, None)
-
-    app = app_module.create_app()
-    app.config["TESTING"] = True
-
-    # create_app internally calls load_config() which resets the global cfg.
-    # Override *after* app creation so our tmp path sticks when singletons
-    # are lazy-initialized on first API call.
-    from stock_trading_system.config import get_config
-    cfg = get_config()
-    cfg["portfolio"] = {"db_path": str(db_path)}
-
-    # Force task manager to initialize now so workers are registered
-    # and subsequent orphan recovery runs on an empty DB.
-    app_module._get_task_manager()
-
-    with app.test_client() as c:
-        yield c
-
-    tm = getattr(app_module, "_task_manager", None)
-    if tm is not None:
-        tm.shutdown(wait=False)
+def client(app_client):
+    """Logged-in alice client; default actor for every TA-1.3.* case."""
+    users = app_client["users"]
+    return app_client["make_client"](users.alice_email, users.alice_password)
 
 
 def _await_status(client, task_id, terminal={"success", "failed", "cancelled"},
@@ -128,6 +96,15 @@ def test_list_pagination_params(client):
     assert len(body["items"]) <= 2
 
 
+def test_list_unknown_scope_falls_back_to_mine(client):
+    """Typoed scope must never bypass filtering and leak other users' tasks."""
+    client.post("/api/tasks/submit", json={"type": "echo", "params": {"k": 1}})
+    rv = client.get("/api/tasks?scope=my")  # typo: "my" instead of "mine"
+    assert rv.status_code == 200
+    body = rv.get_json()
+    assert body["scope"] == "mine"
+
+
 # ── TA-1.3.7 detail ───────────────────────────────────────────────────────────
 
 
@@ -161,8 +138,6 @@ def test_result_after_success(client):
     assert rv.status_code == 200
     body = rv.get_json()
     assert "task" in body and "result" in body
-    # generic result stored as {'payload': {...}} or raw dict depending on route
-    # echo worker returns {"echoed": params}; stored via generic fallback
     assert body["result"] is not None
 
 
@@ -170,15 +145,11 @@ def test_result_after_success(client):
 
 
 def test_result_not_ready(client):
-    # We can't reliably race an echo task (too fast). Instead submit to an
-    # unknown type, which immediately fails — result should be unavailable.
     rv = client.post("/api/tasks/submit",
                      json={"type": "totally_bogus", "params": {}})
-    assert rv.status_code == 400  # unknown type rejected at the API level
-    # Submit echo and immediately ask for result before waiting
+    assert rv.status_code == 400
     sub = client.post("/api/tasks/submit",
                       json={"type": "echo", "params": {"x": 1}}).get_json()
-    # It may race — if already success, skip; otherwise expect 404
     detail = client.get(f"/api/tasks/{sub['id']}").get_json()
     if detail["status"] != "success":
         rv = client.get(f"/api/tasks/{sub['id']}/result")
@@ -266,11 +237,7 @@ def test_cleanup_endpoint(client):
 
 
 def test_diagnostics_providers_shape(client):
-    """Diagnostics endpoint returns provider statuses + routing summary.
-
-    To keep CI fast, every provider is disabled — we only verify the
-    endpoint shape, not real network reachability.
-    """
+    """Diagnostics endpoint returns provider statuses + routing summary."""
     from stock_trading_system.config import get_config
     cfg = get_config()
     cfg["providers"] = {
@@ -278,6 +245,7 @@ def test_diagnostics_providers_shape(client):
         "akshare_enabled": False,
         "polygon_enabled": False,
         "ib_enabled": False,
+        "schwab_enabled": False,
     }
     cfg["qwen"] = {"enabled": False, "api_key": ""}
     rv = client.get("/api/diagnostics/providers")
@@ -286,5 +254,44 @@ def test_diagnostics_providers_shape(client):
     assert "providers" in body
     assert "routing" in body
     assert "primary" in body["routing"]
-    # All providers disabled → empty providers dict but request still 200
     assert body["providers"] == {}
+
+
+# ── Cross-user task isolation ────────────────────────────────────────────────
+
+
+def test_alice_cannot_read_bob_private_task(app_client):
+    """Bob's private (paper_trade) task must be 403 for Alice."""
+    users = app_client["users"]
+    bob = app_client["make_client"](users.bob_email, users.bob_password)
+    alice = app_client["make_client"](users.alice_email, users.alice_password)
+
+    # Bob submits a private-typed task. We use the generic submitter and
+    # accept either "task type registered" (200) or "not registered" (400).
+    rv = bob.post("/api/tasks/submit", json={
+        "type": "paper_backfill", "params": {},
+    })
+    if rv.status_code != 200:
+        pytest.skip("paper_backfill worker not registered in this build")
+    bob_task_id = rv.get_json()["id"]
+
+    rv2 = alice.get(f"/api/tasks/{bob_task_id}")
+    assert rv2.status_code == 403
+
+
+def test_alice_cannot_cancel_bob_shared_task(app_client):
+    """Even shared-research tasks: only owner/admin can cancel/delete/retry."""
+    users = app_client["users"]
+    bob = app_client["make_client"](users.bob_email, users.bob_password)
+    alice = app_client["make_client"](users.alice_email, users.alice_password)
+    rv = bob.post("/api/tasks/submit", json={
+        "type": "echo", "params": {"who": "bob"},
+    })
+    bob_task_id = rv.get_json()["id"]
+
+    cancel = alice.post(f"/api/tasks/{bob_task_id}/cancel")
+    assert cancel.status_code in (403, 409)  # 409 only if echo already done
+    if cancel.status_code == 409:
+        # echo finished too fast — try delete instead
+        delete = alice.delete(f"/api/tasks/{bob_task_id}")
+        assert delete.status_code == 403

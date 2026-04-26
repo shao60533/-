@@ -174,9 +174,51 @@ class TaskStore:
             cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
             return cur.rowcount > 0
 
-    # Task types whose results are shared (any logged-in user can see)
-    SHARED_TYPES = frozenset(["analysis", "screen", "screen_v2", "screen_v3", "backtest", "report"])
-    PRIVATE_TYPES = frozenset(["portfolio_batch", "personal_advice", "alerts", "paper_trade", "paper_backfill"])
+    # Task types whose results are shared (any logged-in user can see).
+    # Covers: AI analysis, all screener variants, backtest, public reports.
+    SHARED_TYPES = frozenset([
+        "analysis", "screen", "screen_v2", "screen_v3",
+        "backtest", "report",
+    ])
+    # Task types tied to a single user's portfolio / alerts / personal advice.
+    # Owner-only; never shown via shared_research scope.
+    PRIVATE_TYPES = frozenset([
+        "portfolio_batch", "batch_analysis", "personal_advice",
+        "alerts", "paper_trade", "paper_backfill",
+    ])
+
+    VALID_SCOPES = frozenset({"mine", "shared_research", "all"})
+
+    def _scope_clause(
+        self,
+        scope: str | None,
+        created_by: int | None,
+    ) -> tuple[str | None, list[Any]]:
+        """Return (sql_fragment, params) for the given scope.
+
+        Contract:
+            * ``scope=None`` = programmatic / admin listing — no scope filter
+              applied. The HTTP layer is expected to never forward a None.
+            * ``scope="all"`` = explicit no-filter (admin only at HTTP layer).
+            * ``scope="shared_research"`` = restrict to SHARED_TYPES.
+            * ``scope="mine"`` = restrict to ``created_by``. With no caller id
+              we return an impossible predicate rather than leaking everything.
+            * Any other (unknown) scope falls through to "mine" semantics so a
+              typo at a future API caller can never bypass filtering and leak
+              other users' private tasks.
+        """
+        if scope is None:
+            return None, []
+        if scope == "all":
+            return None, []
+        if scope == "shared_research":
+            types = sorted(self.SHARED_TYPES)
+            placeholders = ",".join("?" * len(types))
+            return f"type IN ({placeholders})", list(types)
+        # "mine" or unknown → defensive owner filter
+        if created_by is None:
+            return "1 = 0", []
+        return "created_by = ?", [str(created_by)]
 
     def list(
         self,
@@ -195,15 +237,10 @@ class TaskStore:
         if status:
             clauses.append("status = ?")
             params.append(status)
-        # Scope filtering
-        if scope == "mine" and created_by is not None:
-            clauses.append("created_by = ?")
-            params.append(str(created_by))
-        elif scope == "shared_research":
-            placeholders = ",".join("?" * len(self.SHARED_TYPES))
-            clauses.append(f"type IN ({placeholders})")
-            params.extend(sorted(self.SHARED_TYPES))
-        # scope == "all" → no filter (admin only, checked in web layer)
+        scope_sql, scope_params = self._scope_clause(scope, created_by)
+        if scope_sql:
+            clauses.append(scope_sql)
+            params.extend(scope_params)
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         params.extend([int(limit), int(offset)])
         with self._conn() as conn:
@@ -229,13 +266,10 @@ class TaskStore:
         if status:
             clauses.append("status = ?")
             params.append(status)
-        if scope == "mine" and created_by is not None:
-            clauses.append("created_by = ?")
-            params.append(str(created_by))
-        elif scope == "shared_research":
-            placeholders = ",".join("?" * len(self.SHARED_TYPES))
-            clauses.append(f"type IN ({placeholders})")
-            params.extend(sorted(self.SHARED_TYPES))
+        scope_sql, scope_params = self._scope_clause(scope, created_by)
+        if scope_sql:
+            clauses.append(scope_sql)
+            params.extend(scope_params)
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         with self._conn() as conn:
             row = conn.execute(f"SELECT COUNT(*) FROM tasks {where}", params).fetchone()

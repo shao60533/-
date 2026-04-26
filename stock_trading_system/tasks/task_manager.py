@@ -358,18 +358,42 @@ class TaskManager:
     # ── Plumbing ─────────────────────────────────────────────────────────
 
     def _emit(self, event: str, payload: dict) -> None:
-        """Legacy emit — routes through unified emit_event when task_id available."""
+        """Emit a lifecycle event.
+
+        Three concerns the implementation honors:
+            1. Persist to task_events so reconnecting clients can catch up.
+            2. Broadcast on the *injected* socketio so tests and per-app
+               instances both see every event — never reach for the module-
+               level global, which would skip the test recorder.
+            3. Scope the broadcast to ``user:{created_by}`` when we know the
+               owner, so users only see their own task lifecycle events.
+        """
         task_id = payload.get("task_id") or payload.get("id", "")
+
+        # Persist (best effort; no-op when task_events table is absent).
+        user_id: int | str | None = None
         if task_id:
             try:
-                from stock_trading_system.tasks.event_emitter import emit_event
-                emit_event(task_id, event, payload)
-                return
-            except Exception:
-                pass
-        # Fallback: direct socketio emit (for non-task events)
+                from stock_trading_system.tasks.event_emitter import (
+                    persist_event, _resolve_db_path, _resolve_user_id,
+                )
+                db_path = _resolve_db_path(getattr(self._store, "_db_path", None))
+                user_id = _resolve_user_id(db_path, task_id)
+                persist_event(
+                    task_id, event, payload,
+                    db_path=db_path, user_id=user_id,
+                )
+            except Exception as e:  # pragma: no cover
+                logger.debug("persist_event failed for %s: %s", event, e)
+
+        # Broadcast on the injected socketio. Use a per-user room when we know
+        # the owner so cross-user leakage doesn't happen in production; tests
+        # using RecordingSocketIO ignore the `to=` kwarg.
         try:
-            self._socketio.emit(event, payload)
+            if user_id is not None:
+                self._socketio.emit(event, payload, to=f"user:{user_id}")
+            else:
+                self._socketio.emit(event, payload)
         except Exception as e:  # pragma: no cover
             logger.warning("WS emit failed for %s: %s", event, e)
 

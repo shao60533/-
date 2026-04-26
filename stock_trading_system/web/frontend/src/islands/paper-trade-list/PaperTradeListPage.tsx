@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react"
 import {
-  TestTube, Plus, Search, RefreshCw, Star, MoreHorizontal,
+  TestTube, Search, RefreshCw, Star, MoreHorizontal,
   Trash2, Pencil, Download,
 } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
@@ -14,7 +14,6 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { apiGet, apiDel } from "@/lib/api"
-import { cn } from "@/lib/utils"
 
 interface Session {
   id: number

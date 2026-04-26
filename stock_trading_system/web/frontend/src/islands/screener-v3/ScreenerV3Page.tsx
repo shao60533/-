@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useState } from "react"
 import { Play, Zap, Users, Clock, DollarSign, SlidersHorizontal, ChevronDown, ChevronRight, ArrowLeft } from "lucide-react"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -10,7 +10,7 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Avatar } from "@/components/ui/avatar"
 import { Stat } from "@/components/ui/stat"
 import { Skeleton } from "@/components/ui/skeleton"
-import { GURUS as STATIC_GURUS } from "@/data/gurus"
+import { GURUS as STATIC_GURUS, type Guru } from "@/data/gurus"
 import { apiGet } from "@/lib/api"
 import { cn } from "@/lib/utils"
 
@@ -35,7 +35,7 @@ function ScreenerForm() {
   const [selected, setSelected] = useState<Set<string>>(
     new Set(["buffett", "graham", "munger", "lynch"])
   )
-  const [gurus, setGurus] = useState(STATIC_GURUS)
+  const [gurus, setGurus] = useState<Guru[]>(STATIC_GURUS)
 
   useEffect(() => {
     fetch("/api/screen/v3/gurus", { credentials: "same-origin" })
@@ -43,10 +43,16 @@ function ScreenerForm() {
       .then(d => {
         const list = d.gurus || d
         if (Array.isArray(list) && list.length > 0) {
-          setGurus(list.map((g: any) => ({
-            id: g.name, name: g.display_name,
-            philosophy: g.philosophy, motto: g.motto,
-            color: g.avatar_color, initials: g.avatar_initials,
+          setGurus(list.map((g: any): Guru => ({
+            id: g.name,
+            name: g.display_name,
+            philosophy: g.philosophy,
+            color: g.avatar_color,
+            initials: g.avatar_initials,
+            // Backend /api/screen/v3/gurus omits principles + tier — fall
+            // back to safe defaults so Guru[] stays type-safe.
+            principles: Array.isArray(g.principles) ? g.principles : [],
+            tier: (g.tier as Guru["tier"]) ?? "core",
           })))
         }
       })

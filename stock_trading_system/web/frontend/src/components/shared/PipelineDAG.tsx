@@ -64,10 +64,6 @@ export function PipelineDAG({ taskId, onAllDone }: PipelineDAGProps) {
           }
 
           // Mark next stage as running
-          const nextIdx = STAGES.findIndex(s => {
-            // find first still-pending
-            return true // will check in setStages
-          })
           setStages(prev => {
             const updated = { ...prev }
             // find first pending and mark running

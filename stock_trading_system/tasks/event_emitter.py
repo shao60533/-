@@ -55,53 +55,49 @@ def _now_iso() -> str:
     return datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
-def emit_event(
+def _resolve_db_path(db_path: str | None) -> str:
+    if db_path:
+        return db_path
+    try:
+        from stock_trading_system.config import get_config
+        return get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
+    except Exception:
+        return "data/portfolio.db"
+
+
+def _resolve_user_id(db_path: str, task_id: str) -> int | str | None:
+    try:
+        conn = sqlite3.connect(db_path)
+        row = conn.execute(
+            "SELECT created_by FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        conn.close()
+        return row[0] if row else None
+    except Exception:
+        return None
+
+
+def persist_event(
     task_id: str,
     event: str,
     payload: dict,
     *,
     db_path: str | None = None,
-    user_id: int | None = None,
-    socketio=None,
+    user_id: int | str | None = None,
 ) -> dict | None:
-    """Unified event emission: persist + broadcast.
+    """Persist an event to task_events without broadcasting.
 
-    Args:
-        task_id: The task this event belongs to.
-        event: Event type string (e.g. 'task_progress', 'guru_unit_done').
-        payload: Event-specific data dict.
-        db_path: Path to SQLite DB. If None, tries to resolve from config.
-        user_id: Owner of the task. If None, looks up from tasks table.
-        socketio: Flask-SocketIO instance. If None, tries to import from app.
-
-    Returns:
-        The envelope dict, or None on failure.
+    Returns the envelope so the caller can hand it to whatever transport it
+    likes (SocketIO, in-memory recorder, ...). Best-effort: returns None when
+    we can't resolve user_id or the table doesn't exist yet.
     """
-    # Resolve db_path
-    if db_path is None:
-        try:
-            from stock_trading_system.config import get_config
-            db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
-        except Exception:
-            db_path = "data/portfolio.db"
-
-    # Resolve user_id from task record if not provided
+    db_path = _resolve_db_path(db_path)
     if user_id is None:
-        try:
-            conn = sqlite3.connect(db_path)
-            row = conn.execute(
-                "SELECT created_by FROM tasks WHERE id = ?", (task_id,)
-            ).fetchone()
-            conn.close()
-            user_id = row[0] if row else None
-        except Exception:
-            pass
-
+        user_id = _resolve_user_id(db_path, task_id)
     if user_id is None:
-        logger.debug("Cannot resolve user_id for task %s, skipping emit", task_id)
+        logger.debug("Cannot resolve user_id for task %s, skipping persist", task_id)
         return None
 
-    # Generate sequential seq number (per-task)
     with _seq_lock:
         seq = _seq_cache.get(task_id, 0) + 1
         _seq_cache[task_id] = seq
@@ -116,7 +112,6 @@ def emit_event(
         "emitted_at": emitted_at,
     }
 
-    # 1. Persist to task_events table
     try:
         conn = sqlite3.connect(db_path)
         conn.execute(
@@ -130,7 +125,37 @@ def emit_event(
         # Table might not exist yet (pre-migration) — don't crash the worker
         logger.debug("Failed to persist event: %s", e)
 
-    # 2. Broadcast via SocketIO to user's room
+    return envelope
+
+
+def emit_event(
+    task_id: str,
+    event: str,
+    payload: dict,
+    *,
+    db_path: str | None = None,
+    user_id: int | str | None = None,
+    socketio=None,
+) -> dict | None:
+    """Unified event emission: persist + broadcast to user room.
+
+    The broadcast goes to `user:{user_id}` so users only see their own events.
+    For lifecycle events emitted from TaskManager we already broadcast on the
+    injected socketio at the call site; this path keeps backward compatibility
+    for worker progress events that don't have a TaskManager handle.
+    """
+    db_path = _resolve_db_path(db_path)
+    if user_id is None:
+        user_id = _resolve_user_id(db_path, task_id)
+    envelope = persist_event(
+        task_id, event, payload, db_path=db_path, user_id=user_id,
+    )
+    if envelope is None:
+        return None
+
+    # Resolve socketio if not provided. Avoid importing the web app module at
+    # import-time (would create a cycle); only reach for it when actually
+    # broadcasting.
     if socketio is None:
         try:
             from stock_trading_system.web.app import socketio as _sio
@@ -140,7 +165,7 @@ def emit_event(
 
     if socketio is not None:
         try:
-            socketio.emit(event, envelope, to=f"user:{user_id}")
+            socketio.emit(event, envelope, to=f"user:{envelope['user_id']}")
         except Exception as e:
             logger.debug("Failed to emit via socketio: %s", e)
 
