@@ -24,6 +24,7 @@ R-1 ~ R-7 commits 已落地（6e583b4..5370863）。审计 22 P0 项实际状态
 | ❌ MISSING（v1.7 实测新增）| 2 | **PT-P0-4 paper-trade ticker 详情页空白**（PT-P0-3 fix 未真实落地，pathname.split 仍是老代码）· **A-P0-7 分析提交后跳 /tasks 不是 /analysis 详情**（用户看不到 DAG 流式进度 + 7-tab 报告流入）|
 | ❕ 功能补强（v1.8 新增）| 2 | **D-FEAT-1 仪表盘净值曲线自动回溯**（从最早 snapshot 数据起到今天每日，而非固定 30 天）· **P-FEAT-1 持仓表加盈亏绝对值列**（除百分比外补 PnL 美元值） |
 | ❌ MISSING（v1.9 实测新增）| 1 | **A-P0-8 AI 分析运行中态完全空白**（点开始分析后页面无内容；应该立即显示 K线/新闻/基本面 + Pipeline DAG 实时进度 + 7-tab 占位 skeleton，agent 完成后逐个填充）|
+| ❌ 实测仍未真修（v1.10 prod 验证）| 5 | **D-FEAT-1 净值曲线只 1 个点**（后端 days=30 硬编码未改 None）· **P-FEAT-1 Dashboard 持仓 top3 没加绝对值列**（仅 PortfolioPage 加了）· **SV3-P0-1 V3 结果"加载失败"**（前端用 task_id 拉 result，但后端期望 result_id 整数）· **PT-P0-4 paper-trade ErrorBoundary 真触发**（内部 render 抛错，需修内部 null check）· **R-5.3 K线区域空白**（TVChart 已挂但 klineData 空，需修 quote/history API 接入）|
 
 **T-P0-6 任务中心空白 bug 已修复**（实测 2026-04-25）：
 - ✅ 后端 [app.py:1713-1719](../../stock_trading_system/web/app.py) 返回 `{tasks, items, total, limit, offset}` 双字段向后兼容
@@ -1043,6 +1044,93 @@ F. 移动端 ≤575.98px 重排：
 
 A-P0-8 实质上把 R-5.1 / R-5.2 / R-5.3 / R-5.4 合并成一个完整的"运行中 dashboard"页，工作量已包含在前面那些子任务里，这里只补**布局组合 + 三个独立数据 fetch + DAG 事件 → tab 填充的桥接逻辑**（~3h）。
 
+#### v1.10 新增（生产实测仍未真修，~3h）：
+
+##### R-fix-1 · 净值曲线 backend days=30 硬编码（~15min）
+
+[app.py:762](../../stock_trading_system/web/app.py)：
+```python
+history = pm.get_history(days=30)  # ← 硬编码
+```
+**未根据 v1.8 改动。** 前端 ChipRow 切换"全部"也只能拿 30 天数据。
+
+修法：
+- 改为 `history = pm.get_history(days=request.args.get('history_days', 'all'))`
+- `get_history(days)` 兼容 `days='all'` / `days=None` → 返全量；否则按整数过滤
+- 前端 [DashboardPage.tsx](../../stock_trading_system/web/frontend/src/islands/dashboard/DashboardPage.tsx) 默认请求 `?history_days=all`
+
+验证：用户从 2026-04-14 起的 daily_snapshot → 1Y 视图应连续显示所有可用日期。
+
+##### R-fix-2 · Dashboard 持仓 top 3 加绝对值列（~30min）
+
+[DashboardPage.tsx](../../stock_trading_system/web/frontend/src/islands/dashboard/DashboardPage.tsx) 持仓概览部分（v1.8 P-FEAT-1 漏改）：
+- 找到 holdings.slice(0, 3) 渲染处
+- 每行加一个 `+$1,235.40 / -$890.50` 绝对值字段（与 PortfolioPage 一致）
+- 颜色规则同 portfolio：>0 绿 / <0 红 / =0 灰
+- 移动端 m-card 同步
+
+##### R-fix-3 · Screener V3 结果 ID 不匹配（~30min）
+
+**根因**：
+- [ScreenerV3Page.tsx:228] 前端 `apiGet('/api/screen/v3/results/${resultId}')` 中 `resultId` 是 URL ?result= 的 task_id（UUID）
+- 后端 [app.py:2147] `@app.route("/api/screen/v3/results/<result_id>")` 期望整数 `screen_results_v2.id`
+
+修法（择一）：
+- 方案 A（推荐）：后端路由接受 `task_id`：先 lookup `tasks.result_ref` 解析 `screen_results_v2:<id>` 得真实 result_id 再查
+- 方案 B：前端 task_completed 事件时取 `result_ref.id` 整数，URL 用整数（不用 task_id）
+
+方案 A 实现：
+```python
+@app.route("/api/screen/v3/results/<task_or_result_id>")
+def api_screen_v3_result(task_or_result_id):
+    # 优先按 task_id (UUID) 查
+    task = task_store.get(task_or_result_id)
+    if task and task.result_ref:
+        m = re.match(r"screen_results_v2:(\d+)", task.result_ref)
+        if m: return _fetch_result(int(m.group(1)))
+    # 兼容旧整数 ID
+    if task_or_result_id.isdigit():
+        return _fetch_result(int(task_or_result_id))
+    return jsonify({"error": "result_not_found"}), 404
+```
+
+##### R-fix-4 · Paper-trade ErrorBoundary 内部 throw（~30min）
+
+ErrorBoundary 已加并触发，需查 [PaperTradeContent](../../stock_trading_system/web/frontend/src/islands/paper-trade/PaperTradePage.tsx) 内部具体抛错点。
+
+排查清单：
+1. ticker 解析后 `apiGet('/api/paper/tickers/${ticker}')` 失败时 setState `error` 是否安全
+2. `data.session.metrics` 等深字段在 data.session=null 时是否 null-safe
+3. `data.events.map()` 时 events 是否可能 undefined
+4. ORDER_LABELS / STATUS_ICONS lookup 是否有未知 key 触发 React 警告或 crash
+5. plan 数据缺关键字段（fingerprint / orders）时图表是否能渲染
+
+修法：在 PaperTradeContent 中所有 `.map()` / 字段访问加 `?.` / `|| []` 兜底；保持 ErrorBoundary 不变作最后防线。
+
+实测：调浏览器 DevTools console 看抛错堆栈，逐个修。
+
+##### R-fix-5 · K 线区域空白（~1h）
+
+`<TVChart data={klineData}>` 组件已就位（v1.9 R-5.3 落地），但 klineData 拉不到数据。
+
+诊断：
+- [AnalysisPage.tsx](../../stock_trading_system/web/frontend/src/islands/analysis/AnalysisPage.tsx) 哪个 useEffect / fetch 给 klineData 赋值？
+- 后端是否有 `/api/quote/history` 端点？grep app.py 看
+- 若没有该端点，新增：
+  ```python
+  @app.route("/api/quote/history")
+  def api_quote_history():
+      ticker = request.args.get("ticker")
+      days = int(request.args.get("days", 90))
+      from stock_trading_system.data.data_manager import DataManager
+      dm = DataManager(load_config())
+      bars = dm.get_history(ticker, days=days)  # 返 [{date, open, high, low, close, volume}]
+      return jsonify({"ticker": ticker, "bars": bars})
+  ```
+- 前端 fetch 后 setState `klineData` 数组
+
+验证：SOXL 详情页"K 线走势（近 3 个月）"区域应渲染交互式 TVChart。
+
 ---
 
 ### 6.2 R-1.x 完成后
@@ -1112,3 +1200,4 @@ python -m stock_trading_system.validation.sign_off \
 | v1.7 | 2026-04-25 | 实测两个 P0：(1) PT-P0-4 paper-trade ticker 详情完全空白（PaperTradePage.tsx:68 pathname.split 仍老代码）；(2) A-P0-7 AI 分析提交后跳 /tasks/<id> 应跳 /analysis/<task_id> 配合 Pipeline DAG。新增 R-3.1（30min）+ R-5.4（1h）；剩余 13.5h → 15h |
 | v1.8 | 2026-04-26 | 功能补强 2 项（用户实测后提的非 bug 改进）：(1) D-FEAT-1 仪表盘净值曲线自动回溯（从最早 daily_snapshot 起到今天，不再固定 30 天，加 range switcher chip 全部/1Y/6M/3M/1M/7D + dataZoom；后端 get_history(days=None) 返全量）；(2) P-FEAT-1 持仓表加"盈亏 $"绝对值列（后端 get_holdings 已计算 pnl 字段，前端补显示，dashboard 持仓概览同步加），移动端 m-card 同步加。剩余 15h → 17h | — |
 | v1.9 | 2026-04-26 | 实测 A-P0-8：点[开始分析]后页面完全空白。新增完整运行中态布局（强化 v1.7 A-P0-7 + R-5.1 DAG + R-5.2 侧卡 + R-5.3 K线，合并成一个 dashboard）：Header / 主图 K 线 / Pipeline DAG / 三列侧卡（新闻+基本面+多空比） / 7-tab 占位 skeleton 逐个填充。提交后立即跳 /analysis/<task_id>，K线和新闻/基本面独立拉（< 1s 显示），DAG 订阅 task_events 实时进度，agent_stage_done 事件 → 对应 tab 填充。完成后 history.replaceState 切到 /analysis/<analysis_id>。新增 ~3h（含在 R-5.x 内）；剩余 17h → 20h | — |
+| v1.10 | 2026-04-26 | 生产环境实测发现 5 项前序号称 DONE 的项实际仍未真修：(1) D-FEAT-1 净值曲线后端 `pm.get_history(days=30)` 硬编码（v1.8 后端改动漏做，前端 ChipRow 无效）；(2) P-FEAT-1 Dashboard 持仓 top3 没加绝对值列（v1.8 仅 PortfolioPage 加了，dashboard 漏）；(3) SV3-P0-1 V3 结果"加载失败"（前端用 task_id (UUID) 拉 `/api/screen/v3/results/<id>`，后端期望整数 result_id）；(4) PT-P0-4 Paper-trade ErrorBoundary 真触发（内部 PaperTradeContent 有 throw，需 null check）；(5) R-5.3 K线区域空白（TVChart 已挂但 klineData 空，需新建/修 `/api/quote/history` 端点）。新增 R-fix-1~5（~3h）；剩余 20h → 23h | — |

@@ -397,3 +397,331 @@ updated_by_task_id
 - 任务中心不空白，完成任务能跳转到业务结果页。
 - 前端 build 通过，关键 E2E 通过。
 - `pytest` 基线恢复稳定，不再因为鉴权、依赖、真实 home 目录写入而失败。
+
+## 7. 2026-04-26 验收回归补充指令
+
+### 7.1 当前验收结论
+
+本轮代码已覆盖部分原始 review finding，但仍未达到可签收状态。需要继续按 P0 修复并补测试。
+
+已基本通过：
+
+- 未迁移或空 `users` 表时，不再开放全部业务访问；未初始化 API 应返回 `503 not_initialized`，页面跳登录。
+- 通用 `/api/tasks/submit` 已传入 `created_by=g.user.id`，`TaskManager.submit()` 也能从 request context 兜底推断用户。
+- `/api/tasks` 响应已包含 `tasks/items/total/limit/offset`，任务中心列表 schema mismatch 本体已修。
+
+未通过：
+
+- `POST /api/settings/llm-provider` 调用了不存在的 `_invalidate_singletons()`，登录后切换模型会 500。
+- Settings 页面仍提交旧 schema `{provider, model, api_keys, alerts}`，后端仍只接受 dotted path，保存会返回 `400 No writable fields provided`。
+- Tasks 前端发送 `scope=my`，后端只识别 `mine/shared_research/all`；这会绕过过滤，普通用户可能在列表里看到其他用户任务，包括私有任务。
+- `GET /api/tasks/<task_id>` 没有权限校验，普通用户可读取其他用户私有任务详情；`/result` 有校验但 detail 已泄漏元数据。
+- 当前测试夹具未适配鉴权，大量 API 测试只拿到 401，无法作为回归保护。
+- 前端 `npm run build` 当前失败，存在 TypeScript 与路径解析错误。
+
+### 7.2 P0 修复指令
+
+#### P0-1 修复 LLM 切换运行时错误
+
+目标文件：
+
+- `stock_trading_system/web/app.py`
+
+要求：
+
+- 将 `set_llm_provider()` 中不存在的 `_invalidate_singletons(["llm_provider"])` 改为现有的 `_reset_config_dependent_singletons(["llm_provider"])`。
+- 切换成功后必须清空 `_analyzer`，下一次分析必须重新创建 `StockAnalyzer`。
+- `get_active_provider()` 如果支持 `user_id`，`GET/POST /api/settings/llm-provider` 应保持同一优先级：`env > user_settings > yaml > legacy auto-detect`。
+- 为 `POST /api/settings/llm-provider` 增加登录后的 API 测试：成功切换、缺 key、env locked、非法 provider、连续切换。
+
+验收：
+
+```text
+登录后 POST /api/settings/llm-provider {"provider":"gemini"} 返回 200
+不再出现 NameError: _invalidate_singletons is not defined
+切换后 _analyzer is None，下一次分析使用新 provider
+```
+
+#### P0-2 统一 Settings 前后端 schema
+
+目标文件：
+
+- `stock_trading_system/web/frontend/src/islands/settings/SettingsPage.tsx`
+- `stock_trading_system/web/app.py`
+- `stock_trading_system/config/settings.py`
+
+要求：
+
+- 前端加载 `/api/settings` 时读取后端现有结构：`gemini`、`qwen`、`telegram`、`email`、`ib`、`polygon`。
+- 前端保存时只提交 dotted path：
+
+```json
+{
+  "gemini.api_key": "...",
+  "gemini.model": "...",
+  "qwen.enabled": true,
+  "qwen.api_key": "...",
+  "qwen.model": "...",
+  "qwen.base_url": "...",
+  "alerts.email.enabled": true,
+  "alerts.email.to_address": "...",
+  "alerts.telegram.enabled": false
+}
+```
+
+- 不再提交 `provider`、`model`、`api_keys`、`alerts` 旧聚合对象。
+- Settings 页面只展示后端支持的 LLM provider：`qwen`、`gemini`。
+- OpenAI、Anthropic、DeepSeek 字段先移除，除非后端真的支持。
+- 空字符串允许提交，用于清空错误 key。
+
+验收：
+
+```text
+Settings 保存 Gemini/Qwen API key 返回 200
+后端返回 applied 包含对应 dotted path
+旧 schema 不再由前端发出
+```
+
+#### P0-3 修复任务 scope 契约与私有任务泄漏
+
+目标文件：
+
+- `stock_trading_system/web/frontend/src/islands/tasks/TasksPage.tsx`
+- `stock_trading_system/web/app.py`
+- `stock_trading_system/tasks/task_store.py`
+
+要求：
+
+- 前端 scope 枚举改为后端契约：`mine | shared_research | all`。
+- UI 文案建议：
+  - `mine`：我的任务
+  - `shared_research`：共享研究
+  - `all`：全部（仅 admin 可见或可用）
+- 后端对未知 `scope` 必须拒绝或降级到 `mine`，不能因为未知值变成无过滤。
+- 普通用户请求 `scope=all` 时，可降级为 `shared_research`，但不能返回私有任务。
+- `TaskStore.PRIVATE_TYPES` 必须覆盖所有持仓、提醒、纸面交易、个人建议类任务。
+- `TaskStore.SHARED_TYPES` 仅覆盖分析、选股、回测、公开报告类任务。
+
+验收：
+
+```text
+Alice GET /api/tasks?scope=mine 只返回 Alice 创建的任务
+Alice GET /api/tasks?scope=shared_research 可看到 Bob 的 analysis/screen/backtest/report
+Alice GET /api/tasks?scope=shared_research 看不到 Bob 的 paper_trade/personal_advice/alerts
+Alice GET /api/tasks?scope=my 不得绕过过滤；返回 400 或按 mine 处理
+```
+
+#### P0-4 给任务详情加权限校验
+
+目标文件：
+
+- `stock_trading_system/web/app.py`
+
+要求：
+
+- `GET /api/tasks/<task_id>` 必须调用 `_check_task_ownership(task)`。
+- 对共享任务类型，其他用户可读详情，但不可取消、删除、重试。
+- 对私有任务类型，非 owner 且非 admin 返回 403。
+- `cancel/delete/retry` 继续要求 owner 或 admin。
+- 如果任务详情中包含敏感 params，需要对共享任务详情做 params 白名单或脱敏，避免把用户私有上下文混入共享任务。
+
+验收：
+
+```text
+Alice GET Bob 的 paper_trade task detail 返回 403
+Alice GET Bob 的 analysis task detail 返回 200
+Alice POST Bob 的 analysis cancel/delete/retry 返回 403
+Admin 可读全部任务详情
+```
+
+#### P0-5 修复 Screen V2/V3 任务创建用户归属
+
+目标文件：
+
+- `stock_trading_system/web/app.py`
+
+要求：
+
+- `/api/screen/v2/submit` 和 `/api/screen/v3/trigger` 调用 `tm.submit()` 时显式传 `created_by=g.user.id`。
+- `screen_v3` params 中可以保留 `user_id` 用于估算或审计，但任务 owner 必须来自 `created_by`。
+- 所有绕过 `/api/tasks/submit` 的任务提交路径都要做同样审查：report、backtest、paper trade、batch analysis、agent evolution。
+
+验收：
+
+```text
+任何 Web 路由创建的 task.created_by 都是当前登录用户 id
+不再出现新任务 created_by='user'
+```
+
+#### P0-6 修复 TaskManager 事件测试与实际推送路径
+
+目标文件：
+
+- `stock_trading_system/tasks/task_manager.py`
+- `stock_trading_system/tasks/event_emitter.py`
+- `tests/tasks/test_task_manager.py`
+
+要求：
+
+- `TaskManager._emit()` 需要同时满足：
+  - 持久化事件到 `task_events`。
+  - 使用当前 TaskManager 注入的 `socketio` 发事件，而不是测试时绕到全局 `web.app.socketio`。
+  - 推送到 `user:{created_by}` room。
+- 测试中注入的 `RecordingSocketIO` 应能捕获 `task_created/task_started/task_progress/task_completed/task_failed`。
+- 如果无法解析 `created_by`，可以退化为 direct emit，但不能让测试事件完全消失。
+
+验收：
+
+```text
+pytest -q tests/tasks/test_task_manager.py 通过
+task_events 表能查询到任务生命周期事件
+SocketIO room 推送仍按用户隔离
+```
+
+#### P0-7 修复测试夹具鉴权
+
+目标文件：
+
+- `tests/web/test_llm_provider_api.py`
+- `tests/tasks/test_task_api.py`
+- 相关 validation tests
+
+要求：
+
+- 需要访问业务 API 的测试必须创建已迁移用户表并登录。
+- 测试配置必须使用临时 `STOCK_CONFIG_DIR` 和临时 `portfolio.db`，不能写真实 `~/.stock_trading`。
+- 区分两类测试：
+  - anonymous security tests：期望 401/302/503。
+  - authenticated business tests：先登录，再验证业务响应。
+- 补跨用户任务权限测试：Alice/Bob/Admin 三类 client。
+
+验收：
+
+```text
+pytest -q tests/web/test_llm_provider_api.py tests/tasks/test_task_api.py tests/tasks/test_task_manager.py tests/auth/test_auth_module.py 通过
+```
+
+#### P0-8 修复前端 build
+
+目标文件：
+
+- `stock_trading_system/web/frontend/src/**`
+- `stock_trading_system/web/frontend/tsconfig.json`
+- `stock_trading_system/web/frontend/vite.config.ts`
+
+要求：
+
+- 修复 `@/styles/index.css` 解析失败。
+- 修复 `lightweight-charts` v5 API 不匹配：`addCandlestickSeries`、`addHistogramSeries` 需要按当前版本 API 调整，或替换为已封装的 ChartPanel/ECharts。
+- 清理 `noUnusedLocals` 下所有未使用变量。
+- 修复 `Badge` variant 类型，不能传未定义的 `secondary`。
+- 修复 `AnalysisDetail.task_id` 类型缺失。
+- 修复 `ScreenerV3Page` 的 `Guru` 类型字段缺失。
+
+验收：
+
+```text
+cd stock_trading_system/web/frontend
+npm run build
+```
+
+必须通过。
+
+### 7.3 P1 产品与架构优化建议
+
+#### P1-1 明确任务中心三视图
+
+任务中心不应只有“我的/全部”。按产品定位，应有：
+
+```text
+我的任务:
+  当前用户创建的所有任务，包括私有任务与共享研究任务。
+
+共享研究:
+  所有人创建的 analysis/screen/screen_v2/screen_v3/backtest/report。
+
+全部任务:
+  仅 admin，可看所有任务审计。
+```
+
+这样既符合“用户只管理持仓，选股和 AI 分析共享”，也不会泄漏个人持仓相关任务。
+
+#### P1-2 拆分共享分析与个人建议
+
+继续推进 §1.3：
+
+- `analysis_history` 只存共享研究结论。
+- 基于用户持仓、成本、仓位生成的操作建议进入 `user_analysis_advice`。
+- Analysis 页面展示时分两区：
+  - 共享研究结果
+  - 我的持仓建议
+
+#### P1-3 统一配置版本与 Analyzer cache key
+
+建议新增 `config_version` 或 `llm_config_hash`：
+
+```text
+provider + model + api_key_hash + prompt_version + config_version
+```
+
+Analyzer、Screener、LLM client cache 都按这个 key 失效。不要只靠全局 `_analyzer = None` 长期维持正确性。
+
+#### P1-4 收敛 Settings 信息架构
+
+Settings 分区建议：
+
+```text
+AI 模型:
+  当前 provider、Gemini、Qwen、模型、base_url
+
+数据源:
+  Schwab、Polygon、IB、Qwen data source
+
+通知:
+  Email、Telegram、Webhook
+
+系统:
+  DB path 只读、任务清理、诊断
+
+安全:
+  Session、密码、邀请码
+```
+
+可写字段继续由 `WRITABLE_SETTING_PATHS` 控制，UI 不展示不可写字段。
+
+#### P1-5 建立验收脚本
+
+建议新增一个轻量 gate：
+
+```bash
+pytest -q tests/auth/test_auth_module.py \
+  tests/web/test_llm_provider_api.py \
+  tests/tasks/test_task_api.py \
+  tests/tasks/test_task_manager.py
+
+cd stock_trading_system/web/frontend && npm run build
+```
+
+后续每次改 auth/tasks/settings/frontend 都必须跑这组。
+
+### 7.4 可直接复制给实现会话的指令
+
+```text
+你是实现工程师。请只修改代码和测试，不改产品目标。当前产品定位是“共享研究库 + 私有持仓”：用户只管理自己的持仓、交易、提醒、个人设置和个人建议；AI 分析、选股、回测、公开报告等研究结果默认共享，但必须记录 created_by 用于审计。
+
+请按 docs/design/product-architecture-optimization-instructions.md 的 §7 执行 P0 修复，优先顺序如下：
+1. 修复 /api/settings/llm-provider 调用不存在的 _invalidate_singletons，切换后正确重置 Analyzer。
+2. 修复 SettingsPage 前端 schema，只提交后端支持的 dotted path，移除旧 provider/model/api_keys/alerts 聚合提交。
+3. 修复任务 scope：前后端统一 mine/shared_research/all，未知 scope 不得绕过过滤；普通用户不能看到其他人的私有任务。
+4. 给 GET /api/tasks/<task_id> 加权限校验：共享任务可读，私有任务仅 owner/admin 可读；cancel/delete/retry 仅 owner/admin。
+5. 所有直接 tm.submit 的 Web 路由都显式传 created_by=g.user.id，尤其 screen_v2 和 screen_v3。
+6. 修复 TaskManager 事件推送，使注入 socketio 的测试 recorder 能收到生命周期事件，同时保留 task_events 持久化和 user room 隔离。
+7. 修复测试夹具鉴权：业务 API 测试必须创建用户并登录，测试配置使用临时 STOCK_CONFIG_DIR 和临时 DB。
+8. 修复前端 npm run build 的 TypeScript 错误。
+
+验收命令：
+pytest -q tests/auth/test_auth_module.py tests/web/test_llm_provider_api.py tests/tasks/test_task_api.py tests/tasks/test_task_manager.py
+cd stock_trading_system/web/frontend && npm run build
+
+完成后输出：每个 P0 项的文件变更、测试结果、仍未解决的问题。不要引入 OpenAI/Anthropic/DeepSeek provider，除非后端同时完整支持。
+```

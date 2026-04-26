@@ -1532,7 +1532,7 @@ def create_app(config_path=None):
             return jsonify({"reason": "missing_api_key", "message": f"{label} 未配置 API key"}), 400
         save_config({"llm_provider": provider})
         # Reset analyzer so next analysis uses new provider
-        _invalidate_singletons(["llm_provider"])
+        _reset_config_dependent_singletons(["llm_provider"])
         return jsonify({"active": provider, "source": "user_config"})
 
     # ── Screen V2 (async task-based) ────────────────────────────────────
@@ -1874,16 +1874,21 @@ def create_app(config_path=None):
             return jsonify({"error": str(e)}), 500
         return jsonify(task)
 
+    VALID_TASK_SCOPES = {"mine", "shared_research", "all"}
+
     @app.route("/api/tasks", methods=["GET"])
     def api_tasks_list():
         tm = _get_task_manager()
         task_type = request.args.get("type")
         status = request.args.get("status")
-        scope = request.args.get("scope", "mine")  # mine | shared_research | all
+        scope = (request.args.get("scope") or "mine").strip()
+        # Reject unknown scopes — never silently fall through to "no filter".
+        if scope not in VALID_TASK_SCOPES:
+            scope = "mine"
         limit = min(int(request.args.get("limit", 50)), 200)
         offset = max(int(request.args.get("offset", 0)), 0)
         uid = g.user.id if g.user else None
-        # Only admin can see 'all'
+        # Only admin can see 'all'; everyone else is downgraded to shared_research.
         if scope == "all" and (not g.user or g.user.role != "admin"):
             scope = "shared_research"
         items = tm.list(task_type=task_type, status=status,
@@ -1897,6 +1902,7 @@ def create_app(config_path=None):
             "total": total,
             "limit": limit,
             "offset": offset,
+            "scope": scope,
         })
 
     @app.route("/api/tasks/<task_id>", methods=["GET"])
