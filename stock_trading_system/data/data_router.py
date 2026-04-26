@@ -54,7 +54,26 @@ logger = get_logger("data.router")
 
 
 class DataRouter:
-    """Qwen-first data router with local fallback and SQLite caching."""
+    """Qwen-first data router with local fallback and SQLite caching.
+
+    Provider capability matrix:
+
+    | Capability        | Schwab | yfinance | AkShare | Qwen |
+    |-------------------|--------|----------|---------|------|
+    | realtime_price    |   ✓    |    ✓     |   ✓ CN  |  ✓   |
+    | batch_quotes      |   ✓    |          |         |      |
+    | historical_bars   |        |    ✓     |   ✓ CN  |      |
+    | fundamentals      |        |    ✓     |   ✓ CN  |  ✓   |
+    | news              |        |    ✓     |   ✓ CN  |  ✓   |
+    | account_positions |   ✓    |          |         |      |
+    """
+
+    PROVIDER_CAPABILITIES = {
+        "schwab":   {"realtime_price", "batch_quotes", "account_positions"},
+        "yfinance": {"realtime_price", "historical_bars", "fundamentals", "news"},
+        "akshare":  {"realtime_price", "historical_bars", "fundamentals", "news"},  # CN only
+        "qwen":     {"realtime_price", "fundamentals", "news"},
+    }
 
     def __init__(
         self,
