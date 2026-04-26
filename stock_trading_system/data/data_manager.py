@@ -26,6 +26,17 @@ class DataManager:
 
     def __init__(self, config: dict, cache=None):
         self._config = config
+        # Auto-init LocalCache when caller didn't pass one — so dashboard
+        # repeat-hits the 60s TTL instead of fan-out to providers every time.
+        if cache is None:
+            try:
+                from stock_trading_system.data.local_cache import LocalCache
+                db_path = config.get("portfolio", {}).get("db_path", "data/portfolio.db")
+                cache_path = db_path.replace("portfolio.db", "cache.db")
+                cache = LocalCache(cache_path, config=config)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("LocalCache auto-init failed: %s", e)
+                cache = None
         self._cache = cache  # Optional LocalCache for price TTL
         self._ib = IBProvider(config)
         self._polygon = PolygonProvider(config)
