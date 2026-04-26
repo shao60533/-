@@ -1935,6 +1935,23 @@ def create_app(config_path=None):
             return err
         return jsonify(_sanitize_shared_task(task))
 
+    def _result_ref_to_int(ref: str) -> int | None:
+        """Extract the trailing integer from a `<table>:<id>` result_ref."""
+        if not ref or ":" not in ref:
+            return None
+        try:
+            return int(ref.rsplit(":", 1)[1])
+        except (ValueError, TypeError):
+            return None
+
+    def _params_dict(task: dict) -> dict:
+        """Decode params_json on a task row, returning {} for malformed rows."""
+        try:
+            raw = json.loads(task.get("params_json") or "{}")
+            return raw if isinstance(raw, dict) else {}
+        except (TypeError, json.JSONDecodeError):
+            return {}
+
     def _check_task_ownership(task, require_owner=False):
         """Check if current user can read/mutate a task. Returns error response or None.
 
@@ -2221,19 +2238,74 @@ def create_app(config_path=None):
         )
         return jsonify({"task_id": task["id"], "estimated": params})
 
-    @app.route("/api/screen/v3/results/<result_id>")
-    def api_screen_v3_result(result_id):
-        """Return full V3 screening result."""
+    @app.route("/api/screen/v3/results/<task_or_result_id>")
+    def api_screen_v3_result(task_or_result_id):
+        """Return a V3 screening result.
+
+        Frontend hits /screener-v3?result=<id>, where ``<id>`` is the
+        ``task.id`` (UUID) returned by /trigger. We accept either:
+
+        * a task UUID  → look up via TaskStore.get(), follow ``result_ref``;
+        * a positive integer → fall back to ``screen_results_v2`` row id.
+
+        Always returns ``{id, task_id, created_at, candidates, roundtable, ...}``
+        no matter which table the result lives in.
+        """
         try:
-            from stock_trading_system.screener.v2.result_store import ScreenResultStore
-            store = ScreenResultStore(
-                get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
-            )
-            result = store.get_by_id(int(result_id))
-            if not result:
-                return jsonify({"error": "not found"}), 404
-            return jsonify(result)
-        except Exception as e:
+            store = _get_task_store()
+
+            # 1) Task-UUID path: this is the only shape the V3 frontend ever
+            #    produces today. result_ref can point to either
+            #    ``screen_results_v2:N`` (when the worker chose to pre-persist)
+            #    or ``task_results_generic:N`` (default for screen_v3).
+            task = store.get(task_or_result_id)
+            if task and task.get("result_ref"):
+                ref = str(task["result_ref"])
+                payload: dict | None = None
+                if ref.startswith("screen_results_v2:"):
+                    sid = _result_ref_to_int(ref)
+                    if sid is not None:
+                        v2 = store.get_screen_v2_result(sid)
+                        if v2:
+                            payload = v2.get("results") or {}
+                else:
+                    raw = store.load_result(ref)
+                    payload = raw if isinstance(raw, dict) else None
+                if payload is not None:
+                    response = {
+                        "id": _result_ref_to_int(ref),
+                        "task_id": task["id"],
+                        "created_at": task.get("completed_at") or task.get("created_at"),
+                        "params": _params_dict(task),
+                        "candidates": payload.get("candidates") or [],
+                        "roundtable": payload.get("roundtable"),
+                    }
+                    # Pass through any extra fields the v3 pipeline produced.
+                    for k, v in payload.items():
+                        if k not in ("candidates", "roundtable", "id", "task_id"):
+                            response.setdefault(k, v)
+                    return jsonify(response)
+
+            # 2) Bare integer path: legacy / direct v2 result lookup.
+            if str(task_or_result_id).isdigit():
+                v2 = store.get_screen_v2_result(int(task_or_result_id))
+                if v2:
+                    inner = v2.get("results") or {}
+                    response = {
+                        "id": v2.get("id"),
+                        "task_id": v2.get("task_id"),
+                        "created_at": v2.get("created_at"),
+                        "candidates": inner.get("candidates") or [],
+                        "roundtable": inner.get("roundtable"),
+                    }
+                    for k, v in inner.items():
+                        if k not in ("candidates", "roundtable", "id", "task_id"):
+                            response.setdefault(k, v)
+                    return jsonify(response)
+
+            return jsonify({"error": "result_not_found"}), 404
+        except Exception as e:  # noqa: BLE001
+            logger.exception("V3 result lookup failed")
             return jsonify({"error": str(e)}), 500
 
     # ── Seed Data ───────────────────────────────────────────────────────
