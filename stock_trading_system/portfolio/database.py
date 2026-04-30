@@ -41,17 +41,26 @@ class PortfolioDatabase:
 
     def _init_tables(self):
         with self._get_conn() as conn:
+            # Private tables embed user_id from creation. Composite UNIQUE
+            # over (user_id, ticker|date) is what `upsert_position` /
+            # `save_snapshot` ON CONFLICT clauses target — without it,
+            # two users with the same ticker (or same-day snapshot) collide
+            # on the legacy single-tenant primary key.
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS positions (
-                    ticker TEXT PRIMARY KEY,
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    ticker TEXT NOT NULL,
                     market TEXT NOT NULL,
                     shares REAL NOT NULL,
                     avg_cost REAL NOT NULL,
-                    added_date TEXT NOT NULL
+                    added_date TEXT NOT NULL,
+                    UNIQUE(user_id, ticker)
                 );
 
                 CREATE TABLE IF NOT EXISTS transactions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
                     ticker TEXT NOT NULL,
                     action TEXT NOT NULL,
                     shares REAL NOT NULL,
@@ -61,22 +70,35 @@ class PortfolioDatabase:
                 );
 
                 CREATE TABLE IF NOT EXISTS daily_snapshots (
-                    date TEXT PRIMARY KEY,
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    date TEXT NOT NULL,
                     total_value REAL NOT NULL,
                     total_cost REAL NOT NULL,
                     pnl REAL NOT NULL,
                     pnl_pct REAL NOT NULL,
-                    positions_json TEXT NOT NULL
+                    positions_json TEXT NOT NULL,
+                    UNIQUE(user_id, date)
                 );
 
                 CREATE TABLE IF NOT EXISTS alerts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
                     ticker TEXT NOT NULL,
                     condition TEXT NOT NULL,
                     threshold REAL NOT NULL,
                     created TEXT NOT NULL,
                     triggered INTEGER DEFAULT 0
                 );
+
+                CREATE INDEX IF NOT EXISTS ix_positions_user
+                    ON positions(user_id, ticker);
+                CREATE INDEX IF NOT EXISTS ix_transactions_user
+                    ON transactions(user_id, timestamp DESC);
+                CREATE INDEX IF NOT EXISTS ix_daily_snapshots_user
+                    ON daily_snapshots(user_id, date DESC);
+                CREATE INDEX IF NOT EXISTS ix_alerts_user
+                    ON alerts(user_id, ticker);
 
                 CREATE TABLE IF NOT EXISTS analysis_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -219,7 +241,59 @@ class PortfolioDatabase:
                     UNIQUE(user_id, ticker)
                 );
             """)
+            self._migrate_private_tables_user_id(conn)
             self._migrate_analysis_history(conn)
+
+    def _migrate_private_tables_user_id(self, conn: sqlite3.Connection):
+        """Add user_id to legacy single-tenant private tables.
+
+        Legacy DBs (pre-multi-tenant) created ``positions``/``transactions``/
+        ``daily_snapshots``/``alerts`` without ``user_id``. ALTER TABLE ADD
+        COLUMN is idempotent enough — once the column exists this is a no-op.
+        Composite UNIQUE indices restore per-user identity (same ticker
+        owned by two users no longer collides on the legacy ticker PK).
+
+        NULL ``user_id`` rows are backfilled to the first active user
+        (typically admin) so existing data isn't orphaned and remains
+        visible to *some* tenant rather than vanishing under the new
+        per-user filters.
+        """
+        for table in ("positions", "transactions", "daily_snapshots", "alerts"):
+            cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+            if "user_id" not in cols:
+                try:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN user_id INTEGER")
+                except sqlite3.OperationalError as e:
+                    logger.warning("ALTER %s.user_id failed: %s", table, e)
+
+        for sql in (
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_positions_user_ticker "
+            "ON positions(user_id, ticker)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_snapshots_user_date "
+            "ON daily_snapshots(user_id, date)",
+        ):
+            try:
+                conn.execute(sql)
+            except sqlite3.OperationalError as e:
+                logger.warning("create unique idx failed: %s", e)
+
+        try:
+            row = conn.execute(
+                "SELECT id FROM users WHERE status='active' "
+                "ORDER BY id ASC LIMIT 1"
+            ).fetchone()
+            default_uid = row["id"] if row else None
+        except sqlite3.OperationalError:
+            default_uid = None
+        if default_uid is not None:
+            for table in ("positions", "transactions", "daily_snapshots", "alerts"):
+                try:
+                    conn.execute(
+                        f"UPDATE {table} SET user_id = ? WHERE user_id IS NULL",
+                        (default_uid,),
+                    )
+                except sqlite3.OperationalError as e:
+                    logger.warning("backfill %s.user_id failed: %s", table, e)
 
     def _migrate_analysis_history(self, conn: sqlite3.Connection):
         """Idempotently add structured columns to pre-existing analysis_history."""
@@ -354,16 +428,18 @@ class PortfolioDatabase:
     def save_snapshot(self, snapshot: DailySnapshot):
         with self._get_conn() as conn:
             conn.execute(
-                """INSERT INTO daily_snapshots (date, total_value, total_cost, pnl, pnl_pct, positions_json, user_id)
+                """INSERT INTO daily_snapshots
+                   (user_id, date, total_value, total_cost, pnl, pnl_pct, positions_json)
                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(date) DO UPDATE SET
+                   ON CONFLICT(user_id, date) DO UPDATE SET
                      total_value = excluded.total_value,
                      total_cost = excluded.total_cost,
                      pnl = excluded.pnl,
                      pnl_pct = excluded.pnl_pct,
                      positions_json = excluded.positions_json""",
-                (snapshot.date, snapshot.total_value, snapshot.total_cost,
-                 snapshot.pnl, snapshot.pnl_pct, snapshot.positions_json, snapshot.user_id),
+                (snapshot.user_id, snapshot.date, snapshot.total_value,
+                 snapshot.total_cost, snapshot.pnl, snapshot.pnl_pct,
+                 snapshot.positions_json),
             )
 
     def get_snapshots(

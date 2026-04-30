@@ -475,6 +475,7 @@ function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
   const [bookmarked, setBookmarked] = useState<boolean>(Boolean(detail.bookmarked))
   const [bookmarkBusy, setBookmarkBusy] = useState(false)
   const [actionMsg, setActionMsg] = useState<string | null>(null)
+  const [paperBusy, setPaperBusy] = useState(false)
 
   const handleReanalyze = async () => {
     setActionMsg(null)
@@ -495,10 +496,48 @@ function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
       await apiPost("/api/portfolio/track", {
         ticker: detail.ticker, analysis_id: detail.id,
       })
-      setActionMsg("✓ 已加入追踪列表")
+      setActionMsg("✓ 已加入观察列表（不会自动下单）")
       setTimeout(() => setActionMsg(null), 2500)
     } catch (err: unknown) {
       setActionMsg(err instanceof Error ? `追踪失败：${err.message}` : "追踪失败")
+    }
+  }
+
+  interface PaperTrackResult {
+    ok: boolean
+    session_id?: number
+    plan_id?: number
+    num_orders?: number
+    triggered?: number
+    error?: string
+  }
+
+  const handlePaperTrack = async () => {
+    if (paperBusy) return
+    setPaperBusy(true)
+    setActionMsg(null)
+    try {
+      const res = await apiPost<PaperTrackResult>("/api/paper/track", {
+        analysis_id: detail.id,
+      })
+      if (!res.ok) {
+        setActionMsg(`提交失败：${res.error ?? "process_analysis failed"}`)
+        return
+      }
+      const triggered = res.triggered ?? 0
+      const numOrders = res.num_orders ?? 0
+      if (triggered > 0) {
+        setActionMsg(`✓ 纸面交易计划已生成，立即成交 ${triggered} 单`)
+      } else if (numOrders > 0) {
+        setActionMsg(`✓ 纸面交易计划已生成，${numOrders} 单待触发`)
+      } else {
+        setActionMsg("✓ 已生成空计划（建议中无可执行订单）")
+      }
+      setTimeout(() => setActionMsg(null), 3500)
+    } catch (err: unknown) {
+      setActionMsg(err instanceof Error ? `提交失败：${err.message}` : "提交失败")
+    } finally {
+      setPaperBusy(false)
     }
   }
 
@@ -553,7 +592,15 @@ function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
         {/* Action buttons (right-aligned on desktop, wraps below on mobile) */}
         <div className="flex flex-wrap gap-2">
           <Button variant="outline" size="sm" onClick={handleReanalyze}>再次分析</Button>
-          <Button variant="outline" size="sm" onClick={handleTrack}>加入持仓追踪</Button>
+          <Button variant="outline" size="sm" onClick={handleTrack}>加入观察列表</Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handlePaperTrack}
+            disabled={paperBusy}
+          >
+            {paperBusy ? "提交中…" : "按此建议纸面交易"}
+          </Button>
           <Button variant="outline" size="sm" onClick={() => handleExport("md")}>导出 Markdown</Button>
           <Button variant="outline" size="sm" onClick={() => handleExport("pdf")}>导出 PDF</Button>
           <Button variant="outline" size="sm" onClick={handleShare}>分享链接</Button>

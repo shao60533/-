@@ -28,6 +28,7 @@ R-1 ~ R-7 commits 已落地（6e583b4..5370863）。审计 22 P0 项实际状态
 | ❌ v1.11 修了代码但没修数据（v1.12 实测）| 1 | **D-FEAT-1 净值曲线仍只 1 个点**：v1.11 后端代码 ✅ 正确（返 daily_snapshots 全量），但 **DB 里只有 3 行 snapshot**（2026-04-14/15/16/19），距今缺 11 天。根因：调度器 [task_scheduler.py:105](../../stock_trading_system/scheduler/task_scheduler.py) take_snapshot 没真跑 + 缺历史回填脚本 → 需 R-fix-6 同时补 (a) 历史回填 (b) 调度器修复 (c) UI 触发入口 |
 | ❌ AI 分析模块产品&技术缺口（v1.13 用户提）| 7 | **A-FIX-A K线初始 Skeleton 早 return** [TVChart.tsx:108](../../stock_trading_system/web/frontend/src/components/shared/TVChart.tsx) 导致 chart 容器永不挂载；**A-FIX-B analysis_history 缺 `created_by/provider/config_hash/task_id/duration_sec/bookmarked` 元数据**（[database.py:81](../../stock_trading_system/portfolio/database.py) schema 缺 + [task_store.py:368](../../stock_trading_system/tasks/task_store.py) INSERT 不写）；**A-FIX-C 旧 `/api/analyze`** [app.py:852](../../stock_trading_system/web/app.py) 仍开 daemon thread + 直写 history + 硬编码 `gemini.deep_think_model` 不走 active provider；**A-FIX-D advice 与共享分析未拆分**（advice_json 和 trade_decision 同表，其他用户能看到原作者的持仓上下文）；**A-FIX-E `/analysis` 首页缺 5 条最近卡片 + 深度选择 + 8 tab + 决策独立 tab + 操作按钮齐**；**A-FIX-F Markdown 无 sanitize**（[AnalysisPage.tsx:393](../../stock_trading_system/web/frontend/src/islands/analysis/AnalysisPage.tsx) 仅 react-markdown + remark-gfm，缺 rehype-sanitize）；**A-FIX-G `_record_agent_scores`** [workers.py:135](../../stock_trading_system/tasks/workers.py) 为拿 analysis_id 先 save 半成品行 → 历史页双重记录 |
 | ❌ R-fix-7 验收暴露 4 处遗留（v1.14 用户提）| 4 | **A-FIX-H worker/analyzer progress_cb 契约不一致**：[workers.py:57](../../stock_trading_system/tasks/workers.py) 无条件 `analyzer.analyze(ticker, date, progress_cb=...)`，但 [tests/tasks/test_workers.py:28 FakeAnalyzer.analyze(self,ticker,date)](../../tests/tasks/test_workers.py) 不收 `progress_cb` → `pytest tests/tasks/test_workers.py` 红；**A-FIX-I `/api/history/<id>` 旧 advice_json 跨用户泄露**：[app.py:1046](../../stock_trading_system/web/app.py) `elif record.get("advice_json")` 不检查 `created_by == g.user.id` → Bob 读 Alice 旧分析 详情仍能看到 Alice 的 advice 全文；**A-FIX-J TaskStore 共享表 advice 写入后门**：[task_store.py:392](../../stock_trading_system/tasks/task_store.py) `result.get("advice")` 仍会被写到 `analysis_history.advice_json/action/confidence/...` → 兼容老 caller 但新 worker 路径下应 0 写入；需关闭后门，结构化字段统一 None；**A-FIX-K `depth` 参数空挂**：前端提交 `quick/standard/deep` ([AnalysisPage.tsx:158](../../stock_trading_system/web/frontend/src/islands/analysis/AnalysisPage.tsx))，[app.py:903](../../stock_trading_system/web/app.py) 透传到 task params，但 [workers.py:73](../../stock_trading_system/tasks/workers.py) 的 `out` dict 不含 depth → 数据库无记录、详情页无展示、迭代/反思未差异化 → 虚假控制 |
+| ❌ AI 分析 4 链彻底闭环（v1.17 用户提）| 7 | **AI-FIX-A worker/analyzer 契约 v1.14 仍未真做**：[workers.py:57](../../stock_trading_system/tasks/workers.py) 仍 `analyzer.analyze(ticker, date, progress_cb=...)` + [tests/tasks/test_workers.py:30 `def analyze(self, ticker, date)`](../../tests/tasks/test_workers.py) 旧签名 → `pytest tests/tasks/test_workers.py` 红；契约定为 `progress_cb=None` 必选 + worker 加 TypeError fallback 兼容旧适配器；**AI-FIX-B `/api/history/<id>` advice_json 跨用户 v1.14 仍未真做**：[app.py:1046](../../stock_trading_system/web/app.py) `elif record.get("advice_json"):` 没 ownership 守卫 → Bob 仍能看到 Alice legacy advice；非创建者还需 strip action/confidence/position_pct/entry_low/entry_high/stop_loss/take_profit；迁移把 advice_json 搬到 user_analysis_advice 后清空共享行；**AI-FIX-C TaskStore advice 后门 v1.14 仍未真做**：[task_store.py:395-398](../../stock_trading_system/tasks/task_store.py) `advice_raw = json.dumps(adv,...)` 仍存活 → 共享行被污染；advice_json 必须固定 `""`、7 结构化字段固定 `None`；**AI-FIX-D provider/model cache_key 错配（NEW）**：[analyzer.py:116](../../stock_trading_system/agents/analyzer.py) `model = cfg.get("llm", {}).get("model", "")` —— 配置里**没有** `llm.model` 这一项！实际应 qwen→`qwen.model/qwen.deep_think_model`，gemini→`gemini.deep_think_model/gemini.model`；当前 cache_key 永远是 `qwen:` / `gemini:`（model 恒为空），同 provider 不同 model 切换不刷 graph；`/api/tasks/submit` 的 `_provider/_model` 注入也错；**AI-FIX-E depth v1.14 半成品**：[app.py:897](../../stock_trading_system/web/app.py) 读 depth 透传 task params，[workers.py:73-105](../../stock_trading_system/tasks/workers.py) `out` dict **没把 depth 写回**，DB 没列、详情页没字段；quick/deep 没真正改行为；**AI-FIX-F PipelineDAG 契约错位（NEW）**：前端 [PipelineDAG.tsx STAGES](../../stock_trading_system/web/frontend/src/components/shared/PipelineDAG.tsx) 9 节点 `market_agent/sentiment_agent/news_agent/fundamentals_agent/bull_researcher/bear_researcher/judge/risk_manager/trader`；后端 [analyzer.py:31 PIPELINE_STEPS](../../stock_trading_system/agents/analyzer.py) 7 节点 `market/social/news/fundamentals/debate/risk/decision` —— **ID 完全不同**；前端 fallback `currentIdx++` 任意事件（含 `pipeline_start`）都推进一格 → pipeline 启动就跳完；**AI-FIX-G "加入持仓追踪"按钮 v1.15 R-fix-9D 仍未真做**：[AnalysisPage.tsx:556](../../stock_trading_system/web/frontend/src/islands/analysis/AnalysisPage.tsx) 仍 `加入持仓追踪` 调 `/api/portfolio/track` (=watchlist) 误导用户 |
 | ❌ Dashboard / 持仓多租户契约破损（v1.16 用户提）| 6 | **DH-FIX-A schema 与运行时不一致**：[database.py:45-79](../../stock_trading_system/portfolio/database.py) `_init_tables` 默认 CREATE 的 positions/transactions/daily_snapshots/alerts **都没有 user_id 列**；user_id 由 [migrations/to_multi_tenant.py](../../stock_trading_system/migrations/to_multi_tenant.py) 后期 ALTER 加；但 [manager.py:39-105](../../stock_trading_system/portfolio/manager.py) `add_position/sell_position/take_snapshot` 已经 `user_id=uid` 写库 → fresh DB 不跑迁移就 `OperationalError: no column user_id`；`positions` PRIMARY KEY 仍是 `ticker` 单列、`daily_snapshots` PRIMARY KEY 仍是 `date` 单列 → 两用户共用 ticker/date 时主键冲突；**DH-FIX-B `/api/search` 跨用户数据泄露**：[app.py:1708-1790](../../stock_trading_system/web/app.py) `db.get_all_positions()` / `db.get_transactions()` / `db.get_active_alerts()` 全无 user_id 过滤 → 任意登录用户搜索能看到其他用户的持仓 / 交易备注 / 预警；analysis_history 共享研究保留，但 advice/notes 不能进搜索；**DH-FIX-C `/api/dashboard.alerts_count` 全局计数**：[app.py:783](../../stock_trading_system/web/app.py) `_get_alert_monitor().list_alerts()` 没传 user_id → AlertMonitor 直接 `db.get_active_alerts()` → 计数包含全租户；`AlertMonitor.list_alerts/check_alerts` 没 user_id 入参；**DH-FIX-D 持仓交易缺校验**：[app.py:810-832](../../stock_trading_system/web/app.py) `/api/portfolio/add` 直接 `float(data["shares"])` / `float(data["price"])` 不校验正数；`/api/portfolio/sell` 同；[manager.py:103](../../stock_trading_system/portfolio/manager.py) 卖空仓 "no position found, recording transaction only" → 留下孤立 sell 记录（transaction 已写、position 不存在）；**DH-FIX-E 交易记录字段契约**：`api_transactions` 返 `timestamp + action='buy'/'sell'` 小写；前端期望 `date` + 大写 `BUY/SELL` 上色；时间显示丢失；**DH-FIX-F today_pnl 文案数据不符**：[app.py:847-858](../../stock_trading_system/web/app.py) `today_pnl = pnl.get("total_pnl", 0)` —— 标签说"今日"但数据是"累计"，需要文案改"总盈亏"或基于上一交易日 snapshot 算真实日内 |
 | ❌ AI 建议 → paper trade 执行链断裂（v1.15 用户提）| 7 | **PT-FIX-A SignalLoader 数据源未切**：[signal_loader.py:13-77](../../stock_trading_system/strategy/paper_trader/signal_loader.py) 仍只读 `analysis_history.advice_json`，但 v1.13 之后那一列对其他用户已 NULL → paper trade 跨用户拿不到 advice；且 `load/get_one/backfill_all` 都没有 `user_id` 参数；**PT-FIX-B 分析完成后未驱动 paper trade**：[task_manager.py:409-485](../../stock_trading_system/tasks/task_manager.py) `_post_analysis_save` 只写 `user_analysis_advice`，没调 `process_analysis(...)` → 用户做完 AI 分析没有自动生成 plan/order；**PT-FIX-C `/api/paper/track` 行为太薄**：[app.py:1991-2008](../../stock_trading_system/web/app.py) 仅 `manual_track` 写 analysis_tracked，没调 `process_analysis` → 没 plan / 没 planned_orders / 没 immediate execution；返 `tracked_id` 不返 `plan_id/num_orders/triggered`；**PT-FIX-D 观察列表 vs 纸面追踪混淆**：详情页"加入持仓追踪"按钮调 `/api/portfolio/track` (=watchlist)，文案让用户以为已自动下单；**PT-FIX-E 双纸面执行模型未收敛**：replay simulator (simulator.py) 与 ticker-session plan/order 引擎共存，UI 列表 [app.py:2032-2073](../../stock_trading_system/web/app.py) 只显示 `running + start_capital + sparkline`，没 `active_plans / pending_orders / triggered_orders / open_position_shares / last_eod / skip_reason`；**PT-FIX-F PaperTradeStore schema 自初始化缺 v1.3 列**：[session_store.py:78-95](../../stock_trading_system/strategy/paper_trader/session_store.py) `_SCHEMA_TRADING_PLANS` 没 `fingerprint/reconfirmed_count/reconfirmed_at/analysis_ids`；这 4 列由 [migrations/paper_trade_v1_3.py](../../stock_trading_system/migrations/paper_trade_v1_3.py) 加，但 [session_store.py:917,924,944](../../stock_trading_system/strategy/paper_trader/session_store.py) 又写 SQL 直接读这些列 → 新 DB 不跑 migration 时 `save_plan` 必挂；**PT-FIX-G 测试缺端到端验证**：缺 analysis 完成 → user_analysis_advice → process_analysis → plan/order 链；缺 Bob 不能用 Alice advice 的隔离测试；缺 `/api/paper/track` 返 plan_id 验证；缺 fresh DB 无 migration 直接 save_plan 验证 |
 
@@ -2262,6 +2263,546 @@ cd ../../.. && pytest tests/portfolio tests/web tests/strategy/paper_trader test
 
 ---
 
+#### v1.17 新增（AI 分析 4 链彻底闭环 + 真实落地 v1.14/v1.15 残件，~4.5h）：
+
+##### R-fix-11 · AI 分析 7 项
+
+实测痛点（验收 2026-05-01 晚）：v1.14 R-fix-8 / v1.15 R-fix-9D 多项**仅文档化未真实落地**，本轮真改 + 加 NEW 项（cache_key 错配 + PipelineDAG ID 错位）。
+
+##### R-fix-11A · worker / Analyzer progress_cb 契约 + worker fallback（~30min）
+
+[stock_trading_system/agents/analyzer.py](../../stock_trading_system/agents/analyzer.py) class docstring 顶部加约束：
+```
+StockAnalyzer.analyze(ticker, date, progress_cb=None) — progress_cb 必须是
+optional kw，调用方可省略；旧适配器没收 kw 时 worker 端会 fallback。
+```
+（real Analyzer 已合规 line 190-211，无需改实现）
+
+[stock_trading_system/tasks/workers.py:57](../../stock_trading_system/tasks/workers.py)：
+```python
+        try:
+            raw = analyzer.analyze(ticker, date, progress_cb=_analysis_progress)
+        except TypeError as e:
+            # Legacy adapter without progress_cb — fall back gracefully.
+            if "progress_cb" not in str(e):
+                raise
+            logger.info("analyzer.analyze does not accept progress_cb; "
+                         "falling back to legacy 2-arg signature")
+            raw = analyzer.analyze(ticker, date)
+```
+
+[tests/tasks/test_workers.py:25-33](../../tests/tasks/test_workers.py) `FakeAnalyzer`：
+```python
+class FakeAnalyzer:
+    def __init__(self, signal: str = "BUY"):
+        self.signal = signal
+        self.called_with: tuple | None = None
+        self.progress_events: list[dict] = []
+
+    def analyze(self, ticker, date, progress_cb=None):
+        self.called_with = (ticker, date)
+        if progress_cb is not None:
+            progress_cb({"type": "pipeline_start", "ticker": ticker,
+                         "date": date, "total": 7, "steps": []})
+            progress_cb({"type": "step_done", "step": "market",
+                         "label": "技术面分析", "status": "done",
+                         "index": 0, "total": 7, "duration_ms": 100})
+            progress_cb({"type": "pipeline_done"})
+        return SimpleNamespace(
+            signal=self.signal, market_report="", sentiment_report="",
+            news_report="", fundamentals_report="",
+            investment_debate="", risk_assessment="", trade_decision="",
+            steps=[],
+        )
+```
+新增 1 个用例：
+```python
+def test_worker_forwards_progress_callback_events(monkeypatch):
+    fake = FakeAnalyzer(signal="BUY")
+    emitted: list[tuple[str, str, dict]] = []
+
+    def fake_emit(task_id, event, payload):
+        emitted.append((task_id, event, payload))
+
+    import stock_trading_system.tasks.event_emitter as ee
+    monkeypatch.setattr(ee, "emit_event", fake_emit)
+
+    worker = make_analysis_worker(
+        get_analyzer=lambda: fake,
+        get_strategy_engine=lambda: FakeStrategyEngine(),
+        get_portfolio=lambda: FakePortfolio(),
+        get_router=lambda: FakeRouter(),
+    )
+    worker(
+        {"ticker": "AAPL", "date": "2026-04-15",
+         "__task_id__": "task-1", "__user_id__": 1},
+        lambda pct, msg: None,
+    )
+    types = [p.get("type") for (_, ev, p) in emitted if ev == "analysis_pipeline"]
+    assert "step_done" in types  # forwarded from analyzer.progress_cb
+```
+
+##### R-fix-11B · /api/history advice_json 跨用户守卫（~30min）
+
+[stock_trading_system/web/app.py:1037-1066](../../stock_trading_system/web/app.py) 重写 advice 解析块：
+```python
+        is_creator = (
+            user_id is not None
+            and record.get("created_by") is not None
+            and int(record["created_by"]) == int(user_id)
+        )
+        advice: dict = {}
+        if user_advice:
+            for key in ("action", "confidence", "position_pct",
+                        "entry_low", "entry_high", "stop_loss", "take_profit",
+                        "reasoning", "risk_warning"):
+                if user_advice.get(key) is not None:
+                    advice[key] = user_advice[key]
+        elif is_creator and record.get("advice_json"):
+            try:
+                blob = record["advice_json"]
+                advice = json.loads(blob) if isinstance(blob, str) else blob or {}
+            except (json.JSONDecodeError, TypeError):
+                advice = {}
+
+        # Cross-user readers must not see the structured fields back-filled
+        # from advice_json migration either.
+        if not user_advice and not is_creator:
+            for k in ("action", "confidence", "position_pct",
+                      "entry_low", "entry_high", "stop_loss", "take_profit"):
+                record[k] = None
+```
+
+[stock_trading_system/portfolio/database.py](../../stock_trading_system/portfolio/database.py) `_migrate_analysis_history` advice_json 回填段在写完 user_analysis_advice 后追加（事务内）：
+```python
+                # Strip the legacy fields from the shared row once they're
+                # safely on the per-user table.
+                conn.execute(
+                    """UPDATE analysis_history
+                       SET advice_json = NULL,
+                           action = NULL, confidence = NULL,
+                           position_pct = NULL,
+                           entry_low = NULL, entry_high = NULL,
+                           stop_loss = NULL, take_profit = NULL
+                       WHERE id = ?""",
+                    (int(r["id"]),),
+                )
+```
+
+新建 [tests/web/test_analysis_detail.py::test_bob_does_not_see_alice_legacy_advice_json](../../tests/web/test_analysis_detail.py)（沿用 alice/bob 双 client fixture）：
+- 直 INSERT pre-v1.14 行（`created_by=alice, advice_json='{"action":"BUY","reasoning":"alice-only"}'`）
+- bob GET `/api/history/<aid>` → `body["advice"] in (None, {})`，body 文本不含 "alice-only"
+- 反推字段也校验：`body.get("action") is None` 且 `body.get("stop_loss") is None`
+
+##### R-fix-11C · TaskStore advice 后门关闭（~30min）
+
+[stock_trading_system/tasks/task_store.py:382-450](../../stock_trading_system/tasks/task_store.py) `_save_analysis_result` 整段改写：
+```python
+    def _save_analysis_result(self, task_id: str, result: dict) -> str:
+        """Persist a worker result as a *shared research* row.
+
+        Per-user advice (action / entry / stop / reasoning + holdings snapshot)
+        MUST go through TaskManager's post-save hook into ``user_analysis_advice``.
+        This method NEVER writes those columns on the shared row, even if a
+        caller sneaks ``advice`` into the result dict — they're pinned to NULL
+        to keep the contract obvious and auditable.
+        """
+        self._ensure_analysis_history_table()
+        steps_json = result.get("steps_json")
+        if steps_json is None and result.get("steps") is not None:
+            try:
+                steps_json = json.dumps(result["steps"], ensure_ascii=False)
+            except (TypeError, ValueError):
+                steps_json = None
+        with self._lock, self._conn() as conn:
+            cur = conn.execute(
+                """INSERT INTO analysis_history
+                   (ticker, date, signal, market_report, sentiment_report,
+                    news_report, fundamentals_report, investment_debate,
+                    risk_assessment, trade_decision, advice_json, created_at,
+                    action, confidence, position_pct,
+                    entry_low, entry_high, stop_loss, take_profit,
+                    model, steps_json,
+                    created_by, provider, config_hash, task_id, duration_sec, bookmarked,
+                    depth)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                           ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    result.get("ticker", ""), result.get("date", ""),
+                    result.get("signal", ""),
+                    result.get("market_report", ""),
+                    result.get("sentiment_report", ""),
+                    result.get("news_report", ""),
+                    result.get("fundamentals_report", ""),
+                    result.get("investment_debate", ""),
+                    result.get("risk_assessment", ""),
+                    result.get("trade_decision", ""),
+                    "",                                    # advice_json — NEVER on shared row
+                    now_iso(),
+                    None, None, None, None, None, None, None,  # 7 private cols
+                    result.get("model"),
+                    steps_json,
+                    result.get("created_by"),
+                    result.get("provider"),
+                    result.get("config_hash"),
+                    result.get("task_id") or task_id,
+                    _safe_float(result.get("duration_sec")),
+                    0,
+                    result.get("depth"),
+                ),
+            )
+            return f"analysis_history:{cur.lastrowid}"
+```
+（注：`_ensure_analysis_history_table` CREATE TABLE 同步加 `depth TEXT` 列，与 PortfolioDatabase 完全一致）
+
+新增 [tests/tasks/test_task_store.py::test_save_analysis_result_strips_advice](../../tests/tasks/test_task_store.py)：
+- 调 `store._save_analysis_result(...)` 显式塞 `result.advice = {"action":"BUY","stop_loss":140}`
+- 验 SELECT 行：`advice_json == ""` 且 `action / confidence / position_pct / entry_low / entry_high / stop_loss / take_profit` 全 None
+
+新增 [tests/tasks/test_workers.py::test_worker_advice_payload_routes_to_user_advice](../../tests/tasks/test_workers.py)：
+- 跑 worker → 模拟 TaskManager post-save hook → 验 `analysis_history.advice_json IS NULL/''` AND `user_analysis_advice` 1 行
+
+##### R-fix-11D · provider/model cache_key 修正 + active_model 解析（~1h）
+
+[stock_trading_system/agents/analyzer.py](../../stock_trading_system/agents/analyzer.py) `_init_graph` 改写 cache_key：
+```python
+    def _resolve_active_model(self) -> str:
+        """Pick the right model name based on active provider."""
+        from stock_trading_system.llm.router import get_active_provider
+        provider = get_active_provider(self._config)
+        if provider == "qwen":
+            qcfg = self._config.get("qwen", {}) or {}
+            return qcfg.get("deep_think_model") or qcfg.get("model") or "qwen-plus"
+        # default → gemini
+        gcfg = self._config.get("gemini", {}) or {}
+        return gcfg.get("deep_think_model") or gcfg.get("model") or "gemini-2.5-flash"
+
+    def _init_graph(self):
+        from stock_trading_system.llm.router import get_active_provider
+        provider = get_active_provider(self._config)
+        model = self._resolve_active_model()
+        cache_key = f"{provider}:{model}"
+        with self._graph_lock:
+            if cache_key in self._graphs:
+                self._graph = self._graphs[cache_key]
+                return
+            ...  # rest unchanged
+```
+
+[stock_trading_system/tasks/workers.py:110-145](../../stock_trading_system/tasks/workers.py) `_resolve_active_provider_model`：
+- 重命名旧字段；改成统一调用 `StockAnalyzer._resolve_active_model` 路径或重写：
+```python
+def _resolve_active_provider_model(cfg: dict, user_id) -> tuple[str, str]:
+    """Return (provider, model) using the same rules as analyzer cache_key."""
+    from stock_trading_system.llm.router import get_active_provider
+    provider = (get_active_provider(cfg, user_id=user_id) if user_id
+                 else get_active_provider(cfg))
+    if provider == "qwen":
+        qcfg = cfg.get("qwen", {}) or {}
+        model = qcfg.get("deep_think_model") or qcfg.get("model") or "qwen-plus"
+    else:
+        gcfg = cfg.get("gemini", {}) or {}
+        model = gcfg.get("deep_think_model") or gcfg.get("model") or "gemini-2.5-flash"
+    return provider, model
+```
+`_hash_llm_config` 也改为 hash 本 provider 的 sub-block（`cfg[provider]` keys 排序后 json）而不是整个 cfg["llm"]。
+
+[stock_trading_system/web/app.py](../../stock_trading_system/web/app.py) `/api/tasks/submit` 注入 `_provider/_model` 时调同一 helper。
+
+[tests/agents/test_analyzer_provider_switch.py](../../tests/agents/test_analyzer_provider_switch.py) 加 / 修：
+```python
+def test_cache_key_uses_qwen_deep_think_model(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "qwen")
+    cfg = _make_config(qwen_key="sk-test", gemini_key="AIza-test")
+    cfg["qwen"]["deep_think_model"] = "qwen-max"
+    a = StockAnalyzer(cfg)
+    with patch("tradingagents.graph.trading_graph.TradingAgentsGraph") as mt:
+        mt.return_value = MagicMock()
+        a._init_graph()
+        assert "qwen:qwen-max" in a._graphs
+
+
+def test_cache_key_uses_gemini_deep_think_model(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
+    cfg = _make_config(qwen_key="sk-test", gemini_key="AIza-test")
+    cfg["gemini"]["deep_think_model"] = "gemini-2.5-pro"
+    a = StockAnalyzer(cfg)
+    with patch("tradingagents.graph.trading_graph.TradingAgentsGraph") as mt:
+        mt.return_value = MagicMock()
+        a._init_graph()
+        assert "gemini:gemini-2.5-pro" in a._graphs
+
+
+def test_switch_back_reuses_cached_graph(monkeypatch):
+    cfg = _make_config(qwen_key="sk-test", gemini_key="AIza-test")
+    cfg["qwen"]["deep_think_model"] = "qwen-max"
+    cfg["gemini"]["deep_think_model"] = "gemini-2.5-pro"
+    monkeypatch.setenv("LLM_PROVIDER", "qwen")
+    a = StockAnalyzer(cfg)
+    with patch("tradingagents.graph.trading_graph.TradingAgentsGraph") as mt:
+        mt.return_value = MagicMock()
+        a._init_graph()
+        first = a._graphs["qwen:qwen-max"]
+        monkeypatch.setenv("LLM_PROVIDER", "gemini")
+        a._init_graph()
+        assert "gemini:gemini-2.5-pro" in a._graphs
+        monkeypatch.setenv("LLM_PROVIDER", "qwen")
+        a._init_graph()
+        assert a._graphs["qwen:qwen-max"] is first  # reused, not recreated
+```
+
+##### R-fix-11E · depth 端到端真实化（~45min）
+
+[stock_trading_system/portfolio/database.py](../../stock_trading_system/portfolio/database.py) `analysis_history` schema 已加 `depth TEXT` 列（与 v1.14 一致，若未落需补）；`_migrate_analysis_history.additions` 列表追加 `("depth", "TEXT")`；`save_analysis()` INSERT 占位符加 `data.get("depth")`。
+
+[stock_trading_system/tasks/task_store.py](../../stock_trading_system/tasks/task_store.py) `_ensure_analysis_history_table` CREATE TABLE 加 `depth TEXT`（与 11C 改写合并）。
+
+[stock_trading_system/tasks/workers.py:42-105](../../stock_trading_system/tasks/workers.py) `make_analysis_worker`：
+```python
+        VALID_DEPTHS = {"quick", "standard", "deep"}
+        raw_depth = (params.get("depth") or "standard").strip().lower()
+        depth = raw_depth if raw_depth in VALID_DEPTHS else "standard"
+
+        progress_cb(5, "初始化分析管线")
+        analyzer = get_analyzer()
+        # behavior differentiation
+        if hasattr(analyzer, "set_depth"):
+            analyzer.set_depth(depth)
+        elif hasattr(analyzer, "_iteration_enabled"):
+            if depth == "quick":
+                analyzer._iteration_enabled = False
+        # ... unchanged ...
+```
+worker `out` dict 加 `"depth": depth,`（在 `"created_by": user_id,` 之后）
+
+[stock_trading_system/agents/analyzer.py](../../stock_trading_system/agents/analyzer.py) 加最小钩子：
+```python
+    def set_depth(self, depth: str) -> None:
+        """Apply depth override before analyze().
+
+        ``quick`` forces iteration off (skip reflection / weighted prompts).
+        ``deep`` keeps whatever the config already configured.
+        ``standard`` is the no-op default.
+        """
+        if depth == "quick":
+            self._iteration_enabled = False
+        # standard / deep: leave self._iteration_enabled as-is (config-driven)
+```
+
+[stock_trading_system/web/app.py](../../stock_trading_system/web/app.py) `api_analysis_detail` response 加：`record["depth"] = record.get("depth") or "standard"`
+
+[stock_trading_system/web/frontend/src/islands/analysis/AnalysisPage.tsx](../../stock_trading_system/web/frontend/src/islands/analysis/AnalysisPage.tsx)：
+- `interface AnalysisDetail` 加 `depth?: 'quick' | 'standard' | 'deep'`
+- `DEPTH_LABEL = { quick: '快速', standard: '标准', deep: '深度' }`
+- Header meta 行加 `{detail.depth && <span>分析深度: {DEPTH_LABEL[detail.depth] ?? detail.depth}</span>}`
+- 表单 RadioGroup 文案降级：`快速·跳过迭代/反思` / `标准·当前默认` / `深度·启用迭代（如已配置）`
+
+新增 4 个测试 `tests/tasks/test_workers.py`：
+```python
+def test_worker_persists_depth():
+    fake = FakeAnalyzer()
+    worker = make_analysis_worker(get_analyzer=lambda: fake, ...)
+    out = worker({"ticker": "AAPL", "date": "2026-04-15", "depth": "quick",
+                   "__task_id__": "t1", "__user_id__": 1},
+                  lambda p, m: None)
+    assert out["depth"] == "quick"
+
+
+def test_worker_default_depth_is_standard():
+    out = worker({"ticker": "AAPL", "date": "2026-04-15",
+                   "__task_id__": "t1", "__user_id__": 1}, ...)
+    assert out["depth"] == "standard"
+
+
+def test_worker_unknown_depth_falls_back_to_standard():
+    out = worker({"ticker": "AAPL", "date": "2026-04-15", "depth": "hyper",
+                   "__task_id__": "t1", "__user_id__": 1}, ...)
+    assert out["depth"] == "standard"
+
+
+def test_worker_quick_depth_disables_iteration():
+    class IterAnalyzer(FakeAnalyzer):
+        _iteration_enabled = True
+        def set_depth(self, d):
+            if d == "quick":
+                self._iteration_enabled = False
+    a = IterAnalyzer()
+    worker = make_analysis_worker(get_analyzer=lambda: a, ...)
+    worker({"ticker": "AAPL", "date": "2026-04-15", "depth": "quick", ...}, ...)
+    assert a._iteration_enabled is False
+```
+
+新增 `tests/web/test_analysis_detail.py::test_detail_returns_depth`。
+
+##### R-fix-11F · PipelineDAG 契约对齐（~30min）
+
+[stock_trading_system/web/frontend/src/components/shared/PipelineDAG.tsx](../../stock_trading_system/web/frontend/src/components/shared/PipelineDAG.tsx) STAGES 改为与后端 PIPELINE_STEPS 完全一致：
+```tsx
+const STAGES = [
+  { id: "market",       label: "技术面" },
+  { id: "social",       label: "情绪面" },
+  { id: "news",         label: "新闻" },
+  { id: "fundamentals", label: "基本面" },
+  { id: "debate",       label: "多空辩论" },
+  { id: "risk",         label: "风险评估" },
+  { id: "decision",     label: "最终决策" },
+] as const
+```
+
+事件处理重写：
+```tsx
+onEvent: (env: TaskEventEnvelope) => {
+  if (env.event !== "analysis_pipeline" && env.event !== "agent_stage_done") {
+    if (env.event === "task_completed") { /* mark all done */ }
+    if (env.event === "task_failed")    { /* mark running→failed */ }
+    return
+  }
+  const p = (env.payload || {}) as any
+  const evType = p.type ?? "step_done"  // legacy events default to step_done
+
+  // Pipeline_start / step_start NEVER advance done state.
+  if (evType === "pipeline_start") {
+    setStages(prev => {
+      const u = { ...prev }
+      const first = STAGES[0]?.id
+      if (first && u[first] === "pending") u[first] = "running"
+      return u
+    })
+    return
+  }
+  if (evType === "step_start") {
+    const sid = p.step
+    if (sid) setStages(prev => ({ ...prev, [sid]: "running" }))
+    return
+  }
+  if (evType === "step_done") {
+    const sid = p.step
+    const match = STAGES.find(s => s.id === sid)
+    if (!match) return  // unknown step id — ignore, do NOT auto-advance
+    setStages(prev => {
+      const u = { ...prev, [match.id]: "done" }
+      // mark next pending → running
+      const idx = STAGES.findIndex(s => s.id === match.id)
+      const next = STAGES[idx + 1]
+      if (next && u[next.id] === "pending") u[next.id] = "running"
+      return u
+    })
+    if (p.reasoning || p.summary) {
+      setReasoning(prev => ({ ...prev, [match.id]: p.reasoning || p.summary }))
+    }
+    return
+  }
+  if (evType === "pipeline_done") {
+    setStages(prev => {
+      const u = { ...prev }
+      for (const s of STAGES) u[s.id] = "done"
+      return u
+    })
+    if (!allDoneFired.current) { allDoneFired.current = true; onAllDone?.() }
+    return
+  }
+  if (evType === "pipeline_error") {
+    setStages(prev => {
+      const u = { ...prev }
+      for (const s of STAGES) {
+        if (u[s.id] === "running") u[s.id] = "failed"
+        else if (u[s.id] === "pending") break
+      }
+      return u
+    })
+  }
+}
+```
+**关键**：去掉 `currentIdx++` 顺序 fallback；只信任 `payload.step` 匹配；未知 step 忽略而不是推进。
+
+后端 [stock_trading_system/agents/analyzer.py](../../stock_trading_system/agents/analyzer.py) emit envelope 已用 `{type, step, label, status, index, total, duration_ms}`；TaskManager 的 `analysis_pipeline` event 透传不动。
+
+新建 [tests/frontend/PipelineDAG.test.tsx](../../tests/frontend/PipelineDAG.test.tsx)（或纯逻辑函数提取后做 unit test）：
+- `pipeline_start` 不让任何节点变 done
+- `step_done step=market` → market done，social running，其余 pending
+- 未知 `step=foo` 忽略，状态不变
+- `task_completed` → 全 done
+
+##### R-fix-11G · "加入持仓追踪"按钮拆分（~30min）
+
+[stock_trading_system/web/frontend/src/islands/analysis/AnalysisPage.tsx:480-560](../../stock_trading_system/web/frontend/src/islands/analysis/AnalysisPage.tsx)：
+- 旧 `handleTrack` 改名 `handleWatchlist` 文案改"加入观察列表"，仍调 `/api/portfolio/track`，toast `已加入观察列表（不会自动下单）`
+- 新增 `handlePaperTrack` 调 `/api/paper/track`：
+  ```tsx
+  const [paperBusy, setPaperBusy] = useState(false)
+  const handlePaperTrack = async () => {
+    if (paperBusy) return
+    setPaperBusy(true)
+    try {
+      const res = await apiPost<{
+        ok: boolean; session_id?: number; plan_id?: number;
+        num_orders?: number; triggered?: number; error?: string
+      }>("/api/paper/track", { analysis_id: detail.id })
+      if (!res.ok) { toast(res.error ?? "提交失败"); return }
+      if ((res.triggered ?? 0) > 0) toast(`纸面交易计划已生成，立即成交 ${res.triggered} 单`)
+      else if ((res.num_orders ?? 0) > 0) toast(`计划已生成，${res.num_orders} 单待触发`)
+      else toast(`已生成空 plan（advice 不含可执行订单）`)
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "提交失败")
+    } finally { setPaperBusy(false) }
+  }
+  ```
+- JSX 操作按钮组顺序：`再次分析 / 加入观察列表 / 按此建议纸面交易 / 导出 PDF / 导出 Markdown / 分享 / 收藏`
+
+##### 强约束
+
+- ❌ 不许动 v1.13~v1.16 已通过的 R-fix-7~10 任何文件除上述明确点
+- ❌ 不许在 worker 把 `progress_cb` 调用从必传改为不传；只能加 TypeError fallback
+- ❌ 不许保留 task_store 任何 `if result.get('advice')` 兼容分支
+- ❌ 不许 PipelineDAG 用 `currentIdx++` 顺序推进；只能按 step id 匹配
+- ❌ 不许 cache_key 继续用 `cfg["llm"]["model"]` 路径
+- ❌ 不许吞异常 `try/except: pass`
+- ✅ 允许 alter table 加 `depth TEXT` 列（如 v1.14 未真落地）
+- ✅ 允许 Analyzer 加 `set_depth(depth)` + `_resolve_active_model()` 两个最小方法
+
+##### 验收
+
+```bash
+# 1. 工具链强制 pass（用户硬性要求）
+pytest tests/tasks/test_workers.py tests/web/test_analysis_detail.py tests/web/test_analysis_actions.py tests/agents/test_analyzer_provider_switch.py -q
+cd stock_trading_system/web/frontend && npm run build
+
+# 2. cache_key 切换
+python -c "
+from stock_trading_system.agents.analyzer import StockAnalyzer
+import os
+os.environ['LLM_PROVIDER']='qwen'
+cfg={'qwen':{'api_key':'x','model':'qwen-plus','deep_think_model':'qwen-max'},
+     'gemini':{'api_key':'y','deep_think_model':'gemini-2.5-pro'},
+     'iteration':{'enabled':False}}
+a=StockAnalyzer(cfg)
+print(a._resolve_active_model())  # 期望 qwen-max
+os.environ['LLM_PROVIDER']='gemini'
+print(a._resolve_active_model())  # 期望 gemini-2.5-pro
+"
+
+# 3. depth 端到端
+sqlite3 data/portfolio.db "PRAGMA table_info(analysis_history)" | grep depth  # 应有
+# 提交一次 depth=quick 的分析后
+sqlite3 data/portfolio.db "SELECT depth FROM analysis_history ORDER BY id DESC LIMIT 1"  # = quick
+
+# 4. PipelineDAG 不再提前跳格
+# 浏览器开 /analysis/<task_id>，运行中观察：
+#   pipeline_start 事件 → market 变 running、其余 pending（不能 done）
+#   step_done step=market → market done、social running、其余 pending
+
+# 5. 按钮拆分
+# 详情页应见 [加入观察列表] + [按此建议纸面交易] 两个独立按钮
+
+# 6. 跨用户隔离
+pytest tests/web/test_analysis_detail.py::test_bob_does_not_see_alice_legacy_advice_json -q
+
+# 7. v1.13~v1.16 不能挂
+pytest tests/portfolio tests/web tests/tasks tests/agents tests/strategy/paper_trader tests/validation -q
+```
+
+---
+
 ### 6.2 R-1.x 完成后
 
 P0 闸门全绿，可签字进入 R-6 / R-7 已完成部分的回归 + 真实数据跑一遍。最终 sign-off：
@@ -2336,3 +2877,4 @@ python -m stock_trading_system.validation.sign_off \
 
 | v1.15 | 2026-05-01 | AI 建议 → paper trade 执行链贯通（用户 2026-05-01 提，~6h）：(A) **SignalLoader 切到 user_analysis_advice**——`__init__/load/get_one/backfill_all` 加 `user_id`；主源 `user_analysis_advice` → 转 paper trade 字段（双键名 suggested_position_pct↔position_pct / entry_price_low↔entry_low）；legacy `advice_json` fallback 仅当 `created_by==user_id` 才生效；(B) **`_post_analysis_save` 加第 3 步驱动 paper trade**——`save_user_advice` 之后调 `ensure_ticker_session(user_id)` + `process_analysis(...)`，best-effort 不影响 task；传 `analysis_id/ticker/date/signal/advice/trade_decision/risk/debate` + 当日 price；(C) **`/api/paper/track` 升级**——读 `get_user_advice(g.user.id, analysis_id)`，调 `process_analysis`，返 `{plan_id, num_orders, triggered}`；旧 manual_track 仅作 audit log；(D) **UI 拆分观察列表 vs 纸面追踪**——详情页"加入持仓追踪"改名"加入观察列表"（仍调 `/api/portfolio/track`）+ 新增"按此建议纸面交易"按钮调 `/api/paper/track`；toast 显示已生成/立即成交/待触发；(E) **收敛 forward vs replay**——`list_ticker_sessions` SQL 子查询补 `active_plan_count/pending_orders_count/triggered_orders_count/open_position_shares/last_eod_date/last_skip_reason`；列表页加 `[前向追踪] [历史回放]` tab 切换 + `/api/paper/tickers?mode=forward\|replay` 过滤；(F) **schema 自初始化补 v1.3 列**——`_SCHEMA_TRADING_PLANS` 加 `fingerprint/reconfirmed_count/reconfirmed_at/analysis_ids`；`_init_schema` 幂等 ALTER + 加 `ix_plans_session_ticker_fp` 索引；migration 文件保留作历史；(G) **测试**——`test_signal_loader_reads_user_advice` / `test_signal_loader_legacy_fallback_only_for_creator` / `test_signal_loader_normalizes_dual_keys` / `test_paper_track_returns_plan_id` / `test_paper_track_uses_user_advice_not_shared` / `test_paper_track_bob_cannot_use_alice_advice` / `test_post_analysis_save_drives_paper_trade` / `test_post_analysis_save_paper_trade_failure_is_swallowed` / `test_fresh_db_save_plan_works_without_migration` / `test_existing_db_idempotent_migration`。剩余 ~4.5h | — |
 | v1.16 | 2026-05-01 | Dashboard / 持仓多租户契约修复（用户 2026-05-01 提，~5h）：(A) **PortfolioDatabase 默认 schema 与运行时对齐**——`_init_tables` CREATE positions/transactions/daily_snapshots/alerts 全部含 user_id；positions 加 `UNIQUE(user_id,ticker)`、daily_snapshots 加 `UNIQUE(user_id,date)`；老 DB 兜底用 `ALTER TABLE ADD COLUMN user_id` + 复合 UNIQUE INDEX `ux_positions_user_ticker / ux_snapshots_user_date`；NULL user_id backfill 到 first active user；fresh DB 直接调 add_position/sell_position/take_snapshot/add_alert 不再 OperationalError；(B) **`/api/search` user_id 过滤**——positions/transactions/alerts 全部加 `user_id=g.user.id`；transactions 不再用 notes 参与匹配；analysis_history 共享研究保留；加 `@login_required`；(C) **AlertMonitor 加 user_id + scope**——`list_alerts(user_id, scope='user'\|'all')` / `check_alerts(...)`；`/api/dashboard` 只统计当前用户；后台 cron 显式 `scope='all'`；(D) **持仓交易校验 + 卖空守卫**——新建 `_validate_trade(data, require_existing, user_id)` helper：ticker 字母数字 / shares>0 / price>0 / 卖出必须先有持仓 + shares ≤ 持仓；校验失败 400 不写 transaction；`PortfolioManager.sell_position` 删除"无持仓也写 transaction"兜底，改 raise；(E) **交易记录字段契约统一**——`/api/portfolio/transactions` 返 `action` 大写 (BUY/SELL) + `timestamp` + `date` 别名兼容；前端按大写上色绿/红；(F) **today_pnl 文案/数据修正**——`api_portfolio_summary` 不再让 today_pnl 复用 total_pnl；新增 `_compute_today_pnl(user_id, current_value)` 基于昨日 daily_snapshot 算真实日内变化，无昨日时返 null；前端 `today_pnl != null` 显示"今日 PnL"否则显示"总盈亏"；(G) **测试**——`test_fresh_db_add_position_works / _sell / _take_snapshot / _add_alert` + `test_search_positions_isolated / _alerts_isolated / _transactions_notes_not_indexed` + `test_dashboard_alerts_count_only_self` + `test_buy/sell 校验 6 个用例` + `test_transactions_returns_uppercase_action / _timestamp / _date_alias`。剩余 ~3.5h | — |
+| v1.17 | 2026-05-01 | AI 分析 4 链彻底闭环（用户 2026-05-01 提，~4.5h）：v1.14/v1.15 多项设计**未真实落地**，本轮真改 + 加 NEW 项。(A) **worker / Analyzer progress_cb 契约**——契约统一 `progress_cb=None` 必选；worker 加 TypeError fallback 兼容旧适配器；FakeAnalyzer 加 kw 入参 + 事件回调 case；(B) **`/api/history/<id>` advice_json 跨用户**——`elif record.advice_json` 前置 `is_creator` 守卫；非创建者 strip 7 反推字段；`_migrate_analysis_history` 把 advice_json 搬到 user_analysis_advice 后清空共享行（事务内）；新增 `test_bob_does_not_see_alice_legacy_advice_json`；(C) **TaskStore advice 后门关闭**——`_save_analysis_result` 删 `if result.advice` 分支，`advice_json=""` + 7 结构化字段固定 None；CREATE TABLE 加 `depth TEXT` 同步；新增 `test_save_analysis_result_strips_advice` + `test_worker_advice_payload_routes_to_user_advice`；(D) **provider/model cache_key（NEW）**——废弃 `cfg["llm"]["model"]`，新建 `_resolve_active_model()`：qwen→`deep_think_model||model||qwen-plus`，gemini→`deep_think_model||model||gemini-2.5-flash`；`_init_graph` cache_key=`{provider}:{真实 model}`；worker `_resolve_active_provider_model` + `_hash_llm_config` 同步用本路径；switch back 复用旧 graph；测试 3 个；(E) **depth 真实生效**——schema 加 `depth` 列；worker 归一化 quick/standard/deep 写入 result 与 DB；analyzer 加 `set_depth()` 钩子（quick 关 iteration）；详情页 Header meta 显示分析深度；测试 4 个；(F) **PipelineDAG 契约（NEW）**——前端 STAGES 改为与后端 `PIPELINE_STEPS` 完全一致 7 节点（market/social/news/fundamentals/debate/risk/decision）；事件按 `payload.type` 分支处理（pipeline_start 只设 first→running 不 done；step_done 按 step id 匹配；未知 step 忽略不顺序前进）；废 `currentIdx++` fallback；(G) **"加入持仓追踪"按钮拆分**——改名"加入观察列表"调 `/api/portfolio/track` + 新增"按此建议纸面交易"调 `/api/paper/track` 返 plan_id/num_orders/triggered。剩余 ~3h | — |

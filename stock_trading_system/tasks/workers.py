@@ -917,7 +917,10 @@ def make_paper_trade_worker():
             cfg = get_config()
             db_path = cfg.get("portfolio", {}).get("db_path", "data/portfolio.db")
             store = PaperTradeStore(db_path)
-            signals = SignalLoader(db_path)
+            # Replay simulator runs over all historical analyses without a
+            # per-user lens; opt into the legacy ``advice_json`` fallback so
+            # pre-v1.13 rows continue to feed the backtest.
+            signals = SignalLoader(db_path, allow_legacy_no_user=True)
             local = None
             if LocalCache is not None:
                 try:

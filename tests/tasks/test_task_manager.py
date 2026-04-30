@@ -396,3 +396,107 @@ def test_delete_passthrough(tm):
     _await(tm, t["id"])
     assert tm.delete(t["id"]) is True
     assert tm.get(t["id"]) is None
+
+
+# ── _post_analysis_save: auto paper-trade drive (R-fix-9) ────────────────────
+
+
+def test_post_analysis_save_drives_paper_trade(tm, monkeypatch, tmp_path):
+    """When a worker returns _advice_payload + created_by, the post-save hook
+    creates a paper-trade session, plan, and (best-effort) planned_orders.
+    """
+    from stock_trading_system.portfolio.database import PortfolioDatabase
+    from stock_trading_system.strategy.paper_trader import PaperTradeStore
+
+    db_path = str(tmp_path / "p.db")
+    PortfolioDatabase(db_path)  # bootstrap analysis_history schema
+    store = PaperTradeStore(db_path)
+
+    monkeypatch.setattr(
+        "stock_trading_system.config.get_config",
+        lambda: {"portfolio": {"db_path": db_path}},
+    )
+    # Stub out the data router so we don't try to fetch a live price.
+    import stock_trading_system.web.app as _app_mod
+
+    monkeypatch.setattr(_app_mod, "_get_data_router", lambda: None,
+                        raising=False)
+
+    # Seed an analysis row matching analysis_id=1 so the FK / audit log is sane.
+    pdb = PortfolioDatabase(db_path)
+    aid = pdb.save_analysis({
+        "ticker": "AAPL", "date": "2026-04-15", "signal": "BUY",
+        "created_by": 7,
+    })
+
+    tm._post_analysis_save(f"analysis_history:{aid}", {
+        "ticker": "AAPL", "date": "2026-04-15", "signal": "BUY",
+        "created_by": 7,
+        "trade_decision": "Enter on breakout",
+        "_advice_payload": {
+            "advice": {
+                "action": "BUY", "stop_loss": 140,
+                "entry_price_low": 145, "entry_price_high": 150,
+                "suggested_position_pct": 0.05,
+            },
+            "holdings_snapshot": "[]",
+        },
+    })
+
+    sessions = store.list_ticker_sessions()
+    assert any(s.get("ticker") == "AAPL" for s in sessions)
+    import sqlite3
+    with sqlite3.connect(db_path) as c:
+        n_plans = c.execute(
+            "SELECT COUNT(*) FROM paper_trade_plans"
+        ).fetchone()[0]
+        # the auto-driven session should be tagged with the requesting user.
+        sess_user = c.execute(
+            "SELECT user_id FROM paper_trade_sessions "
+            "WHERE ticker = 'AAPL' AND is_system = 0"
+        ).fetchone()
+    assert n_plans >= 1
+    assert sess_user is not None
+    assert int(sess_user[0]) == 7
+
+
+def test_post_analysis_save_paper_trade_failure_is_swallowed(
+    tm, monkeypatch, tmp_path, caplog,
+):
+    """If process_analysis explodes, the analysis task still succeeds."""
+    db_path = str(tmp_path / "p.db")
+
+    def _boom(*a, **kw):
+        raise RuntimeError("paper engine on fire")
+
+    monkeypatch.setattr(
+        "stock_trading_system.strategy.paper_trader.process_analysis", _boom,
+    )
+    monkeypatch.setattr(
+        "stock_trading_system.config.get_config",
+        lambda: {"portfolio": {"db_path": db_path}},
+    )
+
+    # Seed analysis row so save_user_advice (step 1) succeeds.
+    from stock_trading_system.portfolio.database import PortfolioDatabase
+    pdb = PortfolioDatabase(db_path)
+    aid = pdb.save_analysis({
+        "ticker": "AAPL", "date": "2026-04-15", "signal": "BUY",
+        "created_by": 7,
+    })
+
+    import logging
+    caplog.set_level(logging.WARNING)
+    # MUST NOT raise — paper trade is best-effort.
+    tm._post_analysis_save(f"analysis_history:{aid}", {
+        "ticker": "AAPL", "date": "2026-04-15", "signal": "BUY",
+        "created_by": 7,
+        "_advice_payload": {
+            "advice": {"action": "BUY"}, "holdings_snapshot": "[]",
+        },
+    })
+    assert any(
+        "auto paper-trade" in (r.message or "")
+        or "paper engine on fire" in (r.message or "")
+        for r in caplog.records
+    )

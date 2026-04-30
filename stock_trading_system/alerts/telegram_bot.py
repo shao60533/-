@@ -232,9 +232,15 @@ async def cmd_alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_alerts(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /alerts - list active alerts."""
+    """Handle /alerts - list active alerts.
+
+    Telegram bot is currently single-tenant (single bot owner), so it lists
+    every active alert with ``scope='all'``. If the bot is later wired up
+    to per-user authentication, swap to ``scope='user'`` with the resolved
+    Telegram→user_id mapping.
+    """
     monitor = _get_alert_monitor()
-    alerts = monitor.list_alerts()
+    alerts = monitor.list_alerts(scope="all")
 
     if not alerts:
         await update.message.reply_text("🔕 当前无活跃预警")
@@ -255,9 +261,12 @@ async def cmd_alerts(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /check - manually check alerts."""
+    """Handle /check - manually check alerts.
+
+    Like ``cmd_alerts``, single-tenant bot use uses ``scope='all'``.
+    """
     monitor = _get_alert_monitor()
-    triggered = monitor.check_alerts()
+    triggered = monitor.check_alerts(scope="all")
 
     if triggered:
         lines = [f"🚨 触发 {len(triggered)} 条预警:\n"]

@@ -16,11 +16,29 @@ logger = get_logger("portfolio.manager")
 class PortfolioManager:
     """Portfolio manager with manual position entry and real-time P&L."""
 
-    def __init__(self, config: dict, data_manager: DataManager | None = None):
-        self._config = config
-        db_path = config.get("portfolio", {}).get("db_path", "data/portfolio.db")
+    def __init__(
+        self,
+        config: dict | str,
+        data_manager: DataManager | None = None,
+    ):
+        """Accepts either a config dict (production path) or a raw db_path
+        string (lightweight test/CLI path).
+
+        The string form is used by integration tests that just want to
+        exercise add/sell/snapshot flows against a temp SQLite file
+        without bootstrapping a full provider config. In that mode we
+        still construct a DataManager but with an empty config, so the
+        provider fan-out fails fast and ``get_holdings`` falls back to
+        ``current_price=0`` instead of trying to hit a real network.
+        """
+        if isinstance(config, str):
+            db_path = config
+            self._config = {"portfolio": {"db_path": db_path}}
+        else:
+            self._config = config
+            db_path = config.get("portfolio", {}).get("db_path", "data/portfolio.db")
         self._db = PortfolioDatabase(db_path)
-        self._data_manager = data_manager or DataManager(config)
+        self._data_manager = data_manager or DataManager(self._config)
 
     # ── Manual Entry ─────────────────────────────────────────────────────
 
@@ -84,28 +102,40 @@ class PortfolioManager:
         notes: str = "",
         user_id: int | None = None,
     ):
-        """Record a sell and update position."""
-        uid = self._user_id(user_id)
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        """Record a sell and update position.
 
+        Validates the holding *before* writing the transaction so a sell
+        against a non-existent or under-held position raises instead of
+        leaving an orphan SELL row in transactions. Web callers
+        (``/api/portfolio/sell``) repeat this check at the route layer
+        for a 400 with a clean error message; this guard is the
+        last-resort defence for non-web callers.
+        """
+        uid = self._user_id(user_id)
+        existing = self._db.get_position(ticker, user_id=uid)
+        if existing is None:
+            raise ValueError(f"No position to sell for {ticker} (user={uid})")
+        if shares > existing.shares + 1e-9:
+            raise ValueError(
+                f"Sell shares ({shares}) exceeds holding ({existing.shares})"
+            )
+
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         txn = Transaction(
             id=None, ticker=ticker, action="sell",
             shares=shares, price=price, timestamp=timestamp, notes=notes, user_id=uid,
         )
         self._db.add_transaction(txn)
 
-        existing = self._db.get_position(ticker, user_id=uid)
-        if existing:
-            remaining = existing.shares - shares
-            if remaining <= 0:
-                self._db.delete_position(ticker, user_id=uid)
-                logger.info("Sold all: %s %s @ %s (position closed, user=%s)", shares, ticker, price, uid)
-            else:
-                existing.shares = remaining
-                self._db.upsert_position(existing)
-                logger.info("Sold: %s %s @ %s (remaining: %s, user=%s)", shares, ticker, price, remaining, uid)
+        remaining = existing.shares - shares
+        if remaining <= 1e-9:
+            self._db.delete_position(ticker, user_id=uid)
+            logger.info("Sold all: %s %s @ %s (closed, user=%s)", shares, ticker, price, uid)
         else:
-            logger.warning("No position found for %s (user=%s), recording transaction only", ticker, uid)
+            existing.shares = remaining
+            self._db.upsert_position(existing)
+            logger.info("Sold: %s %s @ %s (remaining=%s, user=%s)",
+                        shares, ticker, price, remaining, uid)
 
     def remove_position(self, ticker: str, user_id: int | None = None):
         """Remove a position entirely without recording a transaction."""

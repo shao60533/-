@@ -777,10 +777,13 @@ def create_app(config_path=None):
 
     @app.route("/api/dashboard")
     def api_dashboard():
+        if g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
+        uid = g.user.id
         pm = _get_portfolio_mgr()
-        pnl = pm.get_pnl()
-        holdings = pm.get_holdings()
-        alerts = _get_alert_monitor().list_alerts()
+        pnl = pm.get_pnl(user_id=uid)
+        holdings = pm.get_holdings(user_id=uid)
+        alerts = _get_alert_monitor().list_alerts(user_id=uid, scope="user")
         # `history_days=all` returns the full series since the user's first
         # snapshot; the chart's range chips do client-side filtering on top.
         # Anything else is parsed as a positive int rolling window.
@@ -793,7 +796,7 @@ def create_app(config_path=None):
                 days = parsed if parsed > 0 else None
             except ValueError:
                 days = 30
-        history = pm.get_history(days=days)
+        history = pm.get_history(days=days, user_id=uid)
         return jsonify({
             "pnl": pnl,
             "holdings": holdings,
@@ -807,34 +810,114 @@ def create_app(config_path=None):
     def api_holdings():
         return jsonify(_get_portfolio_mgr().get_holdings())
 
+    def _validate_trade(data: dict, *, require_existing: bool,
+                         user_id: int) -> str | None:
+        """Return an error string if the trade payload is invalid, else None.
+
+        Centralised so /add and /sell both reject the same shapes:
+            * non-alphanumeric / empty ticker
+            * shares <= 0 or price <= 0
+            * (sell-only) ticker has no holding for this user, or shares
+              exceed the holding — this prevents the "phantom sell" bug
+              where /api/portfolio/sell silently recorded a transaction
+              and left the user with a SELL row but no matching BUY.
+        """
+        ticker = (data.get("ticker") or "").strip().upper()
+        # ".B" / "RDS-B" / "BRK.A" should pass; only allow alnum + . / -
+        if not ticker or not ticker.replace(".", "").replace("-", "").isalnum():
+            return "ticker required and must be alphanumeric"
+        try:
+            shares = float(data.get("shares"))
+            price = float(data.get("price"))
+        except (TypeError, ValueError):
+            return "shares and price must be numbers"
+        if shares <= 0:
+            return "shares must be > 0"
+        if price <= 0:
+            return "price must be > 0"
+        if require_existing:
+            from stock_trading_system.portfolio.database import PortfolioDatabase
+            db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
+            existing = PortfolioDatabase(db_path).get_position(ticker, user_id=user_id)
+            if existing is None:
+                return f"no position to sell for {ticker}"
+            if shares > existing.shares + 1e-9:
+                return f"sell shares ({shares}) exceeds holding ({existing.shares})"
+        return None
+
     @app.route("/api/portfolio/add", methods=["POST"])
     def api_portfolio_add():
-        data = request.json
+        if g.user is None:
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
+        data = request.json or {}
+        err = _validate_trade(data, require_existing=False, user_id=g.user.id)
+        if err:
+            return jsonify({"ok": False, "error": err}), 400
         from stock_trading_system.utils.helpers import detect_market
         pm = _get_portfolio_mgr()
-        ticker = data["ticker"].upper()
+        ticker = data["ticker"].strip().upper()
         pm.add_position(
             ticker, float(data["shares"]), float(data["price"]),
             market=detect_market(ticker),
             date=data.get("date"), notes=data.get("notes", ""),
+            user_id=g.user.id,
         )
         return jsonify({"ok": True, "message": f"BUY {data['shares']} {ticker} @ {data['price']}"})
 
     @app.route("/api/portfolio/sell", methods=["POST"])
     def api_portfolio_sell():
-        data = request.json
+        if g.user is None:
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
+        data = request.json or {}
+        err = _validate_trade(data, require_existing=True, user_id=g.user.id)
+        if err:
+            return jsonify({"ok": False, "error": err}), 400
         pm = _get_portfolio_mgr()
-        ticker = data["ticker"].upper()
+        ticker = data["ticker"].strip().upper()
         pm.sell_position(
             ticker, float(data["shares"]), float(data["price"]),
             date=data.get("date"), notes=data.get("notes", ""),
+            user_id=g.user.id,
         )
         return jsonify({"ok": True, "message": f"SELL {data['shares']} {ticker} @ {data['price']}"})
 
     @app.route("/api/portfolio/transactions")
     def api_transactions():
+        """Return this user's transactions in the contract the UI expects.
+
+        Field contract (frozen for the React island):
+            * ``action``     uppercase ``BUY`` / ``SELL`` (frontend colors
+                             buys green, sells red on the literal upper-case
+                             string)
+            * ``timestamp``  canonical YYYY-MM-DD HH:MM:SS
+            * ``date``       legacy alias of ``timestamp`` for older
+                             callers; both fields point at the same value
+        """
+        if g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
         ticker = request.args.get("ticker")
-        return jsonify(_get_portfolio_mgr().get_transactions(ticker=ticker))
+        rows = _get_portfolio_mgr().get_transactions(
+            ticker=ticker, user_id=g.user.id,
+        )
+        out = []
+        for t in rows:
+            ts = t.get("timestamp") if isinstance(t, dict) else getattr(t, "timestamp", None)
+            # PortfolioManager.get_transactions keys the timestamp as 'date'
+            # for backwards compat; canonicalise to 'timestamp' here.
+            if not ts and isinstance(t, dict):
+                ts = t.get("date")
+            action = (t.get("action") if isinstance(t, dict) else getattr(t, "action", "")) or ""
+            out.append({
+                "id":     t.get("id") if isinstance(t, dict) else getattr(t, "id", None),
+                "ticker": t.get("ticker") if isinstance(t, dict) else getattr(t, "ticker", ""),
+                "action": action.upper(),
+                "shares": t.get("shares") if isinstance(t, dict) else getattr(t, "shares", 0),
+                "price":  t.get("price") if isinstance(t, dict) else getattr(t, "price", 0),
+                "timestamp": ts,
+                "date":   ts,
+                "notes":  (t.get("notes") if isinstance(t, dict) else getattr(t, "notes", "")) or "",
+            })
+        return jsonify(out)
 
     @app.route("/api/portfolio/pnl")
     def api_pnl():
@@ -846,16 +929,65 @@ def create_app(config_path=None):
 
     @app.route("/api/portfolio/summary")
     def api_portfolio_summary():
-        """Aggregated portfolio stats for dashboard/portfolio page."""
+        """Aggregated portfolio stats for dashboard/portfolio page.
+
+        ``today_pnl`` here is the **real** today's P&L — current portfolio
+        value minus the most recent prior daily snapshot's ``total_value``.
+        Returning ``total_pnl`` under the ``today_pnl`` key (the prior bug)
+        was label-fraud: the dashboard tile said "今日 PnL" while showing
+        cumulative P&L.
+
+        ``today_pnl`` is ``None`` when there is no snapshot to diff against
+        (fresh DB / first day) — the frontend then degrades the tile to
+        "总盈亏" instead of guessing.
+        """
+        if g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
+        uid = g.user.id
         pm = _get_portfolio_mgr()
-        pnl = pm.get_pnl()
-        holdings = pm.get_holdings()
+        pnl = pm.get_pnl(user_id=uid)
+        holdings = pm.get_holdings(user_id=uid)
+        today_real = _compute_today_pnl(uid, pnl.get("total_value", 0))
         return jsonify({
-            "total_value": pnl.get("total_value", 0),
-            "today_pnl": pnl.get("total_pnl", 0),
-            "today_pnl_pct": pnl.get("total_pnl_pct", 0),
+            "total_value":    pnl.get("total_value", 0),
+            "total_pnl":      pnl.get("total_pnl", 0),
+            "total_pnl_pct":  pnl.get("total_pnl_pct", 0),
+            "today_pnl":      today_real["pnl"] if today_real else None,
+            "today_pnl_pct":  today_real["pct"] if today_real else None,
             "holdings_count": len(holdings),
         })
+
+    def _compute_today_pnl(user_id: int, current_value: float) -> dict | None:
+        """Return ``{pnl, pct}`` vs the most recent prior daily snapshot.
+
+        Returns ``None`` when no usable prior snapshot exists (fresh user,
+        only today's snapshot, or prior total_value <= 0). The caller
+        surfaces ``None`` directly so the UI can render a degraded tile
+        instead of a misleading zero.
+        """
+        from stock_trading_system.portfolio.database import PortfolioDatabase
+        from stock_trading_system.utils.helpers import today_str
+        db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
+        db = PortfolioDatabase(db_path)
+        rows = db.get_snapshots(user_id=user_id, days=2)
+        if not rows:
+            return None
+        today = today_str()
+        prev = None
+        for r in reversed(rows):
+            r_date = r.date if hasattr(r, "date") else r.get("date")
+            if r_date != today:
+                prev = r
+                break
+        if prev is None:
+            return None
+        prev_value = float(getattr(prev, "total_value", None)
+                            if hasattr(prev, "total_value")
+                            else prev.get("total_value") or 0)
+        if prev_value <= 0:
+            return None
+        diff = current_value - prev_value
+        return {"pnl": round(diff, 2), "pct": round(diff / prev_value * 100, 2)}
 
     @app.route("/api/portfolio/<ticker>", methods=["DELETE"])
     def api_portfolio_delete(ticker):
@@ -937,13 +1069,22 @@ def create_app(config_path=None):
 
     @app.route("/api/alerts")
     def api_alerts():
-        return jsonify(_get_alert_monitor().list_alerts())
+        if g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
+        return jsonify(_get_alert_monitor().list_alerts(
+            user_id=g.user.id, scope="user",
+        ))
 
     @app.route("/api/alerts/add", methods=["POST"])
     def api_alert_add():
+        if g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
         data = request.json
         monitor = _get_alert_monitor()
-        monitor.add_alert(data["ticker"].upper(), data["condition"], float(data["threshold"]))
+        monitor.add_alert(
+            data["ticker"].upper(), data["condition"], float(data["threshold"]),
+            user_id=g.user.id,
+        )
         return jsonify({"ok": True, "message": f"Alert added: {data['ticker']} {data['condition']} {data['threshold']}"})
 
     @app.route("/api/alerts/remove", methods=["POST"])
@@ -954,7 +1095,11 @@ def create_app(config_path=None):
 
     @app.route("/api/alerts/check", methods=["POST"])
     def api_alert_check():
-        triggered = _get_alert_monitor().check_alerts()
+        if g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
+        triggered = _get_alert_monitor().check_alerts(
+            user_id=g.user.id, scope="user",
+        )
         return jsonify({"triggered": triggered})
 
     @app.route("/api/alerts/history")
@@ -1711,8 +1856,15 @@ def create_app(config_path=None):
 
         Query: ?q=<substring>&limit=<per-group>
         Returns: { q, positions, transactions, analyses, alerts } — each a list.
-        Matching is case-insensitive substring against ticker plus
-        category-specific fields (action/signal/condition/notes).
+
+        Per-user isolation: positions / transactions / alerts are scoped to
+        ``g.user.id`` so two users with overlapping tickers cannot leak rows
+        across tenants. ``analysis_history`` stays shared (it's the research
+        library — per-user advice lives in ``user_analysis_advice``).
+
+        Transactions DO NOT index ``notes`` — those are private free-text
+        and indexing them would expose another user's thesis through any
+        casual substring query.
         """
         raw = (request.args.get("q") or "").strip()
         if not raw:
@@ -1726,11 +1878,12 @@ def create_app(config_path=None):
         from stock_trading_system.portfolio.database import PortfolioDatabase
         db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
         db = PortfolioDatabase(db_path)
+        uid = g.user.id if getattr(g, "user", None) else None
 
         # Positions — read rows directly so we don't trigger live price fetches.
         positions_out = []
         try:
-            for p in db.get_all_positions():
+            for p in db.get_all_positions(user_id=uid):
                 if q in p.ticker.lower():
                     positions_out.append({
                         "ticker": p.ticker,
@@ -1743,14 +1896,15 @@ def create_app(config_path=None):
             logger.warning("search positions failed: %s", e)
         positions_out = positions_out[:limit]
 
-        # Transactions — ticker, action, notes.
+        # Transactions — ticker + action only. Notes are private; never index.
         transactions_out = []
         try:
-            for t in db.get_transactions():
-                hay = f"{t.ticker} {t.action} {t.notes or ''}".lower()
+            for t in db.get_transactions(user_id=uid):
+                hay = f"{t.ticker} {t.action}".lower()
                 if q in hay:
                     transactions_out.append({
-                        "id": t.id, "ticker": t.ticker, "action": t.action,
+                        "id": t.id, "ticker": t.ticker,
+                        "action": (t.action or "").upper(),
                         "shares": t.shares, "price": t.price,
                         "timestamp": t.timestamp, "notes": t.notes,
                     })
@@ -1759,21 +1913,21 @@ def create_app(config_path=None):
         except Exception as e:
             logger.warning("search transactions failed: %s", e)
 
-        # Analysis history — ticker, signal, action. Keep payload small.
+        # Analysis history — shared research library, no per-user filter.
+        # Per-user advice fields (action/confidence) live in user_analysis_advice
+        # so we deliberately don't surface them here in a cross-user search.
         analyses_out = []
         try:
-            # Pull a reasonable window and filter in Python; avoids full-table scans
-            # while still matching against the structured columns already stored.
             for r in db.get_analysis_history(limit=500):
-                hay = " ".join(str(r.get(k) or "") for k in ("ticker", "signal", "action", "confidence", "model")).lower()
+                hay = " ".join(
+                    str(r.get(k) or "") for k in ("ticker", "signal", "model")
+                ).lower()
                 if q in hay:
                     analyses_out.append({
                         "id": r.get("id"),
                         "ticker": r.get("ticker"),
                         "date": r.get("date"),
                         "signal": r.get("signal"),
-                        "action": r.get("action"),
-                        "confidence": r.get("confidence"),
                         "model": r.get("model"),
                         "created_at": r.get("created_at"),
                     })
@@ -1785,7 +1939,7 @@ def create_app(config_path=None):
         # Alerts — match ticker or condition (e.g. "price_above").
         alerts_out = []
         try:
-            for a in db.get_active_alerts():
+            for a in db.get_active_alerts(user_id=uid):
                 hay = f"{a.get('ticker','')} {a.get('condition','')}".lower()
                 if q in hay:
                     alerts_out.append({
@@ -1990,24 +2144,84 @@ def create_app(config_path=None):
 
     @app.route("/api/paper/track", methods=["POST"])
     def api_paper_track_create():
+        """Generate a paper-trade plan + planned_orders for the requesting user.
+
+        Reads the user's per-user advice (NOT the shared ``advice_json``),
+        feeds it into ``process_analysis``, and surfaces
+        ``plan_id`` / ``num_orders`` / ``triggered`` so the UI can show
+        "已生成 / 立即成交 / 待触发" instead of an opaque ``tracked_id``.
+        """
+        if g.user is None:
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
         data = request.json or {}
         analysis_id = data.get("analysis_id")
-        session_id = data.get("session_id")
-        if not analysis_id or not session_id:
-            return jsonify({"ok": False, "error": "analysis_id + session_id required"}), 400
+        if not analysis_id:
+            return jsonify({"ok": False, "error": "analysis_id required"}), 400
+        try:
+            aid = int(analysis_id)
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "analysis_id must be int"}), 400
+
         from stock_trading_system.portfolio.database import PortfolioDatabase
+        from stock_trading_system.strategy.paper_trader import process_analysis
         db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
-        db = PortfolioDatabase(db_path)
-        ana = db.get_analysis_by_id(analysis_id)
+        pdb = PortfolioDatabase(db_path)
+        ana = pdb.get_analysis_by_id(aid)
         if not ana:
             return jsonify({"ok": False, "error": "Analysis not found"}), 404
+
+        user_advice = pdb.get_user_advice(g.user.id, aid) or {}
         store = _get_paper_store()
-        from stock_trading_system.strategy.paper_trader import manual_track
-        tid = manual_track(store, analysis_id=analysis_id, ticker=ana["ticker"],
-                           session_id=int(session_id), notes=data.get("notes"))
-        if tid is None:
-            return jsonify({"ok": False, "error": "Failed to create tracking record"}), 500
-        return jsonify({"ok": True, "tracked_id": tid})
+        current_price = None
+        try:
+            router = _get_data_router()
+            if router:
+                pd = router.get_price(ana["ticker"])
+                if pd:
+                    current_price = pd.get("last") or pd.get("close")
+        except Exception as e:  # noqa: BLE001
+            logger.warning("price lookup for /api/paper/track failed: %s", e)
+
+        res = process_analysis(
+            store,
+            analysis_id=aid,
+            ticker=ana["ticker"],
+            analysis_date=ana.get("date") or "",
+            signal=ana.get("signal", ""),
+            advice=user_advice,
+            current_price=current_price,
+            user_id=g.user.id,
+            analysis_blob={
+                "trade_decision":    ana.get("trade_decision") or "",
+                "risk_assessment":   ana.get("risk_assessment") or "",
+                "investment_debate": ana.get("investment_debate") or "",
+            },
+        )
+        if not res.get("ok"):
+            return jsonify({
+                "ok": False,
+                "error": res.get("error", "process_analysis failed"),
+            }), 500
+
+        # Audit log: keep ``analysis_tracked`` writes so the existing
+        # tracking timeline UI still has its history rows.
+        try:
+            from stock_trading_system.strategy.paper_trader import manual_track
+            manual_track(
+                store, analysis_id=aid, ticker=ana["ticker"],
+                session_id=int(res["session_id"]),
+                notes=data.get("notes"),
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("manual_track audit log failed: %s", e)
+
+        return jsonify({
+            "ok": True,
+            "session_id": res.get("session_id"),
+            "plan_id": res.get("plan_id"),
+            "num_orders": res.get("num_orders", 0),
+            "triggered": len(res.get("triggered") or []),
+        })
 
     @app.route("/api/paper/track/<int:tracked_id>", methods=["DELETE"])
     def api_paper_track_delete(tracked_id: int):
@@ -2031,7 +2245,9 @@ def create_app(config_path=None):
     @app.route("/api/paper/tickers")
     def api_paper_tickers():
         store = _get_paper_store()
-        sessions = store.list_ticker_sessions()
+        mode_arg = (request.args.get("mode") or "forward").lower()
+        mode = mode_arg if mode_arg in {"forward", "replay"} else None
+        sessions = store.list_ticker_sessions(mode=mode)
         out = []
         for s in sessions:
             sid = int(s["id"])
@@ -2065,6 +2281,13 @@ def create_app(config_path=None):
                 "hit_rate": (hits / total) if total else None,
                 "hit_pretty": f"{hits}/{total}" if total else "—",
                 "sparkline": spark,
+                # v1.15 — surface plan/order/position state for the list UI
+                "active_plan_count": int(s.get("active_plan_count") or 0),
+                "pending_orders_count": int(s.get("pending_orders_count") or 0),
+                "triggered_orders_count": int(s.get("triggered_orders_count") or 0),
+                "open_position_shares": float(s["open_position_shares"])
+                    if s.get("open_position_shares") is not None else None,
+                "last_skip_reason": s.get("last_skip_reason"),
             })
         return jsonify(out)
 

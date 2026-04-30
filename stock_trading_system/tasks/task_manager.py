@@ -478,6 +478,49 @@ class TaskManager:
                 logger.warning("agent score record failed for analysis %s: %s",
                                analysis_id, e)
 
+        # 3) Auto-drive paper trade for the requesting user (best-effort).
+        # Failures are logged but never block the analysis task — paper
+        # trade is a side-effect, not the primary outcome of /api/analyze.
+        if advice_payload and created_by is not None:
+            try:
+                from stock_trading_system.config import get_config
+                from stock_trading_system.strategy.paper_trader import (
+                    PaperTradeStore, process_analysis,
+                )
+                cfg = get_config()
+                db_path = cfg.get("portfolio", {}).get("db_path", "data/portfolio.db")
+                store = PaperTradeStore(db_path)
+                current_price: float | None = None
+                try:
+                    from stock_trading_system.web.app import _get_data_router
+                    router = _get_data_router()
+                    if router:
+                        pd = router.get_price(result.get("ticker", ""))
+                        if pd:
+                            current_price = pd.get("last") or pd.get("close")
+                except Exception as e:  # noqa: BLE001
+                    logger.debug("price lookup for auto paper-trade failed: %s", e)
+                process_analysis(
+                    store,
+                    analysis_id=analysis_id,
+                    ticker=result.get("ticker", ""),
+                    analysis_date=result.get("date") or "",
+                    signal=result.get("signal", ""),
+                    advice=advice_payload.get("advice") or {},
+                    current_price=current_price,
+                    user_id=int(created_by),
+                    analysis_blob={
+                        "trade_decision":   result.get("trade_decision", ""),
+                        "risk_assessment":  result.get("risk_assessment", ""),
+                        "investment_debate": result.get("investment_debate", ""),
+                    },
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "auto paper-trade for analysis %s failed (non-fatal): %s",
+                    analysis_id, e,
+                )
+
     def wait_for(self, task_id: str, timeout: float | None = None) -> dict | None:
         """Block until a task reaches a terminal state. Test convenience."""
         with self._lock:

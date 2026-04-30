@@ -721,16 +721,18 @@ def _v2_methods():
                                 user_id: int | None = None) -> dict | None:
         """Look up forward-tracking session for ticker.
 
-        ``user_id`` scopes the lookup so two users tracking the same ticker
-        get isolated sessions; ``None`` falls back to legacy un-scoped rows
-        (created before v1.3 added the column) for backwards compatibility.
+        ``user_id`` strictly scopes the lookup so two users tracking the
+        same ticker get isolated sessions. When ``user_id`` is ``None`` the
+        first matching row is returned (preserves legacy display callers
+        such as ``/api/paper/tickers/<ticker>`` that don't carry user
+        context).
         """
         with self._conn() as conn:
             if user_id is None:
                 row = conn.execute(
                     "SELECT * FROM paper_trade_sessions "
-                    "WHERE ticker = ? AND is_system = 0 AND user_id IS NULL "
-                    "LIMIT 1",
+                    "WHERE ticker = ? AND is_system = 0 "
+                    "ORDER BY user_id IS NULL DESC, created_at DESC LIMIT 1",
                     (ticker.upper(),),
                 ).fetchone()
             else:

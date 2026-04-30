@@ -77,9 +77,15 @@ class TaskScheduler:
         logger.info("Scheduler stop requested.")
 
     def _check_alerts(self):
-        """Check all active alerts."""
+        """Check all active alerts across every tenant.
+
+        The cron path is the only caller that legitimately spans users —
+        it evaluates everyone's alerts in one pass and dispatches
+        notifications to each owner. Web/dashboard checks scope to the
+        current user instead.
+        """
         try:
-            triggered = self._alert_monitor.check_alerts()
+            triggered = self._alert_monitor.check_alerts(scope="all")
             if triggered:
                 logger.info("%d alerts triggered", len(triggered))
         except Exception as e:
