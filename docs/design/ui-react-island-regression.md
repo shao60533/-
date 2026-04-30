@@ -25,6 +25,7 @@ R-1 ~ R-7 commits 已落地（6e583b4..5370863）。审计 22 P0 项实际状态
 | ❕ 功能补强（v1.8 新增）| 2 | **D-FEAT-1 仪表盘净值曲线自动回溯**（从最早 snapshot 数据起到今天每日，而非固定 30 天）· **P-FEAT-1 持仓表加盈亏绝对值列**（除百分比外补 PnL 美元值） |
 | ❌ MISSING（v1.9 实测新增）| 1 | **A-P0-8 AI 分析运行中态完全空白**（点开始分析后页面无内容；应该立即显示 K线/新闻/基本面 + Pipeline DAG 实时进度 + 7-tab 占位 skeleton，agent 完成后逐个填充）|
 | ❌ 实测仍未真修（v1.10 prod 验证）| 5 | **D-FEAT-1 净值曲线只 1 个点**（后端 days=30 硬编码未改 None）· **P-FEAT-1 Dashboard 持仓 top3 没加绝对值列**（仅 PortfolioPage 加了）· **SV3-P0-1 V3 结果"加载失败"**（前端用 task_id 拉 result，但后端期望 result_id 整数）· **PT-P0-4 paper-trade ErrorBoundary 真触发**（内部 render 抛错，需修内部 null check）· **R-5.3 K线区域空白**（TVChart 已挂但 klineData 空，需修 quote/history API 接入）|
+| ❌ v1.11 修了代码但没修数据（v1.12 实测）| 1 | **D-FEAT-1 净值曲线仍只 1 个点**：v1.11 后端代码 ✅ 正确（返 daily_snapshots 全量），但 **DB 里只有 3 行 snapshot**（2026-04-14/15/16/19），距今缺 11 天。根因：调度器 [task_scheduler.py:105](../../stock_trading_system/scheduler/task_scheduler.py) take_snapshot 没真跑 + 缺历史回填脚本 → 需 R-fix-6 同时补 (a) 历史回填 (b) 调度器修复 (c) UI 触发入口 |
 
 **T-P0-6 任务中心空白 bug 已修复**（实测 2026-04-25）：
 - ✅ 后端 [app.py:1713-1719](../../stock_trading_system/web/app.py) 返回 `{tasks, items, total, limit, offset}` 双字段向后兼容
@@ -1109,6 +1110,104 @@ ErrorBoundary 已加并触发，需查 [PaperTradeContent](../../stock_trading_s
 
 实测：调浏览器 DevTools console 看抛错堆栈，逐个修。
 
+#### v1.12 新增（数据回填 + 调度器修复，~3h）：
+
+##### R-fix-6 · 净值曲线真·自动回溯（v1.11 没修对的本质）
+
+**实测数据**（生产 2026-04-30）：
+- daily_snapshots: 3 行（2026-04-14, 04-15, 04-16, 04-19）
+- transactions: 25 行，最早 2026-04-12
+- 距今 18 天的可回溯期，**缺 11 天 snapshot**
+- task_scheduler.py:105 已写 `self._portfolio_manager.take_snapshot()` 但没真起作用
+
+v1.11 修了"返全量"的后端代码，但**忘了真正的设计意图：从最早 transaction 起每个交易日都要有 snapshot**。
+
+##### R-fix-6a · 历史回填脚本（~1h）
+
+新建 [stock_trading_system/migrations/backfill_daily_snapshots.py]：
+
+```python
+"""
+回填从最早 transaction 到今天的所有交易日 daily_snapshot。
+算法：
+  for date in 交易日(earliest_txn_date, today):
+    positions_at_date = 重放 transactions 至 date 末
+    closing_prices = yfinance 拉每只 ticker 在 date 当日 close（缓存）
+    total_value = sum(shares * close_price)
+    total_cost = sum(shares * avg_cost)
+    pnl = total_value - total_cost
+    upsert daily_snapshots(user_id, date, total_value, ...)
+幂等：若 (user_id, date) 已存在则 SKIP（保留已有数据，避免覆盖手动快照）
+
+Usage:
+  python -m stock_trading_system.migrations.backfill_daily_snapshots --dry-run
+  python -m stock_trading_system.migrations.backfill_daily_snapshots --user-id=1
+  python -m stock_trading_system.migrations.backfill_daily_snapshots --all-users
+"""
+```
+
+实施细节：
+- 交易日列表用 yfinance/exchange_calendars 取（跳过周末/假日）；fallback 用所有自然日
+- 历史价格走 yfinance.Ticker.history(start, end)，批量拉减少 API 调用
+- 进度打印 `[2026-04-15] 5 positions, total=$200,123.45 ✓`
+- 统计输出回填行数 / 跳过行数 / 失败行数
+
+##### R-fix-6b · 修复每日调度器（~1h）
+
+排查 [task_scheduler.py:105](../../stock_trading_system/scheduler/task_scheduler.py) 为什么没跑：
+1. APScheduler 是否启动？grep `scheduler.start()` / `BackgroundScheduler` 启动调用点
+2. cron 表达式是否正确？应在美股 close 后（北京时间次日 04:30 或 05:00）
+3. 进程是否长期运行？Railway 部署可能 restart 时丢调度器状态
+4. 单租户 vs 多租户：scheduler.take_snapshot() 是否对每个 user_id 都跑？
+
+修法：
+- 启动检查：app 启动时打印 `[scheduler] running, next snapshot at <time>`
+- 改 APScheduler 为 cron 触发：每日 美东 16:30（=北京次日 04:30）
+- 多用户：迭代所有 active users，对每个 user_id 调 take_snapshot(user_id)
+- 失败重试 + 错误日志
+
+##### R-fix-6c · UI 触发入口 + status（~30min）
+
+[DashboardPage.tsx] 净值曲线右上角加按钮 [↻ 重新计算]，点击：
+- `apiPost('/api/portfolio/snapshots/backfill', { from: 'earliest' })`
+- 弹 toast："正在回填历史净值，约 1 分钟..."
+- 后端异步任务（task_manager）跑 backfill 脚本
+- 完成后 dashboard 自动 reload 数据
+
+后端新端点：
+```python
+@app.route("/api/portfolio/snapshots/backfill", methods=["POST"])
+@login_required
+def api_backfill_snapshots():
+    task_id = task_manager.submit("backfill_snapshots", {
+        "user_id": g.user.id,
+        "from": request.json.get("from", "earliest"),
+    })
+    return jsonify({"task_id": task_id})
+```
+
+worker 调 backfill 脚本主函数（不是子进程）。
+
+##### R-fix-6d · Settings 页加"调度器状态"卡（~30min）
+
+[SettingsPage.tsx] 加一卡显示：
+- 调度器运行状态：✓ Running / ✗ Stopped
+- 上次快照时间：2026-04-30 04:30:12
+- 下次快照时间：2026-05-01 04:30:00
+- [立即跑一次] 按钮（管理员）
+- [重启调度器] 按钮（管理员）
+
+后端：
+- `GET /api/scheduler/status` → { running, last_run, next_run, jobs: [...] }
+- `POST /api/scheduler/run-now` → 手动触发 take_snapshot
+
+**验收**：
+- 跑 `python -m stock_trading_system.migrations.backfill_daily_snapshots --dry-run` 显示需回填 ~11 天
+- 跑实施后 `SELECT COUNT(*) FROM daily_snapshots` 应 ≥ 14（含原 3 行 + 回填 11 行）
+- Dashboard 净值曲线 ALL 视图显示 14 个连续点（2026-04-14 → 2026-04-30）
+- ChipRow 7D / 1M / 3M 切换正确缩窄
+- 调度器 status 卡显示 Running + next_run 时间正确
+
 ##### R-fix-5 · K 线区域空白（~1h）
 
 `<TVChart data={klineData}>` 组件已就位（v1.9 R-5.3 落地），但 klineData 拉不到数据。
@@ -1201,3 +1300,4 @@ python -m stock_trading_system.validation.sign_off \
 | v1.8 | 2026-04-26 | 功能补强 2 项（用户实测后提的非 bug 改进）：(1) D-FEAT-1 仪表盘净值曲线自动回溯（从最早 daily_snapshot 起到今天，不再固定 30 天，加 range switcher chip 全部/1Y/6M/3M/1M/7D + dataZoom；后端 get_history(days=None) 返全量）；(2) P-FEAT-1 持仓表加"盈亏 $"绝对值列（后端 get_holdings 已计算 pnl 字段，前端补显示，dashboard 持仓概览同步加），移动端 m-card 同步加。剩余 15h → 17h | — |
 | v1.9 | 2026-04-26 | 实测 A-P0-8：点[开始分析]后页面完全空白。新增完整运行中态布局（强化 v1.7 A-P0-7 + R-5.1 DAG + R-5.2 侧卡 + R-5.3 K线，合并成一个 dashboard）：Header / 主图 K 线 / Pipeline DAG / 三列侧卡（新闻+基本面+多空比） / 7-tab 占位 skeleton 逐个填充。提交后立即跳 /analysis/<task_id>，K线和新闻/基本面独立拉（< 1s 显示），DAG 订阅 task_events 实时进度，agent_stage_done 事件 → 对应 tab 填充。完成后 history.replaceState 切到 /analysis/<analysis_id>。新增 ~3h（含在 R-5.x 内）；剩余 17h → 20h | — |
 | v1.10 | 2026-04-26 | 生产环境实测发现 5 项前序号称 DONE 的项实际仍未真修：(1) D-FEAT-1 净值曲线后端 `pm.get_history(days=30)` 硬编码（v1.8 后端改动漏做，前端 ChipRow 无效）；(2) P-FEAT-1 Dashboard 持仓 top3 没加绝对值列（v1.8 仅 PortfolioPage 加了，dashboard 漏）；(3) SV3-P0-1 V3 结果"加载失败"（前端用 task_id (UUID) 拉 `/api/screen/v3/results/<id>`，后端期望整数 result_id）；(4) PT-P0-4 Paper-trade ErrorBoundary 真触发（内部 PaperTradeContent 有 throw，需 null check）；(5) R-5.3 K线区域空白（TVChart 已挂但 klineData 空，需新建/修 `/api/quote/history` 端点）。新增 R-fix-1~5（~3h）；剩余 20h → 23h | — |
+| v1.12 | 2026-04-30 | v1.11 修了代码但没修数据：实测 daily_snapshots 仅 3 行（2026-04-14/15/16/19），距今缺 11 天。`task_scheduler.py:105` 已写 take_snapshot 但调度器没真跑。设计原意"自动回溯"指从最早 transaction(2026-04-12) 起每个交易日都要有 snapshot。新增 R-fix-6 共 4 子项（~3h）：(a) 历史回填脚本 backfill_daily_snapshots.py（按交易日重放 transactions + yfinance 收盘价 → upsert 幂等）；(b) 修 APScheduler 启动 + cron 美东 16:30（=北京次日 04:30）+ 多用户迭代；(c) Dashboard "↻ 重新计算"按钮触发异步 backfill task；(d) Settings 页加"调度器状态"卡（运行态/上次快照/下次快照/手动触发）。验收：DB ≥ 14 行 snapshot，dashboard ALL 视图 14 连续点 | — |
