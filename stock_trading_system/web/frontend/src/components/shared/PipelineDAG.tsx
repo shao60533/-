@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef } from "react"
 import { CheckCircle2, XCircle, Loader2, Circle } from "lucide-react"
 import { subscribeTaskStream, type TaskEventEnvelope } from "@/lib/socket"
+import { apiGet } from "@/lib/api"
 import { cn } from "@/lib/utils"
 
 /** Pipeline stages in TradingAgents execution order */
@@ -106,7 +107,45 @@ export function PipelineDAG({ taskId, onAllDone }: PipelineDAGProps) {
     // Mark first stage as running
     setStages(prev => ({ ...prev, [STAGES[0].id]: "running" }))
 
-    return () => sub.destroy()
+    // Polling fallback — covers stale page loads + socket drops where no
+    // events arrive. When task is already terminal, mark all stages done.
+    const markAllDone = () => {
+      setStages(prev => {
+        const updated = { ...prev }
+        for (const s of STAGES) updated[s.id] = "done"
+        return updated
+      })
+      if (!allDoneFired.current) {
+        allDoneFired.current = true
+        onAllDone?.()
+      }
+    }
+
+    const checkStatus = () => {
+      apiGet<{ status?: string }>(`/api/tasks/${taskId}`)
+        .then(t => {
+          const s = t.status || ""
+          if (s === "success") markAllDone()
+          else if (s === "failed" || s === "cancelled") {
+            setStages(prev => {
+              const updated = { ...prev }
+              for (const k of Object.keys(updated)) {
+                if (updated[k] === "running") updated[k] = "failed"
+              }
+              return updated
+            })
+            if (!allDoneFired.current) {
+              allDoneFired.current = true
+              onAllDone?.()
+            }
+          }
+        })
+        .catch(() => { /* transient — keep polling */ })
+    }
+    checkStatus()                              // immediate (covers stale page)
+    const poll = setInterval(checkStatus, 5000) // every 5s
+
+    return () => { sub.destroy(); clearInterval(poll) }
   }, [taskId, onAllDone])
 
   return (
