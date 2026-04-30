@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react"
-import { Settings, Save, RefreshCw, Eye, EyeOff, Trash2 } from "lucide-react"
+import { Settings, Save, RefreshCw, Eye, EyeOff, Trash2, Clock, PlayCircle } from "lucide-react"
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -418,6 +418,142 @@ export function SettingsPage() {
           </div>
         </CardContent>
       </Card>
+
+      <SchedulerStatusCard />
     </div>
+  )
+}
+
+interface SchedulerStatusResponse {
+  running: boolean
+  jobs: { id: string; next_run_time: string | null; trigger: string }[]
+  last_run: string | null
+  primary?: boolean
+  pid?: number | null
+}
+
+interface MeResponse {
+  user?: { id: number; email: string; role?: string } | null
+}
+
+function SchedulerStatusCard() {
+  const [status, setStatus] = useState<SchedulerStatusResponse | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [running, setRunning] = useState(false)
+  const [msg, setMsg] = useState<string | null>(null)
+  const [isAdmin, setIsAdmin] = useState(false)
+
+  const reload = useCallback(async () => {
+    setLoading(true)
+    try {
+      const s = await apiGet<SchedulerStatusResponse>("/api/scheduler/status")
+      setStatus(s)
+    } catch {
+      setStatus(null)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    reload()
+    apiGet<MeResponse>("/api/auth/me")
+      .then((r) => setIsAdmin(r.user?.role === "admin"))
+      .catch(() => setIsAdmin(false))
+  }, [reload])
+
+  const handleRunNow = async () => {
+    setRunning(true)
+    setMsg(null)
+    try {
+      await apiPost("/api/scheduler/run-now")
+      setMsg("✓ 已触发一次快照")
+      await reload()
+      setTimeout(() => setMsg(null), 3000)
+    } catch (err: unknown) {
+      setMsg(err instanceof Error ? `失败：${err.message}` : "失败")
+      setTimeout(() => setMsg(null), 5000)
+    } finally {
+      setRunning(false)
+    }
+  }
+
+  const dailyJob = status?.jobs?.find((j) => j.id === "daily_snapshot")
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <div>
+            <CardTitle>调度器</CardTitle>
+            <CardDescription>每日 16:30 (America/New_York) 自动写入 daily_snapshots</CardDescription>
+          </div>
+          <Button variant="ghost" size="sm" onClick={reload} disabled={loading}>
+            <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {loading && !status ? (
+          <Skeleton className="h-20" />
+        ) : (
+          <div className="space-y-3 text-sm">
+            <div className="flex items-center gap-2">
+              <span className="text-muted-foreground">运行状态</span>
+              {status?.running ? (
+                <span className="text-[var(--color-accent-green)]">✓ Running</span>
+              ) : (
+                <span className="text-[var(--color-accent-red)]">✗ Stopped</span>
+              )}
+              {status?.primary && (
+                <span className="text-xs text-muted-foreground">(primary worker pid={status.pid})</span>
+              )}
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+              <div>
+                <Clock className="inline h-3.5 w-3.5 mr-1 text-muted-foreground" />
+                <span className="text-muted-foreground mr-2">上次快照</span>
+                <span className="font-mono">{status?.last_run ?? "—"}</span>
+              </div>
+              <div>
+                <Clock className="inline h-3.5 w-3.5 mr-1 text-muted-foreground" />
+                <span className="text-muted-foreground mr-2">下次快照</span>
+                <span className="font-mono">{dailyJob?.next_run_time ?? "—"}</span>
+              </div>
+            </div>
+            {status?.jobs && status.jobs.length > 0 && (
+              <details className="text-xs text-muted-foreground">
+                <summary className="cursor-pointer">已注册作业 ({status.jobs.length})</summary>
+                <ul className="mt-1 space-y-1 font-mono">
+                  {status.jobs.map((j) => (
+                    <li key={j.id}>
+                      <span className="text-foreground">{j.id}</span> · {j.trigger}
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            )}
+            {isAdmin && (
+              <div className="flex items-center gap-3 pt-1">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleRunNow}
+                  disabled={running}
+                >
+                  {running ? (
+                    <RefreshCw className="h-3.5 w-3.5 mr-1 animate-spin" />
+                  ) : (
+                    <PlayCircle className="h-3.5 w-3.5 mr-1" />
+                  )}
+                  立即跑一次
+                </Button>
+                {msg && <span className="text-xs text-muted-foreground">{msg}</span>}
+              </div>
+            )}
+          </div>
+        )}
+      </CardContent>
+    </Card>
   )
 }

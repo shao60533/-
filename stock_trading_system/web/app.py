@@ -1338,16 +1338,75 @@ def create_app(config_path=None):
 
     # ── Scheduler Control ───────────────────────────────────────────────
 
+    def _last_snapshot_at(uid: int | None) -> str | None:
+        """MAX(date) FROM daily_snapshots — surfaced in /api/scheduler/status."""
+        import sqlite3 as _sql
+        path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
+        try:
+            conn = _sql.connect(path)
+        except _sql.OperationalError:
+            return None
+        try:
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(daily_snapshots)").fetchall()}
+            if uid is not None and "user_id" in cols:
+                row = conn.execute(
+                    "SELECT MAX(date) FROM daily_snapshots WHERE user_id = ?", (uid,),
+                ).fetchone()
+            else:
+                row = conn.execute("SELECT MAX(date) FROM daily_snapshots").fetchone()
+            return row[0] if row else None
+        finally:
+            conn.close()
+
+    def _daily_snapshot_scheduler():
+        """Return the APScheduler singleton if the boot path wired it up."""
+        from stock_trading_system.scheduler.daily_snapshot_scheduler import (
+            DailySnapshotScheduler,
+        )
+        try:
+            return DailySnapshotScheduler.get()
+        except RuntimeError:
+            return None
+
     @app.route("/api/scheduler/status")
     def api_scheduler_status():
+        """Combined status: legacy alert/report scheduler + APScheduler daily job."""
         global _scheduler_thread
         sched = _get_scheduler()
         alive = _scheduler_thread is not None and _scheduler_thread.is_alive()
-        return jsonify({
+        legacy = {
             "running": bool(alive and sched.is_running),
             "thread_alive": bool(alive),
             "alert_interval": sched._alert_interval,
+        }
+        # APScheduler daily-snapshot details (the field /api/scheduler/run-now
+        # actually fires).
+        apsched_payload: dict
+        ap = _daily_snapshot_scheduler()
+        if ap is None:
+            apsched_payload = {"running": False, "jobs": [], "primary": False, "pid": None}
+        else:
+            apsched_payload = ap.status()
+        uid = g.user.id if g.user else None
+        return jsonify({
+            **legacy,
+            "running": bool(legacy["running"] or apsched_payload.get("running")),
+            "jobs": apsched_payload.get("jobs", []),
+            "primary": apsched_payload.get("primary", False),
+            "pid": apsched_payload.get("pid"),
+            "last_run": _last_snapshot_at(uid),
+            "legacy": legacy,
         })
+
+    @app.route("/api/scheduler/run-now", methods=["POST"])
+    @admin_required
+    def api_scheduler_run_now():
+        """Fire the daily-snapshot job immediately (admin-only)."""
+        ap = _daily_snapshot_scheduler()
+        if ap is None:
+            return jsonify({"ok": False, "error": "scheduler not initialized"}), 503
+        result = ap.run_now()
+        return jsonify({"ok": True, "result": result})
 
     @app.route("/api/scheduler/start", methods=["POST"])
     def api_scheduler_start():
