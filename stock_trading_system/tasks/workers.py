@@ -693,6 +693,9 @@ def register_default_workers(tm, deps: WorkerDeps) -> None:
     tm.register("paper_trade", make_paper_trade_worker())
     tm.register("paper_backfill", make_paper_backfill_worker())
 
+    # ── Daily-snapshot backfill (dashboard "↻ 重新计算" button) ──
+    tm.register("backfill_snapshots", make_backfill_snapshots_worker())
+
     if deps.get_report_gen:
         tm.register("report", make_report_worker(deps.get_report_gen))
 
@@ -848,5 +851,50 @@ def make_paper_backfill_worker():
         store = PaperTradeStore(db_path)
         pdb = PortfolioDatabase(db_path)
         result = backfill_all(store, pdb, cfg, progress_cb=progress_cb)
+        return result
+    return worker
+
+
+def make_backfill_snapshots_worker():
+    """Replay transactions + yfinance into daily_snapshots for one user.
+
+    Wraps the migration script's per-user entry point so the dashboard
+    "↻ 重新计算" button can run it through the existing TaskManager event
+    pipeline (progress + completion broadcast).
+
+    params:
+        user_id (int):  resolved from g.user.id at submit time
+        from   (str):   "earliest" (default) — earliest transaction; or an
+                        ISO date string to start later.
+        force  (bool):  pass-through to the migration's --force semantics.
+    """
+    def worker(params, progress_cb):
+        from datetime import datetime as _dt
+        from stock_trading_system.config import get_config
+        from stock_trading_system.migrations.backfill_daily_snapshots import (
+            backfill_user, backfill_all_users,
+        )
+        cfg = get_config()
+        db_path = cfg.get("portfolio", {}).get("db_path", "data/portfolio.db")
+        user_id = params.get("user_id")
+        force = bool(params.get("force", False))
+
+        progress_cb(2, "解析交易日窗口")
+        if user_id is None:
+            # No logged-in user (CLI / cron) — fall back to all-users mode.
+            results = backfill_all_users(
+                db_path,
+                force=force,
+                progress_cb=lambda pct, step: progress_cb(int(pct), step),
+            )
+            progress_cb(100, "完成")
+            return {"results": results, "ran_at": _dt.utcnow().isoformat() + "Z"}
+
+        result = backfill_user(
+            db_path, int(user_id),
+            force=force,
+            progress_cb=lambda pct, step: progress_cb(int(pct), step),
+        )
+        progress_cb(100, "完成")
         return result
     return worker

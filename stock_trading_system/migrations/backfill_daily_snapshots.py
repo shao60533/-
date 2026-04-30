@@ -344,6 +344,11 @@ def backfill_user(
     conn = sqlite3.connect(db_path)
     try:
         conn.row_factory = sqlite3.Row
+        # Match TaskStore's WAL setup so this connection plays nicely with
+        # concurrent task-progress writes from the same process.
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA synchronous = NORMAL")
+        conn.execute("PRAGMA busy_timeout = 5000")
         multi_tenant = _has_user_id_column(conn, "transactions")
         snapshots_have_user_id = _has_user_id_column(conn, "daily_snapshots")
         txns = _load_transactions(conn, user_id, multi_tenant)
@@ -512,6 +517,11 @@ def _persist_or_dry_run(
         snapshots_have_user_id=snapshots_have_user_id,
         force=force,
     )
+    # Commit per-row so SQLite releases the write lock between days. The
+    # task progress writer (TaskStore.update) also touches this database
+    # concurrently when this migration runs as a worker; without per-row
+    # commits the tasks UPDATE blocks behind us and eventually times out.
+    conn.commit()
 
 
 # ── Multi-user driver ────────────────────────────────────────────────────────

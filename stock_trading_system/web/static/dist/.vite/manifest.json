@@ -146,6 +146,13 @@
       "_card-R5Ei9fix.js"
     ]
   },
+  "_loader-circle-BXA4wSJd.js": {
+    "file": "assets/loader-circle-BXA4wSJd.js",
+    "name": "loader-circle",
+    "imports": [
+      "_card-R5Ei9fix.js"
+    ]
+  },
   "_play-Bv4YGkJl.js": {
     "file": "assets/play-Bv4YGkJl.js",
     "name": "play",
@@ -193,12 +200,9 @@
       "_card-R5Ei9fix.js"
     ]
   },
-  "_socket-DF_8nUpV.js": {
-    "file": "assets/socket-DF_8nUpV.js",
-    "name": "socket",
-    "imports": [
-      "_card-R5Ei9fix.js"
-    ]
+  "_socket-CfB_D7Lo.js": {
+    "file": "assets/socket-CfB_D7Lo.js",
+    "name": "socket"
   },
   "_stat-BKxRXmoQ.js": {
     "file": "assets/stat-BKxRXmoQ.js",
@@ -265,7 +269,7 @@
     ]
   },
   "src/islands/analysis/main.tsx": {
-    "file": "assets/analysis-L5cmETuH.js",
+    "file": "assets/analysis-DAHDbb0a.js",
     "name": "analysis",
     "src": "src/islands/analysis/main.tsx",
     "isEntry": true,
@@ -276,9 +280,10 @@
       "_skeleton-Dt6bmOln.js",
       "_alert-BqaA6fYo.js",
       "_tabs-DXUFhQXm.js",
-      "_socket-DF_8nUpV.js",
+      "_socket-CfB_D7Lo.js",
       "_circle-x-gmy9xAFi.js",
       "_circle-check-Bg21Jf7-.js",
+      "_loader-circle-BXA4wSJd.js",
       "_circle-DNX84o3G.js",
       "_arrow-left-BHv9RlfB.js",
       "_clock-zVsNojEg.js",
@@ -311,7 +316,7 @@
     ]
   },
   "src/islands/dashboard/main.tsx": {
-    "file": "assets/dashboard-BfC7N-oL.js",
+    "file": "assets/dashboard-CEFYHNCN.js",
     "name": "dashboard",
     "src": "src/islands/dashboard/main.tsx",
     "isEntry": true,
@@ -320,8 +325,10 @@
       "_stat-BKxRXmoQ.js",
       "_chip-DlUqOfsY.js",
       "_ChartPanel-CsI-SP6z.js",
+      "_socket-CfB_D7Lo.js",
       "_trending-up-D13oL0Fu.js",
       "_target-CwU08265.js",
+      "_refresh-cw-CMhclDjF.js",
       "_chart-column-BRHfOw8u.js",
       "_react-vendor-yfL0ty4i.js",
       "_echarts-vendor-CKr1AriL.js",
@@ -460,7 +467,7 @@
     ]
   },
   "src/islands/tasks/main.tsx": {
-    "file": "assets/tasks-BSQC6UP0.js",
+    "file": "assets/tasks-DZP44qJo.js",
     "name": "tasks",
     "src": "src/islands/tasks/main.tsx",
     "isEntry": true,
@@ -470,8 +477,9 @@
       "_chip-DlUqOfsY.js",
       "_skeleton-Dt6bmOln.js",
       "_alert-BqaA6fYo.js",
-      "_socket-DF_8nUpV.js",
+      "_socket-CfB_D7Lo.js",
       "_circle-alert-_ZrNkxAG.js",
+      "_loader-circle-BXA4wSJd.js",
       "_eye-DKiTvp88.js",
       "_circle-x-gmy9xAFi.js",
       "_rotate-cw-DOH5pVYH.js",

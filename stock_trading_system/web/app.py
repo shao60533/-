@@ -1312,6 +1312,30 @@ def create_app(config_path=None):
         pm.take_snapshot()
         return jsonify({"ok": True, "message": "Snapshot saved"})
 
+    @app.route("/api/portfolio/snapshots/backfill", methods=["POST"])
+    def api_portfolio_snapshots_backfill():
+        """Submit a backfill task that replays transactions into daily_snapshots.
+
+        Body: ``{"from": "earliest" | "<YYYY-MM-DD>", "force": bool}``
+        Returns ``{"task_id": "...", "task": {...}}`` so the frontend can
+        subscribe to its progress through the unified-progress stream.
+        """
+        if g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
+        body = request.get_json(silent=True) or {}
+        params = {
+            "user_id": g.user.id,
+            "from": body.get("from", "earliest"),
+            "force": bool(body.get("force", False)),
+        }
+        tm = _get_task_manager()
+        task = tm.submit(
+            "backfill_snapshots", params,
+            title=f"回填净值快照 · user={g.user.id}",
+            created_by=g.user.id,
+        )
+        return jsonify({"ok": True, "task_id": task["id"], "task": task})
+
     # ── Scheduler Control ───────────────────────────────────────────────
 
     @app.route("/api/scheduler/status")

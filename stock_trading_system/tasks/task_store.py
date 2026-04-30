@@ -190,6 +190,7 @@ class TaskStore:
     PRIVATE_TYPES = frozenset([
         "portfolio_batch", "batch_analysis", "personal_advice",
         "alerts", "paper_trade", "paper_backfill",
+        "backfill_snapshots",
     ])
 
     VALID_SCOPES = frozenset({"mine", "shared_research", "all"})
