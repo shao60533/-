@@ -986,17 +986,48 @@ def create_app(config_path=None):
         if not record:
             return jsonify({"error": "Not found"}), 404
 
-        # Map DB columns to frontend-expected fields
+        # Per-user advice (v1.14): the shared row no longer holds a
+        # holdings-aware position-sizing payload. Pull the current user's
+        # row out of user_analysis_advice instead.
+        user_id = g.user.id if g.user else None
+        user_advice = None
+        bookmarked = False
+        if user_id is not None:
+            user_advice = db.get_user_advice(user_id, analysis_id)
+            bookmarked = db.is_bookmarked(user_id, analysis_id)
+
+        # Resolve created_by → display_name (fallback to email).
+        created_by_name = None
+        if record.get("created_by"):
+            try:
+                user = _user_repo.find_by_id(int(record["created_by"]))
+                if user:
+                    created_by_name = user.display_name or user.email
+            except Exception as e:  # noqa: BLE001
+                logger.warning("created_by lookup failed: %s", e)
+
+        # confidence string → numeric for the gauge UI
         conf_str = (record.get("confidence") or "").lower()
         conf_map = {"high": 0.85, "medium": 0.5, "low": 0.25}
         confidence_num = conf_map.get(conf_str)
 
-        advice = {}
-        if record.get("advice_json"):
+        # advice dict that the frontend renders. Prefer the current user's
+        # entry; fall back to the legacy ``advice_json`` blob on the shared
+        # row for pre-v1.14 records (back-compat — safe because that legacy
+        # column was set by the original requester anyway).
+        advice: dict = {}
+        if user_advice:
+            for key in ("action", "confidence", "position_pct",
+                        "entry_low", "entry_high", "stop_loss", "take_profit",
+                        "reasoning", "risk_warning"):
+                if user_advice.get(key) is not None:
+                    advice[key] = user_advice[key]
+        elif record.get("advice_json"):
             try:
-                advice = json.loads(record["advice_json"]) if isinstance(record["advice_json"], str) else record["advice_json"]
+                blob = record["advice_json"]
+                advice = json.loads(blob) if isinstance(blob, str) else blob or {}
             except (json.JSONDecodeError, TypeError):
-                pass
+                advice = {}
 
         analysts = {}
         for key in ("market_report", "sentiment_report", "news_report",
@@ -1009,6 +1040,9 @@ def create_app(config_path=None):
         record["confidence"] = confidence_num
         record["risk_level"] = advice.get("risk_level") or conf_str or "-"
         record["analysts"] = analysts
+        record["advice"] = advice or None
+        record["bookmarked"] = bookmarked
+        record["created_by_name"] = created_by_name
 
         return jsonify(record)
 

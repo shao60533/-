@@ -166,6 +166,46 @@ class PortfolioDatabase:
 
                 CREATE INDEX IF NOT EXISTS idx_analysis_ticker_time
                     ON analysis_history(ticker, created_at DESC);
+
+                -- v1.14: split per-user advice from shared research.
+                -- analysis_history holds the shared report; this table
+                -- holds the holdings-aware position-sizing advice that
+                -- depends on the requester's portfolio. Per-user UNIQUE
+                -- so a user can re-run advice on the same shared row
+                -- (e.g. after adding a position) and replace cleanly.
+                CREATE TABLE IF NOT EXISTS user_analysis_advice (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    analysis_id INTEGER NOT NULL,
+                    holdings_context_snapshot TEXT,
+                    action TEXT,
+                    confidence TEXT,
+                    position_pct REAL,
+                    entry_low REAL,
+                    entry_high REAL,
+                    stop_loss REAL,
+                    take_profit REAL,
+                    reasoning TEXT,
+                    risk_warning TEXT,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(user_id, analysis_id),
+                    FOREIGN KEY(analysis_id)
+                        REFERENCES analysis_history(id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_uaa_user
+                    ON user_analysis_advice(user_id, created_at DESC);
+
+                -- v1.14: per-user bookmarks. Two users can independently
+                -- star the same shared analysis row.
+                CREATE TABLE IF NOT EXISTS analysis_bookmarks (
+                    user_id INTEGER NOT NULL,
+                    analysis_id INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY(user_id, analysis_id),
+                    FOREIGN KEY(analysis_id)
+                        REFERENCES analysis_history(id) ON DELETE CASCADE
+                );
             """)
             self._migrate_analysis_history(conn)
 
@@ -518,3 +558,91 @@ class PortfolioDatabase:
         with self._get_conn() as conn:
             cur = conn.execute("DELETE FROM analysis_history WHERE id = ?", (analysis_id,))
             return cur.rowcount > 0
+
+    # ── User-scoped advice + bookmarks (v1.14) ───────────────────────────
+
+    def save_user_advice(
+        self,
+        user_id: int,
+        analysis_id: int,
+        advice: dict,
+        holdings_snapshot: str | None = None,
+    ) -> int:
+        """UPSERT this user's advice for this shared analysis row.
+
+        Replaces any prior advice for (user_id, analysis_id) so re-running
+        with a fresh holdings snapshot stays single-row.
+        """
+        adv = advice or {}
+        with self._get_conn() as conn:
+            cur = conn.execute(
+                """INSERT INTO user_analysis_advice
+                   (user_id, analysis_id, holdings_context_snapshot,
+                    action, confidence, position_pct,
+                    entry_low, entry_high, stop_loss, take_profit,
+                    reasoning, risk_warning, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(user_id, analysis_id) DO UPDATE SET
+                     holdings_context_snapshot = excluded.holdings_context_snapshot,
+                     action = excluded.action,
+                     confidence = excluded.confidence,
+                     position_pct = excluded.position_pct,
+                     entry_low = excluded.entry_low,
+                     entry_high = excluded.entry_high,
+                     stop_loss = excluded.stop_loss,
+                     take_profit = excluded.take_profit,
+                     reasoning = excluded.reasoning,
+                     risk_warning = excluded.risk_warning,
+                     created_at = excluded.created_at""",
+                (
+                    int(user_id), int(analysis_id), holdings_snapshot or "",
+                    adv.get("action"),
+                    adv.get("confidence"),
+                    _coerce_float(adv.get("suggested_position_pct")),
+                    _coerce_float(adv.get("entry_price_low")),
+                    _coerce_float(adv.get("entry_price_high")),
+                    _coerce_float(adv.get("stop_loss")),
+                    _coerce_float(adv.get("take_profit")),
+                    adv.get("reasoning") or "",
+                    adv.get("risk_warning") or "",
+                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                ),
+            )
+            return int(cur.lastrowid)
+
+    def get_user_advice(self, user_id: int, analysis_id: int) -> dict | None:
+        """Return the requesting user's per-analysis advice (or None)."""
+        with self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM user_analysis_advice "
+                "WHERE user_id = ? AND analysis_id = ?",
+                (int(user_id), int(analysis_id)),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def set_bookmark(self, user_id: int, analysis_id: int, bookmarked: bool) -> bool:
+        """Toggle a per-user bookmark; returns the new state."""
+        with self._get_conn() as conn:
+            if bookmarked:
+                conn.execute(
+                    "INSERT OR IGNORE INTO analysis_bookmarks "
+                    "(user_id, analysis_id, created_at) VALUES (?, ?, ?)",
+                    (int(user_id), int(analysis_id),
+                     datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+                )
+                return True
+            conn.execute(
+                "DELETE FROM analysis_bookmarks "
+                "WHERE user_id = ? AND analysis_id = ?",
+                (int(user_id), int(analysis_id)),
+            )
+            return False
+
+    def is_bookmarked(self, user_id: int, analysis_id: int) -> bool:
+        with self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM analysis_bookmarks "
+                "WHERE user_id = ? AND analysis_id = ?",
+                (int(user_id), int(analysis_id)),
+            ).fetchone()
+            return row is not None
