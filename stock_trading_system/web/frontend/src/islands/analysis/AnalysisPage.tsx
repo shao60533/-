@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from "react"
+import { useEffect, useState, useRef, useCallback } from "react"
 import { Sparkles, Send, ArrowLeft, Clock, Newspaper, BarChart3, Scale, ExternalLink } from "lucide-react"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -8,7 +8,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { PipelineDAG } from "@/components/shared/PipelineDAG"
-import { TVChart } from "@/components/shared/TVChart"
+import { TVChart, type TVChartState } from "@/components/shared/TVChart"
 import { apiGet, apiPost } from "@/lib/api"
 import { subscribeTaskStream } from "@/lib/socket"
 import Markdown from "react-markdown"
@@ -257,31 +257,63 @@ function AnalysisRunningView({ taskId, ticker, onComplete }: {
 
 function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
   const [klineData, setKlineData] = useState<OHLCVRow[]>([])
+  const [klineState, setKlineState] = useState<TVChartState>("loading")
   const [activeTab, setActiveTab] = useState("summary")
   const tabsRef = useRef<HTMLDivElement>(null)
 
-  useEffect(() => {
-    if (!detail.ticker) return
-    // Primary: /api/quote/history (days-based, dedicated for chart rendering).
-    // Fallback: /api/chart/{ticker} (period-based, predates the days API).
-    apiGet<{ bars?: OHLCVRow[]; data?: OHLCVRow[] }>(
-      `/api/quote/history?ticker=${detail.ticker}&days=90`,
-    )
-      .then(r => {
-        const bars = r.bars ?? []
-        if (bars.length > 0) {
-          setKlineData(bars)
-          return null
-        }
-        return apiGet<{ data: OHLCVRow[] }>(
+  // Primary: /api/quote/history (days-based, dedicated for chart rendering).
+  // Fallback: /api/chart/{ticker} (period-based, predates the days API).
+  // We track state explicitly so the chart container — which always mounts
+  // — can show loading / empty / error overlays without unmounting itself.
+  const refetchKline = useCallback(async () => {
+    if (!detail.ticker) {
+      setKlineState("empty")
+      return
+    }
+    setKlineState("loading")
+    try {
+      const primary = await apiGet<{ bars?: OHLCVRow[] }>(
+        `/api/quote/history?ticker=${detail.ticker}&days=90`,
+      )
+      const bars = primary.bars ?? []
+      if (bars.length > 0) {
+        setKlineData(bars)
+        setKlineState("ok")
+        return
+      }
+      // Empty primary → try the legacy chart endpoint.
+      const fallback = await apiGet<{ data?: OHLCVRow[] }>(
+        `/api/chart/${detail.ticker}?period=3mo&interval=1d`,
+      )
+      const fbBars = fallback.data ?? []
+      if (fbBars.length > 0) {
+        setKlineData(fbBars)
+        setKlineState("ok")
+      } else {
+        setKlineState("empty")
+      }
+    } catch (err: unknown) {
+      // Primary failed → try the fallback before declaring error.
+      try {
+        const fallback = await apiGet<{ data?: OHLCVRow[] }>(
           `/api/chart/${detail.ticker}?period=3mo&interval=1d`,
         )
-      })
-      .then(r => {
-        if (r && Array.isArray(r.data) && r.data.length > 0) setKlineData(r.data)
-      })
-      .catch(() => {})
+        const fbBars = fallback.data ?? []
+        if (fbBars.length > 0) {
+          setKlineData(fbBars)
+          setKlineState("ok")
+          return
+        }
+        setKlineState("empty")
+      } catch {
+        setKlineState("error")
+      }
+    }
   }, [detail.ticker])
+
+  useEffect(() => {
+    refetchKline()
+  }, [refetchKline])
 
   // Build report content map
   const reportContent: Record<string, string> = {}
@@ -376,7 +408,7 @@ function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
       <Card>
         <CardHeader><CardTitle className="text-sm">K 线走势（近 3 个月）</CardTitle></CardHeader>
         <CardContent>
-          <TVChart data={klineData} height={380} loading={klineData.length === 0} />
+          <TVChart data={klineData} state={klineState} onRetry={refetchKline} height={380} />
         </CardContent>
       </Card>
 
