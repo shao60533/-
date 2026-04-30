@@ -8,6 +8,7 @@ numpy>=1.24.0
 pyyaml>=6.0
 click>=8.0
 schedule>=1.2.0
+APScheduler>=3.10.0
 python-telegram-bot>=21.0
 aiosmtplib>=3.0
 rich>=13.0

@@ -372,6 +372,28 @@ def create_app(config_path=None):
     from stock_trading_system.tasks.event_emitter import ensure_task_events_table
     ensure_task_events_table(db_path)
 
+    # ── Daily-snapshot scheduler ───────────────────────────────────────
+    # Auto-starts once per deployment (worker-0 / single-process wins the
+    # filesystem lock; the rest stay inert). Runs at 16:30 America/New_York
+    # right after the US close. Disable with DISABLE_DAILY_SNAPSHOT_SCHEDULER=1
+    # for tests / dev shells that don't want a background thread.
+    if _multi_tenant_ready and not os.environ.get(
+        "DISABLE_DAILY_SNAPSHOT_SCHEDULER"
+    ):
+        from stock_trading_system.scheduler.daily_snapshot_scheduler import (
+            DailySnapshotScheduler, take_snapshot_all_users,
+        )
+
+        def _snapshot_all_users():
+            return take_snapshot_all_users(
+                _user_repo,
+                portfolio_manager_factory=lambda _uid: _get_portfolio_mgr(),
+            )
+
+        DailySnapshotScheduler.reset()
+        scheduler = DailySnapshotScheduler.get(_snapshot_all_users)
+        scheduler.start_if_primary()
+
     # Public paths that don't require authentication
     PUBLIC_PREFIXES = ("/static/", "/login", "/register", "/reset",
                        "/api/auth/login", "/api/auth/register", "/api/auth/reset",

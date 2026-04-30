@@ -139,6 +139,9 @@ def app_client(tmp_path, isolated_config_dir, monkeypatch):
     # all bind to the same temp DB. Setting it AFTER app creation is too late
     # because create_app captures db_path from config before we can edit it.
     monkeypatch.setenv("STOCK_DB_PATH", str(db_path))
+    # Default-off for the daily-snapshot scheduler in tests; suites that
+    # explicitly verify the cron wiring should clear this env locally.
+    monkeypatch.setenv("DISABLE_DAILY_SNAPSHOT_SCHEDULER", "1")
     # Pin API keys via env too so any code path that reloads the config (e.g.
     # the LLM-provider POST handler calls save_config → load_config) does not
     # blow away our in-memory test keys.
