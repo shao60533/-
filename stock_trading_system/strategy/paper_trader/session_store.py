@@ -89,6 +89,10 @@ CREATE TABLE IF NOT EXISTS paper_trade_plans (
     status TEXT DEFAULT 'active',         -- active | superseded | expired
     superseded_by_plan_id INTEGER,
     superseded_at TEXT,
+    fingerprint TEXT,                     -- v1.3 F1 dedup
+    reconfirmed_count INTEGER DEFAULT 1,  -- v1.3 F1 dedup
+    reconfirmed_at TEXT,                  -- v1.3 F1 dedup
+    analysis_ids TEXT,                    -- v1.3 F1 dedup (json array)
     created_at TEXT NOT NULL,
     FOREIGN KEY (session_id) REFERENCES paper_trade_sessions(id) ON DELETE CASCADE
 );
@@ -261,11 +265,35 @@ class PaperTradeStore:
                 conn.execute("ALTER TABLE paper_trade_sessions ADD COLUMN ticker TEXT")
             if "last_eod_date" not in cols:
                 conn.execute("ALTER TABLE paper_trade_sessions ADD COLUMN last_eod_date TEXT")
-            # Unique ticker index (non-system only)
+            if "user_id" not in cols:
+                conn.execute("ALTER TABLE paper_trade_sessions ADD COLUMN user_id INTEGER")
+            if "replay_mode" not in cols:
+                conn.execute("ALTER TABLE paper_trade_sessions ADD COLUMN replay_mode TEXT")
+            # Unique (ticker, user_id) — one forward-tracking session per
+            # ticker per user. NULL user_id treated as a distinct legacy slot.
+            conn.execute("DROP INDEX IF EXISTS idx_session_ticker")
             conn.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_session_ticker "
-                "ON paper_trade_sessions(ticker) "
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_session_ticker_user "
+                "ON paper_trade_sessions(ticker, IFNULL(user_id, -1)) "
                 "WHERE ticker IS NOT NULL AND is_system = 0"
+            )
+            # v1.3 F1: paper_trade_plans columns (idempotent for legacy DBs)
+            plan_cols = {r[1] for r in conn.execute("PRAGMA table_info(paper_trade_plans)")}
+            for col, ddl in (
+                ("fingerprint",
+                 "ALTER TABLE paper_trade_plans ADD COLUMN fingerprint TEXT"),
+                ("reconfirmed_count",
+                 "ALTER TABLE paper_trade_plans ADD COLUMN reconfirmed_count INTEGER DEFAULT 1"),
+                ("reconfirmed_at",
+                 "ALTER TABLE paper_trade_plans ADD COLUMN reconfirmed_at TEXT"),
+                ("analysis_ids",
+                 "ALTER TABLE paper_trade_plans ADD COLUMN analysis_ids TEXT"),
+            ):
+                if col not in plan_cols:
+                    conn.execute(ddl)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS ix_plans_session_ticker_fp "
+                "ON paper_trade_plans(session_id, fingerprint)"
             )
             for idx_sql in _INDEXES:
                 conn.execute(idx_sql)
@@ -689,17 +717,35 @@ def _row_to_session(row: sqlite3.Row) -> dict:
 def _v2_methods():
     """Inject V2 methods onto PaperTradeStore (kept here to avoid churn above)."""
 
-    def find_session_by_ticker(self, ticker: str) -> dict | None:
+    def find_session_by_ticker(self, ticker: str,
+                                user_id: int | None = None) -> dict | None:
+        """Look up forward-tracking session for ticker.
+
+        ``user_id`` scopes the lookup so two users tracking the same ticker
+        get isolated sessions; ``None`` falls back to legacy un-scoped rows
+        (created before v1.3 added the column) for backwards compatibility.
+        """
         with self._conn() as conn:
-            row = conn.execute(
-                "SELECT * FROM paper_trade_sessions WHERE ticker = ? AND is_system = 0 LIMIT 1",
-                (ticker.upper(),),
-            ).fetchone()
+            if user_id is None:
+                row = conn.execute(
+                    "SELECT * FROM paper_trade_sessions "
+                    "WHERE ticker = ? AND is_system = 0 AND user_id IS NULL "
+                    "LIMIT 1",
+                    (ticker.upper(),),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT * FROM paper_trade_sessions "
+                    "WHERE ticker = ? AND is_system = 0 AND user_id = ? "
+                    "LIMIT 1",
+                    (ticker.upper(), int(user_id)),
+                ).fetchone()
             return _row_to_session(row) if row else None
 
     def create_ticker_session(
         self, ticker: str, start_date: str,
         start_capital: float = 100000.0, config: dict | None = None,
+        user_id: int | None = None,
     ) -> int:
         cfg = config or {
             "sizing": {"mode": "advice", "default_pct": 0.1, "max_single_pct": 0.5},
@@ -713,23 +759,55 @@ def _v2_methods():
             cur = conn.execute(
                 """INSERT INTO paper_trade_sessions
                    (name, mode, status, start_capital, start_date, end_date,
-                    config_json, auto_track, is_system, ticker, created_at)
-                   VALUES (?, 'ticker', 'running', ?, ?, NULL, ?, 1, 0, ?, ?)""",
+                    config_json, auto_track, is_system, ticker, user_id, created_at)
+                   VALUES (?, 'ticker', 'running', ?, ?, NULL, ?, 1, 0, ?, ?, ?)""",
                 (f"{ticker.upper()} · 纸面追踪",
                  start_capital, start_date,
                  json.dumps(cfg, ensure_ascii=False),
-                 ticker.upper(), _now_iso()),
+                 ticker.upper(),
+                 int(user_id) if user_id is not None else None,
+                 _now_iso()),
             )
             return int(cur.lastrowid)
 
-    def list_ticker_sessions(self) -> list[dict]:
+    def list_ticker_sessions(self, mode: str | None = None) -> list[dict]:
+        """Return ticker-scoped sessions enriched with plan/order/position counters.
+
+        ``mode='forward'`` filters out simulator replay rows; ``'replay'``
+        filters out forward-tracking rows; ``None`` returns both.
+        """
+        sql = """
+            SELECT s.*,
+              (SELECT COUNT(*) FROM paper_trade_plans
+                 WHERE session_id = s.id AND status = 'active')           AS active_plan_count,
+              (SELECT COUNT(*) FROM paper_trade_planned_orders
+                 WHERE session_id = s.id AND status = 'pending')           AS pending_orders_count,
+              (SELECT COUNT(*) FROM paper_trade_planned_orders
+                 WHERE session_id = s.id AND status = 'triggered')         AS triggered_orders_count,
+              (SELECT position_shares FROM paper_trade_daily_stats
+                 WHERE session_id = s.id ORDER BY date DESC LIMIT 1)       AS open_position_shares,
+              (SELECT skip_reason FROM paper_trade_strategy_events
+                 WHERE session_id = s.id
+                 ORDER BY event_date DESC, id DESC LIMIT 1)                AS last_skip_reason
+            FROM paper_trade_sessions s
+            WHERE s.ticker IS NOT NULL AND s.is_system = 0
+        """
+        if mode == "forward":
+            sql += " AND (s.replay_mode IS NULL OR s.replay_mode = '')"
+        elif mode == "replay":
+            sql += " AND s.replay_mode IS NOT NULL AND s.replay_mode != ''"
+        sql += " ORDER BY s.created_at DESC"
         with self._conn() as conn:
-            rows = conn.execute(
-                """SELECT * FROM paper_trade_sessions
-                   WHERE ticker IS NOT NULL AND is_system = 0
-                   ORDER BY created_at DESC"""
-            ).fetchall()
-        return [_row_to_session(r) for r in rows]
+            rows = conn.execute(sql).fetchall()
+        out: list[dict] = []
+        for r in rows:
+            d = _row_to_session(r)
+            for k in ("active_plan_count", "pending_orders_count",
+                      "triggered_orders_count", "open_position_shares",
+                      "last_skip_reason"):
+                d[k] = r[k]
+            out.append(d)
+        return out
 
     def update_session_last_eod(self, session_id: int, date: str) -> None:
         with self._lock, self._conn() as conn:

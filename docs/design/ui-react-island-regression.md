@@ -28,6 +28,7 @@ R-1 ~ R-7 commits 已落地（6e583b4..5370863）。审计 22 P0 项实际状态
 | ❌ v1.11 修了代码但没修数据（v1.12 实测）| 1 | **D-FEAT-1 净值曲线仍只 1 个点**：v1.11 后端代码 ✅ 正确（返 daily_snapshots 全量），但 **DB 里只有 3 行 snapshot**（2026-04-14/15/16/19），距今缺 11 天。根因：调度器 [task_scheduler.py:105](../../stock_trading_system/scheduler/task_scheduler.py) take_snapshot 没真跑 + 缺历史回填脚本 → 需 R-fix-6 同时补 (a) 历史回填 (b) 调度器修复 (c) UI 触发入口 |
 | ❌ AI 分析模块产品&技术缺口（v1.13 用户提）| 7 | **A-FIX-A K线初始 Skeleton 早 return** [TVChart.tsx:108](../../stock_trading_system/web/frontend/src/components/shared/TVChart.tsx) 导致 chart 容器永不挂载；**A-FIX-B analysis_history 缺 `created_by/provider/config_hash/task_id/duration_sec/bookmarked` 元数据**（[database.py:81](../../stock_trading_system/portfolio/database.py) schema 缺 + [task_store.py:368](../../stock_trading_system/tasks/task_store.py) INSERT 不写）；**A-FIX-C 旧 `/api/analyze`** [app.py:852](../../stock_trading_system/web/app.py) 仍开 daemon thread + 直写 history + 硬编码 `gemini.deep_think_model` 不走 active provider；**A-FIX-D advice 与共享分析未拆分**（advice_json 和 trade_decision 同表，其他用户能看到原作者的持仓上下文）；**A-FIX-E `/analysis` 首页缺 5 条最近卡片 + 深度选择 + 8 tab + 决策独立 tab + 操作按钮齐**；**A-FIX-F Markdown 无 sanitize**（[AnalysisPage.tsx:393](../../stock_trading_system/web/frontend/src/islands/analysis/AnalysisPage.tsx) 仅 react-markdown + remark-gfm，缺 rehype-sanitize）；**A-FIX-G `_record_agent_scores`** [workers.py:135](../../stock_trading_system/tasks/workers.py) 为拿 analysis_id 先 save 半成品行 → 历史页双重记录 |
 | ❌ R-fix-7 验收暴露 4 处遗留（v1.14 用户提）| 4 | **A-FIX-H worker/analyzer progress_cb 契约不一致**：[workers.py:57](../../stock_trading_system/tasks/workers.py) 无条件 `analyzer.analyze(ticker, date, progress_cb=...)`，但 [tests/tasks/test_workers.py:28 FakeAnalyzer.analyze(self,ticker,date)](../../tests/tasks/test_workers.py) 不收 `progress_cb` → `pytest tests/tasks/test_workers.py` 红；**A-FIX-I `/api/history/<id>` 旧 advice_json 跨用户泄露**：[app.py:1046](../../stock_trading_system/web/app.py) `elif record.get("advice_json")` 不检查 `created_by == g.user.id` → Bob 读 Alice 旧分析 详情仍能看到 Alice 的 advice 全文；**A-FIX-J TaskStore 共享表 advice 写入后门**：[task_store.py:392](../../stock_trading_system/tasks/task_store.py) `result.get("advice")` 仍会被写到 `analysis_history.advice_json/action/confidence/...` → 兼容老 caller 但新 worker 路径下应 0 写入；需关闭后门，结构化字段统一 None；**A-FIX-K `depth` 参数空挂**：前端提交 `quick/standard/deep` ([AnalysisPage.tsx:158](../../stock_trading_system/web/frontend/src/islands/analysis/AnalysisPage.tsx))，[app.py:903](../../stock_trading_system/web/app.py) 透传到 task params，但 [workers.py:73](../../stock_trading_system/tasks/workers.py) 的 `out` dict 不含 depth → 数据库无记录、详情页无展示、迭代/反思未差异化 → 虚假控制 |
+| ❌ Dashboard / 持仓多租户契约破损（v1.16 用户提）| 6 | **DH-FIX-A schema 与运行时不一致**：[database.py:45-79](../../stock_trading_system/portfolio/database.py) `_init_tables` 默认 CREATE 的 positions/transactions/daily_snapshots/alerts **都没有 user_id 列**；user_id 由 [migrations/to_multi_tenant.py](../../stock_trading_system/migrations/to_multi_tenant.py) 后期 ALTER 加；但 [manager.py:39-105](../../stock_trading_system/portfolio/manager.py) `add_position/sell_position/take_snapshot` 已经 `user_id=uid` 写库 → fresh DB 不跑迁移就 `OperationalError: no column user_id`；`positions` PRIMARY KEY 仍是 `ticker` 单列、`daily_snapshots` PRIMARY KEY 仍是 `date` 单列 → 两用户共用 ticker/date 时主键冲突；**DH-FIX-B `/api/search` 跨用户数据泄露**：[app.py:1708-1790](../../stock_trading_system/web/app.py) `db.get_all_positions()` / `db.get_transactions()` / `db.get_active_alerts()` 全无 user_id 过滤 → 任意登录用户搜索能看到其他用户的持仓 / 交易备注 / 预警；analysis_history 共享研究保留，但 advice/notes 不能进搜索；**DH-FIX-C `/api/dashboard.alerts_count` 全局计数**：[app.py:783](../../stock_trading_system/web/app.py) `_get_alert_monitor().list_alerts()` 没传 user_id → AlertMonitor 直接 `db.get_active_alerts()` → 计数包含全租户；`AlertMonitor.list_alerts/check_alerts` 没 user_id 入参；**DH-FIX-D 持仓交易缺校验**：[app.py:810-832](../../stock_trading_system/web/app.py) `/api/portfolio/add` 直接 `float(data["shares"])` / `float(data["price"])` 不校验正数；`/api/portfolio/sell` 同；[manager.py:103](../../stock_trading_system/portfolio/manager.py) 卖空仓 "no position found, recording transaction only" → 留下孤立 sell 记录（transaction 已写、position 不存在）；**DH-FIX-E 交易记录字段契约**：`api_transactions` 返 `timestamp + action='buy'/'sell'` 小写；前端期望 `date` + 大写 `BUY/SELL` 上色；时间显示丢失；**DH-FIX-F today_pnl 文案数据不符**：[app.py:847-858](../../stock_trading_system/web/app.py) `today_pnl = pnl.get("total_pnl", 0)` —— 标签说"今日"但数据是"累计"，需要文案改"总盈亏"或基于上一交易日 snapshot 算真实日内 |
 | ❌ AI 建议 → paper trade 执行链断裂（v1.15 用户提）| 7 | **PT-FIX-A SignalLoader 数据源未切**：[signal_loader.py:13-77](../../stock_trading_system/strategy/paper_trader/signal_loader.py) 仍只读 `analysis_history.advice_json`，但 v1.13 之后那一列对其他用户已 NULL → paper trade 跨用户拿不到 advice；且 `load/get_one/backfill_all` 都没有 `user_id` 参数；**PT-FIX-B 分析完成后未驱动 paper trade**：[task_manager.py:409-485](../../stock_trading_system/tasks/task_manager.py) `_post_analysis_save` 只写 `user_analysis_advice`，没调 `process_analysis(...)` → 用户做完 AI 分析没有自动生成 plan/order；**PT-FIX-C `/api/paper/track` 行为太薄**：[app.py:1991-2008](../../stock_trading_system/web/app.py) 仅 `manual_track` 写 analysis_tracked，没调 `process_analysis` → 没 plan / 没 planned_orders / 没 immediate execution；返 `tracked_id` 不返 `plan_id/num_orders/triggered`；**PT-FIX-D 观察列表 vs 纸面追踪混淆**：详情页"加入持仓追踪"按钮调 `/api/portfolio/track` (=watchlist)，文案让用户以为已自动下单；**PT-FIX-E 双纸面执行模型未收敛**：replay simulator (simulator.py) 与 ticker-session plan/order 引擎共存，UI 列表 [app.py:2032-2073](../../stock_trading_system/web/app.py) 只显示 `running + start_capital + sparkline`，没 `active_plans / pending_orders / triggered_orders / open_position_shares / last_eod / skip_reason`；**PT-FIX-F PaperTradeStore schema 自初始化缺 v1.3 列**：[session_store.py:78-95](../../stock_trading_system/strategy/paper_trader/session_store.py) `_SCHEMA_TRADING_PLANS` 没 `fingerprint/reconfirmed_count/reconfirmed_at/analysis_ids`；这 4 列由 [migrations/paper_trade_v1_3.py](../../stock_trading_system/migrations/paper_trade_v1_3.py) 加，但 [session_store.py:917,924,944](../../stock_trading_system/strategy/paper_trader/session_store.py) 又写 SQL 直接读这些列 → 新 DB 不跑 migration 时 `save_plan` 必挂；**PT-FIX-G 测试缺端到端验证**：缺 analysis 完成 → user_analysis_advice → process_analysis → plan/order 链；缺 Bob 不能用 Alice advice 的隔离测试；缺 `/api/paper/track` 返 plan_id 验证；缺 fresh DB 无 migration 直接 save_plan 验证 |
 
 **T-P0-6 任务中心空白 bug 已修复**（实测 2026-04-25）：
@@ -1904,6 +1905,363 @@ pytest tests/portfolio/test_database.py tests/web/test_analysis_detail.py tests/
 
 ---
 
+#### v1.16 新增（Dashboard / 持仓多租户契约修复，~5h）：
+
+##### R-fix-10 · 持仓多租户契约 6 项
+
+实测痛点（验收 2026-05-01 中）：
+- v1.13 多租户上线后 `analysis_history` 已转共享 + per-user advice，但 `positions/transactions/daily_snapshots/alerts` 这条**用户私有**链路只在迁移脚本里加了 user_id；fresh DB 不跑迁移就坏
+- 默认 schema 还把 `positions.ticker` / `daily_snapshots.date` 当全局主键 → 两用户同一 ticker / 同日 snapshot 会冲突
+- `/api/search` / `/api/dashboard.alerts_count` 没把 user_id 当过滤维度 → 跨用户数据泄露
+- 持仓增删缺前置校验：负数 / 0 / 卖空都能写 transaction，留孤立记录
+- 列表字段契约对不上：`timestamp + 'buy'/'sell'` 后端 vs `date + BUY/SELL` 前端
+- `today_pnl` 复用 `total_pnl` —— 标签欺骗用户
+
+##### R-fix-10A · PortfolioDatabase 默认 schema 自含 user_id（~1.5h）
+
+[stock_trading_system/portfolio/database.py](../../stock_trading_system/portfolio/database.py) `_init_tables` 整段 CREATE 改写：
+```sql
+CREATE TABLE IF NOT EXISTS positions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    ticker TEXT NOT NULL,
+    market TEXT NOT NULL,
+    shares REAL NOT NULL,
+    avg_cost REAL NOT NULL,
+    added_date TEXT NOT NULL,
+    UNIQUE(user_id, ticker)
+);
+
+CREATE TABLE IF NOT EXISTS transactions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    ticker TEXT NOT NULL,
+    action TEXT NOT NULL,
+    shares REAL NOT NULL,
+    price REAL NOT NULL,
+    timestamp TEXT NOT NULL,
+    notes TEXT DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS daily_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    date TEXT NOT NULL,
+    total_value REAL NOT NULL,
+    total_cost REAL NOT NULL,
+    pnl REAL NOT NULL,
+    pnl_pct REAL NOT NULL,
+    positions_json TEXT NOT NULL,
+    UNIQUE(user_id, date)
+);
+
+CREATE TABLE IF NOT EXISTS alerts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    ticker TEXT NOT NULL,
+    condition TEXT NOT NULL,
+    threshold REAL NOT NULL,
+    created TEXT NOT NULL,
+    triggered INTEGER DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS ix_positions_user ON positions(user_id, ticker);
+CREATE INDEX IF NOT EXISTS ix_transactions_user ON transactions(user_id, timestamp DESC);
+CREATE INDEX IF NOT EXISTS ix_daily_snapshots_user ON daily_snapshots(user_id, date DESC);
+CREATE INDEX IF NOT EXISTS ix_alerts_user ON alerts(user_id, ticker);
+```
+
+`_init_tables` 在 executescript 之后追加幂等迁移老 DB（4 张表）：
+```python
+            for table in ("positions", "transactions", "daily_snapshots", "alerts"):
+                cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+                if "user_id" not in cols:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN user_id INTEGER")
+            # Backfill NULL user_id 为首个 active user（admin 兜底）
+            try:
+                row = conn.execute(
+                    "SELECT id FROM users WHERE status='active' ORDER BY id ASC LIMIT 1"
+                ).fetchone()
+                default_uid = row["id"] if row else None
+            except sqlite3.OperationalError:
+                default_uid = None
+            if default_uid is not None:
+                for table in ("positions", "transactions", "daily_snapshots", "alerts"):
+                    conn.execute(
+                        f"UPDATE {table} SET user_id = ? WHERE user_id IS NULL",
+                        (default_uid,),
+                    )
+```
+
+注意 `positions` 历史 PRIMARY KEY 是 `ticker` 单列，老 DB 不能直接改 PK；只加 user_id 列 + 加复合 UNIQUE 索引（`CREATE UNIQUE INDEX IF NOT EXISTS ux_positions_user_ticker ON positions(user_id, ticker)`）；`daily_snapshots` 同（`ux_snapshots_user_date`）。fresh DB 走新 schema 用 `UNIQUE(user_id,ticker)`，老 DB 兜底用 unique index。
+
+##### R-fix-10B · `/api/search` 加 user_id 过滤（~30min）
+
+[stock_trading_system/web/app.py](../../stock_trading_system/web/app.py) `api_search`：
+- 所有 `db.get_all_positions()` / `db.get_transactions()` / `db.get_active_alerts()` 调用都加 `user_id=g.user.id`
+- analysis_history 部分保持共享，但 SELECT 字段从 ticker/signal/action/confidence/model 中**剔除 advice/notes** —— 已是默认行为，这里只需复核
+- transactions 的 `notes` 字段不参与"hay"匹配（避免 `notes='alice 心得'` 给 bob 搜出来）；改用 `f"{t.ticker} {t.action}".lower()`
+- 加 `@login_required`
+
+`PortfolioDatabase.get_all_positions / get_transactions / get_active_alerts` 加 `user_id` 入参（已部分支持，缺者补）：
+```python
+def get_all_positions(self, user_id: int | None = None) -> list[Position]:
+    sql = "SELECT * FROM positions"
+    params: tuple = ()
+    if user_id is not None:
+        sql += " WHERE user_id = ?"
+        params = (user_id,)
+    ...
+
+def get_active_alerts(self, user_id: int | None = None) -> list[dict]:
+    sql = "SELECT * FROM alerts WHERE triggered = 0"
+    params: tuple = ()
+    if user_id is not None:
+        sql += " AND user_id = ?"
+        params = (user_id,)
+    ...
+```
+
+##### R-fix-10C · `/api/dashboard.alerts_count` + AlertMonitor user_id（~30min）
+
+[stock_trading_system/alerts/monitor.py](../../stock_trading_system/alerts/monitor.py)：
+- `list_alerts(user_id: int | None = None, scope: str = 'user') -> list[dict]`
+  - 默认 `scope='user'` + 显式 user_id 时只返该用户
+  - `scope='all'` （后台/cron 用）时不过滤
+  - 缺 user_id 且 scope='user' 时 raise ValueError 防误用
+- `check_alerts(user_id: int | None = None, scope: str = 'all')` 同；后台 cron 调用方显式传 `scope='all'`
+- 内部 `db.get_active_alerts(user_id=user_id)` 透传
+
+[stock_trading_system/web/app.py](../../stock_trading_system/web/app.py)：
+- `api_dashboard`: `alerts = monitor.list_alerts(user_id=g.user.id, scope='user')`
+- 其他用户态调 list_alerts 的（`/api/alerts` 列表）同样加 user_id
+- 后台 task / scheduler 调 `check_alerts` 显式 `scope='all'`
+
+##### R-fix-10D · 持仓交易校验 + 卖空守卫（~1h）
+
+[stock_trading_system/web/app.py](../../stock_trading_system/web/app.py) `api_portfolio_add` 整段替换：
+```python
+@app.route("/api/portfolio/add", methods=["POST"])
+@login_required
+def api_portfolio_add():
+    data = request.json or {}
+    err = _validate_trade(data, require_existing=False, user_id=g.user.id)
+    if err:
+        return jsonify({"ok": False, "error": err}), 400
+    from stock_trading_system.utils.helpers import detect_market
+    pm = _get_portfolio_mgr()
+    ticker = data["ticker"].upper()
+    pm.add_position(
+        ticker, float(data["shares"]), float(data["price"]),
+        market=detect_market(ticker),
+        date=data.get("date"), notes=data.get("notes", ""),
+        user_id=g.user.id,
+    )
+    return jsonify({"ok": True, "message": f"BUY {data['shares']} {ticker} @ {data['price']}"})
+
+
+@app.route("/api/portfolio/sell", methods=["POST"])
+@login_required
+def api_portfolio_sell():
+    data = request.json or {}
+    err = _validate_trade(data, require_existing=True, user_id=g.user.id)
+    if err:
+        return jsonify({"ok": False, "error": err}), 400
+    pm = _get_portfolio_mgr()
+    ticker = data["ticker"].upper()
+    pm.sell_position(
+        ticker, float(data["shares"]), float(data["price"]),
+        date=data.get("date"), notes=data.get("notes", ""),
+        user_id=g.user.id,
+    )
+    return jsonify({"ok": True, "message": f"SELL {data['shares']} {ticker} @ {data['price']}"})
+```
+
+新建 helper（同文件，靠近 portfolio routes）：
+```python
+def _validate_trade(data: dict, require_existing: bool, user_id: int) -> str | None:
+    """Return None if ok, else an error string. Used by /api/portfolio/add and /sell."""
+    ticker = (data.get("ticker") or "").strip().upper()
+    if not ticker or not ticker.replace(".", "").replace("-", "").isalnum():
+        return "ticker required and must be alphanumeric"
+    try:
+        shares = float(data.get("shares"))
+        price = float(data.get("price"))
+    except (TypeError, ValueError):
+        return "shares and price must be numbers"
+    if shares <= 0:
+        return "shares must be > 0"
+    if price <= 0:
+        return "price must be > 0"
+    if require_existing:
+        from stock_trading_system.portfolio.database import PortfolioDatabase
+        db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
+        existing = PortfolioDatabase(db_path).get_position(ticker, user_id=user_id)
+        if existing is None:
+            return f"no position to sell for {ticker}"
+        if shares > existing.shares + 1e-9:
+            return f"sell shares ({shares}) exceeds holding ({existing.shares})"
+    return None
+```
+
+[stock_trading_system/portfolio/manager.py](../../stock_trading_system/portfolio/manager.py) `sell_position`：
+- 删除 line 103-105 兜底 `else: logger.warning("no position found, recording transaction only")`
+- 改为 `else: raise ValueError(f"No position for {ticker} (user={uid})")`
+- transaction 写入移到 position 检查通过之后（先 check existing → check shares 足够 → 写 transaction → upsert/delete position）
+
+##### R-fix-10E · 交易记录字段契约（~30min）
+
+[stock_trading_system/web/app.py](../../stock_trading_system/web/app.py) `api_transactions`：
+```python
+@app.route("/api/portfolio/transactions")
+@login_required
+def api_transactions():
+    ticker = request.args.get("ticker")
+    rows = _get_portfolio_mgr().get_transactions(ticker=ticker, user_id=g.user.id)
+    out = []
+    for t in rows:
+        out.append({
+            "id": t.get("id"),
+            "ticker": t.get("ticker"),
+            "action": (t.get("action") or "").upper(),  # BUY/SELL
+            "shares": t.get("shares"),
+            "price": t.get("price"),
+            "timestamp": t.get("timestamp"),
+            "date": t.get("timestamp"),  # alias for legacy frontend
+            "notes": t.get("notes") or "",
+        })
+    return jsonify(out)
+```
+
+[stock_trading_system/web/frontend/src/islands/portfolio/PortfolioPage.tsx](../../stock_trading_system/web/frontend/src/islands/portfolio/PortfolioPage.tsx)（或 transactions tab 对应组件）：
+- `Transaction` interface 加 `timestamp?: string`，`action: 'BUY' | 'SELL'`
+- 渲染时间列：`{t.timestamp || t.date}`
+- 上色：`action === 'BUY' ? 'text-green-500' : 'text-red-500'`（容错小写）
+- 测试 `toUpperCase()` 转换以兼容老数据
+
+##### R-fix-10F · today_pnl 文案降级 + 数据修正（~30min）
+
+最小修：[stock_trading_system/web/app.py](../../stock_trading_system/web/app.py) `api_portfolio_summary`：
+- 删除 `today_pnl` 字段；改为 `total_pnl` + `total_pnl_pct`
+- 若想保留"今日盈亏"，新增 `today_pnl_real`：从 `daily_snapshots` 拉昨日 `total_value`，今日 `total_value - 昨日 total_value`，没有昨日 snapshot 时返 None
+
+```python
+@app.route("/api/portfolio/summary")
+@login_required
+def api_portfolio_summary():
+    pm = _get_portfolio_mgr()
+    pnl = pm.get_pnl(user_id=g.user.id)
+    holdings = pm.get_holdings(user_id=g.user.id)
+    today_real = _compute_today_pnl(g.user.id, pnl.get("total_value", 0))
+    return jsonify({
+        "total_value":    pnl.get("total_value", 0),
+        "total_pnl":      pnl.get("total_pnl", 0),
+        "total_pnl_pct":  pnl.get("total_pnl_pct", 0),
+        "today_pnl":      today_real["pnl"] if today_real else None,
+        "today_pnl_pct":  today_real["pct"] if today_real else None,
+        "holdings_count": len(holdings),
+    })
+
+
+def _compute_today_pnl(user_id: int, current_value: float) -> dict | None:
+    from stock_trading_system.portfolio.database import PortfolioDatabase
+    db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
+    db = PortfolioDatabase(db_path)
+    rows = db.get_snapshots(user_id=user_id, days=2)  # 已支持 user_id
+    if not rows or len(rows) < 1:
+        return None
+    prev = rows[-1] if rows[-1]["date"] != _today_str() else (rows[-2] if len(rows) > 1 else None)
+    if not prev:
+        return None
+    prev_value = float(prev["total_value"] or 0)
+    if prev_value <= 0:
+        return None
+    diff = current_value - prev_value
+    return {"pnl": round(diff, 2), "pct": round(diff / prev_value * 100, 2)}
+```
+
+[stock_trading_system/web/frontend/src/islands/portfolio/PortfolioPage.tsx / DashboardPage.tsx](../../stock_trading_system/web/frontend/src/islands/portfolio/PortfolioPage.tsx)：
+- 标签 "今日 PnL" → 改为 `summary.today_pnl != null ? '今日 PnL' : '总盈亏'` 二选一
+- 数据：if `today_pnl != null` 显示日内；else 显示 `total_pnl`
+
+##### 强约束
+
+- ❌ 不许把 fresh DB 改成依赖 to_multi_tenant 才能跑
+- ❌ 不许把任何用户的 positions/transactions/alerts 暴露给其他用户
+- ❌ 不许保留"卖空仓时只写 transaction 不验持仓"的兜底
+- ❌ 不许在 `api_search.transactions` 把 notes 拿来匹配（notes 私人）
+- ❌ 不许 today_pnl 标签继续用 total_pnl 的值
+- ✅ 允许 ALTER TABLE 加 user_id 列 + 加复合 UNIQUE 索引
+- ✅ 允许 `_init_tables` 末尾扫表幂等迁移老 DB
+- ✅ 允许 `AlertMonitor.list_alerts/check_alerts` 加 user_id + scope kw
+
+##### R-fix-10G · 测试
+
+[tests/portfolio/test_fresh_db.py](../../tests/portfolio/test_fresh_db.py)（新建）：
+- `test_fresh_db_add_position_works`：fresh sqlite → `PortfolioManager.add_position(user_id=1, ticker='AAPL', ...)` → 不抛 OperationalError，DB 验 positions 1 行 user_id=1
+- `test_fresh_db_sell_position_works`：fresh + add → sell 全量 → positions 表无该 ticker for user_id=1
+- `test_fresh_db_take_snapshot_works`：fresh → `pm.take_snapshot(user_id=1)` → daily_snapshots 1 行 user_id=1
+- `test_fresh_db_add_alert_works`：fresh → `monitor.add_alert(user_id=1, ...)` → alerts 1 行 user_id=1
+
+[tests/web/test_search_isolation.py](../../tests/web/test_search_isolation.py)（新建）：
+- `test_search_positions_isolated`：alice 持 AAPL、bob 持 TSLA → bob `/api/search?q=AAPL` 返 positions=[]
+- `test_search_alerts_isolated`：alice 设 AAPL alert → bob `/api/search?q=AAPL` 不见 alert
+- `test_search_transactions_notes_not_indexed`：alice 写 transaction notes='secret-alpha' → bob `/api/search?q=secret-alpha` → transactions=[]
+
+[tests/web/test_dashboard_alerts_count.py](../../tests/web/test_dashboard_alerts_count.py)（新建）：
+- `test_dashboard_alerts_count_only_self`：alice 设 2 alerts、bob 设 1 → bob `/api/dashboard` `alerts_count == 1`
+
+[tests/web/test_portfolio_validation.py](../../tests/web/test_portfolio_validation.py)（新建）：
+- `test_buy_negative_shares_rejected`：POST `/api/portfolio/add {shares:-1}` → 400，DB 无 transaction
+- `test_buy_zero_price_rejected`：同上 price=0 → 400
+- `test_buy_missing_ticker_rejected`：→ 400
+- `test_sell_no_holding_rejected`：→ 400 + 无 transaction 写入
+- `test_sell_excess_shares_rejected`：alice 持 10，POST sell 100 → 400
+- `test_sell_valid_decrements_position`：sell 5 → position.shares=5
+
+[tests/web/test_portfolio_transactions_contract.py](../../tests/web/test_portfolio_transactions_contract.py)（新建）：
+- `test_transactions_returns_uppercase_action`：buy 一笔 → `/api/portfolio/transactions` 返 `action='BUY'`
+- `test_transactions_returns_timestamp_field`：响应每条含 `timestamp` 非空
+- `test_transactions_includes_date_alias_for_legacy`：响应每条同时含 `date` 字段（= timestamp）
+
+##### 验收
+
+```bash
+# 1. fresh DB
+rm -f /tmp/fresh_portfolio.db
+python -c "
+from stock_trading_system.portfolio.database import PortfolioDatabase
+from stock_trading_system.portfolio.manager import PortfolioManager
+pdb = PortfolioDatabase('/tmp/fresh_portfolio.db')
+pm = PortfolioManager('/tmp/fresh_portfolio.db')
+pm.add_position('AAPL', 10, 150.0, user_id=1)
+pm.sell_position('AAPL', 3, 160.0, user_id=1)
+print('OK')
+"
+# 期望：OK，无 OperationalError
+
+# 2. 跨用户隔离
+pytest tests/portfolio/test_fresh_db.py -q
+pytest tests/web/test_search_isolation.py -q
+pytest tests/web/test_dashboard_alerts_count.py -q
+
+# 3. 校验
+pytest tests/web/test_portfolio_validation.py -q
+
+# 4. 字段契约
+pytest tests/web/test_portfolio_transactions_contract.py -q
+
+# 5. 文案 today_pnl
+curl -s 'http://localhost:5000/api/portfolio/summary' --cookie 'session=...' | jq
+# 应见 total_pnl 必有；today_pnl 可为 number 或 null（无昨日 snapshot 时）
+
+# 6. 前端 build + 全量回归
+cd stock_trading_system/web/frontend && npm run build
+cd ../../.. && pytest tests/portfolio tests/web tests/strategy/paper_trader tests/tasks tests/validation -q
+```
+
+---
+
 ### 6.2 R-1.x 完成后
 
 P0 闸门全绿，可签字进入 R-6 / R-7 已完成部分的回归 + 真实数据跑一遍。最终 sign-off：
@@ -1977,3 +2335,4 @@ python -m stock_trading_system.validation.sign_off \
 | v1.14 | 2026-05-01 | R-fix-7 验收暴露 4 处遗留（~2.5h）：(A) **worker/analyzer progress_cb 契约对齐**——`workers.py:57` 无条件传 `progress_cb=` 但 `tests/tasks/test_workers.py FakeAnalyzer.analyze(self,ticker,date)` 不收 → 旧测试红；统一契约为"analyzer.analyze 必须接受可选 `progress_cb=None`"，FakeAnalyzer 同步加 kw + 至少 1 case 验证 events；(B) **`/api/history/<id>` advice_json 跨用户泄露关闭**——legacy fallback 加 `record.created_by == user_id` 守卫；非创建者也屏蔽 action/confidence/position_pct/entry_low/entry_high/stop_loss/take_profit 反推字段；`_migrate_analysis_history` 把 advice_json 搬到 user_analysis_advice 后**清空共享行的 advice_json + 7 结构化字段**（事务内）；测试 `test_bob_does_not_see_alice_legacy_advice_json`；(C) **TaskStore advice 后门关闭**——`_save_analysis_result` 删除 `if result.get("advice")` 兼容分支，advice_json 硬编码 `""`、action/confidence/position_pct/entry/stop/take_profit 硬编码 `None`；增加测试 `test_save_analysis_result_strips_advice` + `test_worker_advice_payload_routes_to_user_advice`；(D) **`depth` 参数真实生效**——schema 加 `depth TEXT` 列 + idempotent ALTER；worker 读 params.depth 归一化 `{quick,standard,deep}` 写入 result 与 DB；行为差异化最小语义：quick 强制关 iteration、deep 沿用 config iteration、standard 默认；详情页 Header meta 行展示"分析深度"；前端 RadioGroup 文案降级为"预估 + 是否启用迭代"；测试 `test_worker_persists_depth` / `test_worker_default_depth_is_standard` / `test_worker_unknown_depth_falls_back_to_standard` / `test_detail_returns_depth`。剩余 ~10.5h | — |
 
 | v1.15 | 2026-05-01 | AI 建议 → paper trade 执行链贯通（用户 2026-05-01 提，~6h）：(A) **SignalLoader 切到 user_analysis_advice**——`__init__/load/get_one/backfill_all` 加 `user_id`；主源 `user_analysis_advice` → 转 paper trade 字段（双键名 suggested_position_pct↔position_pct / entry_price_low↔entry_low）；legacy `advice_json` fallback 仅当 `created_by==user_id` 才生效；(B) **`_post_analysis_save` 加第 3 步驱动 paper trade**——`save_user_advice` 之后调 `ensure_ticker_session(user_id)` + `process_analysis(...)`，best-effort 不影响 task；传 `analysis_id/ticker/date/signal/advice/trade_decision/risk/debate` + 当日 price；(C) **`/api/paper/track` 升级**——读 `get_user_advice(g.user.id, analysis_id)`，调 `process_analysis`，返 `{plan_id, num_orders, triggered}`；旧 manual_track 仅作 audit log；(D) **UI 拆分观察列表 vs 纸面追踪**——详情页"加入持仓追踪"改名"加入观察列表"（仍调 `/api/portfolio/track`）+ 新增"按此建议纸面交易"按钮调 `/api/paper/track`；toast 显示已生成/立即成交/待触发；(E) **收敛 forward vs replay**——`list_ticker_sessions` SQL 子查询补 `active_plan_count/pending_orders_count/triggered_orders_count/open_position_shares/last_eod_date/last_skip_reason`；列表页加 `[前向追踪] [历史回放]` tab 切换 + `/api/paper/tickers?mode=forward\|replay` 过滤；(F) **schema 自初始化补 v1.3 列**——`_SCHEMA_TRADING_PLANS` 加 `fingerprint/reconfirmed_count/reconfirmed_at/analysis_ids`；`_init_schema` 幂等 ALTER + 加 `ix_plans_session_ticker_fp` 索引；migration 文件保留作历史；(G) **测试**——`test_signal_loader_reads_user_advice` / `test_signal_loader_legacy_fallback_only_for_creator` / `test_signal_loader_normalizes_dual_keys` / `test_paper_track_returns_plan_id` / `test_paper_track_uses_user_advice_not_shared` / `test_paper_track_bob_cannot_use_alice_advice` / `test_post_analysis_save_drives_paper_trade` / `test_post_analysis_save_paper_trade_failure_is_swallowed` / `test_fresh_db_save_plan_works_without_migration` / `test_existing_db_idempotent_migration`。剩余 ~4.5h | — |
+| v1.16 | 2026-05-01 | Dashboard / 持仓多租户契约修复（用户 2026-05-01 提，~5h）：(A) **PortfolioDatabase 默认 schema 与运行时对齐**——`_init_tables` CREATE positions/transactions/daily_snapshots/alerts 全部含 user_id；positions 加 `UNIQUE(user_id,ticker)`、daily_snapshots 加 `UNIQUE(user_id,date)`；老 DB 兜底用 `ALTER TABLE ADD COLUMN user_id` + 复合 UNIQUE INDEX `ux_positions_user_ticker / ux_snapshots_user_date`；NULL user_id backfill 到 first active user；fresh DB 直接调 add_position/sell_position/take_snapshot/add_alert 不再 OperationalError；(B) **`/api/search` user_id 过滤**——positions/transactions/alerts 全部加 `user_id=g.user.id`；transactions 不再用 notes 参与匹配；analysis_history 共享研究保留；加 `@login_required`；(C) **AlertMonitor 加 user_id + scope**——`list_alerts(user_id, scope='user'\|'all')` / `check_alerts(...)`；`/api/dashboard` 只统计当前用户；后台 cron 显式 `scope='all'`；(D) **持仓交易校验 + 卖空守卫**——新建 `_validate_trade(data, require_existing, user_id)` helper：ticker 字母数字 / shares>0 / price>0 / 卖出必须先有持仓 + shares ≤ 持仓；校验失败 400 不写 transaction；`PortfolioManager.sell_position` 删除"无持仓也写 transaction"兜底，改 raise；(E) **交易记录字段契约统一**——`/api/portfolio/transactions` 返 `action` 大写 (BUY/SELL) + `timestamp` + `date` 别名兼容；前端按大写上色绿/红；(F) **today_pnl 文案/数据修正**——`api_portfolio_summary` 不再让 today_pnl 复用 total_pnl；新增 `_compute_today_pnl(user_id, current_value)` 基于昨日 daily_snapshot 算真实日内变化，无昨日时返 null；前端 `today_pnl != null` 显示"今日 PnL"否则显示"总盈亏"；(G) **测试**——`test_fresh_db_add_position_works / _sell / _take_snapshot / _add_alert` + `test_search_positions_isolated / _alerts_isolated / _transactions_notes_not_indexed` + `test_dashboard_alerts_count_only_self` + `test_buy/sell 校验 6 个用例` + `test_transactions_returns_uppercase_action / _timestamp / _date_alias`。剩余 ~3.5h | — |
