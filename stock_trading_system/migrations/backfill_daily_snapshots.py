@@ -28,6 +28,15 @@ not a composite PK), so we ``INSERT OR IGNORE`` keyed on ``date`` and
 treat repeats as already-done. ``--force`` switches to ``INSERT OR REPLACE``
 for callers that want to recompute.
 
+NOTE on multi-user shape: the production schema has PRIMARY KEY (date),
+so two users can't both hold a snapshot for the same date — the second
+user's INSERT OR IGNORE is silently dropped. The current production
+deployment is single-user (one row in ``users``); per-user multi-tenant
+isolation across the same dates would require a separate schema change
+(composite ``UNIQUE (user_id, date)`` or PK swap), which is out of scope
+here. Iteration over ``list_active()`` is still wired up so the migration
+becomes correct as soon as that schema change ships.
+
 CLI
 ---
     python -m stock_trading_system.migrations.backfill_daily_snapshots --dry-run
@@ -379,22 +388,17 @@ def backfill_user(
 
             if not force and _snapshot_exists(
                 conn, target_date=target_str,
-                user_id=user_id, multi_tenant=multi_tenant,
+                user_id=user_id, multi_tenant=snapshots_have_user_id,
             ):
                 skipped += 1
                 continue
 
             positions = _replay_positions(txns, cutoff)
             if not positions:
-                # Pre-trade days: nothing held → still emit a flat row so the
-                # equity curve renders a continuous line at $0 from day 0.
-                _persist_or_dry_run(
-                    conn, dry_run=dry_run, force=force, multi_tenant=multi_tenant,
-                    target_date=target_str, user_id=user_id,
-                    total_value=0.0, total_cost=0.0,
-                    pnl=0.0, pnl_pct=0.0, positions_json="[]",
-                )
-                backfilled += 1
+                # Pre-trade day: skip rather than write a flat $0 row. With
+                # the existing PK-on-date schema, writing a flat row for one
+                # user would block another user's real row for the same day.
+                skipped += 1
                 continue
 
             total_value = 0.0
@@ -442,7 +446,8 @@ def backfill_user(
             pnl_pct = (pnl / total_cost * 100.0) if total_cost > 0 else 0.0
 
             _persist_or_dry_run(
-                conn, dry_run=dry_run, force=force, multi_tenant=multi_tenant,
+                conn, dry_run=dry_run, force=force,
+                snapshots_have_user_id=snapshots_have_user_id,
                 target_date=target_str, user_id=user_id,
                 total_value=total_value, total_cost=total_cost,
                 pnl=pnl, pnl_pct=pnl_pct,
