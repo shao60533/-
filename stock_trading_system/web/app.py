@@ -2051,6 +2051,11 @@ def create_app(config_path=None):
             params.setdefault("_model", cfg.get("llm", {}).get("model", ""))
 
         uid = g.user.id if g.user else None
+        # Inject the requester id into params so workers (e.g. analysis) can
+        # capture per-user provenance + per-user advice without each route
+        # remembering. Underscore-prefixed key matches __task_id__ etc.
+        if uid is not None:
+            params.setdefault("__user_id__", uid)
         try:
             task = tm.submit(task_type, params, title=title, created_by=uid)
         except Exception as e:  # noqa: BLE001

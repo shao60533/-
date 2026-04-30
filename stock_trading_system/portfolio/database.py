@@ -100,7 +100,19 @@ class PortfolioDatabase:
                     stop_loss REAL,
                     take_profit REAL,
                     model TEXT,
-                    steps_json TEXT
+                    steps_json TEXT,
+                    -- v1.14 provenance: who ran this, with which LLM, hashed
+                    -- LLM config so the same prompt+model collapses to one
+                    -- cache hit, plus task_id back-reference and timing.
+                    -- bookmarked is a per-row legacy bit; the canonical
+                    -- per-user bookmark lives in `analysis_bookmarks` so
+                    -- two users can independently star the same shared row.
+                    created_by INTEGER,
+                    provider TEXT,
+                    config_hash TEXT,
+                    task_id TEXT,
+                    duration_sec REAL,
+                    bookmarked INTEGER DEFAULT 0
                 );
 
                 CREATE TABLE IF NOT EXISTS alert_history (
@@ -170,6 +182,15 @@ class PortfolioDatabase:
             ("take_profit", "REAL"),
             ("model", "TEXT"),
             ("steps_json", "TEXT"),
+            # v1.14 provenance columns. ALTER TABLE ADD COLUMN is idempotent
+            # — pre-existing rows get NULL, fine for a shared library that
+            # didn't capture this metadata before.
+            ("created_by", "INTEGER"),
+            ("provider", "TEXT"),
+            ("config_hash", "TEXT"),
+            ("task_id", "TEXT"),
+            ("duration_sec", "REAL"),
+            ("bookmarked", "INTEGER DEFAULT 0"),
         ]
         for name, typ in additions:
             if name not in cols:
@@ -401,8 +422,10 @@ class PortfolioDatabase:
                     news_report, fundamentals_report, investment_debate,
                     risk_assessment, trade_decision, advice_json, created_at,
                     action, confidence, position_pct,
-                    entry_low, entry_high, stop_loss, take_profit, model, steps_json)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    entry_low, entry_high, stop_loss, take_profit, model, steps_json,
+                    created_by, provider, config_hash, task_id, duration_sec, bookmarked)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                           ?, ?, ?, ?, ?, ?)""",
                 (
                     data["ticker"], data["date"], data["signal"],
                     data.get("market_report", ""),
@@ -423,6 +446,12 @@ class PortfolioDatabase:
                     _coerce_float(adv.get("take_profit")),
                     data.get("model"),
                     steps_raw,
+                    data.get("created_by"),
+                    data.get("provider"),
+                    data.get("config_hash"),
+                    data.get("task_id"),
+                    _coerce_float(data.get("duration_sec")),
+                    int(bool(data.get("bookmarked", 0))),
                 ),
             )
             return int(cur.lastrowid)

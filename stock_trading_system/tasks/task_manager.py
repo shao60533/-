@@ -234,6 +234,15 @@ class TaskManager:
                 result_ref = ref_from_worker
             else:
                 result_ref = self._store.save_result(task_type, task_id, result)
+            # ── Post-save hooks ─────────────────────────────────────────
+            # Workers (currently only `analysis`) can attach side-effects
+            # to the canonical analysis_id without doubling up writes. The
+            # hook returns silently on failure so the task itself still
+            # marks success — these side-effects are auditing, not core.
+            if task_type == "analysis" and isinstance(result, dict) \
+                    and isinstance(result_ref, str) \
+                    and result_ref.startswith("analysis_history:"):
+                self._post_analysis_save(result_ref, result)
             duration_ms = int((time.perf_counter() - started) * 1000)
             self._store.update(
                 task_id,
@@ -396,6 +405,78 @@ class TaskManager:
                 self._socketio.emit(event, payload)
         except Exception as e:  # pragma: no cover
             logger.warning("WS emit failed for %s: %s", event, e)
+
+    def _post_analysis_save(self, result_ref: str, result: dict) -> None:
+        """Side-effect hook fired after _save_analysis_result wrote a row.
+
+        Two consumers today:
+          1. ``user_analysis_advice`` — per-user, holdings-aware position
+             sizing + reasoning. Stripped from the shared row so cross-user
+             reads don't leak portfolio context.
+          2. ``record_analysis`` (per-agent scorecards) — only fires when
+             iteration is enabled and the worker captured a final_state.
+
+        Both of these used to live inside the worker, where the scorecard
+        path called ``db.save_analysis(...)`` just to mint an id and
+        thereby double-recorded every iterated analysis. Doing them here
+        with the canonical id keeps the analysis_history table single-row.
+        """
+        try:
+            analysis_id = int(result_ref.split(":", 1)[1])
+        except (ValueError, IndexError) as e:
+            logger.warning("post-analysis hook: bad result_ref %s: %s", result_ref, e)
+            return
+
+        # 1) Per-user advice
+        advice_payload = result.get("_advice_payload")
+        created_by = result.get("created_by")
+        if advice_payload and created_by is not None:
+            try:
+                from stock_trading_system.config import get_config
+                from stock_trading_system.portfolio.database import PortfolioDatabase
+                cfg = get_config()
+                db_path = cfg.get("portfolio", {}).get("db_path", "data/portfolio.db")
+                pdb = PortfolioDatabase(db_path)
+                pdb.save_user_advice(
+                    user_id=int(created_by),
+                    analysis_id=analysis_id,
+                    advice=advice_payload.get("advice") or {},
+                    holdings_snapshot=advice_payload.get("holdings_snapshot") or "",
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning("save_user_advice failed for analysis %s: %s",
+                               analysis_id, e)
+
+        # 2) Agent scorecards (iteration-only)
+        final_state_blob = result.get("_final_state_json")
+        if final_state_blob:
+            try:
+                from stock_trading_system.config import get_config
+                from stock_trading_system.tasks.workers import (
+                    record_agent_scores_for_analysis, deserialize_final_state,
+                )
+                cfg = get_config()
+                db_path = cfg.get("portfolio", {}).get("db_path", "data/portfolio.db")
+                final_state = deserialize_final_state(final_state_blob)
+                if final_state is not None:
+                    # Resolve a router lazily — avoid importing web.app here.
+                    def _get_router_lazy():
+                        try:
+                            from stock_trading_system.web.app import _get_data_router
+                            return _get_data_router()
+                        except Exception:  # noqa: BLE001
+                            return None
+                    record_agent_scores_for_analysis(
+                        analysis_id=analysis_id,
+                        final_state=final_state,
+                        ticker=result.get("ticker", ""),
+                        date=result.get("date", ""),
+                        get_router=_get_router_lazy,
+                        db_path=db_path,
+                    )
+            except Exception as e:  # noqa: BLE001
+                logger.warning("agent score record failed for analysis %s: %s",
+                               analysis_id, e)
 
     def wait_for(self, task_id: str, timeout: float | None = None) -> dict | None:
         """Block until a task reaches a terminal state. Test convenience."""
