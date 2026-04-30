@@ -28,6 +28,7 @@ R-1 ~ R-7 commits 已落地（6e583b4..5370863）。审计 22 P0 项实际状态
 | ❌ v1.11 修了代码但没修数据（v1.12 实测）| 1 | **D-FEAT-1 净值曲线仍只 1 个点**：v1.11 后端代码 ✅ 正确（返 daily_snapshots 全量），但 **DB 里只有 3 行 snapshot**（2026-04-14/15/16/19），距今缺 11 天。根因：调度器 [task_scheduler.py:105](../../stock_trading_system/scheduler/task_scheduler.py) take_snapshot 没真跑 + 缺历史回填脚本 → 需 R-fix-6 同时补 (a) 历史回填 (b) 调度器修复 (c) UI 触发入口 |
 | ❌ AI 分析模块产品&技术缺口（v1.13 用户提）| 7 | **A-FIX-A K线初始 Skeleton 早 return** [TVChart.tsx:108](../../stock_trading_system/web/frontend/src/components/shared/TVChart.tsx) 导致 chart 容器永不挂载；**A-FIX-B analysis_history 缺 `created_by/provider/config_hash/task_id/duration_sec/bookmarked` 元数据**（[database.py:81](../../stock_trading_system/portfolio/database.py) schema 缺 + [task_store.py:368](../../stock_trading_system/tasks/task_store.py) INSERT 不写）；**A-FIX-C 旧 `/api/analyze`** [app.py:852](../../stock_trading_system/web/app.py) 仍开 daemon thread + 直写 history + 硬编码 `gemini.deep_think_model` 不走 active provider；**A-FIX-D advice 与共享分析未拆分**（advice_json 和 trade_decision 同表，其他用户能看到原作者的持仓上下文）；**A-FIX-E `/analysis` 首页缺 5 条最近卡片 + 深度选择 + 8 tab + 决策独立 tab + 操作按钮齐**；**A-FIX-F Markdown 无 sanitize**（[AnalysisPage.tsx:393](../../stock_trading_system/web/frontend/src/islands/analysis/AnalysisPage.tsx) 仅 react-markdown + remark-gfm，缺 rehype-sanitize）；**A-FIX-G `_record_agent_scores`** [workers.py:135](../../stock_trading_system/tasks/workers.py) 为拿 analysis_id 先 save 半成品行 → 历史页双重记录 |
 | ❌ R-fix-7 验收暴露 4 处遗留（v1.14 用户提）| 4 | **A-FIX-H worker/analyzer progress_cb 契约不一致**：[workers.py:57](../../stock_trading_system/tasks/workers.py) 无条件 `analyzer.analyze(ticker, date, progress_cb=...)`，但 [tests/tasks/test_workers.py:28 FakeAnalyzer.analyze(self,ticker,date)](../../tests/tasks/test_workers.py) 不收 `progress_cb` → `pytest tests/tasks/test_workers.py` 红；**A-FIX-I `/api/history/<id>` 旧 advice_json 跨用户泄露**：[app.py:1046](../../stock_trading_system/web/app.py) `elif record.get("advice_json")` 不检查 `created_by == g.user.id` → Bob 读 Alice 旧分析 详情仍能看到 Alice 的 advice 全文；**A-FIX-J TaskStore 共享表 advice 写入后门**：[task_store.py:392](../../stock_trading_system/tasks/task_store.py) `result.get("advice")` 仍会被写到 `analysis_history.advice_json/action/confidence/...` → 兼容老 caller 但新 worker 路径下应 0 写入；需关闭后门，结构化字段统一 None；**A-FIX-K `depth` 参数空挂**：前端提交 `quick/standard/deep` ([AnalysisPage.tsx:158](../../stock_trading_system/web/frontend/src/islands/analysis/AnalysisPage.tsx))，[app.py:903](../../stock_trading_system/web/app.py) 透传到 task params，但 [workers.py:73](../../stock_trading_system/tasks/workers.py) 的 `out` dict 不含 depth → 数据库无记录、详情页无展示、迭代/反思未差异化 → 虚假控制 |
+| ❌ AI 建议 → paper trade 执行链断裂（v1.15 用户提）| 7 | **PT-FIX-A SignalLoader 数据源未切**：[signal_loader.py:13-77](../../stock_trading_system/strategy/paper_trader/signal_loader.py) 仍只读 `analysis_history.advice_json`，但 v1.13 之后那一列对其他用户已 NULL → paper trade 跨用户拿不到 advice；且 `load/get_one/backfill_all` 都没有 `user_id` 参数；**PT-FIX-B 分析完成后未驱动 paper trade**：[task_manager.py:409-485](../../stock_trading_system/tasks/task_manager.py) `_post_analysis_save` 只写 `user_analysis_advice`，没调 `process_analysis(...)` → 用户做完 AI 分析没有自动生成 plan/order；**PT-FIX-C `/api/paper/track` 行为太薄**：[app.py:1991-2008](../../stock_trading_system/web/app.py) 仅 `manual_track` 写 analysis_tracked，没调 `process_analysis` → 没 plan / 没 planned_orders / 没 immediate execution；返 `tracked_id` 不返 `plan_id/num_orders/triggered`；**PT-FIX-D 观察列表 vs 纸面追踪混淆**：详情页"加入持仓追踪"按钮调 `/api/portfolio/track` (=watchlist)，文案让用户以为已自动下单；**PT-FIX-E 双纸面执行模型未收敛**：replay simulator (simulator.py) 与 ticker-session plan/order 引擎共存，UI 列表 [app.py:2032-2073](../../stock_trading_system/web/app.py) 只显示 `running + start_capital + sparkline`，没 `active_plans / pending_orders / triggered_orders / open_position_shares / last_eod / skip_reason`；**PT-FIX-F PaperTradeStore schema 自初始化缺 v1.3 列**：[session_store.py:78-95](../../stock_trading_system/strategy/paper_trader/session_store.py) `_SCHEMA_TRADING_PLANS` 没 `fingerprint/reconfirmed_count/reconfirmed_at/analysis_ids`；这 4 列由 [migrations/paper_trade_v1_3.py](../../stock_trading_system/migrations/paper_trade_v1_3.py) 加，但 [session_store.py:917,924,944](../../stock_trading_system/strategy/paper_trader/session_store.py) 又写 SQL 直接读这些列 → 新 DB 不跑 migration 时 `save_plan` 必挂；**PT-FIX-G 测试缺端到端验证**：缺 analysis 完成 → user_analysis_advice → process_analysis → plan/order 链；缺 Bob 不能用 Alice advice 的隔离测试；缺 `/api/paper/track` 返 plan_id 验证；缺 fresh DB 无 migration 直接 save_plan 验证 |
 
 **T-P0-6 任务中心空白 bug 已修复**（实测 2026-04-25）：
 - ✅ 后端 [app.py:1713-1719](../../stock_trading_system/web/app.py) 返回 `{tasks, items, total, limit, offset}` 双字段向后兼容
@@ -1593,6 +1594,316 @@ cd stock_trading_system/web/frontend && npm run build
 
 ---
 
+#### v1.15 新增（AI 建议 → paper trade 执行链贯通，~6h）：
+
+##### R-fix-9 · advice → paper trade 7 项
+
+实测痛点（验收 2026-05-01 早）：
+- v1.13 把 advice 拆到 `user_analysis_advice` 后，paper trade 链路没跟上：[signal_loader.py](../../stock_trading_system/strategy/paper_trader/signal_loader.py) 还只读 `analysis_history.advice_json`，跨用户读到的是 NULL；分析完成 → paper trade 自动下单的链断了；`/api/paper/track` 仍是只写 analysis_tracked 的占位实现；详情页"加入持仓追踪"用 watchlist 端点伪装成纸面交易。
+- 主链路没收敛：replay simulator + ticker-session plan/order 引擎并存，UI 不分得清。
+- 自初始化 schema 缺 v1.3 列，fresh DB 不跑迁移直接 `save_plan` 必挂。
+
+##### R-fix-9A · SignalLoader 切到 user_analysis_advice（~1h）
+
+[stock_trading_system/strategy/paper_trader/signal_loader.py](../../stock_trading_system/strategy/paper_trader/signal_loader.py)：
+- `__init__` 加可选 `user_id: int | None = None`；`load(...)` / `get_one(...)` / `backfill_all(...)` 都加 `user_id` 入参（优先 ctor 提供的）
+- 主源：`SELECT * FROM user_analysis_advice WHERE user_id = ? AND analysis_id = ?` → 转为 paper trade 期望字段：
+  ```
+  action, suggested_position_pct (或 position_pct),
+  entry_price_low (或 entry_low), entry_price_high (或 entry_high),
+  stop_loss, take_profit, reasoning, risk_warning
+  ```
+  （写双键名兼容下游 plan_parser 的两种习惯：`suggested_position_pct` ↔ `position_pct`、`entry_price_low/high` ↔ `entry_low/high`）
+- legacy fallback：当 `user_advice` 为空且 `analysis_history.created_by == user_id` 时，才允许读 `advice_json`；非创建者一律不 fallback（advice 返 `{}`）
+- 没有 user_id 时（admin/批量回放），仅当显式 `allow_legacy_no_user=True` 才 fallback；默认 advice 返 `{}` 并 warn
+- 沿用现有 `analysis_history` 行作为"研究行"取 ticker/date/signal/created_by
+
+##### R-fix-9B · 分析完成自动驱动 paper trade（~1h）
+
+[stock_trading_system/tasks/task_manager.py](../../stock_trading_system/tasks/task_manager.py) `_post_analysis_save` 在写完 `user_analysis_advice` 之后追加第 3 步（同 try 隔离，不影响 task 成功）：
+
+```python
+# 3) Auto-drive paper trade for the requesting user
+if advice_payload and created_by is not None:
+    try:
+        from stock_trading_system.strategy.paper_trader import (
+            PaperTradeStore, process_analysis, ensure_ticker_session,
+        )
+        store = PaperTradeStore(db_path)
+        ensure_ticker_session(store, result["ticker"],
+                              start_date=result.get("date"),
+                              user_id=int(created_by))
+        # current_price: 从 router 拿 (best-effort)
+        current_price = None
+        try:
+            from stock_trading_system.web.app import _get_data_router
+            router = _get_data_router()
+            if router:
+                price_data = router.get_price(result["ticker"])
+                if price_data:
+                    current_price = price_data.get("last") or price_data.get("close")
+        except Exception:
+            pass
+        process_analysis(
+            store,
+            analysis_id=analysis_id,
+            ticker=result["ticker"],
+            analysis_date=result.get("date") or "",
+            signal=result.get("signal", ""),
+            advice=advice_payload.get("advice") or {},
+            current_price=current_price,
+            analysis_blob={
+                "trade_decision": result.get("trade_decision", ""),
+                "risk_assessment": result.get("risk_assessment", ""),
+                "investment_debate": result.get("investment_debate", ""),
+            },
+        )
+    except Exception as e:
+        logger.warning("auto paper-trade for analysis %s failed (non-fatal): %s",
+                       analysis_id, e)
+```
+
+`ensure_ticker_session(store, ticker, start_date, user_id=...)`：[ticker_session_manager.py](../../stock_trading_system/strategy/paper_trader/ticker_session_manager.py) 接受可选 `user_id`，新建 session 时落到 `paper_trade_sessions.user_id`（已支持，否则补字段）。
+
+##### R-fix-9C · `/api/paper/track` 升级（~45min）
+
+[stock_trading_system/web/app.py](../../stock_trading_system/web/app.py) `api_paper_track_create`：
+```python
+@app.route("/api/paper/track", methods=["POST"])
+@login_required
+def api_paper_track_create():
+    data = request.json or {}
+    analysis_id = data.get("analysis_id")
+    if not analysis_id:
+        return jsonify({"ok": False, "error": "analysis_id required"}), 400
+    from stock_trading_system.portfolio.database import PortfolioDatabase
+    from stock_trading_system.strategy.paper_trader import (
+        PaperTradeStore, process_analysis, ensure_ticker_session,
+    )
+    db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
+    pdb = PortfolioDatabase(db_path)
+    ana = pdb.get_analysis_by_id(int(analysis_id))
+    if not ana:
+        return jsonify({"ok": False, "error": "Analysis not found"}), 404
+    user_advice = pdb.get_user_advice(g.user.id, int(analysis_id)) or {}
+
+    store = _get_paper_store()
+    ensure_ticker_session(store, ana["ticker"],
+                          start_date=ana["date"], user_id=g.user.id)
+    current_price = None
+    try:
+        router = _get_data_router()
+        if router:
+            pd = router.get_price(ana["ticker"])
+            if pd:
+                current_price = pd.get("last") or pd.get("close")
+    except Exception:
+        pass
+    res = process_analysis(
+        store,
+        analysis_id=int(analysis_id), ticker=ana["ticker"],
+        analysis_date=ana["date"], signal=ana.get("signal", ""),
+        advice=user_advice,
+        current_price=current_price,
+        analysis_blob={
+            "trade_decision": ana.get("trade_decision") or "",
+            "risk_assessment": ana.get("risk_assessment") or "",
+            "investment_debate": ana.get("investment_debate") or "",
+        },
+    )
+    if not res.get("ok"):
+        return jsonify({"ok": False, "error": res.get("error", "process failed")}), 500
+    return jsonify({
+        "ok": True,
+        "session_id": res.get("session_id"),
+        "plan_id": res.get("plan_id"),
+        "num_orders": res.get("num_orders", 0),
+        "triggered": len(res.get("triggered") or []),
+    })
+```
+
+旧 `manual_track` 仅写 `analysis_tracked` 的逻辑保留作 audit log（不删除），但**不再是主路径**；如果保留它，应在 `process_analysis` 之后顺手调用以保留历史 timeline。
+
+##### R-fix-9D · UI 区分观察列表 vs 纸面追踪（~30min）
+
+[AnalysisPage.tsx](../../stock_trading_system/web/frontend/src/islands/analysis/AnalysisPage.tsx) `AnalysisDetailView` 操作按钮组：
+- "加入持仓追踪" 按钮**改名为 "加入观察列表"**，仍调 `/api/portfolio/track`
+- **新增 "按此建议纸面交易" 按钮**，调 `/api/paper/track`：
+  ```tsx
+  const handlePaperTrack = async () => {
+    try {
+      const res = await apiPost<{plan_id: number; num_orders: number; triggered: number}>(
+        "/api/paper/track", { analysis_id: detail.id })
+      if (res.triggered > 0) {
+        toast(`已生成纸面交易计划，立即成交 ${res.triggered} 单`)
+      } else if (res.num_orders > 0) {
+        toast(`已生成纸面交易计划，${res.num_orders} 单待触发`)
+      } else {
+        toast(`已生成空 plan（advice 不含可执行订单）`)
+      }
+    } catch (e) { toast(e.message ?? '提交失败') }
+  }
+  ```
+- 操作组顺序：再次分析 / 加入观察列表 / **按此建议纸面交易** / 导出 PDF / 导出 Markdown / 分享 / 收藏
+
+##### R-fix-9E · 收敛主链路 + 列表页字段补全（~1h）
+
+[stock_trading_system/strategy/paper_trader/session_store.py](../../stock_trading_system/strategy/paper_trader/session_store.py) `list_ticker_sessions`：
+- SQL 增 LEFT JOIN：`active_plan` count, `pending_orders`/`triggered_orders` count, `last_eod_date`, 最近一条 strategy_event 的 `skip_reason`
+- 返回字段补：`active_plan_count`, `pending_orders_count`, `triggered_orders_count`, `open_position_shares`, `last_eod_date`, `last_skip_reason`
+- 实施：单 SQL 几个相关子查询：
+  ```sql
+  SELECT s.*,
+    (SELECT COUNT(*) FROM paper_trade_plans WHERE session_id=s.id AND status='active') AS active_plan_count,
+    (SELECT COUNT(*) FROM paper_trade_planned_orders WHERE session_id=s.id AND status='pending') AS pending_orders_count,
+    (SELECT COUNT(*) FROM paper_trade_planned_orders WHERE session_id=s.id AND status='triggered') AS triggered_orders_count,
+    (SELECT position_shares FROM paper_trade_daily_stats WHERE session_id=s.id ORDER BY date DESC LIMIT 1) AS open_position_shares,
+    (SELECT skip_reason FROM paper_trade_strategy_events WHERE session_id=s.id ORDER BY event_date DESC, id DESC LIMIT 1) AS last_skip_reason
+  FROM paper_trade_sessions s
+  WHERE s.ticker IS NOT NULL AND s.is_system = 0
+  ORDER BY s.created_at DESC
+  ```
+
+[app.py](../../stock_trading_system/web/app.py) `api_paper_tickers` 透传新字段。
+
+[stock_trading_system/web/frontend/src/islands/paper-trade-list/PaperTradeListPage.tsx](../../stock_trading_system/web/frontend/src/islands/paper-trade-list/PaperTradeListPage.tsx)（或当前列表组件）每张卡显示：`active_plan_count` 个 plan / `pending_orders_count` 待触发 / `triggered_orders_count` 已成交 / `open_position_shares` 持仓 / `last_eod_date` / 若 `last_skip_reason` 非空显示徽章 `跳过: <reason>`。
+
+收敛：UI 列表标题加 tab 切换 `[前向追踪] [历史回放]`：
+- 前向追踪 tab → `paper_trade_sessions WHERE is_system = 0 AND replay_mode IS NULL`（即 ticker-session）
+- 历史回放 tab → 来自 simulator 的 `replay_mode IS NOT NULL` session（沿用现有 simulator）
+- API：`/api/paper/tickers?mode=forward|replay` 加 query 过滤
+
+##### R-fix-9F · PaperTradeStore schema 自初始化补 v1.3 列（~30min）
+
+[stock_trading_system/strategy/paper_trader/session_store.py](../../stock_trading_system/strategy/paper_trader/session_store.py) `_SCHEMA_TRADING_PLANS` 末尾扩展：
+```sql
+CREATE TABLE IF NOT EXISTS paper_trade_plans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER NOT NULL,
+    analysis_id INTEGER NOT NULL,
+    rating TEXT,
+    thesis TEXT,
+    holding_months_min INTEGER,
+    holding_months_max INTEGER,
+    raw_summary TEXT,
+    plan_json TEXT NOT NULL,
+    parse_method TEXT,
+    status TEXT DEFAULT 'active',
+    superseded_by_plan_id INTEGER,
+    superseded_at TEXT,
+    fingerprint TEXT,                        -- v1.3 cols (now in init schema)
+    reconfirmed_count INTEGER DEFAULT 1,
+    reconfirmed_at TEXT,
+    analysis_ids TEXT,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (session_id) REFERENCES paper_trade_sessions(id) ON DELETE CASCADE
+);
+```
+
+`_init_schema` 在 CREATE 之后做幂等迁移（已有表升级路径）：
+```python
+# v1.3 columns idempotent migration for pre-existing dbs
+plan_cols = {r[1] for r in conn.execute("PRAGMA table_info(paper_trade_plans)")}
+for col, ddl in [
+    ("fingerprint", "ALTER TABLE paper_trade_plans ADD COLUMN fingerprint TEXT"),
+    ("reconfirmed_count", "ALTER TABLE paper_trade_plans ADD COLUMN reconfirmed_count INTEGER DEFAULT 1"),
+    ("reconfirmed_at", "ALTER TABLE paper_trade_plans ADD COLUMN reconfirmed_at TEXT"),
+    ("analysis_ids", "ALTER TABLE paper_trade_plans ADD COLUMN analysis_ids TEXT"),
+]:
+    if col not in plan_cols:
+        conn.execute(ddl)
+conn.execute("CREATE INDEX IF NOT EXISTS ix_plans_session_ticker_fp "
+             "ON paper_trade_plans(session_id, fingerprint)")
+```
+
+`migrations/paper_trade_v1_3.py` 保留作历史路径，不删（已部署旧库还能跑），但核心功能不再依赖它。
+
+##### R-fix-9G · 验收测试（~1.25h）
+
+新建/扩展测试文件：
+
+[tests/strategy/paper_trader/test_signal_loader.py](../../tests/strategy/paper_trader/test_signal_loader.py)：
+- `test_signal_loader_reads_user_advice`：插 `analysis_history`(advice_json=NULL, created_by=alice) + `user_analysis_advice`(user_id=alice) → `SignalLoader(db, user_id=alice).get_one(aid)` 返 advice 含 action/entry_low/stop_loss
+- `test_signal_loader_legacy_fallback_only_for_creator`：插 `analysis_history`(advice_json='{"action":"BUY"}', created_by=alice) → SignalLoader(user_id=alice) 返 BUY；user_id=bob 返 `{}`
+- `test_signal_loader_normalizes_dual_keys`：advice 有 `suggested_position_pct=0.1`，loader 返 `position_pct=0.1` 同时保留 `suggested_position_pct`
+
+[tests/web/test_paper_track.py](../../tests/web/test_paper_track.py)（新建）：
+- `test_paper_track_returns_plan_id`：alice 走完整 analysis → POST `/api/paper/track {analysis_id:N}` → 200 含 `plan_id, num_orders, triggered`；DB 验 `paper_trade_plans` 1 行 + `paper_trade_planned_orders` ≥ 0 行
+- `test_paper_track_uses_user_advice_not_shared`：alice 写 user_advice (action=BUY, stop=140)，shared 表 advice_json=NULL → bob POST `/api/paper/track` 拿不到 advice → plan empty (num_orders=0) 或 200 但 plan 无 entry orders；alice 调 → plan 含 entry order
+- `test_paper_track_immediate_execution`：mock router.get_price → process_analysis 触发 immediate order → triggered ≥ 1
+- `test_paper_track_bob_cannot_use_alice_advice`：bob 拿到 alice 的 analysis_id → POST `/api/paper/track` → plan 用的是 bob 自己的 advice（=空）而非 alice 的
+
+[tests/tasks/test_task_manager.py](../../tests/tasks/test_task_manager.py)：
+- `test_post_analysis_save_drives_paper_trade`：mock TaskManager 跑一次 analysis worker → `_post_analysis_save` 后 DB 验：`user_analysis_advice` 1 行 + `paper_trade_plans` 1 行 + `paper_trade_planned_orders` ≥ 0 行
+- `test_post_analysis_save_paper_trade_failure_is_swallowed`：mock `process_analysis` 抛异常 → analysis task 仍标 completed，warning 已 log
+
+[tests/strategy/paper_trader/test_fresh_db_save_plan.py](../../tests/strategy/paper_trader/test_fresh_db_save_plan.py)（新建）：
+- `test_fresh_db_save_plan_works_without_migration`：创建空 sqlite → `PaperTradeStore(path)` → `save_plan(...)` 不抛 OperationalError；验 `paper_trade_plans` schema 含 `fingerprint, reconfirmed_count, reconfirmed_at, analysis_ids` 四列
+- `test_existing_db_idempotent_migration`：创建一个旧版无 v1.3 列的 DB → 实例化 PaperTradeStore 自动 ALTER 4 列 → save_plan 不抛
+
+##### 强约束
+
+- ❌ 不许动 v1.13 / v1.14 已通过的 R-fix-7 / R-fix-8 任何文件除上述明确点
+- ❌ 不许吞异常 `try/except: pass`；paper trade 的 best-effort 失败必须 log warning
+- ❌ 不许把 paper trade 错误冒泡阻断 analysis task（保持 task 成功）
+- ❌ 不许 SignalLoader 默认 fallback 到 advice_json（必须 user_id 缺失 + 显式 allow_legacy_no_user=True 才行）
+- ❌ 不许保留 `/api/paper/track` 旧"只插 analysis_tracked"行为作主路径
+- ✅ 允许在 `_SCHEMA_TRADING_PLANS` 加 4 列 + idempotent ALTER
+- ✅ 允许 `ensure_ticker_session` 加可选 user_id
+- ✅ 允许 `_post_analysis_save` 加第 3 步 paper-trade hook（同 try 隔离）
+
+##### 验收
+
+```bash
+# 1. 单元 + 集成
+pytest tests/strategy/paper_trader/test_signal_loader.py -q
+pytest tests/strategy/paper_trader/test_fresh_db_save_plan.py -q
+pytest tests/web/test_paper_track.py -q
+pytest tests/tasks/test_task_manager.py -q
+pytest tests/paper_trade -q   # F1 dedup 仍 pass
+pytest tests/tasks tests/web tests/strategy/paper_trader -q
+
+# 2. 端到端 smoke
+# alice 跑分析后:
+sqlite3 data/portfolio.db \
+  "SELECT u.user_id, p.id, p.fingerprint, COUNT(o.id) AS orders
+     FROM user_analysis_advice u
+     JOIN paper_trade_plans p ON p.analysis_id = u.analysis_id
+     LEFT JOIN paper_trade_planned_orders o ON o.plan_id = p.id
+    WHERE u.user_id = <alice_id>
+    GROUP BY p.id ORDER BY p.id DESC LIMIT 3"
+# 期望：每条分析对应一个 plan + ≥0 orders；fingerprint 非空
+
+# 3. 跨用户隔离
+# bob 用 alice 的 analysis_id POST /api/paper/track
+sqlite3 data/portfolio.db \
+  "SELECT user_id, COUNT(*) FROM paper_trade_sessions
+   WHERE ticker='AAPL' GROUP BY user_id"
+# alice / bob 各有独立 session
+
+# 4. 列表页字段
+curl -s 'http://localhost:5000/api/paper/tickers' | jq '.[0] | {active_plan_count, pending_orders_count, triggered_orders_count, last_skip_reason}'
+# 4 字段都有（可为 0/null，不能是 undefined）
+
+# 5. fresh DB
+python -c "
+from stock_trading_system.strategy.paper_trader import PaperTradeStore
+import os; p='/tmp/fresh_pt.db'; os.path.exists(p) and os.remove(p)
+s = PaperTradeStore(p)
+import sqlite3; c = sqlite3.connect(p)
+print({r[1] for r in c.execute('PRAGMA table_info(paper_trade_plans)')} & {'fingerprint','reconfirmed_count','reconfirmed_at','analysis_ids'})
+"
+# 期望 = {'fingerprint','reconfirmed_count','reconfirmed_at','analysis_ids'}
+
+# 6. 前端 build
+cd stock_trading_system/web/frontend && npm run build
+
+# 7. v1.13 + v1.14 不能挂
+pytest tests/portfolio/test_database.py tests/web/test_analysis_detail.py tests/web/test_analysis_actions.py tests/tasks/test_workers.py tests/validation/test_migration_integrity.py -q
+```
+
+---
+
 ### 6.2 R-1.x 完成后
 
 P0 闸门全绿，可签字进入 R-6 / R-7 已完成部分的回归 + 真实数据跑一遍。最终 sign-off：
@@ -1664,3 +1975,5 @@ python -m stock_trading_system.validation.sign_off \
 | v1.12 | 2026-04-30 | v1.11 修了代码但没修数据：实测 daily_snapshots 仅 3 行（2026-04-14/15/16/19），距今缺 11 天。`task_scheduler.py:105` 已写 take_snapshot 但调度器没真跑。设计原意"自动回溯"指从最早 transaction(2026-04-12) 起每个交易日都要有 snapshot。新增 R-fix-6 共 4 子项（~3h）：(a) 历史回填脚本 backfill_daily_snapshots.py（按交易日重放 transactions + yfinance 收盘价 → upsert 幂等）；(b) 修 APScheduler 启动 + cron 美东 16:30（=北京次日 04:30）+ 多用户迭代；(c) Dashboard "↻ 重新计算"按钮触发异步 backfill task；(d) Settings 页加"调度器状态"卡（运行态/上次快照/下次快照/手动触发）。验收：DB ≥ 14 行 snapshot，dashboard ALL 视图 14 连续点 | — |
 | v1.13 | 2026-04-30 | AI 分析模块 7 大产品&技术缺口（用户 2026-04-30 提）：(A) `<TVChart>` 初始 `loading + data=[]` 早 return Skeleton 导致 chart 容器永不挂载，改为始终渲染容器 + overlay 三态（loading/empty/error）+ onRetry，详情页 K 线主路径 `/api/quote/history?days=90`、回退 `/api/chart/<ticker>?period=3mo`；(B) `analysis_history` schema 加 `created_by/provider/config_hash/task_id/duration_sec/bookmarked` 6 列 + idempotent ALTER TABLE，TaskStore `_save_analysis_result` INSERT 同步写，worker 注入 `provider/model/config_hash/duration_sec/created_by/task_id`；(C) 废 `/api/analyze` daemon thread + 直写 history + 硬编码 `gemini.deep_think_model`，改为 thin wrapper 转 TaskManager；(D) 新建 `user_analysis_advice` 私有表（user_id+analysis_id+持仓 snapshot+action+entry/stop/take），`analysis_history` 仅共享研究，`/api/history/<id>` LEFT JOIN advice WHERE user_id=current；(E) `/analysis` 首页 5 条最近卡 + 深度 RadioGroup（quick/standard/deep）+ 详情 8 tab（决策独立）+ 操作按钮 5 个（再次/追踪/导出 PDF/MD/分享/收藏 per-user）；(F) `react-markdown` 加 `rehype-sanitize` + 白名单 schema（table/code/pre）防 LLM 注入；(G) 修 `_record_agent_scores` 半成品 + 完整两次 INSERT 的双重记录（改为 TaskManager 落库后用真 analysis_id 调 scorer.record_analysis）。新增 R-fix-7A~G 共 ~10h；剩余 ~13h | — |
 | v1.14 | 2026-05-01 | R-fix-7 验收暴露 4 处遗留（~2.5h）：(A) **worker/analyzer progress_cb 契约对齐**——`workers.py:57` 无条件传 `progress_cb=` 但 `tests/tasks/test_workers.py FakeAnalyzer.analyze(self,ticker,date)` 不收 → 旧测试红；统一契约为"analyzer.analyze 必须接受可选 `progress_cb=None`"，FakeAnalyzer 同步加 kw + 至少 1 case 验证 events；(B) **`/api/history/<id>` advice_json 跨用户泄露关闭**——legacy fallback 加 `record.created_by == user_id` 守卫；非创建者也屏蔽 action/confidence/position_pct/entry_low/entry_high/stop_loss/take_profit 反推字段；`_migrate_analysis_history` 把 advice_json 搬到 user_analysis_advice 后**清空共享行的 advice_json + 7 结构化字段**（事务内）；测试 `test_bob_does_not_see_alice_legacy_advice_json`；(C) **TaskStore advice 后门关闭**——`_save_analysis_result` 删除 `if result.get("advice")` 兼容分支，advice_json 硬编码 `""`、action/confidence/position_pct/entry/stop/take_profit 硬编码 `None`；增加测试 `test_save_analysis_result_strips_advice` + `test_worker_advice_payload_routes_to_user_advice`；(D) **`depth` 参数真实生效**——schema 加 `depth TEXT` 列 + idempotent ALTER；worker 读 params.depth 归一化 `{quick,standard,deep}` 写入 result 与 DB；行为差异化最小语义：quick 强制关 iteration、deep 沿用 config iteration、standard 默认；详情页 Header meta 行展示"分析深度"；前端 RadioGroup 文案降级为"预估 + 是否启用迭代"；测试 `test_worker_persists_depth` / `test_worker_default_depth_is_standard` / `test_worker_unknown_depth_falls_back_to_standard` / `test_detail_returns_depth`。剩余 ~10.5h | — |
+
+| v1.15 | 2026-05-01 | AI 建议 → paper trade 执行链贯通（用户 2026-05-01 提，~6h）：(A) **SignalLoader 切到 user_analysis_advice**——`__init__/load/get_one/backfill_all` 加 `user_id`；主源 `user_analysis_advice` → 转 paper trade 字段（双键名 suggested_position_pct↔position_pct / entry_price_low↔entry_low）；legacy `advice_json` fallback 仅当 `created_by==user_id` 才生效；(B) **`_post_analysis_save` 加第 3 步驱动 paper trade**——`save_user_advice` 之后调 `ensure_ticker_session(user_id)` + `process_analysis(...)`，best-effort 不影响 task；传 `analysis_id/ticker/date/signal/advice/trade_decision/risk/debate` + 当日 price；(C) **`/api/paper/track` 升级**——读 `get_user_advice(g.user.id, analysis_id)`，调 `process_analysis`，返 `{plan_id, num_orders, triggered}`；旧 manual_track 仅作 audit log；(D) **UI 拆分观察列表 vs 纸面追踪**——详情页"加入持仓追踪"改名"加入观察列表"（仍调 `/api/portfolio/track`）+ 新增"按此建议纸面交易"按钮调 `/api/paper/track`；toast 显示已生成/立即成交/待触发；(E) **收敛 forward vs replay**——`list_ticker_sessions` SQL 子查询补 `active_plan_count/pending_orders_count/triggered_orders_count/open_position_shares/last_eod_date/last_skip_reason`；列表页加 `[前向追踪] [历史回放]` tab 切换 + `/api/paper/tickers?mode=forward\|replay` 过滤；(F) **schema 自初始化补 v1.3 列**——`_SCHEMA_TRADING_PLANS` 加 `fingerprint/reconfirmed_count/reconfirmed_at/analysis_ids`；`_init_schema` 幂等 ALTER + 加 `ix_plans_session_ticker_fp` 索引；migration 文件保留作历史；(G) **测试**——`test_signal_loader_reads_user_advice` / `test_signal_loader_legacy_fallback_only_for_creator` / `test_signal_loader_normalizes_dual_keys` / `test_paper_track_returns_plan_id` / `test_paper_track_uses_user_advice_not_shared` / `test_paper_track_bob_cannot_use_alice_advice` / `test_post_analysis_save_drives_paper_trade` / `test_post_analysis_save_paper_trade_failure_is_swallowed` / `test_fresh_db_save_plan_works_without_migration` / `test_existing_db_idempotent_migration`。剩余 ~4.5h | — |
