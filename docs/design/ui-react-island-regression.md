@@ -27,6 +27,7 @@ R-1 ~ R-7 commits 已落地（6e583b4..5370863）。审计 22 P0 项实际状态
 | ❌ 实测仍未真修（v1.10 prod 验证）| 5 | **D-FEAT-1 净值曲线只 1 个点**（后端 days=30 硬编码未改 None）· **P-FEAT-1 Dashboard 持仓 top3 没加绝对值列**（仅 PortfolioPage 加了）· **SV3-P0-1 V3 结果"加载失败"**（前端用 task_id 拉 result，但后端期望 result_id 整数）· **PT-P0-4 paper-trade ErrorBoundary 真触发**（内部 render 抛错，需修内部 null check）· **R-5.3 K线区域空白**（TVChart 已挂但 klineData 空，需修 quote/history API 接入）|
 | ❌ v1.11 修了代码但没修数据（v1.12 实测）| 1 | **D-FEAT-1 净值曲线仍只 1 个点**：v1.11 后端代码 ✅ 正确（返 daily_snapshots 全量），但 **DB 里只有 3 行 snapshot**（2026-04-14/15/16/19），距今缺 11 天。根因：调度器 [task_scheduler.py:105](../../stock_trading_system/scheduler/task_scheduler.py) take_snapshot 没真跑 + 缺历史回填脚本 → 需 R-fix-6 同时补 (a) 历史回填 (b) 调度器修复 (c) UI 触发入口 |
 | ❌ AI 分析模块产品&技术缺口（v1.13 用户提）| 7 | **A-FIX-A K线初始 Skeleton 早 return** [TVChart.tsx:108](../../stock_trading_system/web/frontend/src/components/shared/TVChart.tsx) 导致 chart 容器永不挂载；**A-FIX-B analysis_history 缺 `created_by/provider/config_hash/task_id/duration_sec/bookmarked` 元数据**（[database.py:81](../../stock_trading_system/portfolio/database.py) schema 缺 + [task_store.py:368](../../stock_trading_system/tasks/task_store.py) INSERT 不写）；**A-FIX-C 旧 `/api/analyze`** [app.py:852](../../stock_trading_system/web/app.py) 仍开 daemon thread + 直写 history + 硬编码 `gemini.deep_think_model` 不走 active provider；**A-FIX-D advice 与共享分析未拆分**（advice_json 和 trade_decision 同表，其他用户能看到原作者的持仓上下文）；**A-FIX-E `/analysis` 首页缺 5 条最近卡片 + 深度选择 + 8 tab + 决策独立 tab + 操作按钮齐**；**A-FIX-F Markdown 无 sanitize**（[AnalysisPage.tsx:393](../../stock_trading_system/web/frontend/src/islands/analysis/AnalysisPage.tsx) 仅 react-markdown + remark-gfm，缺 rehype-sanitize）；**A-FIX-G `_record_agent_scores`** [workers.py:135](../../stock_trading_system/tasks/workers.py) 为拿 analysis_id 先 save 半成品行 → 历史页双重记录 |
+| ❌ R-fix-7 验收暴露 4 处遗留（v1.14 用户提）| 4 | **A-FIX-H worker/analyzer progress_cb 契约不一致**：[workers.py:57](../../stock_trading_system/tasks/workers.py) 无条件 `analyzer.analyze(ticker, date, progress_cb=...)`，但 [tests/tasks/test_workers.py:28 FakeAnalyzer.analyze(self,ticker,date)](../../tests/tasks/test_workers.py) 不收 `progress_cb` → `pytest tests/tasks/test_workers.py` 红；**A-FIX-I `/api/history/<id>` 旧 advice_json 跨用户泄露**：[app.py:1046](../../stock_trading_system/web/app.py) `elif record.get("advice_json")` 不检查 `created_by == g.user.id` → Bob 读 Alice 旧分析 详情仍能看到 Alice 的 advice 全文；**A-FIX-J TaskStore 共享表 advice 写入后门**：[task_store.py:392](../../stock_trading_system/tasks/task_store.py) `result.get("advice")` 仍会被写到 `analysis_history.advice_json/action/confidence/...` → 兼容老 caller 但新 worker 路径下应 0 写入；需关闭后门，结构化字段统一 None；**A-FIX-K `depth` 参数空挂**：前端提交 `quick/standard/deep` ([AnalysisPage.tsx:158](../../stock_trading_system/web/frontend/src/islands/analysis/AnalysisPage.tsx))，[app.py:903](../../stock_trading_system/web/app.py) 透传到 task params，但 [workers.py:73](../../stock_trading_system/tasks/workers.py) 的 `out` dict 不含 depth → 数据库无记录、详情页无展示、迭代/反思未差异化 → 虚假控制 |
 
 **T-P0-6 任务中心空白 bug 已修复**（实测 2026-04-25）：
 - ✅ 后端 [app.py:1713-1719](../../stock_trading_system/web/app.py) 返回 `{tasks, items, total, limit, offset}` 双字段向后兼容
@@ -1442,6 +1443,156 @@ npm install rehype-sanitize
 
 ---
 
+#### v1.14 新增（R-fix-7 验收暴露 4 处遗留，~2.5h）：
+
+##### R-fix-8 · AI 分析 R-fix-7 残留 4 项
+
+实测痛点（验收 2026-04-30 晚）：
+- **R-fix-8A**：[workers.py:57](../../stock_trading_system/tasks/workers.py) `analyzer.analyze(ticker, date, progress_cb=_analysis_progress)` 无条件传 kw；[tests/tasks/test_workers.py:28 FakeAnalyzer.analyze(self,ticker,date)](../../tests/tasks/test_workers.py) 不收 → 旧测试 5 个红
+- **R-fix-8B**：[app.py:1046-1050](../../stock_trading_system/web/app.py) `elif record.get("advice_json"):` 没有 ownership 检查；[database.py:255-261](../../stock_trading_system/portfolio/database.py) 的 v1.13 迁移把存量 advice_json 留在共享表上没 NULL 化 → 任何登录用户拉 `/api/history/<id>` 都拿到原 creator 的 advice 全文
+- **R-fix-8C**：[task_store.py:392-407](../../stock_trading_system/tasks/task_store.py) 现 `result.get("advice")` 兼容分支仍写 `advice_json + action/confidence/position_pct/entry_low/entry_high/stop_loss/take_profit` 到共享行 → 新 worker 不主动塞 advice，但只要任意调用者塞进 result 就被污染；属"后门未关"
+- **R-fix-8D**：[app.py:903](../../stock_trading_system/web/app.py) 透传 `depth` 到 task params，但 [workers.py:73-90](../../stock_trading_system/tasks/workers.py) 的 `out` dict 不含 depth → DB 无记录 → 详情页无法展示，前端 RadioGroup 形同虚设
+
+##### R-fix-8A · 统一 progress_cb 契约（~30min）
+
+采纳"contract = `progress_cb` 必须是可选 kw"方案（real Analyzer 已合规，仅测试 fakes 需对齐）：
+
+[stock_trading_system/agents/analyzer.py](../../stock_trading_system/agents/analyzer.py)：
+- 已有 `progress_cb: Optional[Callable[[dict], None]] = None`，无需改
+- 在类 docstring 显式声明：`Analyzer 实现必须接受 progress_cb=None；调用方可传可不传`
+
+[tests/tasks/test_workers.py](../../tests/tasks/test_workers.py)：
+- `FakeAnalyzer.analyze(self, ticker, date)` 改为 `def analyze(self, ticker, date, progress_cb=None)`
+- 在测试断言里至少 1 个 case 验证 progress_cb 被调用过（捕获 events）
+
+[stock_trading_system/tasks/workers.py](../../stock_trading_system/tasks/workers.py) 不动 `analyzer.analyze(...)` 调用 —— 契约对齐后无需 fallback。
+
+##### R-fix-8B · 修 advice_json 跨用户泄露（~45min）
+
+[stock_trading_system/web/app.py](../../stock_trading_system/web/app.py) `api_analysis_detail`：
+- `elif record.get("advice_json"):` 加 ownership 检查：
+  ```python
+  elif record.get("advice_json") and record.get("created_by") == user_id:
+      try:
+          blob = record["advice_json"]
+          advice = json.loads(blob) if isinstance(blob, str) else blob or {}
+      except (json.JSONDecodeError, TypeError):
+          advice = {}
+  # 否则 advice = {} 保持空
+  ```
+- 并把 `record["action"]/confidence/position_pct/entry_low/entry_high/stop_loss/take_profit` 这些来自 advice_json 反推的结构化字段在跨用户时也 strip 掉（直接 `record.pop(k, None)` for k in 上述 list 当 created_by != user_id）
+
+[stock_trading_system/portfolio/database.py](../../stock_trading_system/portfolio/database.py) `_migrate_analysis_history`：
+- 当迁移把 `advice_json` 写到 `user_analysis_advice` 后，**清空共享表上的 advice_json + 7 结构化字段**：
+  ```python
+  conn.execute(
+      """UPDATE analysis_history
+         SET advice_json = NULL, action = NULL, confidence = NULL,
+             position_pct = NULL, entry_low = NULL, entry_high = NULL,
+             stop_loss = NULL, take_profit = NULL
+       WHERE id = ?""",
+      (r["id"],),
+  )
+  ```
+- 仅当 user_analysis_advice 写入成功后清空（事务内）
+
+[tests/web/test_analysis_detail.py](../../tests/web/test_analysis_detail.py) 加用例：
+- `test_bob_does_not_see_alice_legacy_advice_json`：直接 INSERT 一行 `created_by=alice_id, advice_json='{"action":"BUY","reasoning":"alice-only"}'`（不走迁移），Bob login GET `/api/history/<id>` → response `advice` 必须为 None，body 中不能含 "alice-only" 字符串
+
+##### R-fix-8C · 关闭 TaskStore advice 后门（~30min）
+
+[stock_trading_system/tasks/task_store.py](../../stock_trading_system/tasks/task_store.py) `_save_analysis_result`：
+- 删除当前的 `advice_raw = ""; adv = result.get("advice") or {}; if adv: advice_raw = json.dumps(adv,...)` 8 行
+- INSERT 占位符 `advice_json` 改写硬编码 `""`
+- INSERT 占位符 `action / confidence / position_pct / entry_low / entry_high / stop_loss / take_profit` 改写硬编码 `None, None, None, None, None, None, None`
+- 这意味着不论调用方是否在 result 里塞 `advice`，共享表永远不再持有个人建议
+
+[tests/tasks/test_task_store.py](../../tests/tasks/test_task_store.py)（如不存在则在 [tests/tasks/test_workers.py](../../tests/tasks/test_workers.py) 加）：
+- `test_save_analysis_result_strips_advice`：调用 `_save_analysis_result(task_id, {..., "advice": {"action":"BUY"}})`，SELECT 验 `advice_json IS NULL OR ''` 且 `action IS NULL`
+- `test_worker_advice_payload_routes_to_user_advice`：跑 worker → 模拟 TaskManager post-save hook → `analysis_history.advice_json IS NULL` AND `user_analysis_advice` 存在 1 行（user_id, action='BUY' 等）
+
+##### R-fix-8D · 让 depth 真实生效（~45min）
+
+最小可验收语义（不改实际 pipeline 时长，但确保参数贯穿全链）：
+
+[stock_trading_system/portfolio/database.py](../../stock_trading_system/portfolio/database.py)：
+- `analysis_history` schema 加列 `depth TEXT`（默认 NULL）
+- `_migrate_analysis_history` additions 列表追加 `("depth", "TEXT")`
+- `save_analysis()` INSERT 加 `data.get("depth")`
+
+[stock_trading_system/tasks/task_store.py](../../stock_trading_system/tasks/task_store.py)：
+- `_ensure_analysis_history_table` CREATE TABLE 同步加 `depth TEXT`
+- `_save_analysis_result` INSERT 加 `result.get("depth")`
+
+[stock_trading_system/tasks/workers.py](../../stock_trading_system/tasks/workers.py) `make_analysis_worker`：
+- 读 `depth = (params.get("depth") or "standard").lower()`，归一化到 `{quick, standard, deep}`，否则 fallback `standard`
+- worker `out` dict 加 `"depth": depth`
+- 行为差异化（最小可验收）：
+  - `quick`：传 `progress_cb` 标记 quick；analyzer 内部 `iteration_enabled` 强制 False（即使 config 开了）；worker 跑时 progress_cb 仍发事件，UI 端 banner 显示 "快速模式"
+  - `standard`：当前默认行为
+  - `deep`：若 config 启用 iteration → 沿用；否则在 metadata 标 `"depth": "deep"` + 提示"深度模式当前等同标准（迭代未启用）"
+- 实施提示：在 worker 内 `analyzer = get_analyzer(depth=depth)` 或 setattr 注入 `_iteration_force_off=True/None/False`
+- analyzer 侧加最小钩子：`def __init__(..., depth_override=None)` 或方法 `set_depth(depth)`，仅控制 `self._iteration_enabled`
+
+[stock_trading_system/web/app.py](../../stock_trading_system/web/app.py) `api_analysis_detail`：
+- response 加 `record["depth"] = record.get("depth") or "standard"`
+
+[stock_trading_system/web/frontend/src/islands/analysis/AnalysisPage.tsx](../../stock_trading_system/web/frontend/src/islands/analysis/AnalysisPage.tsx)：
+- `AnalysisDetail` interface 加 `depth?: 'quick' | 'standard' | 'deep'`
+- `AnalysisDetailView` Header meta 行加：`{detail.depth && <span>分析深度: {DEPTH_LABEL[detail.depth]}</span>}`（DEPTH_LABEL = { quick: '快速', standard: '标准', deep: '深度' }）
+- 表单 RadioGroup 描述改为：「快速 (~30s, ~$0.05)·跳过迭代」/「标准 (~2min)·当前默认」/「深度·启用迭代/反思（如已配置）」 —— 用语不再绝对化
+
+[tests/tasks/test_workers.py](../../tests/tasks/test_workers.py)：
+- `test_worker_persists_depth`：submit `depth="quick"` → result dict 含 `depth='quick'`
+- `test_worker_default_depth_is_standard`：submit 不带 depth → result `depth='standard'`
+- `test_worker_unknown_depth_falls_back_to_standard`：submit `depth="hyper"` → result `depth='standard'`
+
+[tests/web/test_analysis_detail.py](../../tests/web/test_analysis_detail.py)：
+- `test_detail_returns_depth`：保存一行 depth='deep'，GET → response 含 `"depth": "deep"`
+
+##### 强约束
+
+- ❌ 不许动 v1.13 已通过的 R-fix-7 任何前端 / 后端文件除上述明确点
+- ❌ 不许把 `depth` 做成全局开关 / global state
+- ❌ 不许在 `_save_analysis_result` 保留任何 `if advice:` 兼容分支
+- ❌ 不许把 advice_json 跨用户兜底返回，连"only first 100 chars"也不行
+- ❌ 不许吞异常
+- ✅ 允许 alter table 加 1 列 `depth`
+- ✅ 允许 FakeAnalyzer 加 progress_cb=None
+- ✅ 允许 analyzer 加最小 depth 钩子（仅控制 iteration_enabled）
+
+##### 验收
+
+```bash
+# 1. 契约对齐
+pytest tests/tasks/test_workers.py -q
+pytest tests/tasks -q
+
+# 2. 跨用户隔离
+pytest tests/web/test_analysis_detail.py tests/web/test_analysis_actions.py -q
+# 必须含 test_bob_does_not_see_alice_legacy_advice_json
+
+# 3. 迁移完整性
+pytest tests/validation/test_migration_integrity.py -q
+
+# 4. 共享表 advice 0 写入（DB 直查）
+sqlite3 data/portfolio.db "SELECT COUNT(*) FROM analysis_history WHERE advice_json IS NOT NULL AND advice_json != '' AND created_at > '2026-04-30'"
+# 期望 = 0（v1.14 上线后新分析）
+
+# 5. depth 端到端
+curl -X POST -H 'Content-Type: application/json' --cookie 'session=...' \
+  -d '{"ticker":"AAPL","depth":"quick"}' http://localhost:5000/api/analyze
+# 等任务完成后
+sqlite3 data/portfolio.db "SELECT depth FROM analysis_history ORDER BY id DESC LIMIT 1"
+# 期望 = quick
+# 浏览器 /analysis/<id> Header meta 行应显示 "分析深度: 快速"
+
+# 6. 前端 build
+cd stock_trading_system/web/frontend && npm run build
+```
+
+---
+
 ### 6.2 R-1.x 完成后
 
 P0 闸门全绿，可签字进入 R-6 / R-7 已完成部分的回归 + 真实数据跑一遍。最终 sign-off：
@@ -1512,3 +1663,4 @@ python -m stock_trading_system.validation.sign_off \
 | v1.10 | 2026-04-26 | 生产环境实测发现 5 项前序号称 DONE 的项实际仍未真修：(1) D-FEAT-1 净值曲线后端 `pm.get_history(days=30)` 硬编码（v1.8 后端改动漏做，前端 ChipRow 无效）；(2) P-FEAT-1 Dashboard 持仓 top3 没加绝对值列（v1.8 仅 PortfolioPage 加了，dashboard 漏）；(3) SV3-P0-1 V3 结果"加载失败"（前端用 task_id (UUID) 拉 `/api/screen/v3/results/<id>`，后端期望整数 result_id）；(4) PT-P0-4 Paper-trade ErrorBoundary 真触发（内部 PaperTradeContent 有 throw，需 null check）；(5) R-5.3 K线区域空白（TVChart 已挂但 klineData 空，需新建/修 `/api/quote/history` 端点）。新增 R-fix-1~5（~3h）；剩余 20h → 23h | — |
 | v1.12 | 2026-04-30 | v1.11 修了代码但没修数据：实测 daily_snapshots 仅 3 行（2026-04-14/15/16/19），距今缺 11 天。`task_scheduler.py:105` 已写 take_snapshot 但调度器没真跑。设计原意"自动回溯"指从最早 transaction(2026-04-12) 起每个交易日都要有 snapshot。新增 R-fix-6 共 4 子项（~3h）：(a) 历史回填脚本 backfill_daily_snapshots.py（按交易日重放 transactions + yfinance 收盘价 → upsert 幂等）；(b) 修 APScheduler 启动 + cron 美东 16:30（=北京次日 04:30）+ 多用户迭代；(c) Dashboard "↻ 重新计算"按钮触发异步 backfill task；(d) Settings 页加"调度器状态"卡（运行态/上次快照/下次快照/手动触发）。验收：DB ≥ 14 行 snapshot，dashboard ALL 视图 14 连续点 | — |
 | v1.13 | 2026-04-30 | AI 分析模块 7 大产品&技术缺口（用户 2026-04-30 提）：(A) `<TVChart>` 初始 `loading + data=[]` 早 return Skeleton 导致 chart 容器永不挂载，改为始终渲染容器 + overlay 三态（loading/empty/error）+ onRetry，详情页 K 线主路径 `/api/quote/history?days=90`、回退 `/api/chart/<ticker>?period=3mo`；(B) `analysis_history` schema 加 `created_by/provider/config_hash/task_id/duration_sec/bookmarked` 6 列 + idempotent ALTER TABLE，TaskStore `_save_analysis_result` INSERT 同步写，worker 注入 `provider/model/config_hash/duration_sec/created_by/task_id`；(C) 废 `/api/analyze` daemon thread + 直写 history + 硬编码 `gemini.deep_think_model`，改为 thin wrapper 转 TaskManager；(D) 新建 `user_analysis_advice` 私有表（user_id+analysis_id+持仓 snapshot+action+entry/stop/take），`analysis_history` 仅共享研究，`/api/history/<id>` LEFT JOIN advice WHERE user_id=current；(E) `/analysis` 首页 5 条最近卡 + 深度 RadioGroup（quick/standard/deep）+ 详情 8 tab（决策独立）+ 操作按钮 5 个（再次/追踪/导出 PDF/MD/分享/收藏 per-user）；(F) `react-markdown` 加 `rehype-sanitize` + 白名单 schema（table/code/pre）防 LLM 注入；(G) 修 `_record_agent_scores` 半成品 + 完整两次 INSERT 的双重记录（改为 TaskManager 落库后用真 analysis_id 调 scorer.record_analysis）。新增 R-fix-7A~G 共 ~10h；剩余 ~13h | — |
+| v1.14 | 2026-05-01 | R-fix-7 验收暴露 4 处遗留（~2.5h）：(A) **worker/analyzer progress_cb 契约对齐**——`workers.py:57` 无条件传 `progress_cb=` 但 `tests/tasks/test_workers.py FakeAnalyzer.analyze(self,ticker,date)` 不收 → 旧测试红；统一契约为"analyzer.analyze 必须接受可选 `progress_cb=None`"，FakeAnalyzer 同步加 kw + 至少 1 case 验证 events；(B) **`/api/history/<id>` advice_json 跨用户泄露关闭**——legacy fallback 加 `record.created_by == user_id` 守卫；非创建者也屏蔽 action/confidence/position_pct/entry_low/entry_high/stop_loss/take_profit 反推字段；`_migrate_analysis_history` 把 advice_json 搬到 user_analysis_advice 后**清空共享行的 advice_json + 7 结构化字段**（事务内）；测试 `test_bob_does_not_see_alice_legacy_advice_json`；(C) **TaskStore advice 后门关闭**——`_save_analysis_result` 删除 `if result.get("advice")` 兼容分支，advice_json 硬编码 `""`、action/confidence/position_pct/entry/stop/take_profit 硬编码 `None`；增加测试 `test_save_analysis_result_strips_advice` + `test_worker_advice_payload_routes_to_user_advice`；(D) **`depth` 参数真实生效**——schema 加 `depth TEXT` 列 + idempotent ALTER；worker 读 params.depth 归一化 `{quick,standard,deep}` 写入 result 与 DB；行为差异化最小语义：quick 强制关 iteration、deep 沿用 config iteration、standard 默认；详情页 Header meta 行展示"分析深度"；前端 RadioGroup 文案降级为"预估 + 是否启用迭代"；测试 `test_worker_persists_depth` / `test_worker_default_depth_is_standard` / `test_worker_unknown_depth_falls_back_to_standard` / `test_detail_returns_depth`。剩余 ~10.5h | — |
