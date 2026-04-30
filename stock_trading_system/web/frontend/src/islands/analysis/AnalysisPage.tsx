@@ -13,6 +13,7 @@ import { apiGet, apiPost } from "@/lib/api"
 import { subscribeTaskStream } from "@/lib/socket"
 import Markdown from "react-markdown"
 import remarkGfm from "remark-gfm"
+import rehypeSanitize, { defaultSchema } from "rehype-sanitize"
 
 interface AnalysisDetail {
   id: string; ticker: string; signal: string; date: string
@@ -42,6 +43,25 @@ function signalVariant(signal: string): "buy" | "sell" | "hold" | "default" {
 function getIdFromUrl(): string | null {
   const match = window.location.pathname.match(/\/analysis\/([^/]+)/)
   return match?.[1] ?? null
+}
+
+// rehype-sanitize schema. Default is GitHub's safe-list; we extend it to
+// keep tables + fenced code rendering (LLM output frequently uses both)
+// without enabling raw HTML or scripts. Anything not on this list is
+// stripped before React inserts the markdown into the DOM.
+const MD_SANITIZE_SCHEMA = {
+  ...defaultSchema,
+  attributes: {
+    ...(defaultSchema.attributes ?? {}),
+    code: [...(defaultSchema.attributes?.code ?? []), "className"],
+    span: [...(defaultSchema.attributes?.span ?? []), "className"],
+    div: [...(defaultSchema.attributes?.div ?? []), "className"],
+  },
+  tagNames: [
+    ...(defaultSchema.tagNames ?? []),
+    "table", "thead", "tbody", "tr", "th", "td",
+    "code", "pre",
+  ],
 }
 
 /** UUID-like = task ID (running state); pure digits = analysis_history ID (complete) */
@@ -430,7 +450,12 @@ function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
                 <TabsContent key={tab.key} value={tab.key} className="mt-4">
                   {content ? (
                     <div className="prose prose-invert prose-sm max-w-none text-[var(--color-text-secondary)] max-h-[600px] overflow-y-auto">
-                      <Markdown remarkPlugins={[remarkGfm]}>{content}</Markdown>
+                      <Markdown
+                        remarkPlugins={[remarkGfm]}
+                        rehypePlugins={[[rehypeSanitize, MD_SANITIZE_SCHEMA]]}
+                      >
+                        {content}
+                      </Markdown>
                     </div>
                   ) : (
                     <p className="text-sm text-muted-foreground py-8 text-center">暂无数据</p>
