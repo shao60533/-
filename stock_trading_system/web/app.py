@@ -873,100 +873,43 @@ def create_app(config_path=None):
 
     @app.route("/api/analyze", methods=["POST"])
     def api_analyze():
-        data = request.json
-        ticker = data["ticker"].upper()
-        date = data.get("date")
-        if not date:
-            from stock_trading_system.utils.helpers import today_str
-            date = today_str()
+        """Legacy /api/analyze: forwards to TaskManager.
 
-        # Run in background thread, emit result via WebSocket
-        def run_analysis():
-            try:
-                socketio.emit("analysis_status", {"ticker": ticker, "status": "running"})
+        v1.14 unifies all analysis through the same pipeline as /api/tasks/submit
+        + the analysis worker + Pipeline DAG events. Old clients that POST here
+        receive the same {task_id, status} envelope and can subscribe to
+        /api/tasks/<task_id> for progress.
 
-                def _progress(event: dict):
-                    payload = {"ticker": ticker, **event}
-                    # Use emit_event for persistence + per-user room broadcast
-                    from stock_trading_system.tasks.event_emitter import emit_event as _emit_ev
-                    _task_id = locals().get('_current_task_id', '')
-                    if _task_id:
-                        _emit_ev(_task_id, "analysis_pipeline", payload)
-                    else:
-                        socketio.emit("analysis_pipeline", payload)
+        The previous implementation spawned a daemon thread, emitted three
+        bespoke socket events (analysis_status / analysis_result /
+        analysis_error), and wrote analysis_history directly with a
+        hard-coded gemini.deep_think_model — none of which matched the
+        unified flow workers go through. All of that is gone.
+        """
+        if g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
+        data = request.json or {}
+        ticker = (data.get("ticker") or "").upper().strip()
+        if not ticker:
+            return jsonify({"error": "ticker required"}), 400
+        from stock_trading_system.utils.helpers import today_str
+        date = data.get("date") or today_str()
+        depth = data.get("depth") or "standard"
 
-                analyzer = _get_analyzer()
-                result = analyzer.analyze(ticker, date, progress_cb=_progress)
-
-                # Also generate strategy advice
-                advice = None
-                try:
-                    engine = _get_strategy_engine()
-                    pm = _get_portfolio_mgr()
-                    holdings = pm.get_holdings()
-                    # Get current price for strategy calculation
-                    price_data = _get_data_manager().get_price(ticker)
-                    current_price = None
-                    if price_data:
-                        current_price = price_data.get("last") or price_data.get("close")
-                    advice_obj = engine.generate_advice(result, holdings, current_price)
-                    advice = {
-                        "action": advice_obj.action,
-                        "confidence": advice_obj.confidence,
-                        "suggested_position_pct": advice_obj.suggested_position_pct,
-                        "entry_price_low": advice_obj.entry_price_low,
-                        "entry_price_high": advice_obj.entry_price_high,
-                        "stop_loss": advice_obj.stop_loss,
-                        "take_profit": advice_obj.take_profit,
-                        "reasoning": advice_obj.reasoning,
-                        "risk_warning": advice_obj.risk_warning,
-                    }
-                except Exception as e:
-                    logger.warning("Strategy advice failed: %s", e)
-
-                result_data = {
-                    "ticker": ticker,
-                    "date": date,
-                    "signal": result.signal,
-                    "market_report": result.market_report,
-                    "sentiment_report": result.sentiment_report,
-                    "news_report": result.news_report,
-                    "fundamentals_report": result.fundamentals_report,
-                    "investment_debate": str(result.investment_debate),
-                    "risk_assessment": str(result.risk_assessment),
-                    "trade_decision": str(result.trade_decision),
-                    "advice": advice,
-                    "steps": result.steps,
-                }
-                socketio.emit("analysis_result", result_data)
-
-                # Save to history
-                try:
-                    import json as _json
-                    from stock_trading_system.portfolio.database import PortfolioDatabase
-                    db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
-                    db = PortfolioDatabase(db_path)
-                    # Record which LLM actually produced this run so the history
-                    # page can show provenance for cross-model comparisons.
-                    gemini_cfg = get_config().get("gemini", {}) or {}
-                    model_name = gemini_cfg.get("deep_think_model") or gemini_cfg.get("model", "")
-                    db.save_analysis({
-                        **result_data,
-                        "advice_json": _json.dumps(advice, ensure_ascii=False) if advice else "",
-                        "steps_json": _json.dumps(result.steps, ensure_ascii=False),
-                        "model": model_name,
-                        "created_at": __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    })
-                    logger.info("Analysis saved to history: %s", ticker)
-                except Exception as save_err:
-                    logger.warning("Failed to save analysis history: %s", save_err)
-            except Exception as e:
-                logger.error("Analysis failed for %s: %s", ticker, e)
-                socketio.emit("analysis_error", {"ticker": ticker, "error": str(e)})
-
-        thread = threading.Thread(target=run_analysis, daemon=True)
-        thread.start()
-        return jsonify({"ok": True, "message": f"Analysis started for {ticker}"})
+        tm = _get_task_manager()
+        params = {
+            "ticker": ticker,
+            "date": date,
+            "depth": depth,
+            "__user_id__": g.user.id,
+        }
+        task = tm.submit(
+            task_type="analysis",
+            params=params,
+            title=f"AI 分析 · {ticker}",
+            created_by=g.user.id,
+        )
+        return jsonify({"task_id": task["id"], "status": "queued"})
 
     # ── Screener API ────────────────────────────────────────────────────
 
