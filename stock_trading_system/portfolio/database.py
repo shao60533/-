@@ -206,6 +206,18 @@ class PortfolioDatabase:
                     FOREIGN KEY(analysis_id)
                         REFERENCES analysis_history(id) ON DELETE CASCADE
                 );
+
+                -- v1.14: lightweight per-user watchlist. Receives the
+                -- analyses the "加入持仓追踪" button targets when the
+                -- user hasn't (yet) wired paper_trade.
+                CREATE TABLE IF NOT EXISTS user_watchlist (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    ticker TEXT NOT NULL,
+                    analysis_id INTEGER,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(user_id, ticker)
+                );
             """)
             self._migrate_analysis_history(conn)
 
@@ -646,3 +658,23 @@ class PortfolioDatabase:
                 (int(user_id), int(analysis_id)),
             ).fetchone()
             return row is not None
+
+    def add_to_watchlist(
+        self,
+        user_id: int,
+        ticker: str,
+        analysis_id: int | None = None,
+    ) -> int:
+        """Idempotent — same (user, ticker) just refreshes the timestamp."""
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with self._get_conn() as conn:
+            cur = conn.execute(
+                """INSERT INTO user_watchlist
+                   (user_id, ticker, analysis_id, created_at)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(user_id, ticker) DO UPDATE SET
+                     analysis_id = excluded.analysis_id,
+                     created_at = excluded.created_at""",
+                (int(user_id), ticker.upper(), analysis_id, ts),
+            )
+            return int(cur.lastrowid or 0)

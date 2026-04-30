@@ -5,7 +5,7 @@ import os
 import threading
 from pathlib import Path
 
-from flask import Flask, render_template, jsonify, request, redirect, g
+from flask import Flask, render_template, jsonify, request, redirect, g, Response
 from flask_socketio import SocketIO
 
 from stock_trading_system.config import load_config, get_config, save_config
@@ -970,12 +970,33 @@ def create_app(config_path=None):
 
     @app.route("/api/history")
     def api_analysis_history():
+        """List recent analyses. Frontend `/analysis` shows the top 5 as cards.
+
+        Each row gets a ``created_by_name`` JOIN so the cards can display
+        the originator. Response shape: ``{items, count}``.
+        """
         from stock_trading_system.portfolio.database import PortfolioDatabase
         db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
         db = PortfolioDatabase(db_path)
         ticker = request.args.get("ticker")
-        records = db.get_analysis_history(ticker=ticker)
-        return jsonify(records)
+        limit = int(request.args.get("limit", 50))
+        records = db.get_analysis_history(ticker=ticker, limit=limit)
+        # Resolve display_name via the user repo (cache per request).
+        cache: dict[int, str] = {}
+        for rec in records:
+            uid = rec.get("created_by")
+            if uid is None:
+                continue
+            if uid not in cache:
+                try:
+                    user = _user_repo.find_by_id(int(uid))
+                    cache[uid] = (user.display_name or user.email) if user else ""
+                except Exception:  # noqa: BLE001
+                    cache[uid] = ""
+            rec["created_by_name"] = cache[uid] or None
+        # Both `items` (v1.14 contract) and `records` (legacy HistoryPage)
+        # are surfaced so we don't have to refactor every caller in this PR.
+        return jsonify({"items": records, "records": records, "count": len(records)})
 
     @app.route("/api/history/<int:analysis_id>")
     def api_analysis_detail(analysis_id):
@@ -1083,6 +1104,134 @@ def create_app(config_path=None):
         db = PortfolioDatabase(db_path)
         ok = db.delete_analysis(analysis_id)
         return jsonify({"ok": ok})
+
+    # ── E of v1.14: export + bookmark + track ────────────────────────────
+
+    def _render_analysis_markdown(rec: dict) -> str:
+        """Stitch the 8 report sections into one markdown blob.
+
+        Used by the export endpoint. Pure formatting — no HTML, no script
+        injection surface; rehype-sanitize on the read path is the second
+        layer if anyone ever pipes this back through Markdown.
+        """
+        ticker = rec.get("ticker", "")
+        date = rec.get("date", "")
+        signal = rec.get("signal", "")
+        provider = rec.get("provider") or ""
+        model = rec.get("model") or ""
+        lines = [
+            f"# {ticker} · AI 分析",
+            "",
+            f"- **日期**: {date}",
+            f"- **信号**: {signal}",
+            f"- **Provider**: {provider} / {model}".rstrip(" /"),
+            f"- **生成时间**: {rec.get('created_at', '')}",
+            "",
+        ]
+        for header, key in [
+            ("市场 / 技术面", "market_report"),
+            ("情绪面", "sentiment_report"),
+            ("新闻", "news_report"),
+            ("基本面", "fundamentals_report"),
+            ("多空辩论", "investment_debate"),
+            ("风险评估", "risk_assessment"),
+            ("决策", "trade_decision"),
+        ]:
+            body = rec.get(key) or ""
+            if body:
+                lines.append(f"## {header}")
+                lines.append("")
+                lines.append(str(body))
+                lines.append("")
+        return "\n".join(lines)
+
+    @app.route("/api/history/<int:analysis_id>/export")
+    def api_history_export(analysis_id):
+        if g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
+        fmt = (request.args.get("format") or "md").lower()
+        from stock_trading_system.portfolio.database import PortfolioDatabase
+        db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
+        db = PortfolioDatabase(db_path)
+        rec = db.get_analysis_by_id(analysis_id)
+        if not rec:
+            return jsonify({"error": "not found"}), 404
+
+        md = _render_analysis_markdown(rec)
+        filename_base = f"{rec.get('ticker', 'analysis')}-{rec.get('date', 'undated')}"
+        if fmt == "md":
+            return Response(
+                md, mimetype="text/markdown",
+                headers={
+                    "Content-Disposition":
+                        f'attachment; filename="{filename_base}.md"',
+                },
+            )
+        if fmt == "pdf":
+            try:
+                # WeasyPrint is heavy + has system deps. We treat it as
+                # opt-in; the markdown export always works and is the
+                # safer default.
+                from weasyprint import HTML  # type: ignore[import-not-found]
+                import markdown as md_lib  # type: ignore[import-not-found]
+            except ImportError:
+                return jsonify({
+                    "error": "pdf_unavailable",
+                    "message": "PDF export requires weasyprint + markdown; "
+                               "install via `pip install weasyprint markdown` "
+                               "and restart. Markdown export still works.",
+                }), 501
+            html = md_lib.markdown(md, extensions=["tables", "fenced_code"])
+            pdf_bytes = HTML(string=html).write_pdf()
+            return Response(
+                pdf_bytes, mimetype="application/pdf",
+                headers={
+                    "Content-Disposition":
+                        f'attachment; filename="{filename_base}.pdf"',
+                },
+            )
+        return jsonify({"error": "format must be md|pdf"}), 400
+
+    @app.route("/api/history/<int:analysis_id>/bookmark", methods=["POST"])
+    def api_bookmark_toggle(analysis_id):
+        if g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
+        body = request.get_json(silent=True) or {}
+        bookmarked = bool(body.get("bookmarked", True))
+        from stock_trading_system.portfolio.database import PortfolioDatabase
+        db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
+        db = PortfolioDatabase(db_path)
+        # Confirm the analysis exists; otherwise the FK constraint would
+        # mask the real "wrong id" with a generic error.
+        if not db.get_analysis_by_id(analysis_id):
+            return jsonify({"error": "not found"}), 404
+        new_state = db.set_bookmark(g.user.id, analysis_id, bookmarked)
+        return jsonify({"ok": True, "bookmarked": new_state})
+
+    @app.route("/api/portfolio/track", methods=["POST"])
+    def api_portfolio_track():
+        """Add a ticker to the user's lightweight watchlist + audit-link
+        the originating analysis. Does NOT touch the paper-trade session
+        store — that integration lives in /api/paper/track and is heavier.
+        """
+        if g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
+        body = request.get_json(silent=True) or {}
+        ticker = (body.get("ticker") or "").upper().strip()
+        analysis_id = body.get("analysis_id")
+        if not ticker:
+            return jsonify({"error": "ticker required"}), 400
+        try:
+            analysis_id_int = int(analysis_id) if analysis_id is not None else None
+        except (TypeError, ValueError):
+            return jsonify({"error": "analysis_id must be int"}), 400
+        from stock_trading_system.portfolio.database import PortfolioDatabase
+        db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
+        db = PortfolioDatabase(db_path)
+        db.add_to_watchlist(
+            user_id=g.user.id, ticker=ticker, analysis_id=analysis_id_int,
+        )
+        return jsonify({"ok": True, "ticker": ticker, "analysis_id": analysis_id_int})
 
     # ── Reports API ─────────────────────────────────────────────────────
 

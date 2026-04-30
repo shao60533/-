@@ -539,16 +539,50 @@ function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
   return (
     <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-6">
       {/* Header */}
-      <div className="flex items-center gap-3 flex-wrap">
-        <Button variant="ghost" size="sm" onClick={() => window.location.href = "/analysis"}>
-          <ArrowLeft className="h-4 w-4" />
-        </Button>
-        <h1 className="text-xl font-bold font-mono">{detail.ticker}</h1>
-        <Badge variant={signalVariant(detail.signal)}>{detail.signal || "N/A"}</Badge>
-        {detail.confidence != null && (
-          <span className="text-sm text-muted-foreground">置信度 {(detail.confidence * 100).toFixed(0)}%</span>
-        )}
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div className="flex items-center gap-3 flex-wrap">
+          <Button variant="ghost" size="sm" onClick={() => window.location.href = "/analysis"}>
+            <ArrowLeft className="h-4 w-4" />
+          </Button>
+          <h1 className="text-xl font-bold font-mono">{detail.ticker}</h1>
+          <Badge variant={signalVariant(detail.signal)}>{detail.signal || "N/A"}</Badge>
+          {detail.confidence != null && (
+            <span className="text-sm text-muted-foreground">置信度 {(detail.confidence * 100).toFixed(0)}%</span>
+          )}
+        </div>
+        {/* Action buttons (right-aligned on desktop, wraps below on mobile) */}
+        <div className="flex flex-wrap gap-2">
+          <Button variant="outline" size="sm" onClick={handleReanalyze}>再次分析</Button>
+          <Button variant="outline" size="sm" onClick={handleTrack}>加入持仓追踪</Button>
+          <Button variant="outline" size="sm" onClick={() => handleExport("md")}>导出 Markdown</Button>
+          <Button variant="outline" size="sm" onClick={() => handleExport("pdf")}>导出 PDF</Button>
+          <Button variant="outline" size="sm" onClick={handleShare}>分享链接</Button>
+          <Button
+            variant={bookmarked ? "default" : "outline"}
+            size="sm"
+            onClick={handleBookmark}
+            disabled={bookmarkBusy}
+          >
+            {bookmarked ? "★ 已收藏" : "☆ 收藏"}
+          </Button>
+        </div>
       </div>
+
+      {/* Provenance / metadata row */}
+      <div className="text-xs text-muted-foreground flex flex-wrap gap-x-4 gap-y-1">
+        {detail.created_by_name && <span>创建者：{detail.created_by_name}</span>}
+        {detail.provider && (
+          <span>Provider：{detail.provider}{detail.model ? ` / ${detail.model}` : ""}</span>
+        )}
+        {detail.duration_sec != null && (
+          <span>耗时：{Number(detail.duration_sec).toFixed(1)}s</span>
+        )}
+        {detail.created_at && <span>创建于：{detail.created_at}</span>}
+      </div>
+
+      {actionMsg && (
+        <div className="text-xs text-muted-foreground">{actionMsg}</div>
+      )}
 
       {/* Pipeline DAG (shown for running tasks or as completed timeline) */}
       {isRunning && detail.task_id && (
