@@ -26,6 +26,7 @@ R-1 ~ R-7 commits 已落地（6e583b4..5370863）。审计 22 P0 项实际状态
 | ❌ MISSING（v1.9 实测新增）| 1 | **A-P0-8 AI 分析运行中态完全空白**（点开始分析后页面无内容；应该立即显示 K线/新闻/基本面 + Pipeline DAG 实时进度 + 7-tab 占位 skeleton，agent 完成后逐个填充）|
 | ❌ 实测仍未真修（v1.10 prod 验证）| 5 | **D-FEAT-1 净值曲线只 1 个点**（后端 days=30 硬编码未改 None）· **P-FEAT-1 Dashboard 持仓 top3 没加绝对值列**（仅 PortfolioPage 加了）· **SV3-P0-1 V3 结果"加载失败"**（前端用 task_id 拉 result，但后端期望 result_id 整数）· **PT-P0-4 paper-trade ErrorBoundary 真触发**（内部 render 抛错，需修内部 null check）· **R-5.3 K线区域空白**（TVChart 已挂但 klineData 空，需修 quote/history API 接入）|
 | ❌ v1.11 修了代码但没修数据（v1.12 实测）| 1 | **D-FEAT-1 净值曲线仍只 1 个点**：v1.11 后端代码 ✅ 正确（返 daily_snapshots 全量），但 **DB 里只有 3 行 snapshot**（2026-04-14/15/16/19），距今缺 11 天。根因：调度器 [task_scheduler.py:105](../../stock_trading_system/scheduler/task_scheduler.py) take_snapshot 没真跑 + 缺历史回填脚本 → 需 R-fix-6 同时补 (a) 历史回填 (b) 调度器修复 (c) UI 触发入口 |
+| ❌ AI 分析模块产品&技术缺口（v1.13 用户提）| 7 | **A-FIX-A K线初始 Skeleton 早 return** [TVChart.tsx:108](../../stock_trading_system/web/frontend/src/components/shared/TVChart.tsx) 导致 chart 容器永不挂载；**A-FIX-B analysis_history 缺 `created_by/provider/config_hash/task_id/duration_sec/bookmarked` 元数据**（[database.py:81](../../stock_trading_system/portfolio/database.py) schema 缺 + [task_store.py:368](../../stock_trading_system/tasks/task_store.py) INSERT 不写）；**A-FIX-C 旧 `/api/analyze`** [app.py:852](../../stock_trading_system/web/app.py) 仍开 daemon thread + 直写 history + 硬编码 `gemini.deep_think_model` 不走 active provider；**A-FIX-D advice 与共享分析未拆分**（advice_json 和 trade_decision 同表，其他用户能看到原作者的持仓上下文）；**A-FIX-E `/analysis` 首页缺 5 条最近卡片 + 深度选择 + 8 tab + 决策独立 tab + 操作按钮齐**；**A-FIX-F Markdown 无 sanitize**（[AnalysisPage.tsx:393](../../stock_trading_system/web/frontend/src/islands/analysis/AnalysisPage.tsx) 仅 react-markdown + remark-gfm，缺 rehype-sanitize）；**A-FIX-G `_record_agent_scores`** [workers.py:135](../../stock_trading_system/tasks/workers.py) 为拿 analysis_id 先 save 半成品行 → 历史页双重记录 |
 
 **T-P0-6 任务中心空白 bug 已修复**（实测 2026-04-25）：
 - ✅ 后端 [app.py:1713-1719](../../stock_trading_system/web/app.py) 返回 `{tasks, items, total, limit, offset}` 双字段向后兼容
@@ -1232,6 +1233,215 @@ worker 调 backfill 脚本主函数（不是子进程）。
 
 ---
 
+#### v1.13 新增（AI 分析模块产品&技术缺口，~10h）：
+
+##### R-fix-7 · AI 分析 7 大缺口（用户提）
+
+实测痛点（生产 2026-04-30）：
+- 详情页 K 线区域空白：[TVChart.tsx:108](../../stock_trading_system/web/frontend/src/components/shared/TVChart.tsx) `if (loading && data.length === 0) return <Skeleton/>` → 初始 `containerRef` 不渲染 → chart-init useEffect (`[height]`) 跑时 `containerRef.current=null` 直接 return → 数据到达后 div 挂载但 chart 已经"放弃" → 永远空
+- 历史元数据残缺：[analysis_history](../../stock_trading_system/portfolio/database.py) schema 有 model 但缺 `created_by / provider / config_hash / task_id / duration_sec / bookmarked`；[task_store._save_analysis_result](../../stock_trading_system/tasks/task_store.py) INSERT 12 列，连 model 都不写
+- 双入口未统一：[/api/analyze](../../stock_trading_system/web/app.py)（app.py:852）daemon thread + 直写 history + 硬编码 gemini config；TaskManager 走 [workers.py make_analysis_worker](../../stock_trading_system/tasks/workers.py) → TaskStore 走 generic insert。两条路对元数据写入完全不一致
+- advice 与共享研究未拆分：advice_json 含 holdings_context 当前用户持仓数据，与共享研究存在同一行 → 其他用户拉 `/api/history/<id>` 时看到的 advice 来自原作者持仓
+- `/analysis` 首页缺最近卡 + 深度选择 + 8 tab + 决策独立 tab + 操作按钮齐
+- Markdown 无 sanitize，LLM 输出可注入 HTML
+- `_record_agent_scores` [workers.py:135](../../stock_trading_system/tasks/workers.py) 为拿 analysis_id 先 `db.save_analysis({ticker, date, signal, 5 reports})` 半成品行 → 然后 worker 主路径 `_save_analysis_result` 又插一行完整数据 → 同次分析 2 行
+
+##### R-fix-7A · 修 TVChart 初始 Skeleton 吃掉容器（~30min）
+
+[stock_trading_system/web/frontend/src/components/shared/TVChart.tsx](../../stock_trading_system/web/frontend/src/components/shared/TVChart.tsx)：
+- **删除**末尾 `if (loading && data.length === 0) return <Skeleton .../>`
+- **改**为始终 `return <div ref={containerRef} style={{height, position: 'relative'}}>` + 内嵌状态层（loading / empty / error 三态 overlay 盖在 chart 之上）
+- 状态层用绝对定位 `inset-0`，`pointer-events-none`，背景半透明深色 + Spinner / 提示文字 / 重试按钮
+- props 加 `onRetry?: () => void` 用于 empty / error 显示重试按钮
+- chart-init useEffect 依赖不变（仍 `[height]`），但 containerRef 永远存在 → init 永远跑
+
+[AnalysisPage.tsx](../../stock_trading_system/web/frontend/src/islands/analysis/AnalysisPage.tsx) `AnalysisDetailView`：
+- 加 `klineState: 'loading' | 'ok' | 'empty' | 'error'`，初值 `'loading'`
+- 主路径 `apiGet('/api/quote/history?ticker=&days=90')` 失败或 bars=[] → fallback `/api/chart/<ticker>?period=3mo&interval=1d` 解析为 OHLCV
+- 双源都失败/空 → `setKlineState('empty')`，传给 TVChart 显示"暂无 K 线数据"+ 重试按钮
+- TVChart props: `<TVChart data={klineData} state={klineState} onRetry={refetchKline} height={380} />`
+
+##### R-fix-7B · 扩 analysis_history schema + TaskStore 写元数据（~1.5h）
+
+[stock_trading_system/portfolio/database.py](../../stock_trading_system/portfolio/database.py)：
+- `CREATE TABLE` 加列：`created_by INTEGER`, `provider TEXT`, `config_hash TEXT`, `task_id TEXT`, `duration_sec REAL`, `bookmarked INTEGER DEFAULT 0`
+- `_migrate_analysis_history` additions 列表追加同 6 列（idempotent ALTER TABLE ADD COLUMN）
+- `save_analysis()` INSERT 列表 + VALUES 占位符各加 6 列
+- `get_analysis_history(...)` 返字段不变（SELECT *）
+
+[stock_trading_system/tasks/task_store.py](../../stock_trading_system/tasks/task_store.py)：
+- `_ensure_analysis_history_table` 的 CREATE TABLE 与 PortfolioDatabase 同步（含全部新列）
+- `_save_analysis_result(task_id, result)` INSERT 改写：写 model / provider / config_hash / created_by / task_id / duration_sec / bookmarked / steps_json / advice 结构化字段
+- TaskManager 把 `created_by`（task.created_by）+ `provider/model/config_hash`（router 当前 active）+ `duration_sec`（completed - started）+ `task_id` 全部传给 result dict
+
+[stock_trading_system/tasks/workers.py](../../stock_trading_system/tasks/workers.py) `make_analysis_worker`：
+- worker 起点记 `t_start = time.perf_counter()`
+- worker 返回 dict 加：`provider`（`router.get_active_provider()`）、`model`（`router.get_active_model()`）、`config_hash`（hash 当前 llm config block）、`duration_sec`（now - t_start）、`task_id`、`created_by`（params['__user_id__'] 由 TaskManager 注入）
+
+[AnalysisPage.tsx](../../stock_trading_system/web/frontend/src/islands/analysis/AnalysisPage.tsx) `AnalysisDetailView` Header 下加 meta 行：
+- `创建者: <display_name>` · `Provider: <provider>/<model>` · `耗时: <duration_sec>s` · `创建时间: <created_at>`
+
+##### R-fix-7C · 统一分析任务入口（~1h）
+
+[stock_trading_system/web/app.py](../../stock_trading_system/web/app.py) `/api/analyze`（line 852-947）：
+- **删除** daemon thread 整段
+- 改为 thin wrapper：
+  ```python
+  @app.route("/api/analyze", methods=["POST"])
+  @login_required
+  def api_analyze():
+      data = request.json or {}
+      task_id = task_manager.submit(
+          task_type="analysis",
+          params={"ticker": data["ticker"].upper(),
+                  "date": data.get("date") or today_str(),
+                  "depth": data.get("depth", "standard")},
+          created_by=g.user.id,
+      )
+      return jsonify({"task_id": task_id, "status": "queued"})
+  ```
+- 删除 `def run_analysis():` 整个内联函数 + threading.Thread 启动
+- 删除 `gemini_cfg = get_config().get("gemini", {})` 硬编码 model 读取（worker 已通过 router.get_active_model 写）
+
+##### R-fix-7D · 拆分共享分析与个人 advice（~2h）
+
+[stock_trading_system/portfolio/database.py](../../stock_trading_system/portfolio/database.py)：
+- 新建表（迁移 idempotent）：
+  ```sql
+  CREATE TABLE IF NOT EXISTS user_analysis_advice (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      analysis_id INTEGER NOT NULL,
+      holdings_context_snapshot TEXT,  -- JSON：当时持仓快照
+      action TEXT,
+      confidence TEXT,
+      position_pct REAL,
+      entry_low REAL,
+      entry_high REAL,
+      stop_loss REAL,
+      take_profit REAL,
+      reasoning TEXT,
+      risk_warning TEXT,
+      created_at TEXT NOT NULL,
+      UNIQUE(user_id, analysis_id),
+      FOREIGN KEY(analysis_id) REFERENCES analysis_history(id) ON DELETE CASCADE
+  );
+  CREATE INDEX idx_uaa_user ON user_analysis_advice(user_id, created_at DESC);
+  ```
+- `analysis_history` 把 `advice_json / action / confidence / position_pct / entry_low / entry_high / stop_loss / take_profit` 标记为**已弃用**（不删，但新写不再写入；migration 把存量数据搬到 user_analysis_advice 用 created_by 当 user_id 兜底）
+- 新增方法：`save_user_advice(user_id, analysis_id, advice_dict, holdings_snapshot)` / `get_user_advice(user_id, analysis_id)`
+
+[stock_trading_system/tasks/workers.py](../../stock_trading_system/tasks/workers.py)：
+- `_build_advice` 调用前 snapshot 当前用户持仓 → `holdings_snapshot_json`
+- worker 返回的 dict 不再含 advice 字段（避免写入 analysis_history）
+- 完成后 TaskManager 落库分两步：
+  1. `task_store._save_analysis_result(...)` → analysis_id（共享研究内容）
+  2. `portfolio_db.save_user_advice(user_id=created_by, analysis_id, advice_dict, holdings_snapshot)`
+
+[stock_trading_system/web/app.py](../../stock_trading_system/web/app.py) `/api/history/<id>`：
+- SELECT analysis_history → 返共享字段（不含 advice）
+- LEFT JOIN user_analysis_advice WHERE user_id = g.user.id → `advice` 字段（仅当前用户的）
+- 别人的 advice 永远不返
+
+[AnalysisPage.tsx](../../stock_trading_system/web/frontend/src/islands/analysis/AnalysisPage.tsx)：
+- "决策"tab 渲染 `detail.trade_decision`（共享）
+- 新增"我的建议"tab 渲染 `detail.advice`（私有，仅 current user 有的才显示）
+
+##### R-fix-7E · `/analysis` 产品闭环（~3h）
+
+[AnalysisPage.tsx](../../stock_trading_system/web/frontend/src/islands/analysis/AnalysisPage.tsx) 表单页（else 分支）：
+- 表单上方加"最近分析"卡 grid（5 卡，`apiGet('/api/history?limit=5')`，整卡可点 → /analysis/<id>，显示 ticker / signal Badge / created_by display_name / created_at）
+- 表单加 RadioGroup 字段「分析深度」：
+  - `quick`（仅技术面+基本面，~30s，~$0.05）
+  - `standard`（默认，全 7 agent，~2min，~$0.20）
+  - `deep`（含辩论 + 风险 + 反思迭代，~5min，~$0.80）
+- depth 写入 task params，worker 根据 depth 选择跳过或加载 agent
+
+`AnalysisDetailView` REPORT_TABS 改为 8 项（新增"决策"独立 tab）：
+```typescript
+const REPORT_TABS = [
+  { key: "summary", label: "概览" },
+  { key: "Market", label: "市场/技术面" },
+  { key: "Sentiment", label: "情绪面" },
+  { key: "News", label: "新闻" },
+  { key: "Fundamentals", label: "基本面" },
+  { key: "Investment Debate", label: "多空辩论" },
+  { key: "Risk Assessment", label: "风险评估" },
+  { key: "Decision", label: "决策" },  // ← 新增独立 tab
+] as const
+```
+"决策"tab 渲染 `detail.trade_decision`（不再混 summary）。
+
+详情页 Header 区右侧加操作按钮组：
+- `[再次分析]` → `apiPost('/api/tasks/submit', {type:'analysis', params:{ticker, date:today, depth:'standard'}})` → toast + 跳新 task
+- `[加入持仓追踪]` → `apiPost('/api/portfolio/track', {ticker, analysis_id})`
+- `[导出 PDF]` `[导出 Markdown]` → `apiGet('/api/history/<id>/export?format=pdf|md')` 触发下载
+- `[分享链接]` → 复制 `https://<host>/analysis/<id>` 到剪贴板 + toast
+- `[★ 收藏]` toggle → `apiPost('/api/history/<id>/bookmark', {bookmarked: true|false})` → analysis_history.bookmarked
+
+后端新增 endpoints（[app.py](../../stock_trading_system/web/app.py)）：
+- `GET /api/history/<id>/export?format=pdf|md`：md 直接 join reports + decision 返 `text/markdown`；pdf 用 `weasyprint` 或 `markdown-pdf`
+- `POST /api/history/<id>/bookmark` body `{bookmarked: bool}`：UPDATE analysis_history.bookmarked WHERE id=? — 注意 bookmarked 是 per-user 还是 global？**实施按 per-user**：bookmark 移到 user_analysis_advice 或新增 `analysis_bookmarks(user_id, analysis_id)` 简单关联表
+- `POST /api/portfolio/track` body `{ticker, analysis_id}`：写 analysis_tracked 表（已存在于 paper-trade）
+
+##### R-fix-7F · Markdown sanitize（~30min）
+
+[stock_trading_system/web/frontend/package.json](../../stock_trading_system/web/frontend/package.json) 加依赖：
+```bash
+npm install rehype-sanitize
+```
+
+[AnalysisPage.tsx](../../stock_trading_system/web/frontend/src/islands/analysis/AnalysisPage.tsx)：
+- `import rehypeSanitize, { defaultSchema } from 'rehype-sanitize'`
+- 自定义 schema 加白名单允许 `table / thead / tbody / tr / th / td / code / pre` 标签 + `class / className` 属性（GFM 表格 + Tailwind prose 样式需要）
+- `<Markdown remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeSanitize, schema]]}>`
+- 应用到所有 8 tab 的 markdown 渲染
+
+##### R-fix-7G · 修 `_record_agent_scores` 双重记录（~1h）
+
+[stock_trading_system/tasks/workers.py](../../stock_trading_system/tasks/workers.py) `make_analysis_worker`：
+- 当前流程（错）：
+  1. analyzer.analyze() → result, final_state
+  2. **`_record_agent_scores` 调 `db.save_analysis(半成品)` → analysis_id_1**
+  3. AgentScorer.record_analysis(analysis_id_1, ...)
+  4. worker return → TaskManager → TaskStore._save_analysis_result(完整) → analysis_id_2 ❌ 重复
+- 改为：
+  1. analyzer.analyze() → result, final_state
+  2. **暂存 final_state 在 worker scope**（不立即 save 半成品）
+  3. worker return 完整 dict（含 final_state 序列化或 ref）
+  4. TaskManager → TaskStore._save_analysis_result → analysis_id（唯一）
+  5. **TaskManager 在 _save_analysis_result 之后调 `_record_agent_scores(analysis_id, final_state, ...)`** —— 用真 analysis_id
+- 实施：
+  - `make_analysis_worker` 不再调 `_record_agent_scores`
+  - 在 worker 返回 dict 加 `_final_state_ref`（写到 task_events 或临时 dict 缓存，key=task_id）
+  - TaskManager 完成 `_save_analysis_result` 取到 analysis_id 后调 `_record_agent_scores(analysis_id, final_state)`
+  - 或更简：worker 返回时把 final_state 也 `json.dumps` 到 result['steps_json']（已存在），_record_agent_scores 用 analysis_id 反查
+- 验收：跑一次 analysis，`SELECT COUNT(*) FROM analysis_history WHERE ticker='AAPL' AND created_at > 'NOW-5min'` 应 = 1（不再 = 2）
+
+##### 强约束
+
+- ❌ 不许改已通过的 R-fix-1~6（净值曲线 / 持仓 PnL / SV3 / paper-trade ErrorBoundary / quote/history / scheduler）
+- ❌ 不许动 [PortfolioDatabase.get_snapshots()](../../stock_trading_system/portfolio/database.py) / [PortfolioManager.get_history()](../../stock_trading_system/portfolio/manager.py)
+- ❌ 不许动 [DashboardPage.tsx](../../stock_trading_system/web/frontend/src/islands/dashboard/DashboardPage.tsx) 的净值曲线 ChipRow / range switcher
+- ❌ 不许在 `/api/analyze` 保留 daemon thread 走另一条路（必须只是 wrapper）
+- ❌ 不许把 `bookmarked` 做成 global（必须 per-user）
+- ❌ 不许吞异常 `try/except: pass`
+- ✅ 允许新建：1 张表 `user_analysis_advice` + 1 张表 `analysis_bookmarks`(可选) + 6 列 ALTER TABLE
+- ✅ 允许新增 endpoints：`GET /api/history/<id>/export`、`POST /api/history/<id>/bookmark`、`POST /api/portfolio/track`
+
+**总验收（一次性跑通）**：
+1. 详情页 K 线 90 天日 K 渲染（loading/empty/error 三态 overlay 显示且不吃容器）
+2. 提交分析后 `SELECT created_by, provider, model, config_hash, task_id, duration_sec FROM analysis_history ORDER BY id DESC LIMIT 1` 全部非空
+3. `curl /api/analyze -X POST` 返 `{task_id, status: queued}`，没起 daemon thread（grep `threading.Thread` in api_analyze 应空）
+4. 用户 A 创建分析，用户 B 拉 `/api/history/<id>` → response 不含 advice / holdings_context
+5. `/analysis` 首页 5 条最近卡可见可点；深度 RadioGroup 三选项；详情页 8 tab + 5 操作按钮全
+6. Markdown 测 `<script>alert(1)</script>` 输入 → 渲染时被 strip
+7. 跑一次完整 analysis → `SELECT COUNT(*) FROM analysis_history WHERE ticker='X' AND date='Y'` = 1（不重复）
+8. `npm run build && pytest tests/web/test_analysis.py tests/portfolio/test_database.py tests/tasks/test_workers.py` 全绿
+9. 之前通过的 R-fix-1~6 不能挂
+
+---
+
 ### 6.2 R-1.x 完成后
 
 P0 闸门全绿，可签字进入 R-6 / R-7 已完成部分的回归 + 真实数据跑一遍。最终 sign-off：
@@ -1301,3 +1511,4 @@ python -m stock_trading_system.validation.sign_off \
 | v1.9 | 2026-04-26 | 实测 A-P0-8：点[开始分析]后页面完全空白。新增完整运行中态布局（强化 v1.7 A-P0-7 + R-5.1 DAG + R-5.2 侧卡 + R-5.3 K线，合并成一个 dashboard）：Header / 主图 K 线 / Pipeline DAG / 三列侧卡（新闻+基本面+多空比） / 7-tab 占位 skeleton 逐个填充。提交后立即跳 /analysis/<task_id>，K线和新闻/基本面独立拉（< 1s 显示），DAG 订阅 task_events 实时进度，agent_stage_done 事件 → 对应 tab 填充。完成后 history.replaceState 切到 /analysis/<analysis_id>。新增 ~3h（含在 R-5.x 内）；剩余 17h → 20h | — |
 | v1.10 | 2026-04-26 | 生产环境实测发现 5 项前序号称 DONE 的项实际仍未真修：(1) D-FEAT-1 净值曲线后端 `pm.get_history(days=30)` 硬编码（v1.8 后端改动漏做，前端 ChipRow 无效）；(2) P-FEAT-1 Dashboard 持仓 top3 没加绝对值列（v1.8 仅 PortfolioPage 加了，dashboard 漏）；(3) SV3-P0-1 V3 结果"加载失败"（前端用 task_id (UUID) 拉 `/api/screen/v3/results/<id>`，后端期望整数 result_id）；(4) PT-P0-4 Paper-trade ErrorBoundary 真触发（内部 PaperTradeContent 有 throw，需 null check）；(5) R-5.3 K线区域空白（TVChart 已挂但 klineData 空，需新建/修 `/api/quote/history` 端点）。新增 R-fix-1~5（~3h）；剩余 20h → 23h | — |
 | v1.12 | 2026-04-30 | v1.11 修了代码但没修数据：实测 daily_snapshots 仅 3 行（2026-04-14/15/16/19），距今缺 11 天。`task_scheduler.py:105` 已写 take_snapshot 但调度器没真跑。设计原意"自动回溯"指从最早 transaction(2026-04-12) 起每个交易日都要有 snapshot。新增 R-fix-6 共 4 子项（~3h）：(a) 历史回填脚本 backfill_daily_snapshots.py（按交易日重放 transactions + yfinance 收盘价 → upsert 幂等）；(b) 修 APScheduler 启动 + cron 美东 16:30（=北京次日 04:30）+ 多用户迭代；(c) Dashboard "↻ 重新计算"按钮触发异步 backfill task；(d) Settings 页加"调度器状态"卡（运行态/上次快照/下次快照/手动触发）。验收：DB ≥ 14 行 snapshot，dashboard ALL 视图 14 连续点 | — |
+| v1.13 | 2026-04-30 | AI 分析模块 7 大产品&技术缺口（用户 2026-04-30 提）：(A) `<TVChart>` 初始 `loading + data=[]` 早 return Skeleton 导致 chart 容器永不挂载，改为始终渲染容器 + overlay 三态（loading/empty/error）+ onRetry，详情页 K 线主路径 `/api/quote/history?days=90`、回退 `/api/chart/<ticker>?period=3mo`；(B) `analysis_history` schema 加 `created_by/provider/config_hash/task_id/duration_sec/bookmarked` 6 列 + idempotent ALTER TABLE，TaskStore `_save_analysis_result` INSERT 同步写，worker 注入 `provider/model/config_hash/duration_sec/created_by/task_id`；(C) 废 `/api/analyze` daemon thread + 直写 history + 硬编码 `gemini.deep_think_model`，改为 thin wrapper 转 TaskManager；(D) 新建 `user_analysis_advice` 私有表（user_id+analysis_id+持仓 snapshot+action+entry/stop/take），`analysis_history` 仅共享研究，`/api/history/<id>` LEFT JOIN advice WHERE user_id=current；(E) `/analysis` 首页 5 条最近卡 + 深度 RadioGroup（quick/standard/deep）+ 详情 8 tab（决策独立）+ 操作按钮 5 个（再次/追踪/导出 PDF/MD/分享/收藏 per-user）；(F) `react-markdown` 加 `rehype-sanitize` + 白名单 schema（table/code/pre）防 LLM 注入；(G) 修 `_record_agent_scores` 半成品 + 完整两次 INSERT 的双重记录（改为 TaskManager 落库后用真 analysis_id 调 scorer.record_analysis）。新增 R-fix-7A~G 共 ~10h；剩余 ~13h | — |
