@@ -24,7 +24,21 @@ interface AnalysisDetail {
   analysts?: Record<string, string>
   advice_json?: string
   task_id?: string
+  // v1.14
+  created_by_name?: string | null
+  provider?: string | null
+  model?: string | null
+  duration_sec?: number | null
+  bookmarked?: boolean
+  advice?: Record<string, unknown> | null
 }
+
+interface RecentAnalysisRow {
+  id: number; ticker: string; signal: string; date: string
+  created_at?: string; created_by_name?: string | null
+}
+
+type AnalysisDepth = "quick" | "standard" | "deep"
 
 interface OHLCVRow {
   date: string; open: number; high: number; low: number; close: number; volume: number
@@ -64,20 +78,28 @@ const MD_SANITIZE_SCHEMA = {
   ],
 }
 
-/** UUID-like = task ID (running state); pure digits = analysis_history ID (complete) */
+/** UUID = task ID (running state); pure digits or "analysis_history:N" = completed history ID */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 function isTaskId(id: string): boolean {
-  return id.length > 10 && /[a-f-]/.test(id)
+  return UUID_RE.test(id)
 }
 
 const REPORT_TABS = [
   { key: "summary", label: "概览" },
-  { key: "Market", label: "技术面" },
-  { key: "Fundamentals", label: "基本面" },
+  { key: "Market", label: "市场/技术面" },
   { key: "Sentiment", label: "情绪面" },
   { key: "News", label: "新闻" },
+  { key: "Fundamentals", label: "基本面" },
   { key: "Investment Debate", label: "多空辩论" },
   { key: "Risk Assessment", label: "风险评估" },
+  { key: "Decision", label: "决策" },
 ] as const
+
+const DEPTH_OPTIONS: { value: AnalysisDepth; label: string; hint: string }[] = [
+  { value: "quick",    label: "快速", hint: "~30s · ~$0.05 · 跳过辩论/反思" },
+  { value: "standard", label: "标准", hint: "~2min · ~$0.20 · 7 Agent 默认" },
+  { value: "deep",     label: "深度", hint: "~5min · ~$0.80 · 启用迭代" },
+]
 
 export function AnalysisPage() {
   const [urlId] = useState<string | null>(getIdFromUrl)
@@ -94,10 +116,15 @@ export function AnalysisPage() {
   // Form state
   const [ticker, setTicker] = useState("")
   const [date, setDate] = useState(new Date().toISOString().slice(0, 10))
+  const [depth, setDepth] = useState<AnalysisDepth>("standard")
   const [submitting, setSubmitting] = useState(false)
+  // Recent shared-research cards on the form page (top 5).
+  const [recent, setRecent] = useState<RecentAnalysisRow[]>([])
 
-  // Completed analysis ID (numeric)
-  const detailId = urlId && !isTaskId(urlId) ? urlId : null
+  // Completed analysis ID (numeric) — strip "analysis_history:" prefix if present
+  const detailId = urlId && !isTaskId(urlId)
+    ? (urlId.startsWith("analysis_history:") ? urlId.slice("analysis_history:".length) : urlId)
+    : null
 
   // Load completed analysis
   useEffect(() => {
@@ -127,7 +154,8 @@ export function AnalysisPage() {
     setSubmitting(true); setError(null)
     try {
       const res = await apiPost<TaskSubmitResult>("/api/tasks/submit", {
-        type: "analysis", params: { ticker: ticker.toUpperCase(), date },
+        type: "analysis",
+        params: { ticker: ticker.toUpperCase(), date, depth },
       })
       // Navigate to /analysis/<task_id> to show running DAG
       if (res.task_id) {
@@ -139,6 +167,21 @@ export function AnalysisPage() {
       setError(err instanceof Error ? err.message : "提交失败")
     } finally { setSubmitting(false) }
   }
+
+  // Pull the top 5 most recent analyses for the form-page "最近分析" cards.
+  // Only fired on the form view (no detailId, no taskId) to avoid wasted
+  // bandwidth on the detail / running screens.
+  useEffect(() => {
+    if (detailId || taskId) return
+    apiGet<{ items?: RecentAnalysisRow[]; records?: RecentAnalysisRow[] }>(
+      "/api/history?limit=5",
+    )
+      .then((r) => {
+        const items = r.items ?? r.records ?? []
+        setRecent(items.slice(0, 5))
+      })
+      .catch(() => setRecent([]))
+  }, [detailId, taskId])
 
   // ── Running state: show PipelineDAG ─────────────────────────
   if (taskId) {
@@ -183,9 +226,36 @@ export function AnalysisPage() {
         <Sparkles className="h-5 w-5 text-[var(--color-accent-blue)]" />
         <h1 className="text-xl font-bold">AI 分析</h1>
       </div>
+
+      {recent.length > 0 && (
+        <div>
+          <div className="text-sm font-semibold mb-2">最近分析</div>
+          <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-5">
+            {recent.map((a) => (
+              <a
+                key={a.id}
+                href={`/analysis/${a.id}`}
+                className="rounded-lg border border-border bg-card hover:border-primary/40 transition-colors p-3 block"
+              >
+                <div className="font-mono text-base font-bold">{a.ticker}</div>
+                <div className="mt-1">
+                  <Badge variant={signalVariant(a.signal || "")} className="text-[10px]">
+                    {a.signal || "—"}
+                  </Badge>
+                </div>
+                <div className="mt-2 text-xs text-muted-foreground truncate">
+                  {a.created_by_name ?? "—"}
+                </div>
+                <div className="text-xs text-muted-foreground">{a.date}</div>
+              </a>
+            ))}
+          </div>
+        </div>
+      )}
+
       <Card>
         <CardHeader><CardTitle>发起分析</CardTitle></CardHeader>
-        <CardContent>
+        <CardContent className="space-y-4">
           <div className="flex flex-col gap-3 form-row-mobile sm:flex-row sm:items-end">
             <div className="flex-1 space-y-1.5">
               <label className="text-sm text-muted-foreground">股票代码</label>
@@ -199,7 +269,38 @@ export function AnalysisPage() {
               {submitting ? <><Clock className="h-4 w-4 mr-1 animate-spin" />提交中...</> : <><Send className="h-4 w-4 mr-1" />开始分析</>}
             </Button>
           </div>
-          {error && <Alert variant="destructive" className="mt-4"><AlertTitle>提交失败</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}
+
+          <div className="space-y-2">
+            <div className="text-sm text-muted-foreground">分析深度</div>
+            <div className="grid gap-2 sm:grid-cols-3">
+              {DEPTH_OPTIONS.map(opt => (
+                <label
+                  key={opt.value}
+                  className={
+                    "flex items-start gap-2 rounded-lg border p-3 cursor-pointer text-sm " +
+                    (depth === opt.value
+                      ? "border-primary/60 bg-primary/5"
+                      : "border-border")
+                  }
+                >
+                  <input
+                    type="radio"
+                    name="analysis-depth"
+                    value={opt.value}
+                    checked={depth === opt.value}
+                    onChange={() => setDepth(opt.value)}
+                    className="mt-0.5"
+                  />
+                  <div>
+                    <div className="font-semibold">{opt.label}</div>
+                    <div className="text-xs text-muted-foreground">{opt.hint}</div>
+                  </div>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          {error && <Alert variant="destructive" className="mt-2"><AlertTitle>提交失败</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}
         </CardContent>
       </Card>
     </div>
@@ -335,7 +436,7 @@ function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
     refetchKline()
   }, [refetchKline])
 
-  // Build report content map
+  // Build report content map (8 tabs)
   const reportContent: Record<string, string> = {}
   if (detail.summary) reportContent["summary"] = detail.summary
   if (detail.analysts) {
@@ -343,6 +444,9 @@ function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
       reportContent[key] = typeof val === "string" ? val : JSON.stringify(val, null, 2)
     }
   }
+  // The "决策" tab is sourced from analysis_history.trade_decision rather
+  // than analysts.* — the worker stores it as a top-level column.
+  if (detail.trade_decision) reportContent["Decision"] = detail.trade_decision
 
   // Parse advice_json so the catch suppresses bad rows. We only need the
   // side effect of validating it parses; the rendered UI reads structured
@@ -366,6 +470,71 @@ function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
   // Detect if analysis is still running (created < 5 min ago, no summary)
   const isRecent = detail.created_at && (Date.now() - new Date(detail.created_at).getTime()) < 5 * 60 * 1000
   const isRunning = isRecent && !detail.summary && !!detail.task_id
+
+  // Action-button state
+  const [bookmarked, setBookmarked] = useState<boolean>(Boolean(detail.bookmarked))
+  const [bookmarkBusy, setBookmarkBusy] = useState(false)
+  const [actionMsg, setActionMsg] = useState<string | null>(null)
+
+  const handleReanalyze = async () => {
+    setActionMsg(null)
+    try {
+      const res = await apiPost<TaskSubmitResult>("/api/tasks/submit", {
+        type: "analysis",
+        params: { ticker: detail.ticker, date: detail.date, depth: "standard" },
+      })
+      if (res.task_id) window.location.href = `/analysis/${res.task_id}`
+    } catch (err: unknown) {
+      setActionMsg(err instanceof Error ? `再分析失败：${err.message}` : "再分析失败")
+    }
+  }
+
+  const handleTrack = async () => {
+    setActionMsg(null)
+    try {
+      await apiPost("/api/portfolio/track", {
+        ticker: detail.ticker, analysis_id: detail.id,
+      })
+      setActionMsg("✓ 已加入追踪列表")
+      setTimeout(() => setActionMsg(null), 2500)
+    } catch (err: unknown) {
+      setActionMsg(err instanceof Error ? `追踪失败：${err.message}` : "追踪失败")
+    }
+  }
+
+  const handleExport = (fmt: "md" | "pdf") => {
+    // Browser download — no JSON parsing needed.
+    window.location.href = `/api/history/${detail.id}/export?format=${fmt}`
+  }
+
+  const handleShare = async () => {
+    const url = `${window.location.origin}/analysis/${detail.id}`
+    try {
+      await navigator.clipboard.writeText(url)
+      setActionMsg("✓ 链接已复制")
+      setTimeout(() => setActionMsg(null), 2500)
+    } catch {
+      // Fallback: surface the URL inline so the user can copy it manually.
+      setActionMsg(`分享链接：${url}`)
+    }
+  }
+
+  const handleBookmark = async () => {
+    setBookmarkBusy(true)
+    setActionMsg(null)
+    const next = !bookmarked
+    try {
+      const r = await apiPost<{ ok: boolean; bookmarked: boolean }>(
+        `/api/history/${detail.id}/bookmark`,
+        { bookmarked: next },
+      )
+      setBookmarked(Boolean(r.bookmarked))
+    } catch (err: unknown) {
+      setActionMsg(err instanceof Error ? `收藏失败：${err.message}` : "收藏失败")
+    } finally {
+      setBookmarkBusy(false)
+    }
+  }
 
   return (
     <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-6">
