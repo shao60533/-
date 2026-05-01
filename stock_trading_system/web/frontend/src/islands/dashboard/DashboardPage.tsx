@@ -36,30 +36,45 @@ function fmtPct(n: number) { return `${n >= 0 ? "+" : ""}${n.toFixed(2)}%` }
 
 type Range = "ALL" | "1Y" | "6M" | "3M" | "1M" | "7D"
 const RANGE_DAYS: Record<Range, number> = { "ALL": 99999, "1Y": 365, "6M": 180, "3M": 90, "1M": 30, "7D": 7 }
+// First-paint window — 90 days covers the default 3M chip plus 1M / 7D
+// chips with one cheap query. Other range chips trigger a re-fetch
+// against the server window they need (or full history for ALL).
+const DEFAULT_HISTORY_DAYS = 90
+const FULL_HISTORY = "all"
+
+const rangeToHistoryParam = (r: Range): string =>
+  r === "ALL" || r === "1Y" || r === "6M" ? FULL_HISTORY : String(DEFAULT_HISTORY_DAYS)
 
 export function DashboardPage() {
   const [data, setData] = useState<DashData | null>(null)
   const [tasks, setTasks] = useState<TaskRow[]>([])
   const [alloc, setAlloc] = useState<AllocItem[]>([])
   const [loading, setLoading] = useState(true)
-  const [range, setRange] = useState<Range>("ALL")
+  const [range, setRange] = useState<Range>("3M")
+  // Track the server window we already fetched so we don't re-hit
+  // /api/dashboard for chips that fit inside the cached series.
+  const [loadedHistoryWindow, setLoadedHistoryWindow] = useState<string>(
+    String(DEFAULT_HISTORY_DAYS),
+  )
   const [backfilling, setBackfilling] = useState(false)
   const [backfillMsg, setBackfillMsg] = useState<string | null>(null)
 
   // Pull /api/dashboard separately so the ↻ button can refresh it without
   // re-fetching the whole bundle.
-  const reloadDashboard = async () => {
-    const d = await apiGet<DashData>("/api/dashboard?history_days=all")
+  const reloadDashboard = async (window: string = loadedHistoryWindow) => {
+    const d = await apiGet<DashData>(`/api/dashboard?history_days=${window}`)
       .catch(() => null)
     setData(d)
+    setLoadedHistoryWindow(window)
   }
 
   useEffect(() => {
-    // history_days=all → backend returns the full daily_snapshots series so
-    // the range chips below can do client-side filtering on the complete
-    // history. Without this the chart would clip to a 30-day window.
+    // First-paint default: 90 days (covers the default 3M chip plus the
+    // tighter 1M/7D chips with no extra round-trip). The user clicking
+    // ALL / 1Y / 6M will trigger a separate fetch for the full series
+    // — see the range-effect below.
     Promise.all([
-      apiGet<DashData>("/api/dashboard?history_days=all").catch(() => null),
+      apiGet<DashData>(`/api/dashboard?history_days=${DEFAULT_HISTORY_DAYS}`).catch(() => null),
       apiGet<TaskRow[]>("/api/tasks?limit=10&offset=0").catch(() => []),
       apiGet<AllocItem[]>("/api/portfolio/allocation").catch(() => []),
     ]).then(([d, t, a]) => {
@@ -69,6 +84,20 @@ export function DashboardPage() {
       setLoading(false)
     })
   }, [])
+
+  // Range chip → server window upgrade. We only re-fetch when the chip
+  // demands a window we don't already have cached client-side.
+  useEffect(() => {
+    const need = rangeToHistoryParam(range)
+    if (need === loadedHistoryWindow) return
+    if (need === FULL_HISTORY && loadedHistoryWindow === FULL_HISTORY) return
+    // Going from a shorter cached window to a wider one — reload.
+    if (need === FULL_HISTORY ||
+        Number(need) > Number(loadedHistoryWindow || "0")) {
+      reloadDashboard(need)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [range])
 
   const handleBackfill = async () => {
     setBackfilling(true)

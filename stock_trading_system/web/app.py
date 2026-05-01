@@ -2393,44 +2393,42 @@ def create_app(config_path=None):
 
     @app.route("/api/paper/tickers")
     def api_paper_tickers():
+        """List tickers with their plan / position summary.
+
+        v1.16: collapsed from O(N) per-session round-trips down to 4
+        aggregated queries via ``list_ticker_sessions_summary``. The
+        list view returns only the columns the table renders; full
+        events / dailies / trades / plans are deferred to the detail
+        endpoint (``/api/paper/tickers/<ticker>``). Hit-rate is dropped
+        from the list — old code iterated events × dailies on every
+        request, costing seconds for users with many tracked tickers.
+        """
         store = _get_paper_store()
         mode_arg = (request.args.get("mode") or "forward").lower()
         mode = mode_arg if mode_arg in {"forward", "replay"} else None
-        sessions = store.list_ticker_sessions(mode=mode)
+        summaries = store.list_ticker_sessions_summary(mode=mode)
         out = []
-        for s in sessions:
-            sid = int(s["id"])
-            last = store.last_daily_stat(sid)
-            latest_evt = store.latest_strategy_event(sid)
-            events = store.list_strategy_events(sid)
-            dailies = store.list_daily_stats(sid, limit=1000)
-            spark = [float(d["total_value"]) for d in dailies[-30:]]
-            buys = [e for e in events
-                    if (e.get("new_signal") or "").upper() in ("BUY", "OVERWEIGHT")]
-            hits, total = 0, 0
-            for e in buys:
-                fwd = [d for d in dailies if d["date"] > e["event_date"]][:5]
-                if len(fwd) >= 1 and e.get("price"):
-                    total += 1
-                    if fwd[-1]["close_price"] > e["price"]:
-                        hits += 1
+        for s in summaries:
+            last = s.get("last_daily_stat") or {}
+            evt = s.get("latest_event") or {}
             out.append({
-                "id": sid,
+                "id": int(s["id"]),
                 "ticker": s["ticker"],
                 "status": s["status"],
                 "start_date": s["start_date"],
                 "last_eod": s.get("last_eod_date"),
-                "current_signal": latest_evt["new_signal"] if latest_evt else None,
-                "current_action": latest_evt["action"] if latest_evt else None,
-                "total_value": float(last["total_value"]) if last else float(s["start_capital"]),
-                "cum_pnl_pct": float(last["cum_pnl_pct"]) if last else 0,
-                "position_shares": float(last["position_shares"]) if last else 0,
-                "close_price": float(last["close_price"]) if last and last.get("close_price") else None,
-                "num_events": len(events),
-                "hit_rate": (hits / total) if total else None,
-                "hit_pretty": f"{hits}/{total}" if total else "—",
-                "sparkline": spark,
-                # v1.15 — surface plan/order/position state for the list UI
+                "current_signal": evt.get("new_signal"),
+                "current_action": evt.get("action"),
+                "total_value": float(last.get("total_value")) if last.get("total_value") is not None
+                    else float(s["start_capital"]),
+                "cum_pnl_pct": float(last.get("cum_pnl_pct") or 0),
+                "position_shares": float(last.get("position_shares") or 0),
+                "close_price": float(last["close_price"]) if last.get("close_price") else None,
+                "num_events": int(s.get("num_events") or 0),
+                # Hit-rate intentionally null in the list view — see docstring.
+                "hit_rate": None,
+                "hit_pretty": "—",
+                "sparkline": s.get("sparkline") or [],
                 "active_plan_count": int(s.get("active_plan_count") or 0),
                 "pending_orders_count": int(s.get("pending_orders_count") or 0),
                 "triggered_orders_count": int(s.get("triggered_orders_count") or 0),

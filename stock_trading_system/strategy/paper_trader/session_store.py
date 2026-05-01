@@ -811,6 +811,130 @@ def _v2_methods():
             out.append(d)
         return out
 
+    def list_ticker_sessions_summary(
+        self, mode: str | None = None, *, spark_window: int = 30,
+    ) -> list[dict]:
+        """One-shot aggregator for the ``/api/paper/tickers`` list view.
+
+        Old code ran ``last_daily_stat`` / ``latest_strategy_event`` /
+        ``list_strategy_events`` / ``list_daily_stats(limit=1000)`` per
+        session — 4N queries plus a 1000-row scan to compute a 30-point
+        sparkline. This method collapses everything into 4 queries total:
+
+            Q1: sessions + plan/order counters + num_events
+            Q2: most-recent daily stat per session (joined back via
+                MAX(date) per session_id)
+            Q3: most-recent strategy event per session
+            Q4: rolling N most-recent daily total_value per session
+                (window function) for the sparkline
+
+        Hit-rate is intentionally NOT computed here. The previous
+        implementation iterated events × dailies on every list render —
+        for 50 sessions × ~200 events × ~500 dailies that's millions of
+        Python-level comparisons each request. Detail page can compute
+        it lazily if anyone needs it.
+        """
+        # ── Q1: sessions + counters + num_events ───────────────────────
+        sql = """
+            SELECT s.*,
+              (SELECT COUNT(*) FROM paper_trade_plans
+                 WHERE session_id = s.id AND status = 'active')           AS active_plan_count,
+              (SELECT COUNT(*) FROM paper_trade_planned_orders
+                 WHERE session_id = s.id AND status = 'pending')           AS pending_orders_count,
+              (SELECT COUNT(*) FROM paper_trade_planned_orders
+                 WHERE session_id = s.id AND status = 'triggered')         AS triggered_orders_count,
+              (SELECT position_shares FROM paper_trade_daily_stats
+                 WHERE session_id = s.id ORDER BY date DESC LIMIT 1)       AS open_position_shares,
+              (SELECT skip_reason FROM paper_trade_strategy_events
+                 WHERE session_id = s.id
+                 ORDER BY event_date DESC, id DESC LIMIT 1)                AS last_skip_reason,
+              (SELECT COUNT(*) FROM paper_trade_strategy_events
+                 WHERE session_id = s.id)                                  AS num_events
+            FROM paper_trade_sessions s
+            WHERE s.ticker IS NOT NULL AND s.is_system = 0
+        """
+        if mode == "forward":
+            sql += " AND (s.replay_mode IS NULL OR s.replay_mode = '')"
+        elif mode == "replay":
+            sql += " AND s.replay_mode IS NOT NULL AND s.replay_mode != ''"
+        sql += " ORDER BY s.created_at DESC"
+
+        with self._conn() as conn:
+            rows = conn.execute(sql).fetchall()
+            sessions = [(_row_to_session(r), r) for r in rows]
+            sids = [int(r["id"]) for _, r in sessions]
+            if not sids:
+                return []
+            ph = ",".join("?" * len(sids))
+
+            # ── Q2: last daily stat per session ────────────────────────
+            last_by_sid: dict[int, dict] = {}
+            for r in conn.execute(
+                f"""SELECT * FROM paper_trade_daily_stats AS d
+                    WHERE d.session_id IN ({ph})
+                      AND d.date = (
+                        SELECT MAX(date) FROM paper_trade_daily_stats
+                         WHERE session_id = d.session_id
+                      )""",
+                sids,
+            ).fetchall():
+                last_by_sid[int(r["session_id"])] = dict(r)
+
+            # ── Q3: latest strategy event per session ──────────────────
+            evt_by_sid: dict[int, dict] = {}
+            for r in conn.execute(
+                f"""SELECT e.* FROM paper_trade_strategy_events AS e
+                    WHERE e.session_id IN ({ph})
+                      AND e.id = (
+                        SELECT id FROM paper_trade_strategy_events
+                         WHERE session_id = e.session_id
+                         ORDER BY event_date DESC, id DESC LIMIT 1
+                      )""",
+                sids,
+            ).fetchall():
+                evt_by_sid[int(r["session_id"])] = dict(r)
+
+            # ── Q4: rolling N most-recent total_values for sparkline ────
+            # Window function not available on sqlite < 3.25 — fall back
+            # to a UNION-ALL of per-session subqueries when needed.
+            spark_by_sid: dict[int, list[float]] = {sid: [] for sid in sids}
+            try:
+                for r in conn.execute(
+                    f"""SELECT session_id, total_value, date FROM (
+                          SELECT session_id, total_value, date,
+                            ROW_NUMBER() OVER (
+                              PARTITION BY session_id ORDER BY date DESC
+                            ) AS rn
+                          FROM paper_trade_daily_stats
+                          WHERE session_id IN ({ph})
+                        ) WHERE rn <= ?
+                        ORDER BY session_id, date ASC""",
+                    [*sids, int(spark_window)],
+                ).fetchall():
+                    spark_by_sid[int(r["session_id"])].append(float(r["total_value"]))
+            except sqlite3.OperationalError:
+                # Older sqlite — fall back to per-session LIMIT queries.
+                for sid in sids:
+                    rows_s = conn.execute(
+                        """SELECT total_value FROM paper_trade_daily_stats
+                           WHERE session_id = ? ORDER BY date DESC LIMIT ?""",
+                        (sid, int(spark_window)),
+                    ).fetchall()
+                    spark_by_sid[sid] = [float(r["total_value"]) for r in reversed(rows_s)]
+
+        out: list[dict] = []
+        for d, r in sessions:
+            sid = int(d["id"])
+            for k in ("active_plan_count", "pending_orders_count",
+                      "triggered_orders_count", "open_position_shares",
+                      "last_skip_reason", "num_events"):
+                d[k] = r[k]
+            d["last_daily_stat"] = last_by_sid.get(sid)
+            d["latest_event"] = evt_by_sid.get(sid)
+            d["sparkline"] = spark_by_sid.get(sid, [])
+            out.append(d)
+        return out
+
     def update_session_last_eod(self, session_id: int, date: str) -> None:
         with self._lock, self._conn() as conn:
             conn.execute(
@@ -1141,6 +1265,7 @@ def _v2_methods():
     PaperTradeStore.find_session_by_ticker = find_session_by_ticker
     PaperTradeStore.create_ticker_session = create_ticker_session
     PaperTradeStore.list_ticker_sessions = list_ticker_sessions
+    PaperTradeStore.list_ticker_sessions_summary = list_ticker_sessions_summary
     PaperTradeStore.update_session_last_eod = update_session_last_eod
     PaperTradeStore.insert_strategy_event = insert_strategy_event
     PaperTradeStore.list_strategy_events = list_strategy_events
