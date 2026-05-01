@@ -414,9 +414,9 @@ class TaskStore:
                     entry_low, entry_high, stop_loss, take_profit,
                     model, steps_json,
                     created_by, provider, config_hash, task_id, duration_sec, bookmarked,
-                    depth)
+                    depth, rendering_json)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                           ?, ?, ?, ?, ?, ?, ?)""",
+                           ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     result.get("ticker", ""), result.get("date", ""),
                     result.get("signal", ""),
@@ -447,6 +447,7 @@ class TaskStore:
                     _safe_float(result.get("duration_sec")),
                     0,
                     _normalize_depth(result.get("depth")),
+                    result.get("rendering_json") or "",
                 ),
             )
             return f"analysis_history:{cur.lastrowid}"
@@ -538,7 +539,8 @@ class TaskStore:
                     task_id TEXT,
                     duration_sec REAL,
                     bookmarked INTEGER DEFAULT 0,
-                    depth TEXT DEFAULT 'standard'
+                    depth TEXT DEFAULT 'standard',
+                    rendering_json TEXT
                 )
             """)
             cols = {r[1] for r in conn.execute(
@@ -555,6 +557,9 @@ class TaskStore:
                 ("duration_sec", "REAL"),
                 ("bookmarked", "INTEGER DEFAULT 0"),
                 ("depth", "TEXT DEFAULT 'standard'"),
+                # v1.19: per-tab structured cards. JSON blob; the DTO
+                # parses it into a dict before exposing to the API.
+                ("rendering_json", "TEXT"),
             ]
             for name, typ in additions:
                 if name not in cols:

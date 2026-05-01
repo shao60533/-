@@ -29,6 +29,7 @@ def make_analysis_worker(get_analyzer, get_strategy_engine, get_portfolio, get_r
     def worker(params: dict, progress_cb: ProgressCb) -> dict:
         import time as _time
         from stock_trading_system.config import get_config
+        from stock_trading_system.portfolio.database import _normalize_depth
 
         t_start = _time.perf_counter()
         ticker = (params.get("ticker") or "").upper().strip()
@@ -38,6 +39,12 @@ def make_analysis_worker(get_analyzer, get_strategy_engine, get_portfolio, get_r
         if not date:
             from stock_trading_system.utils.helpers import today_str
             date = today_str()
+
+        # Depth (quick/standard/deep) drives the analyzer's iteration
+        # toggle and is persisted onto the shared analysis_history row
+        # so the detail page can show what depth the user paid for.
+        # Unknown values fall back to ``standard``.
+        depth = _normalize_depth(params.get("depth"))
 
         progress_cb(5, "初始化分析管线")
         analyzer = get_analyzer()
@@ -55,12 +62,26 @@ def make_analysis_worker(get_analyzer, get_strategy_engine, get_portfolio, get_r
 
         progress_cb(15, "启动 7 Agent 分析")
         # Adapter compatibility: older / fake analyzers don't accept the
-        # ``progress_cb`` kwarg. Try the streaming call first; fall back to
-        # the unannotated signature if that's the only thing missing.
+        # ``progress_cb`` / ``depth`` kwargs. Try the richest call first
+        # and degrade signature-by-signature so legacy fakes still work.
         try:
-            raw = analyzer.analyze(ticker, date, progress_cb=_analysis_progress)
+            raw = analyzer.analyze(
+                ticker, date,
+                progress_cb=_analysis_progress, depth=depth,
+            )
         except TypeError as e:
-            if "progress_cb" in str(e):
+            msg = str(e)
+            if "depth" in msg:
+                try:
+                    raw = analyzer.analyze(
+                        ticker, date, progress_cb=_analysis_progress,
+                    )
+                except TypeError as e2:
+                    if "progress_cb" in str(e2):
+                        raw = analyzer.analyze(ticker, date)
+                    else:
+                        raise
+            elif "progress_cb" in msg:
                 raw = analyzer.analyze(ticker, date)
             else:
                 raise
@@ -98,6 +119,12 @@ def make_analysis_worker(get_analyzer, get_strategy_engine, get_portfolio, get_r
             "duration_sec": _time.perf_counter() - t_start,
             "task_id": task_id or None,
             "created_by": user_id,
+            "depth": depth,
+            # v1.19: best-effort structured-rendering blob serialized for
+            # storage. Empty string when the analyzer skipped extraction
+            # (extractor unavailable, error, or per-tab failures already
+            # rendered as ``None`` inside the dict).
+            "rendering_json": _serialize_rendering(getattr(result, "rendering", None)),
         }
         if final_state is not None:
             try:
@@ -170,6 +197,21 @@ def _serialize_final_state(final_state) -> str:
         # final_state may have non-serializable nested fields — fall back
         # to its string form so we at least leave a trace.
         return json.dumps({"repr": repr(final_state)}, ensure_ascii=False)
+
+
+def _serialize_rendering(rendering) -> str:
+    """JSON-encode the per-tab rendering dict for storage.
+
+    Best-effort: a missing / unserializable rendering returns ``""`` so the
+    storage layer writes an empty cell rather than crashing the whole task.
+    """
+    if not rendering:
+        return ""
+    try:
+        return json.dumps(rendering, ensure_ascii=False)
+    except (TypeError, ValueError) as e:
+        logger.warning("rendering_json serialization failed: %s", e)
+        return ""
 
 
 def _build_advice_with_snapshot(

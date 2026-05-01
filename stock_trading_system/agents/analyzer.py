@@ -68,6 +68,12 @@ class AnalysisResult:
     risk_assessment: dict = field(default_factory=dict)
     trade_decision: dict = field(default_factory=dict)
     steps: list = field(default_factory=list)  # list of {id, label, status, duration_ms}
+    # v1.19: per-tab structured cards for the 8-tab UI. Keys are the tab
+    # identifiers (``summary`` / ``Market`` / ...); values are dicts that
+    # match the corresponding Pydantic schema in
+    # ``stock_trading_system.agents.rendering.schemas`` — or ``None`` when
+    # extraction failed for that tab (frontend falls back to markdown).
+    rendering: dict = field(default_factory=dict)
 
 
 class StockAnalyzer:
@@ -159,7 +165,21 @@ class StockAnalyzer:
 
     @property
     def _iteration_enabled(self) -> bool:
-        return self._config.get("iteration", {}).get("enabled", False)
+        """Whether to run the iterative / Darwinian-weighted pipeline.
+
+        ``analyze(depth=...)`` sets ``self._depth_override`` for the
+        duration of one call:
+            quick    → force off (single-pass)
+            deep     → force on (when iteration code is available)
+            standard → fall back to the config flag
+        """
+        cfg_enabled = bool(self._config.get("iteration", {}).get("enabled", False))
+        depth = getattr(self, "_depth_override", None) or "standard"
+        if depth == "quick":
+            return False
+        if depth == "deep":
+            return True
+        return cfg_enabled
 
     def _configure_qwen(self, ta_config: dict) -> None:
         qwen_config = self._config.get("qwen", {})
@@ -175,6 +195,56 @@ class StockAnalyzer:
             "base_url", "https://dashscope.aliyuncs.com/compatible-mode/v1")
         ta_config["llm_deep_kwargs"] = {"extra_body": {"enable_thinking": True}, "timeout": 600}
         ta_config["llm_quick_kwargs"] = {"extra_body": {"enable_thinking": False}, "timeout": 120}
+
+    def _build_quick_llm(self):
+        """Build a quick-think LangChain chat instance for the active provider.
+
+        Used by :class:`RenderingExtractor` to convert the finished reports
+        into per-tab structured cards. Mirrors the model selection in
+        ``_configure_qwen`` / ``_configure_gemini`` so structured output uses
+        the same model that produced the underlying text.
+        """
+        from stock_trading_system.llm.router import get_active_provider
+
+        provider = get_active_provider(self._config)
+        if provider == "qwen":
+            from langchain_openai import ChatOpenAI
+            qcfg = self._config.get("qwen", {}) or {}
+            return ChatOpenAI(
+                model=qcfg.get("model", "qwen-plus"),
+                api_key=qcfg.get("api_key", ""),
+                base_url=qcfg.get(
+                    "base_url",
+                    "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                ),
+                temperature=0,
+                timeout=60,
+            )
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        gcfg = self._config.get("gemini", {}) or {}
+        return ChatGoogleGenerativeAI(
+            model=gcfg.get("model", "gemini-2.5-flash"),
+            api_key=gcfg.get("api_key", ""),
+            temperature=0,
+            timeout=60,
+        )
+
+    def _maybe_extract_rendering(self, result: "AnalysisResult") -> None:
+        """Best-effort extraction of structured per-tab cards into ``result.rendering``.
+
+        Failures here MUST NOT block the analysis task — the markdown
+        reports are the canonical artefact and the UI falls back to them
+        when ``rendering`` is empty or partial.
+        """
+        try:
+            from stock_trading_system.agents.rendering.extractor import (
+                RenderingExtractor,
+            )
+            extractor = RenderingExtractor(self._build_quick_llm())
+            result.rendering = extractor.extract(result)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("rendering extraction skipped: %s", e)
+            result.rendering = {}
 
     def _configure_gemini(self, ta_config: dict) -> None:
         gemini_config = self._config.get("gemini", {})
@@ -198,6 +268,7 @@ class StockAnalyzer:
         ticker: str,
         date: str,
         progress_cb: Optional[Callable[[dict], None]] = None,
+        depth: str = "standard",
     ) -> AnalysisResult:
         """Run full multi-agent analysis on a stock.
 
@@ -209,11 +280,17 @@ class StockAnalyzer:
                 "label": "技术面分析", "duration_ms": 12345, "index": 0,
                 "total": 7}``. Event types: ``pipeline_start``, ``step_start``,
                 ``step_done``, ``pipeline_done``, ``pipeline_error``.
+            depth: ``quick`` / ``standard`` / ``deep``. Drives the iteration
+                toggle: ``quick`` forces single-pass (no reflection), ``deep``
+                forces iteration on (where available), ``standard`` defers to
+                the config flag. Unknown values fall back to ``standard``.
 
         Returns:
             AnalysisResult with signal, reports, decision details and per-step
             timings.
         """
+        depth = depth if depth in ("quick", "standard", "deep") else "standard"
+        self._depth_override: str | None = depth
         self._init_graph()
 
         logger.info("Starting analysis for %s on %s", ticker, date)
@@ -281,6 +358,7 @@ class StockAnalyzer:
                     trade_decision=final_state.get("final_trade_decision", {}),
                     steps=list(step_status.values()),
                 )
+                self._maybe_extract_rendering(result)
                 emit({
                     "type": "pipeline_done",
                     "ticker": ticker,
@@ -380,6 +458,7 @@ class StockAnalyzer:
             trade_decision=final_state.get("final_trade_decision", {}),
             steps=list(step_status.values()),
         )
+        self._maybe_extract_rendering(result)
         emit({
             "type": "pipeline_done",
             "ticker": ticker,

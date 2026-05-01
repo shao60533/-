@@ -140,6 +140,7 @@ class PortfolioDatabase:
                     take_profit REAL,
                     model TEXT,
                     steps_json TEXT,
+                    rendering_json TEXT,
                     -- v1.14 provenance: who ran this, with which LLM, hashed
                     -- LLM config so the same prompt+model collapses to one
                     -- cache hit, plus task_id back-reference and timing.
@@ -343,6 +344,13 @@ class PortfolioDatabase:
             # the detail page. Old rows with NULL get treated as
             # 'standard' by the API DTO via _normalize_depth.
             ("depth", "TEXT DEFAULT 'standard'"),
+            # v1.19: per-tab structured cards extracted from the analyzer
+            # reports. JSON blob shaped like
+            # ``{"summary": {...} | None, "Market": {...} | None, ...}``.
+            # Empty string when extraction was skipped (e.g. quick depth or
+            # extractor failure); the DTO parses it into a dict and the
+            # frontend falls back to markdown when a key is missing or null.
+            ("rendering_json", "TEXT"),
         ]
         for name, typ in additions:
             if name not in cols:
@@ -614,9 +622,9 @@ class PortfolioDatabase:
                     action, confidence, position_pct,
                     entry_low, entry_high, stop_loss, take_profit, model, steps_json,
                     created_by, provider, config_hash, task_id, duration_sec, bookmarked,
-                    depth)
+                    depth, rendering_json)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                           ?, ?, ?, ?, ?, ?, ?)""",
+                           ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     data["ticker"], data["date"], data["signal"],
                     data.get("market_report", ""),
@@ -644,6 +652,7 @@ class PortfolioDatabase:
                     _coerce_float(data.get("duration_sec")),
                     int(bool(data.get("bookmarked", 0))),
                     _normalize_depth(data.get("depth")),
+                    data.get("rendering_json", ""),
                 ),
             )
             return int(cur.lastrowid)
