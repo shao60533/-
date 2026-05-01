@@ -98,6 +98,25 @@ def _get_scheduler():
     return _scheduler
 
 
+def _parse_rendering(raw) -> dict:
+    """Best-effort decode of ``analysis_history.rendering_json``.
+
+    Returns the parsed dict on success; an empty dict for missing /
+    malformed rows. NEVER returns the raw string — the API contract
+    promises a structured object so clients can read ``rendering[tab]``
+    without re-parsing.
+    """
+    if not raw:
+        return {}
+    if isinstance(raw, dict):
+        return raw
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def _mask_secret(value: str, keep: int = 4) -> str:
     """Mask a sensitive string, keeping only the last `keep` characters."""
     if not value:
@@ -1025,8 +1044,9 @@ def create_app(config_path=None):
         if not ticker:
             return jsonify({"error": "ticker required"}), 400
         from stock_trading_system.utils.helpers import today_str
+        from stock_trading_system.portfolio.database import _normalize_depth
         date = data.get("date") or today_str()
-        depth = data.get("depth") or "standard"
+        depth = _normalize_depth(data.get("depth"))
 
         tm = _get_task_manager()
         params = {
@@ -1142,6 +1162,7 @@ def create_app(config_path=None):
                     cache[uid] = ""
             return cache[uid] or None
 
+        from stock_trading_system.portfolio.database import _normalize_depth
         items = [{
             "id":               rec.get("id"),
             "ticker":           rec.get("ticker"),
@@ -1155,6 +1176,7 @@ def create_app(config_path=None):
             "duration_sec":     rec.get("duration_sec"),
             "task_id":          rec.get("task_id"),
             "bookmarked":       bool(rec.get("bookmarked")),
+            "depth":            _normalize_depth(rec.get("depth")),
         } for rec in records]
         # Both `items` (v1.14 contract) and `records` (legacy HistoryPage)
         # are surfaced so we don't have to refactor every caller in this PR.
@@ -1190,11 +1212,12 @@ def create_app(config_path=None):
             except Exception as e:  # noqa: BLE001
                 logger.warning("created_by lookup failed: %s", e)
 
-        # advice dict that the frontend renders. Prefer the current user's
-        # entry; fall back to the legacy ``advice_json`` blob ONLY when the
-        # requester was the original creator — pre-v1.14 rows wrote the
-        # creator's holdings-aware advice into the shared column, so any
-        # other reader would be inheriting somebody else's plan.
+        # advice is the requesting user's private row only — the shared
+        # analysis_history row no longer carries advice_json (post-v1.16
+        # migration hoists pre-existing legacy advice into
+        # user_analysis_advice keyed on the original creator). If the
+        # requester has no advice row, the response just shows an empty
+        # advice dict; another tenant's plan never leaks here.
         advice: dict = {}
         if user_advice:
             for key in ("action", "confidence", "position_pct",
@@ -1202,17 +1225,6 @@ def create_app(config_path=None):
                         "reasoning", "risk_warning"):
                 if user_advice.get(key) is not None:
                     advice[key] = user_advice[key]
-        elif record.get("advice_json") and (
-            user_id is not None and creator_id is not None
-            and int(creator_id) == int(user_id)
-        ):
-            try:
-                blob = record["advice_json"]
-                advice = json.loads(blob) if isinstance(blob, str) else (blob or {})
-                if not isinstance(advice, dict):
-                    advice = {}
-            except (json.JSONDecodeError, TypeError):
-                advice = {}
 
         analysts = {}
         for key in ("market_report", "sentiment_report", "news_report",
@@ -1229,6 +1241,7 @@ def create_app(config_path=None):
         # Whitelisted DTO — never echo the raw row, which carries shared
         # advice columns whose values would have leaked across users on
         # pre-v1.14 records.
+        from stock_trading_system.portfolio.database import _normalize_depth
         return jsonify({
             "id":                 record.get("id"),
             "ticker":             record.get("ticker"),
@@ -1242,6 +1255,7 @@ def create_app(config_path=None):
             "duration_sec":       record.get("duration_sec"),
             "task_id":            record.get("task_id"),
             "config_hash":        record.get("config_hash"),
+            "depth":              _normalize_depth(record.get("depth")),
             "executive_summary":  record.get("executive_summary"),
             "summary":            record.get("executive_summary") or record.get("trade_decision") or "",
             "recommendation":     record.get("trade_decision") or "",
@@ -1257,11 +1271,61 @@ def create_app(config_path=None):
             "risk_level":         advice.get("risk_level") or conf_str or "-",
             "advice":             advice or None,
             "bookmarked":         bookmarked,
+            # v1.19: per-tab structured cards. Always parse the stored JSON
+            # into a dict before exposing — never echo ``rendering_json``
+            # itself, that's a storage detail and could trip clients
+            # expecting structured data.
+            "rendering":          _parse_rendering(record.get("rendering_json")),
         })
+
+    def _merge_user_advice_into_records(db, records: list[dict],
+                                         user_id: int | None) -> list[dict]:
+        """Layer this user's private advice onto shared compare/timeline rows.
+
+        The shared row never carries advice (post-v1.16) — _STRUCTURED_COLS
+        only selects shared research columns. We project the requesting
+        user's ``user_analysis_advice`` row, if any, into a nested
+        ``my_advice`` field. Other users' advice is never visible.
+        """
+        if not records:
+            return []
+        ids = [int(r["id"]) for r in records if r.get("id") is not None]
+        advice_by_id: dict[int, dict] = {}
+        if user_id is not None and ids:
+            try:
+                advice_by_id = db.get_user_advice_bulk(user_id, ids)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("get_user_advice_bulk failed: %s", e)
+                advice_by_id = {}
+        out = []
+        for r in records:
+            row = dict(r)
+            row["bookmarked"] = bool(row.get("bookmarked"))
+            adv = advice_by_id.get(int(row["id"])) if row.get("id") else None
+            if adv:
+                row["my_advice"] = {
+                    "action":        adv.get("action"),
+                    "confidence":    adv.get("confidence"),
+                    "position_pct":  adv.get("position_pct"),
+                    "entry_low":     adv.get("entry_low"),
+                    "entry_high":    adv.get("entry_high"),
+                    "stop_loss":     adv.get("stop_loss"),
+                    "take_profit":   adv.get("take_profit"),
+                }
+            else:
+                row["my_advice"] = None
+            out.append(row)
+        return out
 
     @app.route("/api/history/compare")
     def api_analysis_compare():
-        """Compare multiple analyses side-by-side. Query: ?ids=1,2,3 (up to 5)."""
+        """Compare multiple analyses side-by-side. Query: ?ids=1,2,3 (up to 5).
+
+        Shared columns only (v1.16) — per-user advice (action/confidence/
+        entry/stop/take_profit/position_pct) is never embedded directly
+        on the row. The current user's own advice, if any, is layered
+        in via ``my_advice``; other users' advice is never visible.
+        """
         from stock_trading_system.portfolio.database import PortfolioDatabase
         ids_raw = request.args.get("ids", "").strip()
         if not ids_raw:
@@ -1276,24 +1340,51 @@ def create_app(config_path=None):
             return jsonify({"error": "At most 5 records can be compared"}), 400
         db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
         db = PortfolioDatabase(db_path)
+        uid = g.user.id if getattr(g, "user", None) else None
         records = db.get_analyses_by_ids(ids)
+        records = _merge_user_advice_into_records(db, records, uid)
         return jsonify({"count": len(records), "records": records})
 
     @app.route("/api/history/timeline/<ticker>")
     def api_analysis_timeline(ticker):
-        """Structured chronological history for one ticker (drift view)."""
+        """Structured chronological history for one ticker (drift view).
+
+        See ``api_analysis_compare`` for the shared/private contract.
+        """
         from stock_trading_system.portfolio.database import PortfolioDatabase
         limit = int(request.args.get("limit", 20))
         db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
         db = PortfolioDatabase(db_path)
+        uid = g.user.id if getattr(g, "user", None) else None
         records = db.get_analysis_timeline(ticker.upper(), limit=limit)
-        return jsonify({"ticker": ticker.upper(), "count": len(records), "records": records})
+        records = _merge_user_advice_into_records(db, records, uid)
+        return jsonify({"ticker": ticker.upper(), "count": len(records),
+                         "records": records})
 
     @app.route("/api/history/<int:analysis_id>", methods=["DELETE"])
     def api_analysis_delete(analysis_id):
+        """Delete a shared analysis row.
+
+        Only the original creator (``created_by == g.user.id``) or an
+        admin may delete. Anyone else gets 403 — the analysis library is
+        shared research, not a personal scratch pad.
+        """
+        if g.user is None:
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
         from stock_trading_system.portfolio.database import PortfolioDatabase
         db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
         db = PortfolioDatabase(db_path)
+        creator_id = db.get_analysis_creator(analysis_id)
+        if creator_id is None:
+            # Could be 404 (no such row) or legacy row with no created_by.
+            # Treat both as 404; only admin may force-delete via DB tooling.
+            row = db.get_analysis_by_id(analysis_id)
+            if not row:
+                return jsonify({"ok": False, "error": "not_found"}), 404
+            if g.user.role != "admin":
+                return jsonify({"ok": False, "error": "forbidden"}), 403
+        elif creator_id != g.user.id and g.user.role != "admin":
+            return jsonify({"ok": False, "error": "forbidden"}), 403
         ok = db.delete_analysis(analysis_id)
         return jsonify({"ok": ok})
 

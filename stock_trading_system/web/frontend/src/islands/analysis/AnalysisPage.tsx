@@ -14,6 +14,11 @@ import { subscribeTaskStream } from "@/lib/socket"
 import Markdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize"
+import {
+  OverviewCard, MarketCard, SentimentCard, NewsCard,
+  FundamentalsCard, DebateCard, RiskCard, DecisionCard,
+  type RenderingDict,
+} from "@/components/analysis"
 
 interface AnalysisDetail {
   id: string; ticker: string; signal: string; date: string
@@ -31,6 +36,27 @@ interface AnalysisDetail {
   duration_sec?: number | null
   bookmarked?: boolean
   advice?: Record<string, unknown> | null
+  // v1.16: depth UX hint persisted on the shared row
+  depth?: "quick" | "standard" | "deep" | null
+  // v1.19: per-tab structured cards. The DTO emits a parsed dict — clients
+  // never see ``rendering_json`` raw. Missing or null values fall back to
+  // the markdown body (kept inside a ``<details>`` collapsible).
+  rendering?: RenderingDict | null
+}
+
+// Map tab key → structured card component. Each card narrows ``data`` to
+// its own schema-shaped type internally; we type the registry as ``any``
+// here because TypeScript can't pin a polymorphic per-key type cleanly.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const TAB_CARD: Record<string, React.FC<{ data: any }>> = {
+  "summary":            OverviewCard,
+  "Market":             MarketCard,
+  "Sentiment":          SentimentCard,
+  "News":               NewsCard,
+  "Fundamentals":       FundamentalsCard,
+  "Investment Debate":  DebateCard,
+  "Risk Assessment":    RiskCard,
+  "Decision":           DecisionCard,
 }
 
 interface RecentAnalysisRow {
@@ -39,6 +65,15 @@ interface RecentAnalysisRow {
 }
 
 type AnalysisDepth = "quick" | "standard" | "deep"
+
+function depthLabel(d: AnalysisDepth | string | null | undefined): string {
+  switch ((d || "").toLowerCase()) {
+    case "quick":    return "快速"
+    case "deep":     return "深度"
+    case "standard": return "标准"
+    default:         return "标准"
+  }
+}
 
 interface OHLCVRow {
   date: string; open: number; high: number; low: number; close: number; volume: number
@@ -621,6 +656,9 @@ function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
         {detail.provider && (
           <span>Provider：{detail.provider}{detail.model ? ` / ${detail.model}` : ""}</span>
         )}
+        {detail.depth && (
+          <span>深度：{depthLabel(detail.depth)}</span>
+        )}
         {detail.duration_sec != null && (
           <span>耗时：{Number(detail.duration_sec).toFixed(1)}s</span>
         )}
@@ -696,20 +734,32 @@ function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
             </TabsList>
             {REPORT_TABS.map(tab => {
               const content = reportContent[tab.key] || ""
+              const struct = detail.rendering?.[tab.key as keyof RenderingDict]
+              const CardComp = TAB_CARD[tab.key]
+              const hasStruct = !!struct && !!CardComp
               return (
-                <TabsContent key={tab.key} value={tab.key} className="mt-4">
+                <TabsContent key={tab.key} value={tab.key} className="mt-4 space-y-4">
+                  {hasStruct ? (
+                    /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
+                    <CardComp data={struct as any} />
+                  ) : null}
                   {content ? (
-                    <div className="prose prose-invert prose-sm max-w-none text-[var(--color-text-secondary)] max-h-[600px] overflow-y-auto">
-                      <Markdown
-                        remarkPlugins={[remarkGfm]}
-                        rehypePlugins={[[rehypeSanitize, MD_SANITIZE_SCHEMA]]}
-                      >
-                        {content}
-                      </Markdown>
-                    </div>
-                  ) : (
+                    <details className="rounded border border-border/50">
+                      <summary className="cursor-pointer px-4 py-2 text-xs text-muted-foreground hover:bg-muted/30">
+                        {hasStruct ? "完整论述（点击展开）" : "完整论述"}
+                      </summary>
+                      <div className="prose prose-invert prose-sm max-w-none px-4 py-3 max-h-[600px] overflow-y-auto text-[var(--color-text-secondary)]">
+                        <Markdown
+                          remarkPlugins={[remarkGfm]}
+                          rehypePlugins={[[rehypeSanitize, MD_SANITIZE_SCHEMA]]}
+                        >
+                          {content}
+                        </Markdown>
+                      </div>
+                    </details>
+                  ) : (!hasStruct && (
                     <p className="text-sm text-muted-foreground py-8 text-center">暂无数据</p>
-                  )}
+                  ))}
                 </TabsContent>
               )
             })}
