@@ -2931,7 +2931,11 @@ def create_app(config_path=None):
         provider = get_active_provider(cfg, user_id=user_id)
 
         gurus_in = body.get("gurus")
-        if not isinstance(gurus_in, list) or not [g for g in gurus_in if g]:
+        gurus_clean = [
+            str(g).strip() for g in (gurus_in or [])
+            if g and str(g).strip()
+        ] if isinstance(gurus_in, list) else []
+        if not gurus_clean:
             return jsonify({
                 "error": "gurus_required",
                 "message": "至少选择 1 位大师",
@@ -2948,7 +2952,7 @@ def create_app(config_path=None):
             "nl_query": body.get("nl_query", ""),
             "market": market,
             "candidate_n": int(body.get("candidate_n", 20)),
-            "gurus": [str(g).strip() for g in gurus_in if g],
+            "gurus": gurus_clean,
             "mode": body.get("mode", "agent"),
             "with_roundtable": bool(body.get("with_roundtable", False)),
             "user_id": user_id,
