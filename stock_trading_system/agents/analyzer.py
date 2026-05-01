@@ -110,12 +110,18 @@ class StockAnalyzer:
             logger.warning("Failed to patch TradingAgents for Qwen: %s", e)
 
     def _init_graph(self):
-        """Lazy-init TradingAgents graph, cached per (provider, model) key."""
+        """Lazy-init TradingAgents graph, cached per active provider.
+
+        Cache key is the active LLM provider name (``"qwen"``/``"gemini"``).
+        Switching providers creates a fresh graph; switching back hits the
+        cache. Model bumps within the same provider don't bust the cache —
+        TradingAgentsGraph rebinds the model lazily, so a per-provider entry
+        is sufficient.
+        """
         from stock_trading_system.llm.router import get_active_provider
 
         provider = get_active_provider(self._config)
-        model = self._config.get("llm", {}).get("model", "")
-        cache_key = f"{provider}:{model}"
+        cache_key = provider or ""
 
         with self._graph_lock:
             if cache_key in self._graphs:

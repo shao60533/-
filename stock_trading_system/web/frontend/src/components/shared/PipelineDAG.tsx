@@ -4,90 +4,132 @@ import { subscribeTaskStream, type TaskEventEnvelope } from "@/lib/socket"
 import { apiGet } from "@/lib/api"
 import { cn } from "@/lib/utils"
 
-/** Pipeline stages in TradingAgents execution order */
+/** Pipeline stage IDs MUST match the backend's ``PIPELINE_STEPS`` first
+ * element (see ``stock_trading_system/agents/analyzer.py``). The backend
+ * emits events with ``payload.step`` set to one of these IDs and
+ * ``payload.type`` describing the lifecycle event. */
 const STAGES = [
-  { id: "market_agent",       label: "技术面" },
-  { id: "sentiment_agent",    label: "情绪面" },
-  { id: "news_agent",         label: "新闻" },
-  { id: "fundamentals_agent", label: "基本面" },
-  { id: "bull_researcher",    label: "看多" },
-  { id: "bear_researcher",    label: "看空" },
-  { id: "judge",              label: "裁判" },
-  { id: "risk_manager",       label: "风控" },
-  { id: "trader",             label: "决策" },
+  { id: "market",       label: "技术面" },
+  { id: "social",       label: "情绪面" },
+  { id: "news",         label: "新闻" },
+  { id: "fundamentals", label: "基本面" },
+  { id: "debate",       label: "多空辩论" },
+  { id: "risk",         label: "风险评估" },
+  { id: "decision",     label: "最终决策" },
 ] as const
 
+type StageId = typeof STAGES[number]["id"]
 type StageStatus = "pending" | "running" | "done" | "failed"
+
+interface AnalysisPipelinePayload {
+  type?: "pipeline_start" | "step_start" | "step_done" | "pipeline_done" | "pipeline_error"
+  step?: string
+  label?: string
+  index?: number
+  total?: number
+  duration_ms?: number
+  steps?: Array<{ id: string; status?: StageStatus }>
+  reasoning?: string
+  summary?: string
+}
 
 interface PipelineDAGProps {
   taskId: string
   onAllDone?: () => void
 }
 
+function buildInitialStages(): Record<StageId, StageStatus> {
+  const init: Record<string, StageStatus> = {}
+  for (const s of STAGES) init[s.id] = "pending"
+  return init as Record<StageId, StageStatus>
+}
+
 export function PipelineDAG({ taskId, onAllDone }: PipelineDAGProps) {
-  const [stages, setStages] = useState<Record<string, StageStatus>>(() => {
-    const init: Record<string, StageStatus> = {}
-    for (const s of STAGES) init[s.id] = "pending"
-    return init
-  })
+  const [stages, setStages] = useState<Record<StageId, StageStatus>>(buildInitialStages)
   const [reasoning, setReasoning] = useState<Record<string, string>>({})
   const [expanded, setExpanded] = useState<string | null>(null)
   const allDoneFired = useRef(false)
 
   useEffect(() => {
-    let currentIdx = 0
+    const markAllDone = () => {
+      setStages(prev => {
+        const updated = { ...prev }
+        for (const s of STAGES) updated[s.id] = "done"
+        return updated
+      })
+      if (!allDoneFired.current) {
+        allDoneFired.current = true
+        onAllDone?.()
+      }
+    }
 
     const sub = subscribeTaskStream({
       taskIds: [taskId],
       onEvent: (env: TaskEventEnvelope) => {
-        if (env.event === "agent_stage_done" || env.event === "analysis_pipeline") {
-          const p = (env.payload || {}) as any
-          const stageId = p.stage || p.agent || p.label || ""
+        if (env.event === "analysis_pipeline") {
+          const p = (env.payload || {}) as AnalysisPipelinePayload
+          const evtType = p.type || ""
+          const stepId = p.step || ""
 
-          // Match by stage id or by label
-          const match = STAGES.find(s =>
-            s.id === stageId || s.label === stageId ||
-            stageId.toLowerCase().includes(s.id.replace("_agent", ""))
-          )
-
-          if (match) {
-            setStages(prev => ({ ...prev, [match.id]: "done" }))
-            if (p.reasoning || p.summary) {
-              setReasoning(prev => ({ ...prev, [match.id]: p.reasoning || p.summary }))
-            }
-          } else {
-            // Sequential fallback: mark next stage as done
-            if (currentIdx < STAGES.length) {
-              const s = STAGES[currentIdx]
-              setStages(prev => ({ ...prev, [s.id]: "done" }))
-              currentIdx++
-            }
+          // pipeline_start: initialize ONLY — never advance any node.
+          // The backend marks the first step as "running" inside its own
+          // step_status snapshot, so we mirror that here without touching
+          // any node beyond ``steps[0]``.
+          if (evtType === "pipeline_start") {
+            setStages(prev => {
+              const reset = buildInitialStages()
+              if (STAGES.length > 0) reset[STAGES[0].id] = "running"
+              return reset
+            })
+            return
           }
 
-          // Mark next stage as running
-          setStages(prev => {
-            const updated = { ...prev }
-            // find first pending and mark running
-            for (const s of STAGES) {
-              if (updated[s.id] === "pending") {
-                updated[s.id] = "running"
-                break
+          // step_start: mark this step as running (don't touch others).
+          if (evtType === "step_start" && isKnownStage(stepId)) {
+            setStages(prev => ({ ...prev, [stepId as StageId]: "running" }))
+            return
+          }
+
+          // step_done: only this transitions a node to "done". The next
+          // pending node (if any) is bumped to "running" so the user sees
+          // forward motion.
+          if (evtType === "step_done" && isKnownStage(stepId)) {
+            setStages(prev => {
+              const updated = { ...prev, [stepId as StageId]: "done" }
+              for (const s of STAGES) {
+                if (updated[s.id] === "pending") {
+                  updated[s.id] = "running"
+                  break
+                }
               }
+              return updated
+            })
+            const note = p.reasoning || p.summary
+            if (note) {
+              setReasoning(prev => ({ ...prev, [stepId]: note }))
             }
-            return updated
-          })
+            return
+          }
+
+          // pipeline_done / pipeline_error: terminal markers.
+          if (evtType === "pipeline_done") {
+            markAllDone()
+            return
+          }
+          if (evtType === "pipeline_error") {
+            setStages(prev => {
+              const updated = { ...prev }
+              for (const s of STAGES) {
+                if (updated[s.id] === "running") updated[s.id] = "failed"
+              }
+              return updated
+            })
+            return
+          }
         }
 
         if (env.event === "task_completed") {
-          setStages(prev => {
-            const updated = { ...prev }
-            for (const s of STAGES) updated[s.id] = "done"
-            return updated
-          })
-          if (!allDoneFired.current) {
-            allDoneFired.current = true
-            onAllDone?.()
-          }
+          markAllDone()
         }
 
         if (env.event === "task_failed") {
@@ -104,23 +146,8 @@ export function PipelineDAG({ taskId, onAllDone }: PipelineDAGProps) {
       onStatusChange: () => {},
     })
 
-    // Mark first stage as running
-    setStages(prev => ({ ...prev, [STAGES[0].id]: "running" }))
-
     // Polling fallback — covers stale page loads + socket drops where no
     // events arrive. When task is already terminal, mark all stages done.
-    const markAllDone = () => {
-      setStages(prev => {
-        const updated = { ...prev }
-        for (const s of STAGES) updated[s.id] = "done"
-        return updated
-      })
-      if (!allDoneFired.current) {
-        allDoneFired.current = true
-        onAllDone?.()
-      }
-    }
-
     const checkStatus = () => {
       apiGet<{ status?: string }>(`/api/tasks/${taskId}`)
         .then(t => {
@@ -129,7 +156,7 @@ export function PipelineDAG({ taskId, onAllDone }: PipelineDAGProps) {
           else if (s === "failed" || s === "cancelled") {
             setStages(prev => {
               const updated = { ...prev }
-              for (const k of Object.keys(updated)) {
+              for (const k of Object.keys(updated) as StageId[]) {
                 if (updated[k] === "running") updated[k] = "failed"
               }
               return updated
@@ -206,6 +233,10 @@ export function PipelineDAG({ taskId, onAllDone }: PipelineDAGProps) {
       )}
     </div>
   )
+}
+
+function isKnownStage(id: string): id is StageId {
+  return (STAGES as readonly { id: string }[]).some(s => s.id === id)
 }
 
 function StageNode({

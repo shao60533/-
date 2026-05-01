@@ -1117,8 +1117,9 @@ def create_app(config_path=None):
     def api_analysis_history():
         """List recent analyses. Frontend `/analysis` shows the top 5 as cards.
 
-        Each row gets a ``created_by_name`` JOIN so the cards can display
-        the originator. Response shape: ``{items, count}``.
+        Whitelisted DTO — the raw row contains per-user advice columns
+        (``advice_json`` / ``action`` / ``position_pct`` / ``entry_*`` /
+        ``stop_loss`` / ``take_profit``) that must not leak across users.
         """
         from stock_trading_system.portfolio.database import PortfolioDatabase
         db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
@@ -1126,22 +1127,38 @@ def create_app(config_path=None):
         ticker = request.args.get("ticker")
         limit = int(request.args.get("limit", 50))
         records = db.get_analysis_history(ticker=ticker, limit=limit)
+
         # Resolve display_name via the user repo (cache per request).
         cache: dict[int, str] = {}
-        for rec in records:
-            uid = rec.get("created_by")
+
+        def _name(uid):
             if uid is None:
-                continue
+                return None
             if uid not in cache:
                 try:
                     user = _user_repo.find_by_id(int(uid))
                     cache[uid] = (user.display_name or user.email) if user else ""
                 except Exception:  # noqa: BLE001
                     cache[uid] = ""
-            rec["created_by_name"] = cache[uid] or None
+            return cache[uid] or None
+
+        items = [{
+            "id":               rec.get("id"),
+            "ticker":           rec.get("ticker"),
+            "date":             rec.get("date"),
+            "signal":           rec.get("signal"),
+            "created_at":       rec.get("created_at"),
+            "created_by":       rec.get("created_by"),
+            "created_by_name":  _name(rec.get("created_by")),
+            "provider":         rec.get("provider"),
+            "model":            rec.get("model"),
+            "duration_sec":     rec.get("duration_sec"),
+            "task_id":          rec.get("task_id"),
+            "bookmarked":       bool(rec.get("bookmarked")),
+        } for rec in records]
         # Both `items` (v1.14 contract) and `records` (legacy HistoryPage)
         # are surfaced so we don't have to refactor every caller in this PR.
-        return jsonify({"items": records, "records": records, "count": len(records)})
+        return jsonify({"items": items, "records": items, "count": len(items)})
 
     @app.route("/api/history/<int:analysis_id>")
     def api_analysis_detail(analysis_id):
@@ -1164,23 +1181,20 @@ def create_app(config_path=None):
 
         # Resolve created_by → display_name (fallback to email).
         created_by_name = None
-        if record.get("created_by"):
+        creator_id = record.get("created_by")
+        if creator_id:
             try:
-                user = _user_repo.find_by_id(int(record["created_by"]))
+                user = _user_repo.find_by_id(int(creator_id))
                 if user:
                     created_by_name = user.display_name or user.email
             except Exception as e:  # noqa: BLE001
                 logger.warning("created_by lookup failed: %s", e)
 
-        # confidence string → numeric for the gauge UI
-        conf_str = (record.get("confidence") or "").lower()
-        conf_map = {"high": 0.85, "medium": 0.5, "low": 0.25}
-        confidence_num = conf_map.get(conf_str)
-
         # advice dict that the frontend renders. Prefer the current user's
-        # entry; fall back to the legacy ``advice_json`` blob on the shared
-        # row for pre-v1.14 records (back-compat — safe because that legacy
-        # column was set by the original requester anyway).
+        # entry; fall back to the legacy ``advice_json`` blob ONLY when the
+        # requester was the original creator — pre-v1.14 rows wrote the
+        # creator's holdings-aware advice into the shared column, so any
+        # other reader would be inheriting somebody else's plan.
         advice: dict = {}
         if user_advice:
             for key in ("action", "confidence", "position_pct",
@@ -1188,10 +1202,15 @@ def create_app(config_path=None):
                         "reasoning", "risk_warning"):
                 if user_advice.get(key) is not None:
                     advice[key] = user_advice[key]
-        elif record.get("advice_json"):
+        elif record.get("advice_json") and (
+            user_id is not None and creator_id is not None
+            and int(creator_id) == int(user_id)
+        ):
             try:
                 blob = record["advice_json"]
-                advice = json.loads(blob) if isinstance(blob, str) else blob or {}
+                advice = json.loads(blob) if isinstance(blob, str) else (blob or {})
+                if not isinstance(advice, dict):
+                    advice = {}
             except (json.JSONDecodeError, TypeError):
                 advice = {}
 
@@ -1201,16 +1220,44 @@ def create_app(config_path=None):
             if record.get(key):
                 analysts[key.replace("_report", "").replace("_", " ").title()] = record[key]
 
-        record["summary"] = record.get("executive_summary") or record.get("trade_decision") or ""
-        record["recommendation"] = record.get("trade_decision") or ""
-        record["confidence"] = confidence_num
-        record["risk_level"] = advice.get("risk_level") or conf_str or "-"
-        record["analysts"] = analysts
-        record["advice"] = advice or None
-        record["bookmarked"] = bookmarked
-        record["created_by_name"] = created_by_name
+        # confidence string → numeric for the gauge UI. Pull from the
+        # per-user advice row, never the shared (and now-empty) column.
+        conf_str = (advice.get("confidence") or "").lower() if isinstance(advice.get("confidence"), str) else ""
+        conf_map = {"high": 0.85, "medium": 0.5, "low": 0.25}
+        confidence_num = conf_map.get(conf_str)
 
-        return jsonify(record)
+        # Whitelisted DTO — never echo the raw row, which carries shared
+        # advice columns whose values would have leaked across users on
+        # pre-v1.14 records.
+        return jsonify({
+            "id":                 record.get("id"),
+            "ticker":             record.get("ticker"),
+            "date":               record.get("date"),
+            "signal":             record.get("signal"),
+            "created_at":         record.get("created_at"),
+            "created_by":         creator_id,
+            "created_by_name":    created_by_name,
+            "provider":           record.get("provider"),
+            "model":              record.get("model"),
+            "duration_sec":       record.get("duration_sec"),
+            "task_id":            record.get("task_id"),
+            "config_hash":        record.get("config_hash"),
+            "executive_summary":  record.get("executive_summary"),
+            "summary":            record.get("executive_summary") or record.get("trade_decision") or "",
+            "recommendation":     record.get("trade_decision") or "",
+            "trade_decision":     record.get("trade_decision") or "",
+            "market_report":      record.get("market_report") or "",
+            "sentiment_report":   record.get("sentiment_report") or "",
+            "news_report":        record.get("news_report") or "",
+            "fundamentals_report": record.get("fundamentals_report") or "",
+            "investment_debate":  record.get("investment_debate") or "",
+            "risk_assessment":    record.get("risk_assessment") or "",
+            "analysts":           analysts,
+            "confidence":         confidence_num,
+            "risk_level":         advice.get("risk_level") or conf_str or "-",
+            "advice":             advice or None,
+            "bookmarked":         bookmarked,
+        })
 
     @app.route("/api/history/compare")
     def api_analysis_compare():
@@ -2392,12 +2439,17 @@ def create_app(config_path=None):
                 "error": f"Unknown task type: {task_type}",
                 "registered": tm.registered_types(),
             }), 400
-        # Inject LLM provider/model into shared research task params for cache dedup
+        # Inject LLM provider/model into shared research task params for
+        # cache dedup. Use the same per-provider resolver the analyzer uses
+        # so cache keys are stable (``qwen:qwen-plus``) rather than the
+        # legacy ``qwen:`` empty-model form.
         if task_type in ("analysis", "screen", "screen_v2", "screen_v3", "backtest"):
-            from stock_trading_system.llm.router import get_active_provider
+            from stock_trading_system.llm.router import resolve_active_model
             cfg = get_config()
-            params.setdefault("_provider", get_active_provider(cfg))
-            params.setdefault("_model", cfg.get("llm", {}).get("model", ""))
+            uid_for_resolve = g.user.id if g.user else None
+            prov, mdl = resolve_active_model(cfg, user_id=uid_for_resolve)
+            params.setdefault("_provider", prov)
+            params.setdefault("_model", mdl or "")
 
         uid = g.user.id if g.user else None
         # Inject the requester id into params so workers (e.g. analysis) can

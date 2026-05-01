@@ -54,7 +54,16 @@ def make_analysis_worker(get_analyzer, get_strategy_engine, get_portfolio, get_r
                 _emit_ev(task_id, "analysis_pipeline", {"ticker": ticker, **event})
 
         progress_cb(15, "启动 7 Agent 分析")
-        raw = analyzer.analyze(ticker, date, progress_cb=_analysis_progress)
+        # Adapter compatibility: older / fake analyzers don't accept the
+        # ``progress_cb`` kwarg. Try the streaming call first; fall back to
+        # the unannotated signature if that's the only thing missing.
+        try:
+            raw = analyzer.analyze(ticker, date, progress_cb=_analysis_progress)
+        except TypeError as e:
+            if "progress_cb" in str(e):
+                raw = analyzer.analyze(ticker, date)
+            else:
+                raise
 
         # When iteration is enabled, analyze() returns (AnalysisResult, final_state)
         final_state = None
@@ -96,10 +105,19 @@ def make_analysis_worker(get_analyzer, get_strategy_engine, get_portfolio, get_r
             except Exception as e:  # noqa: BLE001
                 logger.warning("final_state serialization failed: %s", e)
         # Per-user advice — written to user_analysis_advice by the post-save
-        # hook in TaskManager. NOT into analysis_history (shared row).
+        # hook in TaskManager. ``_advice_payload`` is the canonical key the
+        # hook reads; ``advice`` is kept at the top level purely for in-process
+        # callers (tests, future async tasks) and is intentionally NOT
+        # persisted into the shared ``analysis_history`` row — task_store
+        # ignores it (see ``_save_analysis_result``).
         if advice is not None:
+            advice_dict = (
+                advice if isinstance(advice, dict)
+                else getattr(advice, "__dict__", None) or {}
+            )
+            out["advice"] = advice_dict
             out["_advice_payload"] = {
-                "advice": advice,
+                "advice": advice_dict,
                 "holdings_snapshot": holdings_snapshot,
             }
         return out
@@ -108,25 +126,17 @@ def make_analysis_worker(get_analyzer, get_strategy_engine, get_portfolio, get_r
 
 
 def _resolve_active_provider_model(cfg: dict, user_id) -> tuple[str | None, str | None]:
-    """Best-effort lookup of the active LLM provider + model for the run.
+    """Thin wrapper over :func:`stock_trading_system.llm.router.resolve_active_model`.
 
-    Falls back to the global provider when the per-user override is unset.
+    Kept for backward compatibility — every other caller now imports the
+    canonical resolver directly.
     """
     try:
-        from stock_trading_system.llm.router import get_active_provider
-        provider = get_active_provider(cfg, user_id=user_id) if user_id else \
-            get_active_provider(cfg)
+        from stock_trading_system.llm.router import resolve_active_model
+        return resolve_active_model(cfg, user_id=user_id)
     except Exception as e:  # noqa: BLE001
-        logger.warning("active provider lookup failed: %s", e)
-        provider = None
-    if provider == "qwen":
-        model = (cfg.get("qwen") or {}).get("model")
-    elif provider == "gemini":
-        gem = cfg.get("gemini") or {}
-        model = gem.get("deep_think_model") or gem.get("model")
-    else:
-        model = (cfg.get("llm") or {}).get("model")
-    return provider, model
+        logger.warning("active provider/model lookup failed: %s", e)
+        return None, None
 
 
 def _hash_llm_config(cfg: dict) -> str:
