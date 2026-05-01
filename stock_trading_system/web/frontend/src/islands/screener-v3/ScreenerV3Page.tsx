@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import React, { useEffect, useRef, useState } from "react"
 import { Play, Zap, Users, Clock, DollarSign, SlidersHorizontal, ChevronDown, ChevronRight, ArrowLeft } from "lucide-react"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -259,13 +259,45 @@ function ScreenerForm() {
 
 /* ── Results View ──────────────────────────────────────────── */
 
+// v1.2: run-mode banner metadata. All fields tolerated as missing for
+// pre-v1.2 result rows (DTO emits zeros / empty list rather than null).
+interface RunMetadata {
+  mode: string
+  llm_calls: number
+  cache_hits: number
+  cache_hit_pct: number
+  duration_sec: number
+  gurus_used: string[]
+  candidates_count: number
+  roundtable_enabled: boolean
+}
+
+interface Votes { bullish: number; bearish: number; neutral: number; total: number }
+
+interface Argument { guru: string; confidence: number; snippet: string }
+
+interface RoundtableItem {
+  ticker: string
+  consensus: string[]
+  dissent: string[]
+  split: boolean
+  debate_snippets: string[]
+}
+
 interface ScreenResult {
   id: number
   task_id: string
-  candidates: Candidate[]
-  roundtable?: { summary: string; consensus: string }
+  // Backend canonical key is ``candidates``; tolerate older / stale
+  // worker payloads that wrote ``results`` instead so a bad cache miss
+  // doesn't render an empty page.
+  candidates?: Candidate[]
+  results?: Candidate[]
+  // v1.2: roundtable arrives as ``{items: [{ticker, ...}]}`` envelope.
+  // Legacy ``{summary, consensus}`` shape still tolerated.
+  roundtable?: { items?: RoundtableItem[]; summary?: string; consensus?: string } | null
   created_at: string
   params?: Record<string, unknown>
+  run_metadata?: RunMetadata
 }
 
 interface GuruScore {
@@ -273,6 +305,9 @@ interface GuruScore {
   confidence: number
   reasoning?: string
   key_metrics?: Record<string, unknown>
+  // v1.0 GuruSignal extras the expanded-row card surfaces.
+  tier?: string
+  philosophy?: string
 }
 
 // Backend normalises older worker payloads into the canonical shape, but
@@ -281,10 +316,78 @@ interface Candidate {
   ticker: string
   composite_score?: number
   final_score?: number
-  signal: string
+  // Server is supposed to backfill this with _derive_candidate_signal;
+  // keep nullable so an older API shape (or a hard-cached stale JSON
+  // payload) still type-checks.
+  signal?: string | null
   guru_scores?: Record<string, GuruScore>
   guru_signals?: Array<{ guru: string } & GuruScore>
+  // v1.2 additive fields emitted by ``ScreenerV3Pipeline._aggregate``.
+  votes?: Votes
+  consensus?: string
+  confidence_range?: { min: number; max: number; avg: number }
+  top_bull_argument?: Argument | null
+  top_bear_argument?: Argument | null
+  roundtable?: RoundtableItem | null
 }
+
+// ── v1.2 display helpers ─────────────────────────────────────────────────
+
+function consensusBadge(c: string): "buy" | "sell" | "hold" | "default" {
+  if (c === "unanimous") return "buy"
+  if (c === "majority") return "hold"
+  if (c === "split") return "sell"
+  return "default"
+}
+
+function consensusLabel(c: string): string {
+  return c === "unanimous" ? "全员共识"
+       : c === "majority" ? "多数派"
+       : c === "split" ? "对峙"
+       : "—"
+}
+
+function fmtDuration(sec: number): string {
+  if (!sec) return "—"
+  const m = Math.floor(sec / 60)
+  const s = sec % 60
+  return m > 0 ? `${m}m ${s}s` : `${s}s`
+}
+
+function tierLabel(tier?: string): string {
+  return tier === "core" ? "核心"
+       : tier === "advanced" ? "进阶"
+       : tier === "classic" ? "经典"
+       : ""
+}
+
+function modeLabel(mode?: string): string {
+  return mode === "agent_rt" ? "Agent + 圆桌"
+       : mode === "agent" ? "Agent (无圆桌)"
+       : mode === "classic" ? "经典阈值"
+       : "Agent"
+}
+
+/** Read a numeric fundamentals field; tolerates strings ("28.5") and
+ *  the akshare "—" / "N/A" sentinels by returning ``null``. */
+function fundNum(fund: Record<string, unknown> | null | undefined,
+                  key: string): number | null {
+  if (!fund) return null
+  const raw = fund[key]
+  if (typeof raw === "number" && Number.isFinite(raw)) return raw
+  if (typeof raw === "string") {
+    const n = Number(raw)
+    if (Number.isFinite(n)) return n
+  }
+  return null
+}
+
+const fmtNum = (v: number | null | undefined, d = 1) =>
+  v != null && Number.isFinite(v) ? v.toFixed(d) : "—"
+const fmtPct = (v: number | null | undefined) =>
+  v != null && Number.isFinite(v) ? `${(v * 100).toFixed(1)}%` : "—"
+const fmtPrice = (v: number | null | undefined) =>
+  v != null && Number.isFinite(v) ? `$${v.toFixed(2)}` : "—"
 
 const candidateScore = (c: Candidate): number =>
   (c.composite_score ?? c.final_score ?? 0)
@@ -301,17 +404,69 @@ const candidateGuruScores = (c: Candidate): Record<string, GuruScore> => {
   return {}
 }
 
+/**
+ * Derive a non-empty signal for a candidate. Mirror of the backend
+ * ``_derive_candidate_signal`` so a stale cached response (server
+ * pre-v1.16) still produces useful 看多/看空 counts.
+ *
+ *   1. existing ``signal`` if non-empty
+ *   2. majority among guru votes
+ *   3. composite_score band: >=65 bullish, <=40 bearish, else neutral
+ *   4. "neutral" default
+ */
+const candidateSignal = (c: Candidate): string => {
+  const explicit = (c.signal || "").trim()
+  if (explicit) return explicit
+  const gurus = candidateGuruScores(c)
+  let bullish = 0, bearish = 0
+  for (const g of Object.values(gurus)) {
+    const s = (g?.signal || "").toLowerCase()
+    if (s.includes("bull") || s.includes("buy")) bullish++
+    else if (s.includes("bear") || s.includes("sell")) bearish++
+  }
+  if (bullish > bearish) return "bullish"
+  if (bearish > bullish) return "bearish"
+  const sc = candidateScore(c)
+  if (sc >= 65) return "bullish"
+  if (sc <= 40 && sc > 0) return "bearish"
+  return "neutral"
+}
+
 function ResultsView({ resultId }: { resultId: string }) {
   const [result, setResult] = useState<ScreenResult | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")
   const [expanded, setExpanded] = useState<string | null>(null)
+  // v1.2: lazy-load /api/fundamentals/<ticker> per row. Cache in state
+  // so re-renders don't refetch; ``fundLoading`` ref prevents the same
+  // ticker firing twice while the network call is in flight.
+  const [funds, setFunds] = useState<Record<string, Record<string, unknown> | null>>({})
+  const fundLoading = useRef<Set<string>>(new Set())
 
   useEffect(() => {
     apiGet<ScreenResult>(`/api/screen/v3/results/${resultId}`)
       .then(r => { setResult(r); setLoading(false) })
       .catch(e => { setError(e.message || "加载失败"); setLoading(false) })
   }, [resultId])
+
+  // Trigger one fundamentals fetch per ticker once the result lands.
+  // /api/fundamentals/<ticker> is backed by the v1.6 LocalCache (30s
+  // TTL) so this stays cheap on re-mount.
+  useEffect(() => {
+    if (!result) return
+    const cs = result.candidates || result.results || []
+    for (const c of cs) {
+      if (funds[c.ticker] !== undefined) continue
+      if (fundLoading.current.has(c.ticker)) continue
+      fundLoading.current.add(c.ticker)
+      apiGet<Record<string, unknown>>(`/api/fundamentals/${c.ticker}`)
+        .then(d => setFunds(prev => ({ ...prev, [c.ticker]: d })))
+        .catch(() => setFunds(prev => ({ ...prev, [c.ticker]: null })))
+    }
+    // Only re-fire when the result identity changes — funds map updates
+    // shouldn't retrigger the loop (that would race the loading set).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [result?.task_id])
 
   if (loading) return (
     <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-4">
@@ -328,12 +483,35 @@ function ResultsView({ resultId }: { resultId: string }) {
     </div>
   )
 
-  const candidates = result.candidates || []
-  const bullish = candidates.filter(c => c.signal?.toLowerCase().includes("bull") || c.signal?.toLowerCase().includes("buy")).length
-  const bearish = candidates.filter(c => c.signal?.toLowerCase().includes("bear") || c.signal?.toLowerCase().includes("sell")).length
+  const candidates = result.candidates || result.results || []
+  // v1.2 verdict counts ignore "split" so the "对峙" rows surface in
+  // their own column rather than masquerading as bull/bear.
+  const bullish = candidates.filter(c => {
+    const s = candidateSignal(c).toLowerCase()
+    return (s === "bullish" || s === "buy") && c.consensus !== "split"
+  }).length
+  const bearish = candidates.filter(c => {
+    const s = candidateSignal(c).toLowerCase()
+    return (s === "bearish" || s === "sell") && c.consensus !== "split"
+  }).length
+  const neutral = candidates.length - bullish - bearish
+  const consensusRate = candidates.length > 0
+    ? Math.round(
+        candidates.filter(
+          c => c.consensus === "unanimous" || c.consensus === "majority",
+        ).length / candidates.length * 100,
+      )
+    : 0
   const avgScore = candidates.length > 0
     ? (candidates.reduce((s, c) => s + candidateScore(c), 0) / candidates.length)
     : 0
+
+  // Roundtable envelope can be a v1.2 ``{items: [...]}`` shape OR a
+  // legacy ``{summary, consensus}`` shape. Prefer items; show legacy
+  // only if items is missing AND there's a summary blob.
+  const roundtableItems: RoundtableItem[] | null =
+    Array.isArray(result.roundtable?.items) ? result.roundtable!.items! :
+    null
 
   return (
     <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-6">
@@ -345,23 +523,92 @@ function ResultsView({ resultId }: { resultId: string }) {
         <Badge variant="muted">{result.created_at?.slice(0, 16)}</Badge>
       </div>
 
-      {/* Summary stats */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 grid-collapse-mobile">
+      {/* v1.2 — 6 KPI columns. Pre-v1.2 rows without ``consensus`` /
+          ``votes`` still light up bullish/bearish/neutral via signal,
+          but consensus_rate falls back to 0 (acceptable degraded UX). */}
+      <div className="grid grid-cols-2 md:grid-cols-6 gap-3 grid-collapse-mobile">
         <Stat label="候选数" value={String(candidates.length)} />
         <Stat label="平均分" value={avgScore.toFixed(1)} />
         <Stat label="看多" value={String(bullish)} />
         <Stat label="看空" value={String(bearish)} />
+        <Stat label="中性" value={String(neutral)} />
+        <Stat label="共识率" value={`${consensusRate}%`} />
       </div>
 
-      {/* Roundtable */}
-      {result.roundtable?.summary && (
+      {/* v1.2 — run-mode banner. Hidden for legacy rows that have no
+          metadata (DTO emits zeros + empty list, which we read as
+          "nothing meaningful to show"). */}
+      {result.run_metadata && result.run_metadata.gurus_used.length + result.run_metadata.llm_calls > 0 && (
         <Card>
-          <CardHeader><CardTitle className="text-sm">圆桌辩论结果</CardTitle></CardHeader>
-          <CardContent>
-            <p className="text-sm text-[var(--color-text-secondary)] whitespace-pre-wrap">{result.roundtable.summary}</p>
-            {result.roundtable.consensus && (
-              <Badge variant="default" className="mt-2">{result.roundtable.consensus}</Badge>
+          <CardContent className="py-3 flex flex-wrap items-center gap-3 text-xs">
+            <Badge variant="default">⚡ {modeLabel(result.run_metadata.mode)}</Badge>
+            <span>{result.run_metadata.gurus_used.length} 大师</span>
+            {result.run_metadata.gurus_used.length > 0 && (
+              <div className="flex -space-x-1">
+                {result.run_metadata.gurus_used.slice(0, 6).map(g => (
+                  <Avatar key={g} initials={g.slice(0, 2).toUpperCase()} size="sm"
+                          className="border-2 border-background" />
+                ))}
+              </div>
             )}
+            <span className="text-muted-foreground">·</span>
+            <span>{result.run_metadata.llm_calls} LLM call</span>
+            <span className="text-muted-foreground">·</span>
+            <span>命中缓存 {result.run_metadata.cache_hit_pct}%</span>
+            <span className="text-muted-foreground">·</span>
+            <span>耗时 {fmtDuration(result.run_metadata.duration_sec)}</span>
+            {!result.run_metadata.roundtable_enabled && (
+              <Badge variant="muted" className="ml-auto">无圆桌</Badge>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* v1.2 — Top-5 圆桌辩论 grid (one card per ticker). */}
+      {roundtableItems && roundtableItems.length > 0 && (
+        <Card>
+          <CardHeader className="pb-2"><CardTitle className="text-sm">Top 5 圆桌辩论</CardTitle></CardHeader>
+          <CardContent>
+            <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+              {roundtableItems.map(rt => (
+                <Card key={rt.ticker}
+                      className={cn(
+                        "border",
+                        rt.split ? "border-orange-500/40" : "border-emerald-500/40",
+                      )}>
+                  <CardHeader className="pb-2">
+                    <div className="flex items-center justify-between">
+                      <CardTitle className="font-mono text-base">{rt.ticker}</CardTitle>
+                      <Badge variant={rt.split ? "sell" : "buy"}>
+                        {rt.split ? "CONTESTED" : "CONSENSUS"}
+                      </Badge>
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      共识 {rt.consensus?.length ?? 0} 人
+                      {rt.dissent && rt.dissent.length > 0 && (
+                        <> · 异议 {rt.dissent.length} 人</>
+                      )}
+                    </div>
+                  </CardHeader>
+                  <CardContent className="space-y-2">
+                    {(rt.debate_snippets || []).map((line, i) => {
+                      const isBull = line.startsWith("🟢")
+                      const isBear = line.startsWith("🔴")
+                      const isJudge = line.startsWith("⚖️")
+                      return (
+                        <div key={i} className={cn(
+                          "text-xs leading-relaxed pl-2 border-l-2",
+                          isBull ? "border-emerald-500/50"
+                          : isBear ? "border-red-500/50"
+                          : isJudge ? "border-primary"
+                          : "border-zinc-500/30",
+                        )}>{line}</div>
+                      )
+                    })}
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
           </CardContent>
         </Card>
       )}
@@ -374,8 +621,8 @@ function ResultsView({ resultId }: { resultId: string }) {
             <p className="text-center py-8 text-muted-foreground">无候选结果</p>
           ) : (
             <>
-              {/* Desktop table */}
-              <div className="hidden md:block">
+              {/* Desktop table — v1.2 columns: votes分布 + 共识度 + 现价 + PE */}
+              <div className="hidden md:block overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b text-muted-foreground text-xs uppercase">
@@ -383,61 +630,101 @@ function ResultsView({ resultId }: { resultId: string }) {
                       <th className="text-left py-2 px-2">代码</th>
                       <th className="text-right py-2 px-2">综合分</th>
                       <th className="text-center py-2 px-2">信号</th>
-                      <th className="text-right py-2 px-2">大师数</th>
+                      <th className="text-left py-2 px-2">投票分布</th>
+                      <th className="text-center py-2 px-2">共识度</th>
+                      <th className="text-right py-2 px-2">现价</th>
+                      <th className="text-right py-2 px-2">PE</th>
                       <th className="text-right py-2 px-2"></th>
                     </tr>
                   </thead>
                   <tbody>
-                    {candidates.map((c, i) => (
-                      <tr key={c.ticker} className="border-b border-border/50 hover:bg-muted/30">
-                        <td className="py-2.5 px-2 text-muted-foreground">{i + 1}</td>
-                        <td className="py-2.5 px-2 font-mono font-semibold">{c.ticker}</td>
-                        <td className="text-right py-2.5 px-2 font-mono">{candidateScore(c).toFixed(1)}</td>
-                        <td className="text-center py-2.5 px-2">
-                          <Badge variant={signalBadge(c.signal)}>{c.signal || "-"}</Badge>
-                        </td>
-                        <td className="text-right py-2.5 px-2 text-muted-foreground">{Object.keys(candidateGuruScores(c)).length}</td>
-                        <td className="text-right py-2.5 px-2">
-                          <Button variant="ghost" size="sm" onClick={() => setExpanded(expanded === c.ticker ? null : c.ticker)}>
-                            {expanded === c.ticker ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-                          </Button>
-                        </td>
-                      </tr>
-                    ))}
+                    {candidates.map((c, i) => {
+                      const f = funds[c.ticker]
+                      const isOpen = expanded === c.ticker
+                      const sig = candidateSignal(c)
+                      return (
+                        <React.Fragment key={c.ticker}>
+                          <tr className="border-b border-border/50 hover:bg-muted/30">
+                            <td className="py-2.5 px-2 text-muted-foreground">{i + 1}</td>
+                            <td className="py-2.5 px-2 font-mono font-semibold">{c.ticker}</td>
+                            <td className="text-right py-2.5 px-2 font-mono">{candidateScore(c).toFixed(1)}</td>
+                            <td className="text-center py-2.5 px-2">
+                              <Badge variant={signalBadge(sig)}>{sig.toUpperCase()}</Badge>
+                            </td>
+                            <td className="py-2.5 px-2"><VotesBar votes={c.votes} /></td>
+                            <td className="text-center py-2.5 px-2">
+                              <Badge variant={consensusBadge(c.consensus ?? "")}
+                                     className="text-[10px]">
+                                {consensusLabel(c.consensus ?? "")}
+                              </Badge>
+                            </td>
+                            <td className="text-right py-2.5 px-2 font-mono text-xs">
+                              {f === undefined
+                                ? <Skeleton className="h-3 w-12 ml-auto" />
+                                : fmtPrice(fundNum(f, "regularMarketPrice")
+                                            ?? fundNum(f, "currentPrice"))}
+                            </td>
+                            <td className="text-right py-2.5 px-2 font-mono text-xs">
+                              {f === undefined
+                                ? <Skeleton className="h-3 w-8 ml-auto" />
+                                : fmtNum(fundNum(f, "trailingPE"))}
+                            </td>
+                            <td className="text-right py-2.5 px-2">
+                              <Button variant="ghost" size="sm"
+                                      onClick={() => setExpanded(isOpen ? null : c.ticker)}>
+                                {isOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                              </Button>
+                            </td>
+                          </tr>
+                          {isOpen && (
+                            <tr>
+                              <td colSpan={9} className="bg-[var(--color-bg-secondary)] p-4">
+                                <CandidateExpanded c={c} f={f} />
+                              </td>
+                            </tr>
+                          )}
+                        </React.Fragment>
+                      )
+                    })}
                   </tbody>
                 </table>
               </div>
 
-              {/* Mobile cards */}
+              {/* Mobile cards — slimmer info per row, expand to full
+                  CandidateExpanded for parity with desktop. */}
               <div className="md:hidden space-y-2">
-                {candidates.map((c, i) => (
-                  <div key={c.ticker} className="border rounded-lg p-3 cursor-pointer"
-                       onClick={() => setExpanded(expanded === c.ticker ? null : c.ticker)}>
-                    <div className="flex justify-between items-center">
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs text-muted-foreground">#{i + 1}</span>
-                        <span className="font-mono font-semibold">{c.ticker}</span>
+                {candidates.map((c, i) => {
+                  const sig = candidateSignal(c)
+                  const isOpen = expanded === c.ticker
+                  return (
+                    <div key={c.ticker} className="border rounded-lg p-3">
+                      <div className="flex justify-between items-center cursor-pointer"
+                           onClick={() => setExpanded(isOpen ? null : c.ticker)}>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-muted-foreground">#{i + 1}</span>
+                          <span className="font-mono font-semibold">{c.ticker}</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono text-sm">{candidateScore(c).toFixed(1)}</span>
+                          <Badge variant={signalBadge(sig)}>{sig.toUpperCase()}</Badge>
+                        </div>
                       </div>
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono text-sm">{candidateScore(c).toFixed(1)}</span>
-                        <Badge variant={signalBadge(c.signal)}>{c.signal || "-"}</Badge>
+                      <div className="flex items-center gap-2 mt-2">
+                        <VotesBar votes={c.votes} />
+                        <Badge variant={consensusBadge(c.consensus ?? "")}
+                               className="text-[10px] ml-auto">
+                          {consensusLabel(c.consensus ?? "")}
+                        </Badge>
                       </div>
+                      {isOpen && (
+                        <div className="mt-3 pt-3 border-t border-border/40">
+                          <CandidateExpanded c={c} f={funds[c.ticker]} />
+                        </div>
+                      )}
                     </div>
-                    {expanded === c.ticker && <GuruDetails scores={candidateGuruScores(c)} />}
-                  </div>
-                ))}
+                  )
+                })}
               </div>
-
-              {/* Expanded guru details (desktop) */}
-              {expanded && (
-                <div className="hidden md:block mt-2 border rounded-lg p-4 bg-[var(--color-bg-secondary)]">
-                  <div className="text-sm font-semibold mb-2">{expanded} — 大师评分详情</div>
-                  <GuruDetails scores={(() => {
-                    const c = candidates.find(c => c.ticker === expanded)
-                    return c ? candidateGuruScores(c) : {}
-                  })()} />
-                </div>
-              )}
             </>
           )}
         </CardContent>
@@ -446,19 +733,122 @@ function ResultsView({ resultId }: { resultId: string }) {
   )
 }
 
-function GuruDetails({ scores }: { scores: Record<string, GuruScore> }) {
+/** v1.2: visual breakdown of bullish / neutral / bearish guru votes. */
+function VotesBar({ votes }: { votes?: Votes }) {
+  if (!votes || !votes.total) {
+    return <span className="text-xs text-muted-foreground">—</span>
+  }
+  const { bullish, bearish, neutral, total } = votes
   return (
-    <div className="mt-2 space-y-1.5">
-      {Object.entries(scores).map(([guru, s]) => (
-        <div key={guru} className="flex items-start gap-2 text-xs">
-          <Badge variant={signalBadge(s.signal)} className="text-[9px] shrink-0">{s.signal}</Badge>
-          <span className="font-medium min-w-[80px]">{guru}</span>
-          <span className="font-mono text-muted-foreground">{(s.confidence * 100).toFixed(0)}%</span>
-          {s.reasoning && <span className="text-muted-foreground truncate flex-1">{s.reasoning.slice(0, 80)}</span>}
-        </div>
-      ))}
+    <div className="flex items-center gap-2">
+      <div className="flex w-20 h-2 rounded overflow-hidden bg-zinc-800">
+        <div className="bg-emerald-500" style={{ width: `${bullish / total * 100}%` }} />
+        <div className="bg-zinc-500/60" style={{ width: `${neutral / total * 100}%` }} />
+        <div className="bg-red-500" style={{ width: `${bearish / total * 100}%` }} />
+      </div>
+      <span className="text-[10px] font-mono text-muted-foreground whitespace-nowrap">
+        <span className="text-emerald-400">{bullish}✓</span>{" "}
+        <span>{neutral}=</span>{" "}
+        <span className="text-red-400">{bearish}✗</span>
+      </span>
     </div>
   )
+}
+
+/** v1.2: in-row expansion. Replaces the flat one-line GuruDetails with
+ *  a 4-card grid (signal Badge + confidence bar + reasoning + tier) +
+ *  fundamentals KPI strip + action buttons. */
+function CandidateExpanded({ c, f }: {
+  c: Candidate; f: Record<string, unknown> | null | undefined
+}) {
+  const sigs = candidateGuruScoresList(c)
+  return (
+    <div className="space-y-4">
+      <div className="text-sm font-semibold">{c.ticker} — 大师评分详情</div>
+
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        {sigs.map((s, i) => (
+          <Card key={i} className="bg-card/50">
+            <CardContent className="pt-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="font-semibold text-sm">{s.guru}</span>
+                  {s.tier && (
+                    <Badge variant="muted" className="text-[9px]">{tierLabel(s.tier)}</Badge>
+                  )}
+                </div>
+                <Badge variant={signalBadge(s.signal)} className="text-[10px]">
+                  {(s.signal ?? "—").toUpperCase()}
+                </Badge>
+              </div>
+              <div className="flex items-center gap-2 text-xs">
+                <div className="flex-1 h-1.5 bg-zinc-800 rounded overflow-hidden">
+                  <div className="h-full bg-primary"
+                       style={{ width: `${(s.confidence ?? 0) * 100}%` }} />
+                </div>
+                <span className="font-mono text-muted-foreground text-[10px]">
+                  {((s.confidence ?? 0) * 100).toFixed(0)}%
+                </span>
+              </div>
+              <div className="text-xs leading-relaxed text-muted-foreground line-clamp-6"
+                   title={s.philosophy}>
+                {(s.reasoning ?? "").slice(0, 240)}
+                {((s.reasoning ?? "").length > 240) && "…"}
+              </div>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+
+      {f && (
+        <div className="rounded border border-border/50 bg-card/30 px-4 py-2">
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-x-4 gap-y-1 text-xs font-mono">
+            <KV k="现价"     v={fmtPrice(fundNum(f, "regularMarketPrice")
+                                          ?? fundNum(f, "currentPrice"))} />
+            <KV k="200-SMA"  v={fmtPrice(fundNum(f, "twoHundredDayAverage"))} />
+            <KV k="PE"       v={fmtNum(fundNum(f, "trailingPE"))} />
+            <KV k="ROE"      v={fmtPct(fundNum(f, "returnOnEquity"))} />
+            <KV k="D/E"      v={fmtNum(fundNum(f, "debtToEquity"), 0)} />
+          </div>
+        </div>
+      )}
+
+      <div className="flex flex-wrap gap-2">
+        <Button size="sm" variant="outline"
+                onClick={() => { window.location.href = `/analysis?ticker=${c.ticker}` }}>
+          <Zap className="h-3.5 w-3.5 mr-1" /> 跑 AI 分析
+        </Button>
+        <Button size="sm" variant="outline"
+                onClick={() => {
+                  fetch("/api/portfolio/track", {
+                    method: "POST",
+                    credentials: "same-origin",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ ticker: c.ticker }),
+                  }).catch(() => { /* surface failure via UI later */ })
+                }}>
+          加入观察列表
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+function KV({ k, v }: { k: string; v: string }) {
+  return (
+    <div className="flex items-center justify-between">
+      <span className="text-muted-foreground">{k}</span>
+      <span>{v}</span>
+    </div>
+  )
+}
+
+/** Flatten guru scores into an array preserving the per-guru fields the
+ *  expanded card needs (signal/confidence/reasoning/tier/philosophy). */
+function candidateGuruScoresList(c: Candidate): Array<{ guru: string } & GuruScore> {
+  if (Array.isArray(c.guru_signals) && c.guru_signals.length > 0) return c.guru_signals
+  const map = candidateGuruScores(c)
+  return Object.entries(map).map(([guru, s]) => ({ guru, ...s }))
 }
 
 function signalBadge(signal: string): "buy" | "sell" | "hold" | "default" {

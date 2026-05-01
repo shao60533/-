@@ -1,8 +1,9 @@
 import { AlertTriangle } from "lucide-react"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import type { SentimentCardData } from "./types"
+import type { SentimentCardData, SentimentDriver } from "./types"
 import { MoodGauge } from "./shared/MoodGauge"
+import { safeArray, nonEmptyStr } from "./shared/defensive"
 
 const POLARITY_TONE: Record<string, string> = {
   bullish: "border-emerald-500/40 text-emerald-400",
@@ -14,13 +15,15 @@ const SOURCE_LABEL: Record<string, string> = {
   analyst: "分析师", insider: "内部",
 }
 
-export function SentimentCard({ data }: { data: SentimentCardData }) {
+export function SentimentCard({ data }: { data: SentimentCardData | null | undefined }) {
+  if (!data || typeof data !== "object") return null
+  const drivers = safeArray<SentimentDriver>(data.drivers)
   return (
     <div className="space-y-4">
       <Card>
         <CardContent className="pt-4 flex items-center gap-4 flex-wrap">
           <MoodGauge mood={data.mood} score={data.mood_score} />
-          {data.summary && (
+          {nonEmptyStr(data.summary) && (
             <p className="text-sm leading-relaxed flex-1 min-w-[240px]">{data.summary}</p>
           )}
         </CardContent>
@@ -32,7 +35,7 @@ export function SentimentCard({ data }: { data: SentimentCardData }) {
             <AlertTriangle className="h-4 w-4 text-amber-400 mt-0.5 shrink-0" />
             <div>
               <div className="font-semibold text-amber-300">逆向信号</div>
-              {data.contrarian_reason && (
+              {nonEmptyStr(data.contrarian_reason) && (
                 <div className="text-xs text-muted-foreground mt-0.5">{data.contrarian_reason}</div>
               )}
             </div>
@@ -40,14 +43,21 @@ export function SentimentCard({ data }: { data: SentimentCardData }) {
         </Card>
       )}
 
-      {data.drivers && data.drivers.length > 0 && (
+      {drivers.length > 0 && (
         <Card>
           <CardHeader className="pb-2"><CardTitle className="text-sm">驱动因子</CardTitle></CardHeader>
           <CardContent className="space-y-2">
-            {data.drivers.map((d, i) => (
-              <div key={i} className={`flex items-start gap-3 rounded border bg-card/30 px-3 py-2 ${POLARITY_TONE[d.polarity] ?? "border-zinc-500/30"}`}>
-                <Badge variant="outline" className="text-[10px]">{SOURCE_LABEL[d.source] ?? d.source}</Badge>
-                <span className="text-sm flex-1">{d.theme}</span>
+            {drivers.map((d, i) => (
+              <div
+                key={i}
+                className={`flex items-start gap-3 rounded border bg-card/30 px-3 py-2 ${
+                  POLARITY_TONE[d?.polarity as string] ?? "border-zinc-500/30"
+                }`}
+              >
+                <Badge variant="outline" className="text-[10px]">
+                  {SOURCE_LABEL[d?.source as string] ?? (d?.source ?? "—")}
+                </Badge>
+                <span className="text-sm flex-1">{d?.theme ?? ""}</span>
               </div>
             ))}
           </CardContent>

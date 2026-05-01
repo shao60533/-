@@ -313,7 +313,24 @@ class ScreenerV3Pipeline:
         return round(cost_cny, 2)
 
     def _aggregate(self, candidates, signals, roundtable) -> list[dict]:
-        """Phase 6: aggregate guru signals into ranked results."""
+        """Phase 6: aggregate guru signals into ranked results.
+
+        v1.2 additions (append-only — never mutate v1.0 fields):
+        - ``signal``: majority verdict (bullish / bearish / neutral / split).
+          Pre-v1.2 the candidate row left this NULL and the API DTO ran
+          ``_derive_candidate_signal`` to backfill it from guru votes; now
+          the pipeline does the work itself so the table column never
+          shows "—" for a row that actually has guru signals.
+        - ``votes``: counts per stance + total.
+        - ``consensus``: unanimous / majority / split — drives the
+          frontend "全员共识 / 多数派 / 对峙" Badge.
+        - ``confidence_range``: min / max / avg of guru confidence.
+        - ``top_bull_argument`` / ``top_bear_argument``: highest-confidence
+          guru's reasoning excerpt (max 200 chars) per side, for the
+          expanded-row "核心论据" surface.
+        """
+        from dataclasses import is_dataclass, asdict
+
         by_ticker: dict[str, list[GuruSignal]] = {}
         for s in signals:
             by_ticker.setdefault(s.ticker, []).append(s)
@@ -325,12 +342,81 @@ class ScreenerV3Pipeline:
                 continue
             avg_score = sum(s.total_score for s in sigs) / len(sigs)
             avg_confidence = sum(s.confidence for s in sigs) / len(sigs)
+
+            # ── v1.2 verdict aggregation ──────────────────────────────
+            bullish = [s for s in sigs if s.signal == "bullish"]
+            bearish = [s for s in sigs if s.signal == "bearish"]
+            neutral = [s for s in sigs if s.signal == "neutral"]
+            total = len(sigs)
+            n_bull, n_bear, n_neu = len(bullish), len(bearish), len(neutral)
+
+            if n_bull > n_bear + n_neu:
+                verdict, consensus = "bullish", "unanimous"
+            elif n_bear > n_bull + n_neu:
+                verdict, consensus = "bearish", "unanimous"
+            elif n_bull == 0 and n_bear == 0:
+                verdict, consensus = "neutral", "unanimous"
+            elif n_bull > n_bear and n_bull >= total * 0.6:
+                verdict, consensus = "bullish", "majority"
+            elif n_bear > n_bull and n_bear >= total * 0.6:
+                verdict, consensus = "bearish", "majority"
+            elif n_bull == n_bear and n_bull > 0:
+                verdict, consensus = "split", "split"
+            elif n_bull > n_bear:
+                verdict, consensus = "bullish", "majority"
+            elif n_bear > n_bull:
+                verdict, consensus = "bearish", "majority"
+            else:
+                verdict, consensus = "neutral", "majority"
+
+            confs = [s.confidence for s in sigs]
+            conf_min, conf_max = min(confs), max(confs)
+
+            top_bull = max(bullish, key=lambda s: s.confidence) if bullish else None
+            top_bear = max(bearish, key=lambda s: s.confidence) if bearish else None
+
+            def _arg(sig):
+                if sig is None:
+                    return None
+                return {
+                    "guru": sig.guru,
+                    "confidence": round(sig.confidence, 2),
+                    "snippet": (sig.reasoning or "")[:200],
+                }
+
+            # ``RoundtableResult`` is a dataclass — JSON-encode it via
+            # to_dict() (preferred) or asdict() so the worker's
+            # ``json.dumps`` later doesn't crash on the dataclass instance.
+            rt_obj = roundtable.get(ticker) if roundtable else None
+            if rt_obj is None:
+                rt_dict = None
+            elif hasattr(rt_obj, "to_dict"):
+                rt_dict = rt_obj.to_dict()
+            elif is_dataclass(rt_obj):
+                rt_dict = asdict(rt_obj)
+            else:
+                rt_dict = rt_obj
+
             results.append({
                 "ticker": ticker,
                 "final_score": round(avg_score, 1),
                 "avg_confidence": round(avg_confidence, 2),
                 "guru_signals": [s.model_dump() for s in sigs],
-                "roundtable": roundtable.get(ticker),
+                "roundtable": rt_dict,
+                # ── v1.2 additive fields ─────────────────────────────
+                "signal": verdict,
+                "votes": {
+                    "bullish": n_bull, "bearish": n_bear,
+                    "neutral": n_neu, "total": total,
+                },
+                "consensus": consensus,
+                "confidence_range": {
+                    "min": round(conf_min, 2),
+                    "max": round(conf_max, 2),
+                    "avg": round(avg_confidence, 2),
+                },
+                "top_bull_argument": _arg(top_bull),
+                "top_bear_argument": _arg(top_bear),
             })
 
         results.sort(key=lambda r: r["final_score"], reverse=True)

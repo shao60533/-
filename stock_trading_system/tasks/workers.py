@@ -30,6 +30,9 @@ def make_analysis_worker(get_analyzer, get_strategy_engine, get_portfolio, get_r
         import time as _time
         from stock_trading_system.config import get_config
         from stock_trading_system.portfolio.database import _normalize_depth
+        from stock_trading_system.agents.rendering.state_normalizer import (
+            normalize_state_to_text,
+        )
 
         t_start = _time.perf_counter()
         ticker = (params.get("ticker") or "").upper().strip()
@@ -110,9 +113,20 @@ def make_analysis_worker(get_analyzer, get_strategy_engine, get_portfolio, get_r
             "sentiment_report": result.sentiment_report,
             "news_report": result.news_report,
             "fundamentals_report": result.fundamentals_report,
-            "investment_debate": str(result.investment_debate),
-            "risk_assessment": str(result.risk_assessment),
-            "trade_decision": str(result.trade_decision),
+            # Normalize TradingAgents state dicts to Chinese-headed Markdown
+            # before storage. Previously ``str(dict)`` produced the
+            # ``"{'judge_decision': '...'}"`` Python repr that bled into the
+            # detail page's "完整论述" panel and the user-facing markdown
+            # fallback. Pure-string fields pass through unchanged.
+            "investment_debate": normalize_state_to_text(
+                result.investment_debate, kind="investment_debate",
+            ),
+            "risk_assessment": normalize_state_to_text(
+                result.risk_assessment, kind="risk_debate",
+            ),
+            "trade_decision": normalize_state_to_text(
+                result.trade_decision, kind="trade_decision",
+            ),
             "model": model,
             "provider": provider,
             "config_hash": _hash_llm_config(cfg),

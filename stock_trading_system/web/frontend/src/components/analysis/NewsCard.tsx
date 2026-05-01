@@ -1,6 +1,7 @@
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import type { NewsCardData } from "./types"
+import type { NewsCardData, Headline, Catalyst } from "./types"
+import { safeArray, nonEmptyStr } from "./shared/defensive"
 
 const SENTIMENT_DOT: Record<string, string> = {
   bullish: "bg-emerald-500",
@@ -17,31 +18,34 @@ const KIND_LABEL: Record<string, string> = {
   company: "公司", regulatory: "监管",
 }
 
-export function NewsCard({ data }: { data: NewsCardData }) {
+export function NewsCard({ data }: { data: NewsCardData | null | undefined }) {
+  if (!data || typeof data !== "object") return null
+  const headlines = safeArray<Headline>(data.headlines)
+  const catalysts = safeArray<Catalyst>(data.catalysts)
   return (
     <div className="space-y-4">
-      {data.summary && (
+      {nonEmptyStr(data.summary) && (
         <Card>
           <CardContent className="pt-4 text-sm leading-relaxed">{data.summary}</CardContent>
         </Card>
       )}
 
-      {data.headlines && data.headlines.length > 0 && (
+      {headlines.length > 0 && (
         <Card>
           <CardHeader className="pb-2"><CardTitle className="text-sm">头条</CardTitle></CardHeader>
           <CardContent>
             <div className="space-y-2">
-              {data.headlines.map((h, i) => (
+              {headlines.map((h, i) => (
                 <div key={i} className="flex items-start gap-3">
                   <div className="flex flex-col items-center gap-1 mt-1">
-                    <span className={`inline-block w-2 h-2 rounded-full ${SENTIMENT_DOT[h.sentiment ?? "neutral"]}`} />
-                    <span className={`block w-1 rounded ${IMPACT_BAR[h.impact ?? "medium"]}`} />
+                    <span className={`inline-block w-2 h-2 rounded-full ${SENTIMENT_DOT[h?.sentiment ?? "neutral"] ?? SENTIMENT_DOT.neutral}`} />
+                    <span className={`block w-1 rounded ${IMPACT_BAR[h?.impact ?? "medium"] ?? IMPACT_BAR.medium}`} />
                   </div>
                   <div className="flex-1">
-                    <div className="text-sm">{h.title}</div>
+                    <div className="text-sm">{h?.title ?? ""}</div>
                     <div className="text-[10px] text-muted-foreground mt-0.5 flex gap-2">
-                      {h.source && <span>{h.source}</span>}
-                      {h.date && <span>· {h.date}</span>}
+                      {nonEmptyStr(h?.source) && <span>{h.source}</span>}
+                      {nonEmptyStr(h?.date) && <span>· {h.date}</span>}
                     </div>
                   </div>
                 </div>
@@ -51,17 +55,19 @@ export function NewsCard({ data }: { data: NewsCardData }) {
         </Card>
       )}
 
-      {data.catalysts && data.catalysts.length > 0 && (
+      {catalysts.length > 0 && (
         <Card>
           <CardHeader className="pb-2"><CardTitle className="text-sm">催化剂时间线</CardTitle></CardHeader>
           <CardContent>
             <div className="space-y-2">
-              {data.catalysts.map((c, i) => (
+              {catalysts.map((c, i) => (
                 <div key={i} className="flex items-start gap-3 rounded border border-border/40 bg-card/30 px-3 py-2">
-                  <Badge variant="outline" className="text-[10px]">{KIND_LABEL[c.kind] ?? c.kind}</Badge>
+                  <Badge variant="outline" className="text-[10px]">
+                    {KIND_LABEL[c?.kind as string] ?? (c?.kind ?? "—")}
+                  </Badge>
                   <div className="flex-1 text-sm">
-                    {c.summary}
-                    {c.date && (
+                    {c?.summary ?? ""}
+                    {nonEmptyStr(c?.date) && (
                       <div className="text-[10px] text-muted-foreground mt-0.5">{c.date}</div>
                     )}
                   </div>

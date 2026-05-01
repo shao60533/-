@@ -53,12 +53,16 @@ def test_ticker_detail_does_not_leak_legacy_advice_json(
     )
 
     # Bob (non-creator, no user advice) opens Alice's ticker.
+    # v1.21 tightened the contract: ``find_session_by_ticker`` is now
+    # user-scoped at the route, so Bob receives 404 instead of seeing
+    # Alice's session with advice masked. Strictly more secure — Bob
+    # never even learns the session exists.
     resp = bob_client.get("/api/paper/tickers/AAPL")
-    assert resp.status_code == 200
-    body = resp.get_json()
-    assert body["latest_advice"] is None, (
-        "bob must not see alice's legacy advice_json blob"
-    )
+    assert resp.status_code == 404, resp.get_json()
+    # Belt-and-braces: even on the historical "200 with masked advice"
+    # behavior the body must not leak advice. We assert this stays true
+    # via the 404 — there's no body to leak from.
+    assert "advice" not in (resp.get_json() or {})
 
 
 def test_ticker_detail_returns_user_advice_when_present(

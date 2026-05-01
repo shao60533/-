@@ -99,22 +99,142 @@ def _get_scheduler():
 
 
 def _parse_rendering(raw) -> dict:
-    """Best-effort decode of ``analysis_history.rendering_json``.
+    """Best-effort decode + DTO normalize of ``analysis_history.rendering_json``.
 
     Returns the parsed dict on success; an empty dict for missing /
     malformed rows. NEVER returns the raw string — the API contract
     promises a structured object so clients can read ``rendering[tab]``
     without re-parsing.
+
+    v1.21: every tab card is also passed through ``_normalize_card`` so a
+    single bad enum / non-list field can no longer take down the React
+    detail page (the production /analysis/17 white-screen). Cards that
+    can't be normalised at all are dropped — the frontend falls back to
+    the markdown body for those tabs.
     """
     if not raw:
         return {}
     if isinstance(raw, dict):
-        return raw
-    try:
-        parsed = json.loads(raw)
-    except (json.JSONDecodeError, TypeError):
+        parsed = raw
+    else:
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+    if not isinstance(parsed, dict):
         return {}
-    return parsed if isinstance(parsed, dict) else {}
+    out: dict = {}
+    for tab_key, card in parsed.items():
+        normalised = _normalize_card(tab_key, card)
+        if normalised is not None:
+            out[tab_key] = normalised
+    return out
+
+
+# Per-card normalisers. Each returns either a sanitised dict or None
+# (drop the card entirely so the frontend ErrorBoundary fallback kicks in
+# AND the markdown body still renders the same content as plain text).
+
+def _normalize_card(tab_key: str, card) -> dict | None:
+    """Project a single tab card into a defensive shape.
+
+    Contract:
+        * Drops the card entirely when ``card`` isn't a dict.
+        * Coerces array fields to ``[]`` when missing / non-list.
+        * Coerces missing object fields to ``None`` (frontend renders
+          empty state) instead of leaving them undefined.
+        * Coerces non-numeric "number" fields to ``None`` so the card
+          can render "—" instead of crashing on ``.toFixed``.
+    """
+    if not isinstance(card, dict):
+        return None
+
+    # Generic per-tab massage. Tabs we don't know about pass through
+    # unchanged but still get list/dict guards on common keys.
+    out = dict(card)
+
+    # 1. Overview ----------------------------------------------------
+    if tab_key == "summary":
+        out["key_metrics"] = _ensure_list(out.get("key_metrics"))
+        out["decision_drivers"] = _ensure_list(out.get("decision_drivers"))
+        ds = out.get("debate_synthesis")
+        out["debate_synthesis"] = ds if isinstance(ds, dict) else None
+
+    # 2. Market ------------------------------------------------------
+    elif tab_key == "Market":
+        out["indicators"] = _ensure_list(out.get("indicators"))
+        out["support_resistance"] = [
+            {**lvl, "price": _coerce_finite(lvl.get("price"))}
+            for lvl in _ensure_list(out.get("support_resistance"))
+            if isinstance(lvl, dict)
+        ]
+        out["patterns"] = [p for p in _ensure_list(out.get("patterns"))
+                            if isinstance(p, str) and p.strip()]
+
+    # 3. Sentiment ---------------------------------------------------
+    elif tab_key == "Sentiment":
+        out["drivers"] = _ensure_list(out.get("drivers"))
+        out["mood_score"] = _coerce_finite(out.get("mood_score")) or 0
+
+    # 4. News --------------------------------------------------------
+    elif tab_key == "News":
+        out["headlines"] = _ensure_list(out.get("headlines"))
+        out["catalysts"] = _ensure_list(out.get("catalysts"))
+
+    # 5. Fundamentals -----------------------------------------------
+    elif tab_key == "Fundamentals":
+        for sub in ("valuation", "growth", "profitability", "balance_sheet"):
+            v = out.get(sub)
+            out[sub] = v if isinstance(v, dict) else None
+        qs = _coerce_finite(out.get("quality_score"))
+        out["quality_score"] = qs if qs is not None else None
+
+    # 6. Investment Debate ------------------------------------------
+    elif tab_key == "Investment Debate":
+        out["bull_arguments"] = _ensure_list(out.get("bull_arguments"))
+        out["bear_arguments"] = _ensure_list(out.get("bear_arguments"))
+
+    # 7. Risk Assessment --------------------------------------------
+    elif tab_key == "Risk Assessment":
+        out["top_risks"] = _ensure_list(out.get("top_risks"))
+        for stance_key in ("aggressive", "conservative", "neutral"):
+            v = out.get(stance_key)
+            out[stance_key] = v if isinstance(v, dict) else None
+
+    # 8. Decision ---------------------------------------------------
+    elif tab_key == "Decision":
+        ez = out.get("entry_zone")
+        out["entry_zone"] = ez if isinstance(ez, dict) else None
+        out["structural_stop"] = _coerce_finite(out.get("structural_stop"))
+        out["take_profit_levels"] = _ensure_list(out.get("take_profit_levels"))
+        out["preconditions"] = [p for p in _ensure_list(out.get("preconditions"))
+                                  if isinstance(p, str) and p.strip()]
+        out["exit_conditions"] = [p for p in _ensure_list(out.get("exit_conditions"))
+                                    if isinstance(p, str) and p.strip()]
+        out["alternative_scenarios"] = _ensure_list(out.get("alternative_scenarios"))
+
+    return out
+
+
+def _ensure_list(v) -> list:
+    """Always return a list. Non-list inputs degrade to ``[]`` so the
+    frontend ``Array.isArray`` guard never has to hit a fallback."""
+    return v if isinstance(v, list) else []
+
+
+def _coerce_finite(v):
+    """Coerce a value to a finite float or ``None``. Mirrors the
+    ``toFiniteNumber`` helper on the frontend so both layers agree."""
+    if v is None or v == "":
+        return None
+    if isinstance(v, bool):  # bool is a subclass of int — exclude.
+        return None
+    try:
+        n = float(v)
+    except (TypeError, ValueError):
+        return None
+    import math
+    return n if math.isfinite(n) else None
 
 
 def _mask_secret(value: str, keep: int = 4) -> str:
@@ -2471,23 +2591,33 @@ def create_app(config_path=None):
         """List tickers with their plan / position summary.
 
         v1.16: collapsed from O(N) per-session round-trips down to 4
-        aggregated queries via ``list_ticker_sessions_summary``. The
-        list view returns only the columns the table renders; full
-        events / dailies / trades / plans are deferred to the detail
-        endpoint (``/api/paper/tickers/<ticker>``). Hit-rate is dropped
-        from the list — old code iterated events × dailies on every
-        request, costing seconds for users with many tracked tickers.
+        aggregated queries via ``list_ticker_sessions_summary``.
+
+        v1.21: results are now grouped by ``(user_id, ticker)`` so
+        legacy duplicate paper-trade sessions for the same ticker
+        collapse to a single card. ``session_ids`` exposes every
+        sibling so the detail endpoint can fan out across them.
         """
+        if g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
+        uid = int(g.user.id)
         store = _get_paper_store()
         mode_arg = (request.args.get("mode") or "forward").lower()
         mode = mode_arg if mode_arg in {"forward", "replay"} else None
-        summaries = store.list_ticker_sessions_summary(mode=mode)
+        summaries = store.list_ticker_sessions_summary(mode=mode, user_id=uid)
         out = []
         for s in summaries:
             last = s.get("last_daily_stat") or {}
             evt = s.get("latest_event") or {}
+            sib_ids = s.get("session_ids") or [int(s["id"])]
             out.append({
+                # ``id`` stays the canonical (earliest) session so old
+                # deep-links still resolve. ``latest_session_id`` is the
+                # newest sibling; ``session_ids`` lists all of them so
+                # the detail page can merge data across them.
                 "id": int(s["id"]),
+                "session_ids": sib_ids,
+                "latest_session_id": int(s.get("latest_session_id") or s["id"]),
                 "ticker": s["ticker"],
                 "status": s["status"],
                 "start_date": s["start_date"],
@@ -2499,7 +2629,12 @@ def create_app(config_path=None):
                 "cum_pnl_pct": float(last.get("cum_pnl_pct") or 0),
                 "position_shares": float(last.get("position_shares") or 0),
                 "close_price": float(last["close_price"]) if last.get("close_price") else None,
+                # ``num_events`` already summed across siblings inside
+                # ``list_ticker_sessions_summary``. ``analysis_count`` is
+                # the same number — strategy events are 1:1 with
+                # analyses that produced a tracked plan.
                 "num_events": int(s.get("num_events") or 0),
+                "analysis_count": int(s.get("num_events") or 0),
                 # Hit-rate intentionally null in the list view — see docstring.
                 "hit_rate": None,
                 "hit_pretty": "—",
@@ -2510,6 +2645,7 @@ def create_app(config_path=None):
                 "open_position_shares": float(s["open_position_shares"])
                     if s.get("open_position_shares") is not None else None,
                 "last_skip_reason": s.get("last_skip_reason"),
+                "latest_analysis_at": evt.get("event_date"),
             })
         return jsonify(out)
 
@@ -2519,18 +2655,59 @@ def create_app(config_path=None):
             return jsonify({"error": "unauthorized"}), 401
         uid = g.user.id
         store = _get_paper_store()
-        sess = store.find_session_by_ticker(ticker.upper())
+        sess = store.find_session_by_ticker(ticker.upper(), user_id=uid)
         if not sess:
             return jsonify({"error": "No session for ticker"}), 404
         sid = int(sess["id"])
-        events = store.list_strategy_events(sid)
-        dailies = store.list_daily_stats(sid, limit=1000)
-        trades = store.list_trades(sid, limit=500)
-        active_plan = store.get_active_plan(sid)
-        all_plans = store.list_plans(sid)
-        active_orders = []
-        if active_plan:
-            active_orders = store.list_orders(plan_id=active_plan["id"])
+        # v1.21: aggregate across legacy duplicate sessions for the same
+        # (user, ticker). Older accounts can have several rows in
+        # ``paper_trade_sessions`` for one ticker; the list page now
+        # collapses them, so the detail view must merge events / plans /
+        # orders / trades / dailies across all sibling session ids too —
+        # otherwise clicking the aggregated card showed only one
+        # session's history.
+        sib_ids = store.aggregate_ticker_session_ids(ticker.upper(), user_id=uid) \
+                  or [sid]
+
+        def _by_event(e: dict) -> tuple:
+            return (str(e.get("event_date") or ""), int(e.get("id") or 0))
+
+        events: list[dict] = []
+        for s_id in sib_ids:
+            events.extend(store.list_strategy_events(s_id))
+        events.sort(key=_by_event, reverse=True)
+
+        dailies: list[dict] = []
+        for s_id in sib_ids:
+            dailies.extend(store.list_daily_stats(s_id, limit=1000))
+        # Dailies merged across siblings — collisions on date are rare
+        # but if they occur prefer the highest-id session's row (most
+        # recent activity).
+        dailies.sort(key=lambda d: (str(d.get("date") or ""),
+                                     int(d.get("session_id") or 0)))
+
+        trades: list[dict] = []
+        for s_id in sib_ids:
+            trades.extend(store.list_trades(s_id, limit=500))
+        trades.sort(key=lambda t: str(t.get("entry_date") or ""), reverse=True)
+
+        # Active plan = pick the one from the latest sibling that has one.
+        active_plan = None
+        for s_id in reversed(sib_ids):
+            ap = store.get_active_plan(s_id)
+            if ap is not None:
+                active_plan = ap
+                break
+        active_orders = (
+            store.list_orders(plan_id=active_plan["id"]) if active_plan else []
+        )
+
+        # Plan history: union across siblings, newest first.
+        all_plans: list[dict] = []
+        for s_id in sib_ids:
+            all_plans.extend(store.list_plans(s_id))
+        all_plans.sort(key=lambda p: str(p.get("created_at") or ""), reverse=True)
+
         plan_history = []
         from stock_trading_system.portfolio.database import PortfolioDatabase as _PDB
         _db = _PDB(get_config().get("portfolio", {}).get("db_path", "data/portfolio.db"))
@@ -2542,7 +2719,8 @@ def create_app(config_path=None):
                 try:
                     _ana = _db.get_analysis_by_id(p["analysis_id"])
                     entry["trade_decision"] = (_ana or {}).get("trade_decision") or ""
-                except Exception:
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("plan_history get_analysis_by_id failed: %s", e)
                     entry["trade_decision"] = ""
             plan_history.append(entry)
         latest = events[0] if events else None
@@ -2577,6 +2755,7 @@ def create_app(config_path=None):
                 }
         return jsonify({
             "session": sess,
+            "session_ids": sib_ids,
             "events": events,
             "dailies": dailies,
             "trades": trades,
@@ -3090,18 +3269,22 @@ def create_app(config_path=None):
                     raw = store.load_result(ref)
                     payload = raw if isinstance(raw, dict) else None
                 if payload is not None:
+                    candidates_dto = _normalize_v3_candidates(payload)
                     response = {
                         "id": _result_ref_to_int(ref),
                         "task_id": task["id"],
                         "created_at": task.get("completed_at") or task.get("created_at"),
                         "params": _v3_params_for_viewer(task),
-                        "candidates": _normalize_v3_candidates(payload),
-                        "roundtable": payload.get("roundtable"),
+                        "candidates": candidates_dto,
+                        "roundtable": _v3_roundtable_envelope(payload, candidates_dto),
+                        "run_metadata": _v3_run_metadata(payload, task, candidates_dto),
                     }
                     # Pass through any extra fields the v3 pipeline produced.
                     for k, v in payload.items():
-                        if k not in ("candidates", "results",
-                                     "roundtable", "id", "task_id"):
+                        if k not in ("candidates", "results", "roundtable",
+                                     "id", "task_id", "metrics", "mode",
+                                     "selected_gurus", "gurus_used",
+                                     "candidates_count"):
                             response.setdefault(k, v)
                     return jsonify(response)
 
@@ -3110,16 +3293,20 @@ def create_app(config_path=None):
                 v2 = store.get_screen_v2_result(int(task_or_result_id))
                 if v2:
                     inner = v2.get("results") or {}
+                    candidates_dto = _normalize_v3_candidates(inner)
                     response = {
                         "id": v2.get("id"),
                         "task_id": v2.get("task_id"),
                         "created_at": v2.get("created_at"),
-                        "candidates": _normalize_v3_candidates(inner),
-                        "roundtable": inner.get("roundtable"),
+                        "candidates": candidates_dto,
+                        "roundtable": _v3_roundtable_envelope(inner, candidates_dto),
+                        "run_metadata": _v3_run_metadata(inner, None, candidates_dto),
                     }
                     for k, v in inner.items():
-                        if k not in ("candidates", "results",
-                                     "roundtable", "id", "task_id"):
+                        if k not in ("candidates", "results", "roundtable",
+                                     "id", "task_id", "metrics", "mode",
+                                     "selected_gurus", "gurus_used",
+                                     "candidates_count"):
                             response.setdefault(k, v)
                     return jsonify(response)
 
@@ -3128,12 +3315,137 @@ def create_app(config_path=None):
             logger.exception("V3 result lookup failed")
             return jsonify({"error": str(e)}), 500
 
+    def _v3_roundtable_envelope(payload: dict, candidates: list[dict]) -> dict | None:
+        """Project roundtable data into the ``{items: [...]}`` shape the
+        React grid expects.
+
+        Two source paths to support:
+
+        1. Legacy: the worker pre-aggregated and emitted a top-level
+           ``payload['roundtable']`` dict (rare — most v1 paths leave it
+           NULL because per-ticker roundtable was per-candidate).
+        2. v1.2 default: each candidate carries its own ``roundtable``
+           dict (RoundtableResult.to_dict()) at ``candidate['roundtable']``.
+           We collect those into a single envelope so the frontend can
+           render the "Top 5 圆桌辩论" grid without re-walking candidates.
+        """
+        # Prefer an explicit top-level envelope if the worker already
+        # built one (preserves any extra summary fields the legacy
+        # roundtable codepath may have set).
+        rt = payload.get("roundtable")
+        if isinstance(rt, dict) and ("items" in rt or "summary" in rt):
+            return rt
+        items: list[dict] = []
+        for c in candidates or []:
+            ticker = c.get("ticker")
+            crt = c.get("roundtable")
+            if not (ticker and isinstance(crt, dict)
+                    and isinstance(crt.get("debate_snippets"), list)):
+                continue
+            items.append({
+                "ticker":           ticker,
+                "consensus":        crt.get("consensus") or [],
+                "dissent":          crt.get("dissent") or [],
+                "split":            bool(crt.get("split")),
+                "debate_snippets":  crt.get("debate_snippets") or [],
+            })
+        if not items:
+            # Fall through to whatever the payload had (likely None) so
+            # callers that already understand the envelope shape keep
+            # rendering. We never invent an empty envelope.
+            return rt if isinstance(rt, dict) else None
+        return {"items": items}
+
+    def _v3_run_metadata(payload: dict, task: dict | None,
+                          candidates: list[dict]) -> dict:
+        """Surface mode / LLM call counts / cache hit rate / gurus used
+        for the result-page banner. Tolerates missing metrics so old
+        rows still render (zeros / empty list rather than KeyError)."""
+        metrics = payload.get("metrics") or {}
+        # ``params_json`` on the task row is a JSON string; parse defensively.
+        task_params: dict = {}
+        if task and task.get("params_json"):
+            raw_params = task["params_json"]
+            if isinstance(raw_params, dict):
+                task_params = raw_params
+            elif isinstance(raw_params, str):
+                try:
+                    parsed = json.loads(raw_params)
+                    if isinstance(parsed, dict):
+                        task_params = parsed
+                except (json.JSONDecodeError, TypeError) as e:
+                    logger.warning("v3 params_json parse failed: %s", e)
+        # ``with_roundtable`` was either passed at submit time or implied
+        # by ``mode == "agent_rt"``. Fall back to "any candidate has a
+        # roundtable dict" for legacy results without metadata.
+        explicit_mode = (
+            payload.get("mode")
+            or task_params.get("mode")
+        )
+        roundtable_enabled = bool(
+            payload.get("roundtable_enabled")
+            or task_params.get("with_roundtable")
+            or any(
+                isinstance(c.get("roundtable"), dict) for c in (candidates or [])
+            )
+            or explicit_mode == "agent_rt"
+        )
+        mode = explicit_mode or ("agent_rt" if roundtable_enabled else "agent")
+
+        # Gurus: pipeline emits ``selected_gurus``; spec calls it
+        # ``gurus_used``; user-submit can pass ``gurus``. Pick the first
+        # truthy in priority order so legacy + new payloads both surface.
+        gurus = (
+            payload.get("gurus_used")
+            or payload.get("selected_gurus")
+            or task_params.get("gurus")
+            or []
+        )
+        if not isinstance(gurus, list):
+            gurus = []
+
+        try:
+            llm_calls = int(metrics.get("llm_calls", 0) or 0)
+        except (TypeError, ValueError):
+            llm_calls = 0
+        try:
+            cache_hits = int(metrics.get("cache_hits", 0) or 0)
+        except (TypeError, ValueError):
+            cache_hits = 0
+        cache_hit_pct = round(cache_hits / llm_calls * 100) if llm_calls else 0
+        try:
+            duration_sec = int(metrics.get("duration_sec", 0) or 0)
+        except (TypeError, ValueError):
+            duration_sec = 0
+
+        return {
+            "mode":                mode,
+            "llm_calls":           llm_calls,
+            "cache_hits":          cache_hits,
+            "cache_hit_pct":       cache_hit_pct,
+            "duration_sec":        duration_sec,
+            "gurus_used":          [str(g) for g in gurus],
+            "candidates_count":    int(payload.get("candidates_count")
+                                        or len(candidates or [])),
+            "roundtable_enabled":  roundtable_enabled,
+        }
+
     def _normalize_v3_candidates(payload: dict) -> list[dict]:
         """Project the worker-emitted payload into the canonical
         ``candidates`` list. Tolerates both the new ``candidates`` key and
         the legacy ``results`` key, and rewrites ``final_score`` →
         ``composite_score`` plus ``guru_signals`` (list) → ``guru_scores``
         (dict keyed by guru). Originals are kept intact too.
+
+        v1.16 also backfills ``candidate.signal`` when the worker emitted
+        it as null. Without this the dashboard summary card showed
+        "看多 0 / 看空 0" for any non-null candidate list whose pipeline
+        skipped the signal-aggregation step. Tier order:
+
+            1. existing ``signal`` if non-empty
+            2. majority among ``guru_scores``/``guru_signals`` votes
+            3. ``composite_score`` band: >=65 bullish, <=40 bearish, else neutral
+            4. ``"neutral"`` (last-resort default — never null in the response)
         """
         raw = payload.get("candidates")
         if not raw:
@@ -3155,8 +3467,50 @@ def create_app(config_path=None):
                     }
                 elif isinstance(signals, dict):
                     row["guru_scores"] = signals
+            sig = row.get("signal")
+            if not (isinstance(sig, str) and sig.strip()):
+                row["signal"] = _derive_candidate_signal(row)
             out.append(row)
         return out
+
+    def _derive_candidate_signal(row: dict) -> str:
+        """Best-effort fallback for a candidate that lost its ``signal``
+        field — see ``_normalize_v3_candidates`` docstring for the tier
+        order. We always return a non-empty string so the React island's
+        看多/看空 counters never silently roll back to 0 again.
+        """
+        guru_votes = []
+        guru_scores = row.get("guru_scores")
+        if isinstance(guru_scores, dict):
+            for s in guru_scores.values():
+                if isinstance(s, dict):
+                    guru_votes.append((s.get("signal") or "").lower())
+        else:
+            for s in row.get("guru_signals") or []:
+                if isinstance(s, dict):
+                    guru_votes.append((s.get("signal") or "").lower())
+        bullish = sum(1 for v in guru_votes
+                      if "bull" in v or "buy" in v)
+        bearish = sum(1 for v in guru_votes
+                      if "bear" in v or "sell" in v)
+        if bullish > bearish:
+            return "bullish"
+        if bearish > bullish:
+            return "bearish"
+        # No guru votes (or tied) — fall back to composite score band.
+        score_raw = row.get("composite_score")
+        if score_raw is None:
+            score_raw = row.get("final_score")
+        try:
+            score = float(score_raw) if score_raw is not None else None
+        except (TypeError, ValueError):
+            score = None
+        if score is not None:
+            if score >= 65:
+                return "bullish"
+            if score <= 40:
+                return "bearish"
+        return "neutral"
 
     def _v3_params_for_viewer(task: dict) -> dict:
         """Return ``params`` filtered for the requesting viewer.

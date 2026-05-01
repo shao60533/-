@@ -31,6 +31,14 @@ interface TickerSession {
   triggered_orders_count: number
   open_position_shares: number | null
   last_skip_reason: string | null
+  // v1.21: ticker aggregation. ``id`` is the canonical (earliest)
+  // session for the (user, ticker); ``session_ids`` lists every
+  // sibling that was rolled into this card; ``analysis_count`` is
+  // the total number of analyses across siblings.
+  session_ids?: number[]
+  latest_session_id?: number
+  analysis_count?: number
+  latest_analysis_at?: string | null
 }
 
 function fmtPct(n: number | null | undefined): string {
@@ -160,6 +168,9 @@ function TickerCard({ t }: { t: TickerSession }) {
           </div>
 
           <div className="text-xs space-y-0.5 text-muted-foreground">
+            <div>
+              历史分析 {t.analysis_count ?? t.num_events ?? 0} 次
+            </div>
             <div>
               Plan: {t.active_plan_count} active
             </div>

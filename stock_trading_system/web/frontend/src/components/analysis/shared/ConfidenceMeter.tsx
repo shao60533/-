@@ -10,17 +10,19 @@ const LABEL: Record<Confidence, string> = {
   high: "高置信", medium: "中置信", low: "低置信",
 }
 
-export function ConfidenceMeter({ level }: { level: Confidence }) {
+export function ConfidenceMeter({ level }: { level: Confidence | string | null | undefined }) {
+  const safe: Confidence = (typeof level === "string" && level in PCT
+    ? level as Confidence : "medium")
   const r = 18
   const c = 2 * Math.PI * r
-  const offset = c * (1 - PCT[level])
+  const offset = c * (1 - PCT[safe])
   return (
     <div className="inline-flex items-center gap-2">
       <svg width="44" height="44" viewBox="0 0 44 44" aria-hidden="true">
         <circle cx="22" cy="22" r={r} className="stroke-muted/30" strokeWidth="4" fill="none" />
         <circle
           cx="22" cy="22" r={r}
-          className={TONE[level]}
+          className={TONE[safe]}
           strokeWidth="4"
           strokeLinecap="round"
           fill="none"
@@ -29,7 +31,7 @@ export function ConfidenceMeter({ level }: { level: Confidence }) {
           transform="rotate(-90 22 22)"
         />
       </svg>
-      <span className="text-xs text-muted-foreground">{LABEL[level]}</span>
+      <span className="text-xs text-muted-foreground">{LABEL[safe]}</span>
     </div>
   )
 }

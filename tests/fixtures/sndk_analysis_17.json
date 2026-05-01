@@ -1,0 +1,101 @@
+{
+  "id": 17,
+  "ticker": "SNDK",
+  "date": "2026-05-01",
+  "signal": "Hold",
+  "trade_decision": "Bull case argues for accumulation; bear case warns of margin compression. Hold for further validation might be considered, but the latest pricing pressure tips the balance.\n\n最终评级：Sell（卖出）\n最终交易决策：Sell（卖出）\n\nReasoning: pricing pressure + competitive risk.",
+  "rendering_json": {
+    "summary": {
+      "rating": "Sell",
+      "confidence": "high",
+      "action_direction": "Trim into strength; cap exposure ≤2%",
+      "key_metrics": [
+        {"label": "Price", "value": "$36.10", "tone": "neutral"},
+        {"label": "Target", "value": "$30.00", "tone": "negative"}
+      ],
+      "decision_drivers": [
+        {"headline": "Margin compression", "detail": "Q1 GM dropped 320bps."}
+      ],
+      "debate_synthesis": null,
+      "one_line_takeaway": "Pricing pressure tips the balance toward Sell."
+    },
+    "Market": {
+      "trend": "bearish",
+      "indicators": [
+        {"name": "RSI(14)", "value": "31.2", "signal": "bearish"},
+        {"name": "MA20", "value": "$38.40", "signal": "bearish"}
+      ],
+      "support_resistance": [
+        {"price": 32.50, "kind": "support", "strength": "strong"},
+        {"price": "—", "kind": "resistance"},
+        {"price": 38.40, "kind": "resistance", "strength": "medium"}
+      ],
+      "patterns": ["lower-high", "rising-wedge-break"],
+      "summary": "Lower highs + 20DMA cross = bearish swing."
+    },
+    "Sentiment": {
+      "mood": "fear",
+      "mood_score": -32,
+      "drivers": [
+        {"source": "news", "theme": "earnings-miss", "polarity": "bearish"}
+      ],
+      "summary": "Fear regime; sell-side downgrades increasing."
+    },
+    "News": {
+      "summary": "Q1 earnings miss + lowered guidance.",
+      "headlines": [
+        {"title": "SanDisk Q1 misses", "source": "WSJ", "sentiment": "bearish", "impact": "high"}
+      ],
+      "catalysts": [
+        {"kind": "earnings", "summary": "Q2 print expected mid-July", "date": "2026-07-15"}
+      ]
+    },
+    "Fundamentals": {
+      "valuation": {"pe": 14.2, "pb": 1.8, "vs_industry": "trades 12% below sector"},
+      "growth": {"revenue_yoy_pct": -3.5, "eps_yoy_pct": -18.0},
+      "profitability": {"gross_margin_pct": 24.1, "op_margin_pct": 6.8, "roe_pct": 9.4},
+      "balance_sheet": null,
+      "quality_score": 3,
+      "summary": "Mid-cycle margins, balance sheet tolerable."
+    },
+    "Investment Debate": {
+      "verdict": "bear",
+      "bull_arguments": [
+        {"claim": "Cyclical bottom", "evidence": "Inventory normalising", "weight": "secondary"}
+      ],
+      "bear_arguments": [
+        {"claim": "Margin compression", "evidence": "Q1 GM -320bps", "weight": "primary"}
+      ],
+      "neutral_synthesis": "Bear case is currently more concrete.",
+      "key_disagreement": "Pace of margin recovery."
+    },
+    "Risk Assessment": {
+      "aggressive": {"claim": "短线进场", "evidence": "RSI超卖", "limitation": "趋势仍下行"},
+      "conservative": {"claim": "继续观望", "evidence": "盈利下修", "limitation": "可能错过反弹"},
+      "neutral": {"claim": "小仓位试探", "evidence": "估值中性", "limitation": "需结合大盘"},
+      "verdict": "等待信号确认，仓位 ≤ 2%。",
+      "top_risks": [
+        {"risk": "Q2 guidance miss", "probability": "high", "severity": "high",
+         "mitigation": "Hard stop below $32"},
+        {"risk": "Sector rotation", "probability": "medium", "severity": "medium"}
+      ]
+    },
+    "Decision": {
+      "final_action": "SELL",
+      "conviction": "high",
+      "time_horizon": "short",
+      "entry_zone": null,
+      "structural_stop": "n/a",
+      "take_profit_levels": [
+        {"price": 30.0, "weight_pct": 60, "rationale": "Q1 low retest"},
+        {"price": 27.5, "weight_pct": 40}
+      ],
+      "preconditions": ["volume confirms breakdown"],
+      "exit_conditions": ["close above 38"],
+      "alternative_scenarios": [
+        {"condition": "guidance raise", "action": "cover and wait"}
+      ],
+      "one_line_summary": "Sell on rallies; manage risk tight."
+    }
+  }
+}

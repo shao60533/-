@@ -818,9 +818,210 @@ def make_screen_v3_worker(db, task_manager):
 | **若全部自写** | **~4800+ LOC** |
 | **节省** | **~31%**（主要来自 structured_output / tenacity / TA 辩论图）|
 
+## 14. v1.2 增量：选股结果决策透明化（用户 2026-05-01 提）
+
+### 14.1 现状诊断
+
+生产截图（智能选股 V3 结果页）：信号列全 `-`、看多/看空 KPI 全 0、大师数都 4（无意义计数）、圆桌辩论看不到。
+
+| 症状 | 根因 |
+|---|---|
+| 信号列全 `-` | [pipeline.py _aggregate](../../stock_trading_system/screener/v3/pipeline.py) 已计 bullish/bearish/total 但**没把 verdict 写回 candidate.signal** |
+| 看多/看空 KPI 全 0 | 前端 `candidates.filter(c => c.signal.includes("bull"))` 命中 0 |
+| 圆桌辩论无展示 | (a) 用户截图模式选 `agent`（不带 RT）→ roundtable=None；(b) 即使带 RT，前端只读 `result.roundtable.summary` 一段而非按 ticker 分卡 |
+| 信息密度低 | 14 大师 `GuruSignal.reasoning` 完整段未展示（仅 slice 80）；价格/PE/ROE 有 `/api/fundamentals` 缓存但没接入；运行模式（agent / agent_rt / classic）+ LLM call 数 + cache 命中率没顶部 banner |
+
+### 14.2 数据契约扩展
+
+**`RoundtableResult` 已有字段**（roundtable.py，不改）：
+```python
+@dataclass
+class RoundtableResult:
+    ticker: str
+    consensus: list[str]       # 达成共识的 guru 名单
+    dissent: list[str]         # 异议者名单
+    split: bool                # True = 看多看空对峙
+    debate_snippets: list[str] # ['🟢 lynch: ...', '🔴 burry: ...', '⚖️ 裁判: ...']
+```
+
+**`_aggregate` 输出每个 candidate 扩字段**（向后兼容老 schema，仅追加）：
+
+```python
+{
+  "ticker": "AMD",
+  "final_score": 59.5,
+  "avg_confidence": 0.82,
+  "guru_signals": [...],            # v1.0 已有
+  "roundtable": {...},              # v1.0 已有 (Top 5 only)
+
+  # v1.2 新增 ↓
+  "signal": "bullish",              # majority verdict: bullish | bearish | neutral | split
+  "votes": {"bullish": 4, "bearish": 0, "neutral": 0, "total": 4},
+  "consensus": "unanimous",         # unanimous | majority | split
+  "confidence_range": {"min": 0.60, "max": 0.92, "avg": 0.82},
+  "top_bull_argument": {            # 最高 confidence bull 的 reasoning 段（200 字）
+    "guru": "lynch",
+    "snippet": "AMD 在 GARP 模型下 PEG 0.7…"
+  } | null,
+  "top_bear_argument": {...} | null,
+}
+```
+
+**verdict 计算规则**：
+- `bullish > bearish + neutral` → `bullish` + consensus=unanimous
+- `bullish > bearish` (过半) → `bullish` + consensus=majority
+- `bearish` 同理
+- 其它 → `split` 或 `neutral`
+
+`_aggregate` 末尾 sort 之前补一段 ~30 行计算（见 §14.5 实施）。
+
+### 14.3 API 响应扩展
+
+`/api/screen/v3/results/<id>` 顶层 payload 加：
+
+```json
+{
+  "id": ..., "task_id": ..., "created_at": ..., "params": {...},
+  "candidates": [...],
+  "roundtable": { "items": [...], "summary": "..." },
+  "run_metadata": {
+    "mode": "agent_rt" | "agent" | "classic",
+    "llm_calls": 80,
+    "cache_hit_pct": 30,
+    "duration_sec": 138,
+    "gurus_used": ["buffett", "graham", "munger", "lynch"],
+    "candidates_count": 20,
+    "roundtable_enabled": true
+  }
+}
+```
+
+`run_metadata` 字段一部分已经在 `result.metrics`（pipeline.py 输出）—— DTO 重命名 + 透传即可，不需改 pipeline。
+
+### 14.4 前端 4 块视觉（一次落地）
+
+#### 14.4.1 顶部 KPI 扩为 6 列
+
+```
+┌候选 20┐ ┌均分 42.5┐ ┌看多 8┐ ┌看空 3┐ ┌中性 9┐ ┌共识率 65%┐
+```
+
+- "看多" = `candidates.filter(c.signal == 'bullish' && c.consensus != 'split')`
+- "中性" = candidates.filter(c.signal == 'neutral' || c.consensus == 'split')
+- "共识率" = `(unanimous 数 + majority 数) / total * 100`
+
+#### 14.4.2 运行模式 banner
+
+`<Card>` 单行，显示 mode chip + LLM call 数 + cache 命中 + 总耗时 + 大师列表（Avatar 链）。
+
+```tsx
+<Card><CardContent className="py-3 flex flex-wrap items-center gap-3 text-xs">
+  <Badge variant="default">⚡ {modeLabel}</Badge>
+  <span>{md.gurus_used.length} 大师</span>
+  <span>·</span>
+  <span>{md.llm_calls} LLM call</span>
+  <span>·</span>
+  <span>命中缓存 {md.cache_hit_pct}%</span>
+  <span>·</span>
+  <span>耗时 {fmtDuration(md.duration_sec)}</span>
+  {!md.roundtable_enabled && <Badge variant="muted">无圆桌</Badge>}
+</CardContent></Card>
+```
+
+#### 14.4.3 Top 5 圆桌辩论独立 grid（仅 agent_rt）
+
+不再合并成一段 `summary`。按 ticker 5 张卡：
+
+```tsx
+<div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+  {result.roundtable?.items?.map(rt => (
+    <Card key={rt.ticker} className={rt.split ? 'border-orange-500/40' : 'border-emerald-500/40'}>
+      <CardHeader className="pb-2">
+        <div className="flex items-center justify-between">
+          <CardTitle className="font-mono">{rt.ticker}</CardTitle>
+          <Badge variant={rt.split ? 'sell' : 'buy'}>
+            {rt.split ? 'CONTESTED' : 'CONSENSUS'}
+          </Badge>
+        </div>
+        <div className="text-xs text-muted-foreground">
+          共识 {rt.consensus.length} · 异议 {rt.dissent.length}
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        {rt.debate_snippets.map((line, i) => {
+          const isBull = line.startsWith('🟢')
+          const isBear = line.startsWith('🔴')
+          const isJudge = line.startsWith('⚖️')
+          return (
+            <div key={i} className={`text-xs leading-relaxed pl-2 border-l-2 ${
+              isBull ? 'border-emerald-500/50' :
+              isBear ? 'border-red-500/50' :
+              isJudge ? 'border-primary' : 'border-zinc-500/30'
+            }`}>{line}</div>
+          )
+        })}
+      </CardContent>
+    </Card>
+  ))}
+</div>
+```
+
+#### 14.4.4 候选股票表扩列 + 展开行丰富
+
+桌面表格列：`# / 代码 / 综合分 / 信号 / 投票分布 / 共识度 / 现价 / PE / 操作`
+
+- "投票分布" 列用紧凑条形（绿/灰/红 比例条 + `4✓ 0= 0✗`）
+- "共识度" 列用 Badge：unanimous (绿) / majority (黄) / split (红)
+- "现价 / PE" 列**懒加载**：当前可见行的 ticker 调 `/api/fundamentals/<ticker>`（同 v1.6 30s LocalCache）；rendering 列空缺时显示 skeleton
+
+**展开行**（同 row 下方 `<tr colSpan={9}>`，不开新页）：
+```
+AMD — 大师评分详情
+┌大师 1───────────┐ ┌大师 2───────────┐ ┌大师 3───────────┐ ┌大师 4───────────┐
+│ Lynch (核心)    │ │ Buffett (核心)  │ │ Munger (核心)   │ │ Graham (经典)   │
+│ [BULL] conf 92% │ │ [BULL] conf 88% │ │ [HOLD] conf 60% │ │ [BEAR] conf 75% │
+│ "AMD 在 GARP    │ │ "护城河成型,    │ │ "周期顶部信号   │ │ "PB 6x 已超出   │
+│  模型下 PEG     │ │  数据中心利润   │ │  浮现, 需观察   │ │  我的纪律线…"   │
+│  0.7 标准入场…" │ │  双位数增长…"   │ │  毛利率…"       │ │                 │
+└─────────────────┘ └─────────────────┘ └─────────────────┘ └─────────────────┘
+
+KPI: 现价 $145 · 200-SMA $138 (+5.0%) · PE 28 · ROE 21% · D/E 65
+[→ 跑 AI 分析]  [→ 加观察列表]
+```
+
+每张大师卡含：
+- 大师名 + tier chip（核心 / 进阶 / 经典）
+- signal Badge + confidence 数字
+- reasoning 完整段（不再 slice，给最大 240 字 + line-clamp-6）
+- philosophy 一行（hover 显示）
+
+底部 KPI 行复用 v1.1 `fmtNum / fmtPct` 工具；操作按钮链到 `/analysis?ticker=AMD` 和 `/api/portfolio/track`。
+
+### 14.5 实施清单
+
+| 步 | 范围 | 工时 |
+|---|---|---|
+| 1 | 后端 `pipeline._aggregate` 加 verdict 计算 + votes/consensus/confidence_range/top_*_argument | ~1h |
+| 2 | API `_normalize_v3_candidates` + `/api/screen/v3/results/<id>` payload 加 `run_metadata` | ~30min |
+| 3 | 前端 KPI 6 列 + 运行模式 banner + 工具函数 (fmtDuration / consensusBadge / votesBar) | ~45min |
+| 4 | 前端 Top 5 圆桌 grid 组件（按 ticker 卡片化 debate_snippets） | ~45min |
+| 5 | 前端表格扩列：投票分布条 + 共识 Badge + 现价/PE 懒加载 | ~1h |
+| 6 | 前端展开行：4 张大师卡（reasoning 完整 + tier + philosophy）+ KPI 底栏 + 操作按钮 | ~1h |
+| 7 | 测试 + npm build + smoke | ~30min |
+| **合计** | | **~5h** |
+
+### 14.6 强约束
+
+- 不许动 `_aggregate` 已有字段（`final_score / avg_confidence / guru_signals / roundtable`）—— 仅追加
+- 不许改 `RoundtableResult` dataclass 字段名（前端按现有 `consensus/dissent/split/debate_snippets` 渲染）
+- 不许新建独立投票详情页路由 —— 仅展开当前行
+- 不许吞异常；fundamentals 加载失败该格显示 "—" 不影响其它列
+- 现价/PE 懒加载必须用现有 `/api/fundamentals/<ticker>` 30s LocalCache（v1.6 R-perf），不发明新端点
+
 ## 13. 版本历史
 
 | 版本 | 日期 | 变更 |
 |---|---|---|
 | v1.0 | 2026-04-19 | 初版：新建 `screener/v3/` + 14 大师 agent（12 清洁重写 + 2 自建）+ 并发缓存流式 + 预选面板 + 成本预估 + 圆桌辩论 + 经典模式兼容保留 |
 | v1.1 | 2026-04-19 | 复用审计修订（依据 [engineering-principles.md](../engineering-principles.md) §5.1）：§4.1 改用 `ChatOpenAI.with_structured_output()`；§4.3 改用 `tenacity` 重试；§4.9 复用 TradingAgents 辩论图节点；新增 §12 复用清单（自写 LOC 减 ~31%）|
+| v1.2 | 2026-05-01 | 选股结果决策透明化（用户 2026-05-01 提，~5h）：现状信号列 `-` / 看多看空 KPI 全 0 / 大师数都是 4 / 圆桌辩论看不到。后端 `_aggregate` 加 verdict 计算（bullish/bearish/neutral/split）+ votes 计数 + consensus chip + confidence_range + top_bull/bear_argument；payload 加 `run_metadata` (mode/llm_calls/cache_hit_pct/duration/gurus_used)。前端 4 块视觉：(1) KPI 扩 6 列（候选/均分/看多/看空/中性/共识率）；(2) 运行模式 banner（mode chip + LLM call + cache 命中 + 耗时 + 大师 Avatar）；(3) Top 5 圆桌独立 grid 按 ticker 卡片化（debate_snippets 按 🟢🔴⚖️ 分色边框）；(4) 候选表扩列（投票分布条 + 共识 Badge + 现价/PE 懒加载）+ 展开行 4 大师卡（完整 reasoning + tier + philosophy）+ KPI 底栏 + 跳 AI 分析 / 观察列表按钮。复用 `/api/fundamentals/<ticker>` 30s LocalCache（v1.6 R-perf）；不动 `RoundtableResult` dataclass / `_aggregate` 已有字段。|
