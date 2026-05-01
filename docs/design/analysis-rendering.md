@@ -566,8 +566,388 @@ out["rendering"] = rendering or {}
 | LLM 输出与 markdown 主体冲突 | 卡片头优先（结论），markdown 折叠为参考；用户可对照 |
 | 抽取阻塞 pipeline_done 事件 | extractor 在 `pipeline_done` emit 之**前**完成；超时 45s 单 tab；超时即 null（不阻断 task） |
 
+## 13. v1.1 增量：News / Fundamentals 改用真实数据源 + Quick-info 三卡
+
+### 13.1 背景
+
+详情页顶部"最近新闻 / 基本面指标 / 多空辩论"三张 quick-info 卡当前实现：
+- `extractFundamentals()` 用 regex 从 LLM markdown 抽 PE/ROE/D/E（line ~432）
+- `newsSnippet = (reportContent.News || "").slice(0, 200)` 直接截 LLM 报告头
+- `extractDebateCount()` 数 markdown 里 "看多/看空" 字符出现次数
+
+结果（生产截图）：两张卡显示成 `FINAL TRANSACTION PROPOSAL: **BUY** # 宏观经济与科技巨头市场状态综合研究报告 ## 一、 全球宏观...` —— 是 LLM 报告的 markdown 头，不是新闻头条 / 真数字。
+
+### 13.2 现成数据源（已在项目里）
+
+| 源 | 端点 / 方法 | 字段 |
+|---|---|---|
+| yfinance | `Ticker.info` via [data_manager.get_fundamentals](../../stock_trading_system/data/data_manager.py:194) | `trailingPE / forwardPE / priceToBook / priceToSalesTrailing12Months / pegRatio / returnOnEquity / returnOnAssets / debtToEquity / currentRatio / quickRatio / grossMargins / operatingMargins / profitMargins / revenueGrowth / earningsGrowth / freeCashflow / marketCap / enterpriseValue / sector / industry` 全套 |
+| Polygon | `list_ticker_news` via [data_manager.get_news](../../stock_trading_system/data/data_manager.py:211) | `[{title, url, published, source}]` |
+| 已有路由 | [`/api/fundamentals/<ticker>`](../../stock_trading_system/web/app.py) / [`/api/news/<ticker>`](../../stock_trading_system/web/app.py) | 已就绪，无需新建 |
+
+**结论**：基本面数字 / 新闻头条不需要 LLM 抽 markdown。LLM 只在数据源**没有的字段**（行业对比、quality_score、sentiment 标注、综述 summary）介入。
+
+### 13.3 v1.1 数据策略（混合源）
+
+| Tab | 真数据源 | LLM 责任 | 不变（与 v1.0 同） |
+|---|---|---|---|
+| **News** | `data_manager.get_news(ticker)` 拉 headlines（title/url/published/source） | 给每条 headline 标 `sentiment / impact`、综合 `summary`、抽 `catalysts[]` | NewsCard schema 不变 |
+| **Fundamentals** | `data_manager.get_fundamentals(ticker)` 拉 valuation/growth/profitability/balance_sheet 真数字 | 仅写 `valuation.vs_industry`（行业对比文字） + `quality_score` 1-5 + `summary` | FundamentalsCard schema 不变 |
+| 其它 6 tab | — | 与 v1.0 同 | 不变 |
+
+### 13.4 后端：`data_sources.py` + 修订 RenderingExtractor
+
+新建 [stock_trading_system/agents/rendering/data_sources.py](../../stock_trading_system/agents/rendering/data_sources.py)：
+
+```python
+"""Real data fetchers for News / Fundamentals tabs.
+
+Why this lives here: the v1.0 extractor asked the LLM to recover
+quantitative facts from its own free-text reports. That round-tripped
+hallucinations (made-up PE ratios) and produced unstable values. v1.1
+short-circuits to the existing data_manager providers and lets the LLM
+do only what it is good at — labelling sentiment, writing summaries,
+naming catalysts. Schema shape stays identical to v1.0; only the
+fill source changes.
+"""
+from __future__ import annotations
+
+import logging
+from datetime import datetime, timezone
+
+from stock_trading_system.agents.rendering.schemas import (
+    Headline, Valuation, Growth, Profitability, BalanceSheet,
+)
+
+logger = logging.getLogger("agents.rendering.data_sources")
+
+
+def fetch_fundamentals_facts(ticker: str, data_manager) -> dict:
+    """Pull yfinance/Polygon/IB facts → split across our 4 fundamentals
+    sub-blocks. Returns ``{"valuation","growth","profitability",
+    "balance_sheet","sector","industry","market_cap"}``.
+
+    Missing fields stay None — never invent."""
+    info = {}
+    try:
+        info = data_manager.get_fundamentals(ticker) or {}
+    except Exception as e:
+        logger.warning("fetch_fundamentals_facts(%s) failed: %s", ticker, e)
+        return {}
+    if not isinstance(info, dict):
+        return {}
+    val = Valuation(
+        pe=_safe(info.get("trailingPE")),
+        pb=_safe(info.get("priceToBook")),
+        ps=_safe(info.get("priceToSalesTrailing12Months")),
+        ev_ebitda=_safe(info.get("enterpriseToEbitda")),
+        peg=_safe(info.get("pegRatio") or info.get("trailingPegRatio")),
+    )
+    growth = Growth(
+        revenue_yoy_pct=_pct(info.get("revenueGrowth")),
+        eps_yoy_pct=_pct(info.get("earningsGrowth")),
+        fcf_yoy_pct=_pct(info.get("freeCashflowGrowth")),  # may be None
+    )
+    prof = Profitability(
+        gross_margin_pct=_pct(info.get("grossMargins")),
+        op_margin_pct=_pct(info.get("operatingMargins")),
+        roe_pct=_pct(info.get("returnOnEquity")),
+        roic_pct=_pct(info.get("returnOnAssets")),  # ROA is best yfinance proxy
+    )
+    bs = BalanceSheet(
+        debt_to_equity=_safe(info.get("debtToEquity")),
+        current_ratio=_safe(info.get("currentRatio")),
+        cash_ratio=_safe(info.get("quickRatio")),
+    )
+    return {
+        "valuation": val.model_dump(),
+        "growth": growth.model_dump(),
+        "profitability": prof.model_dump(),
+        "balance_sheet": bs.model_dump(),
+        "sector": info.get("sector"),
+        "industry": info.get("industry"),
+        "market_cap": info.get("marketCap"),
+    }
+
+
+def fetch_news_headlines(ticker: str, data_manager, limit: int = 8) -> list[dict]:
+    """Pull recent headlines. Map to v1.0 Headline schema (without
+    sentiment/impact — those are LLM-labelled in extractor)."""
+    try:
+        items = data_manager.get_news(ticker) or []
+    except Exception as e:
+        logger.warning("fetch_news_headlines(%s) failed: %s", ticker, e)
+        return []
+    out = []
+    for n in items[:limit]:
+        out.append(Headline(
+            title=str(n.get("title") or ""),
+            source=str(n.get("source") or "") or None,
+            date=_normalize_date(n.get("published")),
+            sentiment="neutral",  # LLM will overwrite
+            impact="medium",      # LLM will overwrite
+        ).model_dump())
+    return out
+
+
+# ── helpers ─────────────────────────────────────────────
+def _safe(x):
+    try:
+        return float(x) if x is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _pct(x):
+    """yfinance returns 0.12 for 12%; we store percent."""
+    v = _safe(x)
+    return round(v * 100, 2) if v is not None else None
+
+
+def _normalize_date(raw) -> str | None:
+    if not raw:
+        return None
+    s = str(raw)
+    # yfinance gives epoch int as string; Polygon gives ISO
+    try:
+        if s.isdigit():
+            return datetime.fromtimestamp(int(s), tz=timezone.utc).strftime("%Y-%m-%d")
+        return s[:10]  # ISO → keep date part
+    except Exception:
+        return None
+```
+
+修订 `RenderingExtractor`：构造时多传一个 `data_manager`；News / Fundamentals 走专门方法；其它 6 tab 仍走 v1.0 通用 path。
+
+```python
+class RenderingExtractor:
+    def __init__(self, llm, data_manager=None, *, per_tab_timeout: float = 45.0):
+        self._llm = llm
+        self._dm = data_manager
+        self._timeout = per_tab_timeout
+
+    def extract(self, result, ticker: str) -> dict:
+        """Now needs ticker so News/Fundamentals can hit data_manager."""
+        # 与 v1.0 类似,但 News / Fundamentals 走 _extract_news / _extract_fundamentals
+        ...
+
+    def _extract_news(self, result, ticker: str) -> dict | None:
+        """Real headlines + LLM sentiment/impact + summary + catalysts."""
+        headlines = []
+        if self._dm:
+            headlines = fetch_news_headlines(ticker, self._dm, limit=8)
+        # 让 LLM 在已有 headlines 基础上 enrich:
+        # 1) 给每条 headline 写 sentiment + impact
+        # 2) 抽 catalysts
+        # 3) 写 summary
+        # 输入 headlines JSON + result.news_report markdown 作上下文
+        prompt = (
+            f"Real headlines (from data API):\n{json.dumps(headlines, ensure_ascii=False)}\n\n"
+            f"LLM news_report context:\n{result.news_report or ''}"
+        )
+        sys = (
+            "Enrich the provided real headlines: keep title/source/date/url AS-IS "
+            "and only fill sentiment/impact based on the LLM context. "
+            "Do NOT invent headlines. Add catalysts derived from context. "
+            "Write a 1-3 sentence summary."
+        )
+        try:
+            structured = self._llm.with_structured_output(NewsCard)
+            card = structured.invoke([
+                {"role": "system", "content": sys},
+                {"role": "user", "content": prompt},
+            ])
+            # Hard guard: replace LLM's headlines with the real ones, only
+            # keeping LLM's sentiment/impact if it matched a real title.
+            real_by_title = {h["title"]: h for h in headlines}
+            merged = []
+            for hl in (card.headlines or []):
+                base = real_by_title.get(hl.title)
+                if not base:
+                    continue  # drop hallucinated ones
+                merged.append({**base, "sentiment": hl.sentiment, "impact": hl.impact})
+            # If LLM dropped some, append untagged real headlines
+            tagged_titles = {h["title"] for h in merged}
+            for h in headlines:
+                if h["title"] not in tagged_titles:
+                    merged.append(h)
+            return {
+                "headlines": merged,
+                "catalysts": [c.model_dump() for c in (card.catalysts or [])],
+                "summary": card.summary,
+            }
+        except Exception as e:
+            logger.warning("News extraction failed: %s", e)
+            # Last resort: return headlines without LLM enrichment
+            return {"headlines": headlines, "catalysts": [],
+                    "summary": ""} if headlines else None
+
+    def _extract_fundamentals(self, result, ticker: str) -> dict | None:
+        """Real numbers + LLM only writes vs_industry / quality_score / summary."""
+        facts = {}
+        if self._dm:
+            facts = fetch_fundamentals_facts(ticker, self._dm)
+        # 让 LLM 仅写 valuation.vs_industry / quality_score / summary
+        # 给它真实 facts JSON + 报告 markdown 作上下文
+        if not facts:
+            # Fall back to pure-LLM path (v1.0 behavior)
+            return self._extract_one("Fundamentals", FundamentalsCard,
+                                       result.fundamentals_report or "")
+
+        prompt = (
+            f"Real fundamentals facts (from data API):\n{json.dumps(facts, ensure_ascii=False)}\n\n"
+            f"LLM fundamentals_report context:\n{result.fundamentals_report or ''}"
+        )
+        sys = (
+            "Use the provided real facts AS-IS. Do NOT change pe/pb/ps/peg/"
+            "ev_ebitda/growth/profitability/balance_sheet numbers. Only "
+            "write valuation.vs_industry (1 sentence comparing to sector), "
+            "quality_score (1-5 integer), and summary (1-3 sentences)."
+        )
+        try:
+            structured = self._llm.with_structured_output(FundamentalsCard)
+            card = structured.invoke([
+                {"role": "system", "content": sys},
+                {"role": "user", "content": prompt},
+            ])
+            # Hard guard: overwrite LLM-emitted numeric blocks with real facts.
+            return {
+                "valuation": {**facts["valuation"],
+                               "vs_industry": (card.valuation.vs_industry
+                                                if card.valuation else None)},
+                "growth": facts["growth"],
+                "profitability": facts["profitability"],
+                "balance_sheet": facts["balance_sheet"],
+                "quality_score": int(card.quality_score or 3),
+                "summary": card.summary or "",
+            }
+        except Exception as e:
+            logger.warning("Fundamentals extraction failed: %s", e)
+            return None
+```
+
+### 13.5 前端：Quick-info 三卡改直接拉 API
+
+[AnalysisPage.tsx](../../stock_trading_system/web/frontend/src/islands/analysis/AnalysisPage.tsx) `AnalysisDetailView`：
+
+```tsx
+const [news, setNews] = useState<{title:string; source?:string; published?:string; url?:string}[]>([])
+const [fund, setFund] = useState<Record<string, any> | null>(null)
+
+useEffect(() => {
+  if (!detail.ticker) return
+  apiGet<any[]>(`/api/news/${detail.ticker}`).then(r => setNews((r ?? []).slice(0, 3))).catch(() => {})
+  apiGet<Record<string, any>>(`/api/fundamentals/${detail.ticker}`)
+    .then(setFund).catch(() => setFund(null))
+}, [detail.ticker])
+
+// 删除 extractFundamentals / extractDebateCount / newsSnippet.slice(0,200)
+```
+
+三卡内容改为：
+
+```tsx
+<QuickInfoCard
+  icon={<Newspaper className="h-4 w-4" />}
+  title="最近新闻"
+  onClick={() => scrollToTab("News")}
+>
+  {news.length === 0 ? (
+    <p className="text-xs text-muted-foreground">暂无新闻数据</p>
+  ) : (
+    <ul className="space-y-1.5">
+      {news.map((n, i) => (
+        <li key={i} className="text-xs leading-snug">
+          <span className="line-clamp-2">{n.title}</span>
+          {(n.source || n.published) && (
+            <span className="text-[10px] text-muted-foreground mt-0.5">
+              {n.source}{n.source && n.published && " · "}{n.published}
+            </span>
+          )}
+        </li>
+      ))}
+    </ul>
+  )}
+</QuickInfoCard>
+
+<QuickInfoCard
+  icon={<BarChart3 className="h-4 w-4" />}
+  title="基本面指标"
+  onClick={() => scrollToTab("Fundamentals")}
+>
+  {!fund ? (
+    <p className="text-xs text-muted-foreground">暂无基本面数据</p>
+  ) : (
+    <div className="grid grid-cols-2 gap-x-3 gap-y-1 font-mono text-xs">
+      {fund.trailingPE != null && <KV k="PE" v={fmtNum(fund.trailingPE, 1)} />}
+      {fund.priceToBook != null && <KV k="P/B" v={fmtNum(fund.priceToBook, 1)} />}
+      {fund.returnOnEquity != null && <KV k="ROE" v={fmtPct(fund.returnOnEquity)} />}
+      {fund.debtToEquity != null && <KV k="D/E" v={fmtNum(fund.debtToEquity, 0)} />}
+      {fund.profitMargins != null && <KV k="净利率" v={fmtPct(fund.profitMargins)} />}
+      {fund.revenueGrowth != null && <KV k="营收增长" v={fmtPct(fund.revenueGrowth)} />}
+    </div>
+  )}
+</QuickInfoCard>
+
+<QuickInfoCard
+  icon={<Scale className="h-4 w-4" />}
+  title="多空辩论"
+  onClick={() => scrollToTab("Investment Debate")}
+>
+  {(() => {
+    const debate = detail.rendering?.["Investment Debate"]
+    const synthesis = detail.rendering?.summary?.debate_synthesis
+    if (debate) {
+      const bull = debate.bull_arguments?.length ?? 0
+      const bear = debate.bear_arguments?.length ?? 0
+      return (
+        <div className="space-y-1">
+          <div className="text-xs">看多 <b>{bull}</b> · 看空 <b>{bear}</b> · 结论 <Badge variant="muted" className="text-[10px]">{debate.verdict ?? '—'}</Badge></div>
+          <p className="text-xs text-muted-foreground line-clamp-3">{debate.key_disagreement || debate.neutral_synthesis}</p>
+        </div>
+      )
+    }
+    if (synthesis) {
+      return <p className="text-xs text-muted-foreground line-clamp-3">{synthesis.verdict}</p>
+    }
+    return <p className="text-xs text-muted-foreground">暂无辩论数据</p>
+  })()}
+</QuickInfoCard>
+```
+
+helper 内联：
+
+```tsx
+const fmtNum = (v: number, d: number) => v.toFixed(d)
+const fmtPct = (v: number) => `${(v * 100).toFixed(1)}%`
+const KV = ({ k, v }: { k: string; v: string }) => (
+  <div className="flex items-center justify-between"><span className="text-muted-foreground">{k}</span><span>{v}</span></div>
+)
+```
+
+### 13.6 删除（强约束）
+
+- 删除 `extractFundamentals(text: string)` 整函数
+- 删除 `extractDebateCount(text: string)` 整函数
+- 删除 `const newsSnippet = (reportContent.News || "").slice(0, 200)`
+- 删除 `const fundSnippet = extractFundamentals(...)` / `const debateSnippet = extractDebateCount(...)` 全部对应调用
+
+### 13.7 缓存
+
+`/api/fundamentals/<ticker>` + `/api/news/<ticker>` 已有 LocalCache（v1.6 R-perf 30s TTL）。Quick-info 卡 + Fundamentals/News tab 抽取共用同一份缓存，不会双拉。
+
+### 13.8 风险与边界
+
+| 风险 | 缓解 |
+|---|---|
+| yfinance .info 字段缺失（小盘股、ADR） | facts 字段允许 None，前端 `v != null && <KV/>` 不渲染缺项 |
+| 数据源延迟（yfinance 偶发 1-3s） | 与 LLM 8 并发同源池跑（ThreadPoolExecutor），不串行；LocalCache 复用 |
+| API key 缺失（Polygon 关，仅 yfinance）| `data_manager.get_news` 已有 fallback 链；data_sources.py 不感知 |
+| LLM 仍幻觉 headlines / 改了真数字 | 提取后做 hard guard：headlines 必须 title 命中真集合；valuation/growth/profitability/balance_sheet 字典直接以 facts 覆盖 LLM |
+
 ## 12. 版本历史
 
 | 版本 | 日期 | 变更 |
 |---|---|---|
 | v1.0 | 2026-05-01 | 初版：8 tab × Pydantic schema（Overview/Market/Sentiment/News/Fundamentals/Debate/Risk/Decision）+ `analysis_history.rendering_json` 单列 JSON 存储 + RenderingExtractor 并发 8 calls + 8 Card 组件 + folded markdown 主体 + 单 tab 失败隔离降级 |
+| v1.1 | 2026-05-01 | News / Fundamentals 改混合源：直接调 `data_manager.get_news / get_fundamentals` 拿真实头条 + 真实数字（PE/PB/ROE/D/E/营收增长全套来自 yfinance .info / Polygon news），LLM 仅做 sentiment/impact 标注 + catalysts + summary + vs_industry + quality_score；Hard guard 防 LLM 改真数字（valuation/growth/profitability/balance_sheet 字典覆盖）+ 防 LLM 编造头条（title 必须命中真集合）；前端 quick-info 三卡（最近新闻 / 基本面指标 / 多空辩论）改为直接拉 `/api/news` `/api/fundamentals`，删除 `extractFundamentals` regex / `newsSnippet.slice(0,200)` / `extractDebateCount` 三个脆弱函数；多空辩论卡改用 `detail.rendering["Investment Debate"]` schema |
