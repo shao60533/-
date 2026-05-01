@@ -29,6 +29,13 @@ build/
 .venv/
 venv/
 
+# Vite production bundle for the React islands. Generated locally by
+# `npm run build` and at deploy-time by CI; tracking it pollutes the
+# branch with ~50 hashed asset files (~1.8 MB) per rebuild and was
+# causing the auto-snapshot hook to push a fresh dist on every commit.
+# Deploys MUST run `npm run build` before serving — see README §deploy.
+stock_trading_system/web/static/dist/
+
 # Pytest / test caches
 .pytest_cache/
 .coverage
