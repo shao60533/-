@@ -1710,6 +1710,46 @@ def create_app(config_path=None):
             return jsonify({"error": str(e)}), 500
         return jsonify(news or [])
 
+    @app.route("/api/analysis/<int:analysis_id>/quick-info")
+    def api_analysis_quick_info(analysis_id):
+        """Aggregated quick-info card for the analysis detail page.
+
+        Bundles the news + fundamentals lookups the AnalysisDetailView
+        used to fire as two separate XHRs into a single response. Both
+        upstream providers are best-effort — failures degrade to empty
+        / null rather than 500ing the whole page so the rest of the
+        detail still renders.
+        """
+        from stock_trading_system.portfolio.database import PortfolioDatabase
+        db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
+        db = PortfolioDatabase(db_path)
+        record = db.get_analysis_by_id(analysis_id)
+        if not record:
+            return jsonify({"error": "not_found"}), 404
+        ticker = (record.get("ticker") or "").upper()
+
+        news: list = []
+        if ticker:
+            try:
+                raw = _get_data_manager().get_news(ticker) or []
+                # Top 3 only — quick-info card doesn't paginate.
+                news = list(raw)[:3]
+            except Exception as e:  # noqa: BLE001
+                logger.warning("quick-info news failed for %s: %s", ticker, e)
+
+        fundamentals = None
+        if ticker:
+            try:
+                fundamentals = _get_data_manager().get_fundamentals(ticker)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("quick-info fundamentals failed for %s: %s", ticker, e)
+
+        return jsonify({
+            "ticker": ticker,
+            "news": news,
+            "fundamentals": fundamentals,
+        })
+
     # ── Portfolio Extras ────────────────────────────────────────────────
 
     @app.route("/api/portfolio/update_cost", methods=["POST"])

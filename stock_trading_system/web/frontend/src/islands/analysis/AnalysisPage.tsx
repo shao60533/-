@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useCallback } from "react"
+import { useEffect, useState, useRef, useCallback, lazy, Suspense } from "react"
 import { Sparkles, Send, ArrowLeft, Clock, Newspaper, BarChart3, Scale, ExternalLink } from "lucide-react"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -8,17 +8,23 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { PipelineDAG } from "@/components/shared/PipelineDAG"
-import { TVChart, type TVChartState } from "@/components/shared/TVChart"
+import type { TVChartState } from "@/components/shared/TVChart"
 import { apiGet, apiPost } from "@/lib/api"
-import { subscribeTaskStream } from "@/lib/socket"
-import Markdown from "react-markdown"
-import remarkGfm from "remark-gfm"
-import rehypeSanitize, { defaultSchema } from "rehype-sanitize"
-import {
-  OverviewCard, MarketCard, SentimentCard, NewsCard,
-  FundamentalsCard, DebateCard, RiskCard, DecisionCard,
-  type RenderingDict,
-} from "@/components/analysis"
+// react-markdown + remark-gfm + rehype-sanitize together are ~70kB
+// gzipped — we only need them on the analysis-detail tabs body, never
+// on the form page or the running view. Lazy-load via React.lazy so
+// they end up in their own chunk and only fetch when a user actually
+// renders the body.
+const MarkdownBody = lazy(() => import("@/components/shared/MarkdownBody"))
+// TVChart pulls lightweight-charts (~80kB gz). Same story — defer.
+const TVChart = lazy(() =>
+  import("@/components/shared/TVChart").then(m => ({ default: m.TVChart })),
+)
+// 8 structured tab cards — each barrel module pulls its own helpers
+// (stat formatters, badge variants). Splitting the whole barrel into
+// one chunk keeps the entry small while preserving render simplicity.
+const AnalysisCards = lazy(() => import("@/components/analysis/lazy-bundle"))
+import type { RenderingDict } from "@/components/analysis"
 
 interface AnalysisDetail {
   id: string; ticker: string; signal: string; date: string
@@ -42,21 +48,6 @@ interface AnalysisDetail {
   // never see ``rendering_json`` raw. Missing or null values fall back to
   // the markdown body (kept inside a ``<details>`` collapsible).
   rendering?: RenderingDict | null
-}
-
-// Map tab key → structured card component. Each card narrows ``data`` to
-// its own schema-shaped type internally; we type the registry as ``any``
-// here because TypeScript can't pin a polymorphic per-key type cleanly.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const TAB_CARD: Record<string, React.FC<{ data: any }>> = {
-  "summary":            OverviewCard,
-  "Market":             MarketCard,
-  "Sentiment":          SentimentCard,
-  "News":               NewsCard,
-  "Fundamentals":       FundamentalsCard,
-  "Investment Debate":  DebateCard,
-  "Risk Assessment":    RiskCard,
-  "Decision":           DecisionCard,
 }
 
 interface RecentAnalysisRow {
@@ -120,25 +111,6 @@ function signalVariant(signal: string): "buy" | "sell" | "hold" | "default" {
 function getIdFromUrl(): string | null {
   const match = window.location.pathname.match(/\/analysis\/([^/]+)/)
   return match?.[1] ?? null
-}
-
-// rehype-sanitize schema. Default is GitHub's safe-list; we extend it to
-// keep tables + fenced code rendering (LLM output frequently uses both)
-// without enabling raw HTML or scripts. Anything not on this list is
-// stripped before React inserts the markdown into the DOM.
-const MD_SANITIZE_SCHEMA = {
-  ...defaultSchema,
-  attributes: {
-    ...(defaultSchema.attributes ?? {}),
-    code: [...(defaultSchema.attributes?.code ?? []), "className"],
-    span: [...(defaultSchema.attributes?.span ?? []), "className"],
-    div: [...(defaultSchema.attributes?.div ?? []), "className"],
-  },
-  tagNames: [
-    ...(defaultSchema.tagNames ?? []),
-    "table", "thead", "tbody", "tr", "th", "td",
-    "code", "pre",
-  ],
 }
 
 /** UUID = task ID (running state); pure digits or "analysis_history:N" = completed history ID */
@@ -379,22 +351,35 @@ function AnalysisRunningView({ taskId, ticker, onComplete }: {
   const [completed, setCompleted] = useState(false)
 
   useEffect(() => {
-    const sub = subscribeTaskStream({
-      taskIds: [taskId],
-      onEvent: (env) => {
-        if (env.event === "task_completed") {
-          setCompleted(true)
-          // Extract analysis_id from result_ref
-          const ref = (env.payload as any)?.result_ref ?? ""
-          const m = ref.match?.(/(\d+)/)
-          if (m) {
-            setTimeout(() => onComplete(m[1]), 1000)
+    // Socket.IO is only needed in the *running* view (we tail
+    // task_completed and bounce to the detail page on terminal events).
+    // History detail pages never need it, so dynamic-import keeps the
+    // socket chunk out of the entry bundle on those reads.
+    let cancelled = false
+    let destroy: (() => void) | null = null
+    import("@/lib/socket").then(({ subscribeTaskStream }) => {
+      if (cancelled) return
+      const sub = subscribeTaskStream({
+        taskIds: [taskId],
+        onEvent: (env) => {
+          if (env.event === "task_completed") {
+            setCompleted(true)
+            // Extract analysis_id from result_ref
+            const ref = (env.payload as { result_ref?: string })?.result_ref ?? ""
+            const m = ref.match?.(/(\d+)/)
+            if (m) {
+              setTimeout(() => onComplete(m[1]), 1000)
+            }
           }
-        }
-      },
-      onStatusChange: () => {},
+        },
+        onStatusChange: () => {},
+      })
+      destroy = () => sub.destroy()
     })
-    return () => sub.destroy()
+    return () => {
+      cancelled = true
+      destroy?.()
+    }
   }, [taskId, onComplete])
 
   return (
@@ -444,6 +429,13 @@ function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
   const [klineState, setKlineState] = useState<TVChartState>("loading")
   const [activeTab, setActiveTab] = useState("summary")
   const tabsRef = useRef<HTMLDivElement>(null)
+  // Viewport-gated K-line: don't fetch /api/quote/history or load
+  // lightweight-charts until the chart card scrolls into view. Most
+  // users land on /analysis/<id>, glance at the summary card, then
+  // bounce — that previously cost 90 days of OHLCV + 80kB of chart
+  // code on every visit.
+  const klineSectionRef = useRef<HTMLDivElement>(null)
+  const [klineVisible, setKlineVisible] = useState(false)
 
   // Primary: /api/quote/history (days-based, dedicated for chart rendering).
   // Fallback: /api/chart/{ticker} (period-based, predates the days API).
@@ -495,9 +487,29 @@ function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
     }
   }, [detail.ticker])
 
+  // Watch the K-line section. Once visible we both flag the chart for
+  // mounting and trigger the OHLCV fetch. Re-runs are guarded by
+  // klineVisible so the observer fires exactly once per page load.
   useEffect(() => {
-    refetchKline()
-  }, [refetchKline])
+    if (klineVisible) {
+      refetchKline()
+      return
+    }
+    const node = klineSectionRef.current
+    if (!node || typeof IntersectionObserver === "undefined") {
+      // No IO support → fall back to immediate fetch (Safari < 12.1, JSDOM).
+      setKlineVisible(true)
+      return
+    }
+    const io = new IntersectionObserver((entries) => {
+      if (entries.some(e => e.isIntersecting)) {
+        setKlineVisible(true)
+        io.disconnect()
+      }
+    }, { rootMargin: "200px" })
+    io.observe(node)
+    return () => io.disconnect()
+  }, [klineVisible, refetchKline])
 
   // Build report content map (8 tabs)
   const reportContent: Record<string, string> = {}
@@ -527,14 +539,24 @@ function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
   const [news, setNews] = useState<NewsItem[]>([])
   const [fund, setFund] = useState<Record<string, unknown> | null>(null)
   useEffect(() => {
-    if (!detail.ticker) return
-    apiGet<NewsItem[]>(`/api/news/${detail.ticker}`)
-      .then(r => setNews((r ?? []).slice(0, 3)))
-      .catch(() => setNews([]))
-    apiGet<Record<string, unknown>>(`/api/fundamentals/${detail.ticker}`)
-      .then(setFund)
-      .catch(() => setFund(null))
-  }, [detail.ticker])
+    if (!detail.id) return
+    // v1.16: one aggregated request instead of two parallel XHRs.
+    // Backend handles upstream failures and returns partial results,
+    // so we don't need to retry on individual sub-fetches here.
+    interface QuickInfoResp {
+      news?: NewsItem[]
+      fundamentals?: Record<string, unknown> | null
+    }
+    apiGet<QuickInfoResp>(`/api/analysis/${detail.id}/quick-info`)
+      .then(r => {
+        setNews((r?.news ?? []).slice(0, 3))
+        setFund(r?.fundamentals ?? null)
+      })
+      .catch(() => {
+        setNews([])
+        setFund(null)
+      })
+  }, [detail.id])
 
   const scrollToTab = (tabKey: string) => {
     setActiveTab(tabKey)
@@ -832,11 +854,20 @@ function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
         </QuickInfoCard>
       </div>
 
-      {/* K-line chart (TradingView lightweight-charts) */}
-      <Card>
+      {/* K-line chart — viewport-gated. The container always mounts so
+          IntersectionObserver has something to watch; TVChart itself is
+          lazy-loaded only after the section scrolls into view, and the
+          /api/quote/history fetch fires from the same observer. */}
+      <Card ref={klineSectionRef}>
         <CardHeader><CardTitle className="text-sm">K 线走势（近 3 个月）</CardTitle></CardHeader>
         <CardContent>
-          <TVChart data={klineData} state={klineState} onRetry={refetchKline} height={380} />
+          {klineVisible ? (
+            <Suspense fallback={<Skeleton className="w-full" style={{ height: 380 }} />}>
+              <TVChart data={klineData} state={klineState} onRetry={refetchKline} height={380} />
+            </Suspense>
+          ) : (
+            <Skeleton className="w-full" style={{ height: 380 }} />
+          )}
         </CardContent>
       </Card>
 
@@ -855,13 +886,13 @@ function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
             {REPORT_TABS.map(tab => {
               const content = reportContent[tab.key] || ""
               const struct = detail.rendering?.[tab.key as keyof RenderingDict]
-              const CardComp = TAB_CARD[tab.key]
-              const hasStruct = !!struct && !!CardComp
+              const hasStruct = !!struct
               return (
                 <TabsContent key={tab.key} value={tab.key} className="mt-4 space-y-4">
                   {hasStruct ? (
-                    /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
-                    <CardComp data={struct as any} />
+                    <Suspense fallback={<Skeleton className="h-32 w-full" />}>
+                      <AnalysisCards tabKey={tab.key} data={struct} />
+                    </Suspense>
                   ) : null}
                   {content ? (
                     <details className="rounded border border-border/50">
@@ -869,12 +900,9 @@ function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
                         {hasStruct ? "完整论述（点击展开）" : "完整论述"}
                       </summary>
                       <div className="prose prose-invert prose-sm max-w-none px-4 py-3 max-h-[600px] overflow-y-auto text-[var(--color-text-secondary)]">
-                        <Markdown
-                          remarkPlugins={[remarkGfm]}
-                          rehypePlugins={[[rehypeSanitize, MD_SANITIZE_SCHEMA]]}
-                        >
-                          {content}
-                        </Markdown>
+                        <Suspense fallback={<Skeleton className="h-24 w-full" />}>
+                          <MarkdownBody>{content}</MarkdownBody>
+                        </Suspense>
                       </div>
                     </details>
                   ) : (!hasStruct && (
