@@ -15,7 +15,14 @@ import { apiGet } from "@/lib/api"
 import { cn } from "@/lib/utils"
 
 type Mode = "classic" | "agent" | "agent_rt"
+type Market = "us" | "cn" | "hk"
 const CANDIDATES = [10, 20, 30, 50] as const
+
+const MARKETS: { value: Market; label: string }[] = [
+  { value: "us", label: "美股" },
+  { value: "cn", label: "A 股" },
+  { value: "hk", label: "港股" },
+]
 
 export function ScreenerV3Page() {
   // Check URL for result view
@@ -30,12 +37,15 @@ export function ScreenerV3Page() {
 
 function ScreenerForm() {
   const [nl, setNl] = useState("")
+  const [market, setMarket] = useState<Market>("us")
   const [candidateN, setCandidateN] = useState<number>(20)
   const [mode, setMode] = useState<Mode>("agent")
   const [selected, setSelected] = useState<Set<string>>(
     new Set(["buffett", "graham", "munger", "lynch"])
   )
   const [gurus, setGurus] = useState<Guru[]>(STATIC_GURUS)
+  const [submitting, setSubmitting] = useState(false)
+  const [submitError, setSubmitError] = useState<string | null>(null)
 
   useEffect(() => {
     fetch("/api/screen/v3/gurus", { credentials: "same-origin" })
@@ -73,6 +83,7 @@ function ScreenerForm() {
           headers: { "Content-Type": "application/json" },
           credentials: "same-origin",
           body: JSON.stringify({
+            market,
             candidate_n: candidateN,
             gurus: [...selected],
             with_roundtable: mode === "agent_rt",
@@ -87,7 +98,7 @@ function ScreenerForm() {
       } catch { /* ignore */ }
     }, 500)
     return () => clearTimeout(t)
-  }, [candidateN, selected.size, mode])
+  }, [market, candidateN, selected.size, mode])
 
   const toggle = (id: string) => {
     setSelected(s => {
@@ -124,7 +135,15 @@ function ScreenerForm() {
         </Section>
 
         <Section icon={<SlidersHorizontal className="h-4 w-4" />} title="市场">
-          <ChipRow><Chip active>美股</Chip><Chip>A 股</Chip><Chip>港股</Chip></ChipRow>
+          <ChipRow>
+            {MARKETS.map(m => (
+              <Chip key={m.value}
+                    active={market === m.value}
+                    onClick={() => setMarket(m.value)}>
+                {m.label}
+              </Chip>
+            ))}
+          </ChipRow>
         </Section>
 
         <Section icon={<Users className="h-4 w-4" />} title="大师选择"
@@ -186,20 +205,52 @@ function ScreenerForm() {
           </div>
         </div>
 
-        <div className="flex items-center justify-end gap-2 pt-2">
-          <Button variant="outline" onClick={() => window.location.href = "/"}>取消</Button>
-          <Button variant="default" size="lg" onClick={async () => {
-            try {
-              const resp = await fetch("/api/screen/v3/trigger", {
-                method: "POST", headers: { "Content-Type": "application/json" }, credentials: "same-origin",
-                body: JSON.stringify({ nl_query: nl, market: "us", candidate_n: candidateN, gurus: [...selected], mode, with_roundtable: mode === "agent_rt" }),
-              })
-              const data = await resp.json()
-              if (data.task_id) window.location.href = `/tasks/${data.task_id}`
-            } catch { alert("提交失败") }
-          }}>
-            <Play className="h-4 w-4" /> 开始筛选
-          </Button>
+        <div className="flex flex-col gap-2 pt-2 items-end">
+          {selected.size === 0 && (
+            <p className="text-xs text-[var(--color-accent-red)]">至少选择 1 位大师</p>
+          )}
+          {submitError && (
+            <p className="text-xs text-[var(--color-accent-red)]">{submitError}</p>
+          )}
+          <div className="flex items-center justify-end gap-2">
+            <Button variant="outline" onClick={() => window.location.href = "/"}>取消</Button>
+            <Button
+              variant="default" size="lg"
+              disabled={selected.size === 0 || submitting}
+              onClick={async () => {
+                if (selected.size === 0) {
+                  setSubmitError("至少选择 1 位大师")
+                  return
+                }
+                setSubmitting(true)
+                setSubmitError(null)
+                try {
+                  const resp = await fetch("/api/screen/v3/trigger", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    credentials: "same-origin",
+                    body: JSON.stringify({
+                      nl_query: nl, market,
+                      candidate_n: candidateN,
+                      gurus: [...selected], mode,
+                      with_roundtable: mode === "agent_rt",
+                    }),
+                  })
+                  const data = await resp.json()
+                  if (resp.ok && data.task_id) {
+                    window.location.href = `/tasks/${data.task_id}`
+                    return
+                  }
+                  setSubmitError(data.message || data.error || "提交失败")
+                } catch {
+                  setSubmitError("网络错误，请重试")
+                } finally {
+                  setSubmitting(false)
+                }
+              }}>
+              <Play className="h-4 w-4" /> 开始筛选
+            </Button>
+          </div>
         </div>
       </CardContent>
     </Card>
@@ -217,11 +268,37 @@ interface ScreenResult {
   params?: Record<string, unknown>
 }
 
+interface GuruScore {
+  signal: string
+  confidence: number
+  reasoning?: string
+  key_metrics?: Record<string, unknown>
+}
+
+// Backend normalises older worker payloads into the canonical shape, but
+// we keep the tolerant aliases below so a stale worker still renders.
 interface Candidate {
   ticker: string
-  composite_score: number
+  composite_score?: number
+  final_score?: number
   signal: string
-  guru_scores: Record<string, { signal: string; confidence: number; reasoning?: string; key_metrics?: Record<string, unknown> }>
+  guru_scores?: Record<string, GuruScore>
+  guru_signals?: Array<{ guru: string } & GuruScore>
+}
+
+const candidateScore = (c: Candidate): number =>
+  (c.composite_score ?? c.final_score ?? 0)
+
+const candidateGuruScores = (c: Candidate): Record<string, GuruScore> => {
+  if (c.guru_scores && Object.keys(c.guru_scores).length > 0) return c.guru_scores
+  if (Array.isArray(c.guru_signals)) {
+    const out: Record<string, GuruScore> = {}
+    for (const s of c.guru_signals) {
+      if (s && s.guru) out[s.guru] = s
+    }
+    return out
+  }
+  return {}
 }
 
 function ResultsView({ resultId }: { resultId: string }) {
@@ -254,7 +331,9 @@ function ResultsView({ resultId }: { resultId: string }) {
   const candidates = result.candidates || []
   const bullish = candidates.filter(c => c.signal?.toLowerCase().includes("bull") || c.signal?.toLowerCase().includes("buy")).length
   const bearish = candidates.filter(c => c.signal?.toLowerCase().includes("bear") || c.signal?.toLowerCase().includes("sell")).length
-  const avgScore = candidates.length > 0 ? (candidates.reduce((s, c) => s + (c.composite_score || 0), 0) / candidates.length) : 0
+  const avgScore = candidates.length > 0
+    ? (candidates.reduce((s, c) => s + candidateScore(c), 0) / candidates.length)
+    : 0
 
   return (
     <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-6">
@@ -313,11 +392,11 @@ function ResultsView({ resultId }: { resultId: string }) {
                       <tr key={c.ticker} className="border-b border-border/50 hover:bg-muted/30">
                         <td className="py-2.5 px-2 text-muted-foreground">{i + 1}</td>
                         <td className="py-2.5 px-2 font-mono font-semibold">{c.ticker}</td>
-                        <td className="text-right py-2.5 px-2 font-mono">{(c.composite_score || 0).toFixed(1)}</td>
+                        <td className="text-right py-2.5 px-2 font-mono">{candidateScore(c).toFixed(1)}</td>
                         <td className="text-center py-2.5 px-2">
                           <Badge variant={signalBadge(c.signal)}>{c.signal || "-"}</Badge>
                         </td>
-                        <td className="text-right py-2.5 px-2 text-muted-foreground">{Object.keys(c.guru_scores || {}).length}</td>
+                        <td className="text-right py-2.5 px-2 text-muted-foreground">{Object.keys(candidateGuruScores(c)).length}</td>
                         <td className="text-right py-2.5 px-2">
                           <Button variant="ghost" size="sm" onClick={() => setExpanded(expanded === c.ticker ? null : c.ticker)}>
                             {expanded === c.ticker ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
@@ -340,11 +419,11 @@ function ResultsView({ resultId }: { resultId: string }) {
                         <span className="font-mono font-semibold">{c.ticker}</span>
                       </div>
                       <div className="flex items-center gap-2">
-                        <span className="font-mono text-sm">{(c.composite_score || 0).toFixed(1)}</span>
+                        <span className="font-mono text-sm">{candidateScore(c).toFixed(1)}</span>
                         <Badge variant={signalBadge(c.signal)}>{c.signal || "-"}</Badge>
                       </div>
                     </div>
-                    {expanded === c.ticker && <GuruDetails scores={c.guru_scores} />}
+                    {expanded === c.ticker && <GuruDetails scores={candidateGuruScores(c)} />}
                   </div>
                 ))}
               </div>
@@ -353,7 +432,10 @@ function ResultsView({ resultId }: { resultId: string }) {
               {expanded && (
                 <div className="hidden md:block mt-2 border rounded-lg p-4 bg-[var(--color-bg-secondary)]">
                   <div className="text-sm font-semibold mb-2">{expanded} — 大师评分详情</div>
-                  <GuruDetails scores={candidates.find(c => c.ticker === expanded)?.guru_scores || {}} />
+                  <GuruDetails scores={(() => {
+                    const c = candidates.find(c => c.ticker === expanded)
+                    return c ? candidateGuruScores(c) : {}
+                  })()} />
                 </div>
               )}
             </>
@@ -364,7 +446,7 @@ function ResultsView({ resultId }: { resultId: string }) {
   )
 }
 
-function GuruDetails({ scores }: { scores: Record<string, { signal: string; confidence: number; reasoning?: string; key_metrics?: Record<string, unknown> }> }) {
+function GuruDetails({ scores }: { scores: Record<string, GuruScore> }) {
   return (
     <div className="mt-2 space-y-1.5">
       {Object.entries(scores).map(([guru, s]) => (

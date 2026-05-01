@@ -4,18 +4,26 @@ Critical: events and daily snapshots must be interleaved per day so that
 mark-to-market on day D reflects the position state AFTER day-D events
 applied to the previous day's state.
 
+Per-user contract (v1.16): every backfill runs in a single user's
+context. We **never** pull advice off the shared ``analysis_history``
+row. Per-user advice (entry/stop/take-profit/position_pct) lives in
+``user_analysis_advice`` and is only readable by that user. When the
+caller doesn't pass ``user_id`` (CLI / cron), or when no advice exists
+for the user/analysis pair, we fall back to a conservative
+shared-only plan derived from ``signal``/``trade_decision`` text.
+
 Flow per ticker:
-  1. Ensure session.
+  1. Ensure session (scoped to user_id).
   2. Pre-fetch bars covering [earliest_analysis, today].
   3. For each business day in range:
-     a. Run any analyses dated that day through the executor.
+     a. Run any analyses dated that day through the executor, using
+        only the requesting user's private advice.
      b. Write one daily_stats row marked-to-market with that day's close.
      c. Stop/target checks happen inside daily_updater logic — inlined here.
 """
 
 from __future__ import annotations
 
-import json
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 
@@ -30,7 +38,8 @@ logger = get_logger("paper_trader.backfill")
 
 
 def backfill_all(store, portfolio_db, config: dict,
-                 local_cache=None, progress_cb=None) -> dict:
+                 local_cache=None, progress_cb=None,
+                 user_id: int | None = None) -> dict:
     cb = progress_cb or (lambda *a, **kw: None)
     rows = portfolio_db.get_analysis_history(limit=5000)
     rows = [r for r in rows if (r.get("signal") or "").upper() != "ERROR"]
@@ -51,7 +60,10 @@ def backfill_all(store, portfolio_db, config: dict,
     for i, (ticker, anas) in enumerate(by_ticker.items()):
         cb(int(5 + 90 * i / len(by_ticker)), f"回填 {ticker}")
         try:
-            n_ev, n_d, sid = _backfill_ticker(store, ticker, anas, updater)
+            n_ev, n_d, sid = _backfill_ticker(
+                store, ticker, anas, updater,
+                portfolio_db=portfolio_db, user_id=user_id,
+            )
             total_events += n_ev
             total_days += n_d
             if sid:
@@ -66,9 +78,12 @@ def backfill_all(store, portfolio_db, config: dict,
 
 
 def _backfill_ticker(store, ticker: str, anas: list[dict],
-                     updater: DailyUpdater) -> tuple[int, int, int | None]:
+                     updater: DailyUpdater,
+                     *, portfolio_db, user_id: int | None,
+                     ) -> tuple[int, int, int | None]:
     start_date = anas[0]["date"]
-    sess = ensure_ticker_session(store, ticker, start_date=start_date)
+    sess = ensure_ticker_session(store, ticker, start_date=start_date,
+                                  user_id=user_id)
     sid = int(sess["id"])
 
     # Reset any prior backfill state for this ticker so re-runs are idempotent
@@ -104,9 +119,7 @@ def _backfill_ticker(store, ticker: str, anas: list[dict],
 
         # 1. Apply analyses dated today
         for ana in ana_by_date.get(day_str, []):
-            advice = _parse_advice(ana.get("advice_json"))
-            # Merge executive_summary from the full analysis row (richer text)
-            ana_full = dict(ana)
+            advice = _resolve_user_advice(portfolio_db, user_id, int(ana["id"]))
             price = None
             bar_today = processed_bars.get(day_str)
             if bar_today is not None:
@@ -135,22 +148,26 @@ def _backfill_ticker(store, ticker: str, anas: list[dict],
                 recent = bars.loc[mask].tail(40)
                 recent = recent.rename(columns={c: c.lower() for c in recent.columns})
 
-            # Pass the full analysis text to the executor so plan_parser
-            # sees the real executive_summary / trade_decision from DB
+            # Pass shared research text only — never the legacy advice_json
+            # that pre-v1.14 rows still carry. The executor falls back to
+            # conservative parsing when ``advice`` is None / empty.
             ana_for_parser = {
                 "signal": ana["signal"],
                 "trade_decision": ana.get("trade_decision") or "",
                 "risk_assessment": ana.get("risk_assessment") or "",
                 "investment_debate": ana.get("investment_debate") or "",
                 "market_report": ana.get("market_report") or "",
-                "advice_json": ana.get("advice_json") or advice,
+                # advice_json must reflect the *requesting user's* private
+                # advice, not whatever the shared row happens to carry.
+                "advice_json": advice,
             }
             res = process_analysis(store, analysis_id=int(ana["id"]),
                                    ticker=ticker, analysis_date=day_str,
                                    signal=ana["signal"],
                                    advice=advice, current_price=price,
                                    today_bar=bar_dict, recent_bars=recent,
-                                   analysis_blob=ana_for_parser)
+                                   analysis_blob=ana_for_parser,
+                                   user_id=user_id)
             if res.get("ok"):
                 n_events += 1
 
@@ -171,12 +188,36 @@ def _parse(s: str) -> date:
     return datetime.strptime(s, "%Y-%m-%d").date()
 
 
-def _parse_advice(raw):
-    if not raw:
+def _resolve_user_advice(portfolio_db, user_id: int | None,
+                          analysis_id: int) -> dict | None:
+    """Return the requesting user's private advice for this analysis.
+
+    Strict per-user lookup — never falls back to the shared row's legacy
+    advice_json. ``None`` (anonymous CLI / cron path or "user has not
+    rerun advice on this row") means the executor will plan from
+    shared signal/trade_decision text only, which is the correct
+    privacy-preserving behaviour.
+    """
+    if user_id is None:
         return None
-    if isinstance(raw, dict):
-        return raw
     try:
-        return json.loads(raw)
-    except Exception:
+        row = portfolio_db.get_user_advice(user_id, analysis_id)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("get_user_advice failed (user=%s analysis=%s): %s",
+                       user_id, analysis_id, e)
         return None
+    if not row:
+        return None
+    # Project user_analysis_advice back into the dict shape that
+    # plan_parser / event_executor expect (matches advice_json schema).
+    return {
+        "action":                  row.get("action"),
+        "confidence":              row.get("confidence"),
+        "suggested_position_pct":  row.get("position_pct"),
+        "entry_price_low":         row.get("entry_low"),
+        "entry_price_high":        row.get("entry_high"),
+        "stop_loss":               row.get("stop_loss"),
+        "take_profit":             row.get("take_profit"),
+        "reasoning":               row.get("reasoning") or "",
+        "risk_warning":            row.get("risk_warning") or "",
+    }

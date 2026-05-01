@@ -87,3 +87,27 @@ def has_provider_key(config: dict, provider: Provider) -> bool:
     if provider == "qwen":
         return bool((config.get("qwen") or {}).get("api_key"))
     return bool((config.get("gemini") or {}).get("api_key"))
+
+
+def resolve_active_model(config: dict, user_id: int | None = None) -> tuple[str | None, str | None]:
+    """Return ``(provider, model)`` for the requesting user.
+
+    Resolves the model from the provider-specific config slice — `qwen.model`
+    / `gemini.deep_think_model` (or `.model`) — instead of the historical
+    ``llm.model`` lookup which was always empty in practice and produced
+    cache keys like ``"qwen:"`` / ``"gemini:"``.
+    """
+    provider = (
+        get_active_provider(config, user_id=user_id)
+        if user_id is not None
+        else get_active_provider(config)
+    )
+    if provider == "qwen":
+        qwen = config.get("qwen") or {}
+        model = qwen.get("deep_think_model") or qwen.get("model")
+    elif provider == "gemini":
+        gem = config.get("gemini") or {}
+        model = gem.get("deep_think_model") or gem.get("model")
+    else:
+        model = (config.get("llm") or {}).get("model")
+    return provider, model

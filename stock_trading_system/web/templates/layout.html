@@ -11,15 +11,32 @@
   <title>{% block title %}StockAI Terminal{% endblock %}</title>
 
   {% set assets = vite_assets(entry) %}
+  {# CSS first so initial paint isn't unstyled. #}
   {% for css in assets.css %}
     <link rel="stylesheet" href="{{ css }}">
+  {% endfor %}
+  {# Modulepreload the static-import graph so the browser fans out the
+     network fetches in parallel instead of waiting for each <script>'s
+     fetch+parse before discovering the next one. The entry script
+     itself is rendered below so module execution order matches Vite's
+     manifest. #}
+  {% for js in assets.preloads %}
+    <link rel="modulepreload" href="{{ js }}">
   {% endfor %}
 </head>
 <body class="bg-background text-foreground antialiased">
   <div id="react-root"></div>
 
-  {% for js in assets.js %}
-    <script type="module" src="{{ js }}"></script>
-  {% endfor %}
+  {% if assets.dev %}
+    {# Dev mode: Vite needs its @vite/client AND the entry. The legacy
+       js list still works here since dev preloads stays empty. #}
+    {% for js in assets.js %}
+      <script type="module" src="{{ js }}"></script>
+    {% endfor %}
+  {% else %}
+    {% if assets.entry %}
+      <script type="module" src="{{ assets.entry }}"></script>
+    {% endif %}
+  {% endif %}
 </body>
 </html>

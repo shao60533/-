@@ -50,18 +50,27 @@ def test_signal_loader_reads_user_advice(tmp_path):
 
 
 def test_signal_loader_legacy_fallback_only_for_creator(tmp_path):
-    db = PortfolioDatabase(str(tmp_path / "p.db"))
-    aid = _seed_analysis(
-        db,
-        advice_json='{"action":"BUY","reasoning":"alice-only"}',
-        created_by=1,  # alice
-    )
+    """Pre-existing legacy rows that escaped migration must still only be
+    visible to the original creator. Post-v1.16 ``save_analysis`` no longer
+    writes ``advice_json`` so we inject the legacy state via raw SQL to
+    simulate a row that was created before the migration ran."""
+    import sqlite3
+    db_path = str(tmp_path / "p.db")
+    db = PortfolioDatabase(db_path)
+    aid = _seed_analysis(db, advice_json="", created_by=1)
+    # Force the legacy state directly — this is the only way to reach it
+    # now that save_analysis closes the shared-advice backdoor.
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE analysis_history SET advice_json = ? WHERE id = ?",
+            ('{"action":"BUY","reasoning":"alice-only"}', aid),
+        )
     # Alice (creator) sees legacy advice via advice_json fallback.
-    sig_alice = SignalLoader(str(tmp_path / "p.db"), user_id=1).get_one(aid)
+    sig_alice = SignalLoader(db_path, user_id=1).get_one(aid)
     assert sig_alice is not None
     assert sig_alice["advice"].get("action") == "BUY"
     # Bob (non-creator) must see nothing — no leakage.
-    sig_bob = SignalLoader(str(tmp_path / "p.db"), user_id=2).get_one(aid)
+    sig_bob = SignalLoader(db_path, user_id=2).get_one(aid)
     assert sig_bob is not None
     assert sig_bob["advice"] == {}
 
@@ -87,19 +96,26 @@ def test_signal_loader_normalizes_dual_keys(tmp_path):
 
 
 def test_signal_loader_no_user_blocks_legacy_unless_opted_in(tmp_path):
-    """Default constructor (no user_id) must NOT silently fall back."""
-    db = PortfolioDatabase(str(tmp_path / "p.db"))
-    aid = _seed_analysis(
-        db, advice_json='{"action":"BUY"}', created_by=1,
-    )
+    """Default constructor (no user_id) must NOT silently fall back.
+
+    See ``test_signal_loader_legacy_fallback_only_for_creator`` — legacy
+    state is injected via raw SQL to simulate a pre-migration row.
+    """
+    import sqlite3
+    db_path = str(tmp_path / "p.db")
+    db = PortfolioDatabase(db_path)
+    aid = _seed_analysis(db, advice_json="", created_by=1)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE analysis_history SET advice_json = ? WHERE id = ?",
+            ('{"action":"BUY"}', aid),
+        )
     # Default — no fallback even though advice_json is present.
-    sig_default = SignalLoader(str(tmp_path / "p.db")).get_one(aid)
+    sig_default = SignalLoader(db_path).get_one(aid)
     assert sig_default is not None
     assert sig_default["advice"] == {}
     # Explicit opt-in (used by replay/backfill) — fallback engaged.
-    sig_optin = SignalLoader(
-        str(tmp_path / "p.db"), allow_legacy_no_user=True,
-    ).get_one(aid)
+    sig_optin = SignalLoader(db_path, allow_legacy_no_user=True).get_one(aid)
     assert sig_optin is not None
     assert sig_optin["advice"].get("action") == "BUY"
 
