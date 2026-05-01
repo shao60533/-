@@ -827,11 +827,26 @@ def create_app(config_path=None):
             except ValueError:
                 days = 30
         history = pm.get_history(days=days, user_id=uid)
+        # Provenance for the equity-curve card: the React island shows
+        # an "insufficient snapshots — click 重新计算" notice when the
+        # user has holdings but the daily_snapshots table can't draw a
+        # multi-point curve. ``history_status`` lets the frontend make
+        # that decision without a separate round-trip.
+        first_date = history[0]["date"] if history else None
+        last_date = history[-1]["date"] if history else None
+        if holdings and len(history) <= 1:
+            history_status = "insufficient_snapshots"
+        else:
+            history_status = "ok"
         return jsonify({
             "pnl": pnl,
             "holdings": holdings,
             "alerts_count": len(alerts),
             "history": history,
+            "history_count": len(history),
+            "history_first_date": first_date,
+            "history_last_date": last_date,
+            "history_status": history_status,
         })
 
     # ── Portfolio API ───────────────────────────────────────────────────
@@ -1249,6 +1264,24 @@ def create_app(config_path=None):
         conf_map = {"high": 0.85, "medium": 0.5, "low": 0.25}
         confidence_num = conf_map.get(conf_str)
 
+        # v1.20 trade-action consistency: parse the trader's explicit
+        # ``FINAL TRANSACTION PROPOSAL: **X**`` from ``trade_decision``.
+        # New rows (post-v1.20) already store the parsed action in
+        # ``signal``, so ``decision_action == signal`` for them; old
+        # rows where ``graph.process_signal`` disagreed with the
+        # trader's text surface a ``signal_mismatch=true`` flag so the
+        # frontend can correct itself + show a "已校正" hint.
+        from stock_trading_system.agents.iterative.signal_extractor import (
+            extract_trade_action,
+        )
+        decision_action = extract_trade_action(record.get("trade_decision"))
+        stored_signal = (record.get("signal") or "").strip()
+        signal_mismatch = bool(
+            decision_action
+            and stored_signal
+            and stored_signal.lower() != decision_action.lower()
+        )
+
         # Whitelisted DTO — never echo the raw row, which carries shared
         # advice columns whose values would have leaked across users on
         # pre-v1.14 records.
@@ -1258,6 +1291,8 @@ def create_app(config_path=None):
             "ticker":             record.get("ticker"),
             "date":               record.get("date"),
             "signal":             record.get("signal"),
+            "decision_action":    decision_action,
+            "signal_mismatch":    signal_mismatch,
             "created_at":         record.get("created_at"),
             "created_by":         creator_id,
             "created_by_name":    created_by_name,

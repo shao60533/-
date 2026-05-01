@@ -39,6 +39,22 @@ PIPELINE_STEPS: list[tuple[str, str, str]] = [
 ]
 
 
+def _canonical_signal(trade_decision, *, fallback: str) -> str:
+    """Resolve the canonical signal stored on the analysis row.
+
+    Prefers the trader's explicit ``FINAL TRANSACTION PROPOSAL: **X**``
+    via :func:`extract_trade_action`. Falls back to whatever
+    ``graph.process_signal`` returned (typically OVERWEIGHT /
+    UNDERWEIGHT, which extract_trade_action intentionally doesn't
+    classify) when no clean BUY/SELL/HOLD pattern is present.
+    """
+    from stock_trading_system.agents.iterative.signal_extractor import (
+        extract_trade_action,
+    )
+    parsed = extract_trade_action(trade_decision)
+    return parsed if parsed else fallback
+
+
 def _is_step_done(state: dict, state_key: str) -> bool:
     """Return True if this step's output has been populated in state."""
     if not isinstance(state, dict):
@@ -366,9 +382,13 @@ class StockAnalyzer:
                             "total": total,
                             "duration_ms": 0,
                         })
+                final_signal = _canonical_signal(
+                    final_state.get("final_trade_decision"),
+                    fallback=str(signal),
+                )
                 result = AnalysisResult(
                     ticker=ticker,
-                    signal=str(signal),
+                    signal=final_signal,
                     market_report=final_state.get("market_report", ""),
                     sentiment_report=final_state.get("sentiment_report", ""),
                     news_report=final_state.get("news_report", ""),
@@ -466,9 +486,17 @@ class StockAnalyzer:
             emit({"type": "pipeline_error", "error": str(e), "steps": list(step_status.values())})
             raise
 
+        # v1.20: prefer the trader's explicit ``FINAL TRANSACTION
+        # PROPOSAL: **X**`` over ``graph.process_signal``'s separate LLM
+        # classification. The two used to drift, surfacing as the
+        # "顶部 Hold, 决策正文 Sell" inconsistency on the detail page.
+        final_signal = _canonical_signal(
+            final_state.get("final_trade_decision"),
+            fallback=str(signal),
+        )
         result = AnalysisResult(
             ticker=ticker,
-            signal=str(signal),
+            signal=final_signal,
             market_report=final_state.get("market_report", ""),
             sentiment_report=final_state.get("sentiment_report", ""),
             news_report=final_state.get("news_report", ""),

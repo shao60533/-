@@ -59,8 +59,13 @@ def multi_tenant_db_path(tmp_path):
     p = tmp_path / "portfolio.db"
     PortfolioDatabase(str(p))
     conn = sqlite3.connect(str(p))
+    # v1.16: PortfolioDatabase already provisions user_id on these
+    # tables. Keep the ALTERs idempotent for older snapshots that
+    # might be loaded without the multi-tenant migration.
     for table in ("transactions", "positions", "daily_snapshots"):
-        conn.execute(f"ALTER TABLE {table} ADD COLUMN user_id INTEGER")
+        cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if "user_id" not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN user_id INTEGER")
     # alice trades on 2026-04-14
     conn.execute(
         "INSERT INTO transactions(ticker, action, shares, price, timestamp, notes, user_id) "
@@ -220,21 +225,114 @@ def test_fallback_to_previous_close(db_path, caplog):
     assert fallback_msgs, "expected a fallback-warning log line"
 
 
-def test_failed_when_no_price_at_all(db_path, caplog):
-    """No price within the window → day flagged failed (no row written)."""
+def test_no_price_falls_back_to_cost_basis(db_path, caplog):
+    """No close in window but cost basis available → cost_basis_fallback,
+    snapshot row still written so the curve stays continuous.
+
+    v1.16: hand-typed test tickers (TEST1/TESTX/ZZZTEST) used to abort
+    the whole day's backfill the moment one ticker had no yfinance
+    coverage. Now we value those positions at avg_cost and surface
+    them via ``missing_prices`` + ``fallback_prices_by_ticker``.
+    """
     fetch = _make_fake_history({})  # no prices at all
     import logging
+    import json
     caplog.set_level(logging.WARNING)
     res = backfill_user(
         db_path, None,
         today=date_cls(2026, 4, 15),
         fetch_history=fetch,
     )
+    # Cost basis fallback covered both AAPL and MSFT — day still backfilled.
+    assert res["backfilled"] == 1
+    assert res["failed"] == 0
+    assert res["fallback_prices"] >= 2
+    assert set(res["missing_prices"]) == {"AAPL", "MSFT"}
+    assert res["skipped_tickers"] == []
+    assert res["fallback_prices_by_ticker"] == {
+        "AAPL": "cost_basis_fallback", "MSFT": "cost_basis_fallback",
+    }
+    # positions_json carries the per-ticker price_source.
+    conn = sqlite3.connect(db_path)
+    pj = conn.execute(
+        "SELECT positions_json FROM daily_snapshots WHERE date = '2026-04-15'"
+    ).fetchone()[0]
+    conn.close()
+    pos = json.loads(pj)
+    assert all(p["price_source"] == "cost_basis_fallback" for p in pos)
+    fallback_msgs = [r.message for r in caplog.records
+                     if "cost_basis_fallback" in r.message]
+    assert fallback_msgs
+
+
+def test_failed_when_all_positions_unvalueable(tmp_path, caplog):
+    """Genuine fail case: shares > 0 but cost_basis = 0 (price=0 buy)
+    AND no yfinance coverage. Nothing to anchor a value to → day fails
+    with no row written, so the curve doesn't lie about the position."""
+    import logging
+    import sqlite3
+    p = tmp_path / "p.db"
+    PortfolioDatabase(str(p))
+    conn = sqlite3.connect(str(p))
+    # Both txns have price=0 → cost_basis stays 0, can't fall back.
+    conn.execute(
+        "INSERT INTO transactions(ticker, action, shares, price, timestamp, notes) "
+        "VALUES ('GHOST', 'buy', 10, 0.0, '2026-04-15 10:00:00', '')"
+    )
+    conn.commit()
+    conn.close()
+    fetch = _make_fake_history({})  # no closes either
+    caplog.set_level(logging.WARNING)
+    res = backfill_user(
+        str(p), None,
+        today=date_cls(2026, 4, 15),
+        fetch_history=fetch,
+    )
     assert res["failed"] == 1
     assert res["backfilled"] == 0
-    no_close_msgs = [r.message for r in caplog.records
-                     if "no close for" in r.message]
-    assert no_close_msgs
+    assert res["skipped_tickers"] == ["GHOST"]
+    assert res["missing_prices"] == ["GHOST"]
+
+
+def test_partial_miss_does_not_skip_other_tickers(tmp_path):
+    """One ticker with no yfinance and no cost basis is skipped; the
+    other ticker still produces a snapshot for the same day."""
+    import json
+    import sqlite3
+    p = tmp_path / "p.db"
+    PortfolioDatabase(str(p))
+    conn = sqlite3.connect(str(p))
+    conn.execute(
+        "INSERT INTO transactions(ticker, action, shares, price, timestamp, notes) "
+        "VALUES ('AAPL', 'buy', 10, 150.0, '2026-04-15 10:00:00', '')"
+    )
+    # GHOST: shares but zero cost basis → unvalueable.
+    conn.execute(
+        "INSERT INTO transactions(ticker, action, shares, price, timestamp, notes) "
+        "VALUES ('GHOST', 'buy', 5, 0.0, '2026-04-15 10:05:00', '')"
+    )
+    conn.commit()
+    conn.close()
+    fetch = _make_fake_history({"AAPL": {date_cls(2026, 4, 15): 200.0}})
+    res = backfill_user(
+        str(p), None,
+        today=date_cls(2026, 4, 15),
+        fetch_history=fetch,
+    )
+    # Day still written — AAPL valued at 200.
+    assert res["backfilled"] == 1
+    assert res["failed"] == 0
+    assert "GHOST" in res["skipped_tickers"]
+    conn = sqlite3.connect(str(p))
+    row = conn.execute(
+        "SELECT total_value, positions_json FROM daily_snapshots WHERE date = '2026-04-15'"
+    ).fetchone()
+    conn.close()
+    assert row[0] == pytest.approx(2000.0)  # 10 AAPL * 200
+    pos = json.loads(row[1])
+    by_ticker = {p["ticker"]: p for p in pos}
+    assert by_ticker["AAPL"]["price_source"] == "close"
+    assert by_ticker["GHOST"]["price_source"] == "missing_skipped"
 
 
 # ── Multi-user driver ────────────────────────────────────────────────────────

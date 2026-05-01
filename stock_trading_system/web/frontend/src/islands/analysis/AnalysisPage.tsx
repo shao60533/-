@@ -48,6 +48,21 @@ interface AnalysisDetail {
   // never see ``rendering_json`` raw. Missing or null values fall back to
   // the markdown body (kept inside a ``<details>`` collapsible).
   rendering?: RenderingDict | null
+  // v1.20: canonical trade action parsed from ``trade_decision`` text.
+  // Always prefer ``decision_action`` over ``signal`` when present —
+  // ``signal_mismatch=true`` means the stored signal disagreed with the
+  // trader's explicit ``FINAL TRANSACTION PROPOSAL: **X**`` (legacy row;
+  // we surface a small "已校正" hint so the user knows we corrected it).
+  decision_action?: "Buy" | "Sell" | "Hold" | null
+  signal_mismatch?: boolean
+}
+
+/** Resolve the canonical action to display. Prefers
+ *  ``detail.decision_action`` (v1.20+ canon — parsed from the trader's
+ *  ``FINAL TRANSACTION PROPOSAL: **X**``) over ``detail.signal``
+ *  (historical column — sometimes drifted from the trader's text). */
+function canonicalSignal(detail: Pick<AnalysisDetail, "decision_action" | "signal">): string {
+  return detail.decision_action || detail.signal || ""
 }
 
 interface RecentAnalysisRow {
@@ -680,7 +695,17 @@ function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <h1 className="text-xl font-bold font-mono">{detail.ticker}</h1>
-          <Badge variant={signalVariant(detail.signal)}>{detail.signal || "N/A"}</Badge>
+          <Badge variant={signalVariant(canonicalSignal(detail))}>
+            {canonicalSignal(detail) || "N/A"}
+          </Badge>
+          {detail.signal_mismatch && (
+            <span
+              className="text-[10px] text-amber-400"
+              title={`原存储信号: ${detail.signal} · 决策正文: ${detail.decision_action}`}
+            >
+              信号已按最终决策校正
+            </span>
+          )}
           {detail.confidence != null && (
             <span className="text-sm text-muted-foreground">置信度 {(detail.confidence * 100).toFixed(0)}%</span>
           )}
@@ -743,7 +768,11 @@ function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
         </Card>
         <Card>
           <CardHeader className="pb-2"><CardTitle className="text-sm text-muted-foreground">信号</CardTitle></CardHeader>
-          <CardContent><Badge variant={signalVariant(detail.signal)} className="text-sm">{detail.signal || "N/A"}</Badge></CardContent>
+          <CardContent>
+            <Badge variant={signalVariant(canonicalSignal(detail))} className="text-sm">
+              {canonicalSignal(detail) || "N/A"}
+            </Badge>
+          </CardContent>
         </Card>
         <Card>
           <CardHeader className="pb-2"><CardTitle className="text-sm text-muted-foreground">风险等级</CardTitle></CardHeader>

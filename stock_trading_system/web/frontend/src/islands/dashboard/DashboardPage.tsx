@@ -23,6 +23,25 @@ interface DashData {
     market_value: number; avg_cost: number; current_price: number; market: string
   }[]
   history: { date: string; total_value: number; pnl: number }[]
+  // v1.16: explicit history-status fields so the equity-curve card can
+  // tell "no holdings" apart from "you have holdings but the snapshot
+  // table only has 1 row" (the 'click 重新计算' state).
+  history_count?: number
+  history_first_date?: string | null
+  history_last_date?: string | null
+  history_status?: "ok" | "insufficient_snapshots"
+}
+
+// Result envelope returned by the backfill task. We only inspect a
+// handful of fields for the completion-toast surface; the rest is
+// kept server-side for the operator log.
+interface BackfillResult {
+  backfilled?: number
+  skipped?: number
+  failed?: number
+  fallback_prices?: number
+  missing_prices?: string[]
+  skipped_tickers?: string[]
 }
 
 interface TaskRow {
@@ -115,13 +134,33 @@ export function DashboardPage() {
           if (env.event === "task_completed") {
             sub.destroy()
             setBackfillMsg("✓ 回填完成，刷新中…")
-            await reloadDashboard()
+            // v1.16: post-backfill, jump straight to the full series.
+            // Sticking with the 90-day window means a brand-new
+            // multi-year backfill still looks empty until the user
+            // clicks ALL — defeats the whole purpose of the button.
+            await reloadDashboard(FULL_HISTORY)
+
+            // Surface missing/skipped tickers so the operator can
+            // tell "yfinance was unreachable" apart from "TEST1 isn't
+            // a real ticker, of course it has no price". The result
+            // payload comes through the task event envelope.
+            interface CompletedPayload { result?: BackfillResult; missing_prices?: string[]; skipped_tickers?: string[] }
+            const payload = env.payload as CompletedPayload
+            const r: BackfillResult | undefined =
+              payload?.result ?? (payload as BackfillResult)
+            const missing = r?.missing_prices ?? []
+            const skipped = r?.skipped_tickers ?? []
+            const parts: string[] = ["✓ 回填完成"]
+            if (typeof r?.backfilled === "number") parts.push(`新增 ${r.backfilled} 天`)
+            if (skipped.length > 0) parts.push(`跳过 ${skipped.length} 只无效 ticker：${skipped.slice(0, 3).join(", ")}${skipped.length > 3 ? "…" : ""}`)
+            else if (missing.length > 0) parts.push(`${missing.length} 只 ticker 用成本价兜底：${missing.slice(0, 3).join(", ")}${missing.length > 3 ? "…" : ""}`)
+            setBackfillMsg(parts.join(" · "))
             setBackfilling(false)
-            setTimeout(() => setBackfillMsg(null), 2500)
+            setTimeout(() => setBackfillMsg(null), skipped.length || missing.length ? 8000 : 2500)
           } else if (env.event === "task_failed") {
             sub.destroy()
             setBackfilling(false)
-            setBackfillMsg(`回填失败：${(env.payload as any)?.error_message || "unknown"}`)
+            setBackfillMsg(`回填失败：${(env.payload as { error_message?: string })?.error_message || "unknown"}`)
             setTimeout(() => setBackfillMsg(null), 5000)
           }
         },
@@ -239,6 +278,19 @@ export function DashboardPage() {
             )}
           </CardHeader>
           <CardContent>
+            {/* v1.16: explicit "snapshots not enough yet" notice. Old code
+                showed a flat 1-point line silently when only today's
+                snapshot existed; users assumed the chart was broken.
+                Now we keep the chart mounted but layer a hint over it
+                that points at the 重新计算 button. */}
+            {(data?.history_status === "insufficient_snapshots" ||
+              (filteredHistory.length <= 1 && holdings.length > 0)) && (
+              <div className="mb-2 rounded border border-border/60 bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+                历史快照不足（{data?.history_count ?? filteredHistory.length} 个数据点），请点击右上角
+                <span className="font-medium text-foreground"> 重新计算 </span>
+                生成多日净值曲线。
+              </div>
+            )}
             <ChartPanel option={equityOption} height={280} loading={filteredHistory.length === 0} />
           </CardContent>
         </Card>
