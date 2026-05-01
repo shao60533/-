@@ -399,19 +399,30 @@ def create_app(config_path=None):
     if _multi_tenant_ready and not os.environ.get(
         "DISABLE_DAILY_SNAPSHOT_SCHEDULER"
     ):
-        from stock_trading_system.scheduler.daily_snapshot_scheduler import (
-            DailySnapshotScheduler, take_snapshot_all_users,
-        )
-
-        def _snapshot_all_users():
-            return take_snapshot_all_users(
-                _user_repo,
-                portfolio_manager_factory=lambda _uid: _get_portfolio_mgr(),
+        try:
+            from stock_trading_system.scheduler.daily_snapshot_scheduler import (
+                DailySnapshotScheduler, take_snapshot_all_users,
             )
+        except ImportError as e:
+            # APScheduler is optional. The web app must still boot when
+            # it isn't installed (e.g. minimal CI image / lightweight
+            # tests) — we just skip the daily-snapshot job and log loudly
+            # so an operator running prod without the dep notices.
+            logger.warning(
+                "Daily-snapshot scheduler disabled (missing dep: %s). "
+                "Snapshots will only run via the manual CLI/cron path.",
+                e,
+            )
+        else:
+            def _snapshot_all_users():
+                return take_snapshot_all_users(
+                    _user_repo,
+                    portfolio_manager_factory=lambda _uid: _get_portfolio_mgr(),
+                )
 
-        DailySnapshotScheduler.reset()
-        scheduler = DailySnapshotScheduler.get(_snapshot_all_users)
-        scheduler.start_if_primary()
+            DailySnapshotScheduler.reset()
+            scheduler = DailySnapshotScheduler.get(_snapshot_all_users)
+            scheduler.start_if_primary()
 
     # Public paths that don't require authentication
     PUBLIC_PREFIXES = ("/static/", "/login", "/register", "/reset",
@@ -2904,7 +2915,13 @@ def create_app(config_path=None):
 
     @app.route("/api/screen/v3/trigger", methods=["POST"])
     def api_screen_v3_trigger():
-        """Trigger a V3 screening task."""
+        """Trigger a V3 screening task.
+
+        Validates that at least one guru is selected — running the
+        agent pipeline with zero gurus is the worst kind of silent
+        failure (the result has no candidate scores and the UI shows
+        an empty list with no explanation). 400 the caller instead.
+        """
         from flask import g
         from stock_trading_system.llm.router import get_active_provider
 
@@ -2913,11 +2930,25 @@ def create_app(config_path=None):
         user_id = getattr(g, "user", None) and g.user.id
         provider = get_active_provider(cfg, user_id=user_id)
 
+        gurus_in = body.get("gurus")
+        if not isinstance(gurus_in, list) or not [g for g in gurus_in if g]:
+            return jsonify({
+                "error": "gurus_required",
+                "message": "至少选择 1 位大师",
+            }), 400
+
+        market = (body.get("market") or "us").strip().lower()
+        if market not in ("us", "cn", "hk"):
+            return jsonify({
+                "error": "invalid_market",
+                "message": "market must be one of us / cn / hk",
+            }), 400
+
         params = {
             "nl_query": body.get("nl_query", ""),
-            "market": body.get("market", "us"),
+            "market": market,
             "candidate_n": int(body.get("candidate_n", 20)),
-            "gurus": body.get("gurus", ["buffett", "graham", "munger", "lynch"]),
+            "gurus": [str(g).strip() for g in gurus_in if g],
             "mode": body.get("mode", "agent"),
             "with_roundtable": bool(body.get("with_roundtable", False)),
             "user_id": user_id,
@@ -2943,8 +2974,23 @@ def create_app(config_path=None):
         * a task UUID  → look up via TaskStore.get(), follow ``result_ref``;
         * a positive integer → fall back to ``screen_results_v2`` row id.
 
-        Always returns ``{id, task_id, created_at, candidates, roundtable, ...}``
-        no matter which table the result lives in.
+        Schema normalization (v1.16): different worker versions write the
+        candidate list under different keys. We normalize to the canonical
+        ``candidates: [{ticker, composite_score, signal, guru_scores}]``
+        shape the React island consumes:
+
+            * payload['candidates']                → kept as-is
+            * payload['results']                   → renamed to candidates
+            * candidate['final_score']             → composite_score
+            * candidate['guru_signals'] (list)     → guru_scores (dict by guru)
+
+        The original ``results`` / ``final_score`` / ``guru_signals`` fields
+        are preserved on each candidate too so any client written against
+        the old shape keeps rendering.
+
+        Privacy: ``params`` is filtered through
+        ``_SHARED_PARAMS_WHITELIST['screen_v3']`` for non-owner viewers so
+        ``user_id`` / ``provider`` / other internals never leak.
         """
         try:
             store = _get_task_store()
@@ -2971,13 +3017,14 @@ def create_app(config_path=None):
                         "id": _result_ref_to_int(ref),
                         "task_id": task["id"],
                         "created_at": task.get("completed_at") or task.get("created_at"),
-                        "params": _params_dict(task),
-                        "candidates": payload.get("candidates") or [],
+                        "params": _v3_params_for_viewer(task),
+                        "candidates": _normalize_v3_candidates(payload),
                         "roundtable": payload.get("roundtable"),
                     }
                     # Pass through any extra fields the v3 pipeline produced.
                     for k, v in payload.items():
-                        if k not in ("candidates", "roundtable", "id", "task_id"):
+                        if k not in ("candidates", "results",
+                                     "roundtable", "id", "task_id"):
                             response.setdefault(k, v)
                     return jsonify(response)
 
@@ -2990,11 +3037,12 @@ def create_app(config_path=None):
                         "id": v2.get("id"),
                         "task_id": v2.get("task_id"),
                         "created_at": v2.get("created_at"),
-                        "candidates": inner.get("candidates") or [],
+                        "candidates": _normalize_v3_candidates(inner),
                         "roundtable": inner.get("roundtable"),
                     }
                     for k, v in inner.items():
-                        if k not in ("candidates", "roundtable", "id", "task_id"):
+                        if k not in ("candidates", "results",
+                                     "roundtable", "id", "task_id"):
                             response.setdefault(k, v)
                     return jsonify(response)
 
@@ -3002,6 +3050,52 @@ def create_app(config_path=None):
         except Exception as e:  # noqa: BLE001
             logger.exception("V3 result lookup failed")
             return jsonify({"error": str(e)}), 500
+
+    def _normalize_v3_candidates(payload: dict) -> list[dict]:
+        """Project the worker-emitted payload into the canonical
+        ``candidates`` list. Tolerates both the new ``candidates`` key and
+        the legacy ``results`` key, and rewrites ``final_score`` →
+        ``composite_score`` plus ``guru_signals`` (list) → ``guru_scores``
+        (dict keyed by guru). Originals are kept intact too.
+        """
+        raw = payload.get("candidates")
+        if not raw:
+            raw = payload.get("results") or []
+        out: list[dict] = []
+        for item in raw or []:
+            if not isinstance(item, dict):
+                continue
+            row = dict(item)
+            if "composite_score" not in row and "final_score" in row:
+                row["composite_score"] = row["final_score"]
+            if "guru_scores" not in row:
+                signals = row.get("guru_signals")
+                if isinstance(signals, list):
+                    row["guru_scores"] = {
+                        s.get("guru"): s
+                        for s in signals
+                        if isinstance(s, dict) and s.get("guru")
+                    }
+                elif isinstance(signals, dict):
+                    row["guru_scores"] = signals
+            out.append(row)
+        return out
+
+    def _v3_params_for_viewer(task: dict) -> dict:
+        """Return ``params`` filtered for the requesting viewer.
+
+        Owners and admins see every key; everyone else sees only the
+        whitelist for ``screen_v3``. Strips ``user_id`` / ``__user_id__``
+        / ``provider`` / future internal flags by default.
+        """
+        full = _params_dict(task)
+        uid = str(g.user.id) if getattr(g, "user", None) else None
+        owner = str(task.get("created_by", ""))
+        is_admin = bool(getattr(g, "user", None) and g.user.role == "admin")
+        if uid is not None and (uid == owner or is_admin):
+            return full
+        whitelist = _SHARED_PARAMS_WHITELIST.get("screen_v3") or set()
+        return {k: v for k, v in full.items() if k in whitelist}
 
     # ── Seed Data ───────────────────────────────────────────────────────
 

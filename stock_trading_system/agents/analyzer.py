@@ -229,7 +229,24 @@ class StockAnalyzer:
             timeout=60,
         )
 
-    def _maybe_extract_rendering(self, result: "AnalysisResult") -> None:
+    def _get_data_manager(self):
+        """Lazy-construct a DataManager for hybrid News/Fundamentals extraction.
+
+        Lazy import avoids the web.app circular dependency that bites the
+        worker thread on first analysis. Returns ``None`` on any boot
+        failure so the extractor falls back to pure-LLM mode for those
+        two tabs (the other six are unaffected).
+        """
+        try:
+            from stock_trading_system.data.data_manager import DataManager
+            return DataManager(self._config)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("data_manager init failed: %s", e)
+            return None
+
+    def _maybe_extract_rendering(
+        self, result: "AnalysisResult", ticker: str = "",
+    ) -> None:
         """Best-effort extraction of structured per-tab cards into ``result.rendering``.
 
         Failures here MUST NOT block the analysis task — the markdown
@@ -240,8 +257,11 @@ class StockAnalyzer:
             from stock_trading_system.agents.rendering.extractor import (
                 RenderingExtractor,
             )
-            extractor = RenderingExtractor(self._build_quick_llm())
-            result.rendering = extractor.extract(result)
+            extractor = RenderingExtractor(
+                self._build_quick_llm(),
+                data_manager=self._get_data_manager(),
+            )
+            result.rendering = extractor.extract(result, ticker=ticker)
         except Exception as e:  # noqa: BLE001
             logger.warning("rendering extraction skipped: %s", e)
             result.rendering = {}
@@ -358,7 +378,7 @@ class StockAnalyzer:
                     trade_decision=final_state.get("final_trade_decision", {}),
                     steps=list(step_status.values()),
                 )
-                self._maybe_extract_rendering(result)
+                self._maybe_extract_rendering(result, ticker=ticker)
                 emit({
                     "type": "pipeline_done",
                     "ticker": ticker,
@@ -458,7 +478,7 @@ class StockAnalyzer:
             trade_decision=final_state.get("final_trade_decision", {}),
             steps=list(step_status.values()),
         )
-        self._maybe_extract_rendering(result)
+        self._maybe_extract_rendering(result, ticker=ticker)
         emit({
             "type": "pipeline_done",
             "ticker": ticker,

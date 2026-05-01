@@ -79,6 +79,34 @@ interface OHLCVRow {
   date: string; open: number; high: number; low: number; close: number; volume: number
 }
 
+/** Real-news item from /api/news/<ticker>. yfinance shape — fields are
+ * optional because alternate providers (Polygon, akshare) populate
+ * different subsets. */
+interface NewsItem {
+  title: string
+  source?: string
+  published?: string
+  url?: string
+}
+
+/** Read a numeric fundamentals field into a typed value, returning ``null``
+ * for anything we can't safely cast — guards against akshare returning
+ * "—" / "N/A" strings for missing metrics. */
+function fundNum(fund: Record<string, unknown> | null,
+                  key: string): number | null {
+  if (!fund) return null
+  const raw = fund[key]
+  if (typeof raw === "number" && Number.isFinite(raw)) return raw
+  if (typeof raw === "string") {
+    const n = Number(raw)
+    if (Number.isFinite(n)) return n
+  }
+  return null
+}
+
+const fmtNum = (v: number, d: number) => v.toFixed(d)
+const fmtPct = (v: number) => `${(v * 100).toFixed(1)}%`
+
 interface TaskSubmitResult { task_id: string; status: string }
 
 function signalVariant(signal: string): "buy" | "sell" | "hold" | "default" {
@@ -492,10 +520,21 @@ function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
     }
   } catch { /* ignore malformed advice payloads */ }
 
-  // Quick-info extractions
-  const newsSnippet = (reportContent["News"] || "").slice(0, 200)
-  const fundSnippet = extractFundamentals(reportContent["Fundamentals"] || "")
-  const debateSnippet = extractDebateCount(reportContent["Investment Debate"] || "")
+  // v1.19.1: quick-info cards now hit the same data APIs the analyzer
+  // uses (yfinance/Polygon) instead of heuristic-parsing the LLM markdown.
+  // News is fetched per-detail-mount; Fundamentals same. Debate reuses
+  // the structured rendering already on the detail.
+  const [news, setNews] = useState<NewsItem[]>([])
+  const [fund, setFund] = useState<Record<string, unknown> | null>(null)
+  useEffect(() => {
+    if (!detail.ticker) return
+    apiGet<NewsItem[]>(`/api/news/${detail.ticker}`)
+      .then(r => setNews((r ?? []).slice(0, 3)))
+      .catch(() => setNews([]))
+    apiGet<Record<string, unknown>>(`/api/fundamentals/${detail.ticker}`)
+      .then(setFund)
+      .catch(() => setFund(null))
+  }, [detail.ticker])
 
   const scrollToTab = (tabKey: string) => {
     setActiveTab(tabKey)
@@ -690,26 +729,107 @@ function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
         </Card>
       </div>
 
-      {/* Quick-info cards (news / fundamentals / debate) */}
+      {/* Quick-info cards (news / fundamentals / debate) — v1.19.1 hits
+          the same data APIs the analyzer uses so users see real headlines
+          + real PE/ROE/D-E instead of regex extracts of LLM markdown. */}
       <div className="grid gap-4 md:grid-cols-3 grid-collapse-mobile">
         <QuickInfoCard
           icon={<Newspaper className="h-4 w-4" />}
           title="最近新闻"
-          snippet={newsSnippet || "暂无新闻数据"}
           onClick={() => scrollToTab("News")}
-        />
+        >
+          {news.length === 0 ? (
+            <p className="text-xs text-muted-foreground">暂无新闻数据</p>
+          ) : (
+            <ul className="space-y-1.5">
+              {news.map((n, i) => (
+                <li key={i} className="text-xs leading-snug">
+                  <span className="line-clamp-2">{n.title}</span>
+                  {(n.source || n.published) && (
+                    <div className="text-[10px] text-muted-foreground mt-0.5">
+                      {n.source}{n.source && n.published ? " · " : ""}{n.published}
+                    </div>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </QuickInfoCard>
+
         <QuickInfoCard
           icon={<BarChart3 className="h-4 w-4" />}
           title="基本面指标"
-          snippet={fundSnippet || "暂无基本面数据"}
           onClick={() => scrollToTab("Fundamentals")}
-        />
+        >
+          {!fund ? (
+            <p className="text-xs text-muted-foreground">暂无基本面数据</p>
+          ) : (
+            <div className="grid grid-cols-2 gap-x-3 gap-y-1 font-mono text-xs">
+              {(() => {
+                const pe   = fundNum(fund, "trailingPE")
+                const pb   = fundNum(fund, "priceToBook")
+                const roe  = fundNum(fund, "returnOnEquity")
+                const de   = fundNum(fund, "debtToEquity")
+                const pm   = fundNum(fund, "profitMargins")
+                const rg   = fundNum(fund, "revenueGrowth")
+                const rows = [
+                  pe   != null && <KV key="pe"  k="PE"     v={fmtNum(pe, 1)} />,
+                  pb   != null && <KV key="pb"  k="P/B"    v={fmtNum(pb, 1)} />,
+                  roe  != null && <KV key="roe" k="ROE"    v={fmtPct(roe)} />,
+                  de   != null && <KV key="de"  k="D/E"    v={fmtNum(de, 0)} />,
+                  pm   != null && <KV key="pm"  k="净利率"  v={fmtPct(pm)} />,
+                  rg   != null && <KV key="rg"  k="营收增长" v={fmtPct(rg)} />,
+                ].filter(Boolean)
+                return rows.length > 0 ? rows : (
+                  <p className="text-xs text-muted-foreground col-span-2">
+                    指标暂不可用
+                  </p>
+                )
+              })()}
+            </div>
+          )}
+        </QuickInfoCard>
+
         <QuickInfoCard
           icon={<Scale className="h-4 w-4" />}
           title="多空辩论"
-          snippet={debateSnippet || "暂无辩论数据"}
           onClick={() => scrollToTab("Investment Debate")}
-        />
+        >
+          {(() => {
+            const debate = detail.rendering?.["Investment Debate"]
+            const synthesis = detail.rendering?.summary?.debate_synthesis
+            if (debate) {
+              const bull = debate.bull_arguments?.length ?? 0
+              const bear = debate.bear_arguments?.length ?? 0
+              return (
+                <div className="space-y-1.5">
+                  <div className="text-xs">
+                    看多 <b>{bull}</b> · 看空 <b>{bear}</b>
+                    {debate.verdict && (
+                      <>
+                        {" "}·{" "}
+                        <Badge variant="muted" className="text-[10px]">
+                          {debate.verdict}
+                        </Badge>
+                      </>
+                    )}
+                  </div>
+                  <p className="text-xs text-muted-foreground line-clamp-3">
+                    {debate.key_disagreement || debate.neutral_synthesis}
+                  </p>
+                </div>
+              )
+            }
+            if (synthesis) {
+              return (
+                <p className="text-xs text-muted-foreground line-clamp-3">
+                  {synthesis.verdict}
+                </p>
+              )
+            }
+            return <p className="text-xs text-muted-foreground">暂无辩论数据</p>
+          })()}
+        </QuickInfoCard>
       </div>
 
       {/* K-line chart (TradingView lightweight-charts) */}
@@ -772,43 +892,39 @@ function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
 
 /* ── Quick-info card ─────────────────────────────────────── */
 
-function QuickInfoCard({ icon, title, snippet, onClick }: {
-  icon: React.ReactNode; title: string; snippet: string; onClick: () => void
+function QuickInfoCard({ icon, title, onClick, children }: {
+  icon: React.ReactNode
+  title: string
+  onClick: () => void
+  children: React.ReactNode
 }) {
   return (
-    <Card className="cursor-pointer hover:border-primary/30 transition-colors" onClick={onClick}>
+    <Card
+      className="cursor-pointer hover:border-primary/30 transition-colors"
+      onClick={onClick}
+    >
       <CardContent className="pt-4">
         <div className="flex items-center gap-2 mb-2">
           <span className="text-[var(--color-accent-blue)]">{icon}</span>
-          <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{title}</span>
+          <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            {title}
+          </span>
         </div>
-        <p className="text-xs text-[var(--color-text-secondary)] line-clamp-3 leading-relaxed">
-          {snippet}
-        </p>
-        <span className="text-[10px] text-[var(--color-accent-blue)] mt-2 inline-block">查看详情 →</span>
+        {children}
+        <span className="text-[10px] text-[var(--color-accent-blue)] mt-2 inline-block">
+          查看详情 →
+        </span>
       </CardContent>
     </Card>
   )
 }
 
-/* ── Helpers ──────────────────────────────────────────────── */
-
-function extractFundamentals(text: string): string {
-  // Try to extract PE, ROE, D/E from fundamentals report text
-  const pe = text.match(/PE[^:：]*[:：]\s*([\d.]+)/i)?.[1]
-  const roe = text.match(/ROE[^:：]*[:：]\s*([\d.]+%?)/i)?.[1]
-  const de = text.match(/D\/E[^:：]*[:：]\s*([\d.]+)/i)?.[1]
-  const parts: string[] = []
-  if (pe) parts.push(`PE: ${pe}`)
-  if (roe) parts.push(`ROE: ${roe}`)
-  if (de) parts.push(`D/E: ${de}`)
-  if (parts.length > 0) return parts.join(" · ")
-  return text.slice(0, 150)
-}
-
-function extractDebateCount(text: string): string {
-  const bull = (text.match(/看多|bullish|买入|buy/gi) || []).length
-  const bear = (text.match(/看空|bearish|卖出|sell/gi) || []).length
-  if (bull === 0 && bear === 0) return text.slice(0, 150)
-  return `看多论点 ${bull} 个 · 看空论点 ${bear} 个`
+/** Two-column key/value row used by the Fundamentals quick-info grid. */
+function KV({ k, v }: { k: string; v: string }) {
+  return (
+    <div className="flex items-center justify-between">
+      <span className="text-muted-foreground">{k}</span>
+      <span>{v}</span>
+    </div>
+  )
 }
