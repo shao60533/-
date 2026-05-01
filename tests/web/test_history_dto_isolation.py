@@ -132,9 +132,12 @@ def test_history_detail_dto_no_top_level_advice(app_client):
     assert body["market_report"] == "shared"
 
 
-def test_history_detail_creator_can_read_legacy_advice(app_client):
-    """The original creator IS allowed to see legacy advice_json — it was
-    written from her own holdings snapshot, after all."""
+def test_history_detail_creator_reads_own_user_advice(app_client):
+    """Post-v1.16, even the creator must use the supported pattern —
+    save_analysis writes the shared row, save_user_advice persists the
+    holdings-aware private payload. The detail DTO surfaces only the
+    requesting user's own advice, never the shared advice_json column.
+    """
     users = app_client["users"]
     alice = app_client["make_client"](users.alice_email, users.alice_password)
 
@@ -142,13 +145,17 @@ def test_history_detail_creator_can_read_legacy_advice(app_client):
     db = PortfolioDatabase(app_client["db_path"])
     aid = db.save_analysis({
         "ticker": "AAPL", "date": "2026-04-30", "signal": "BUY",
-        "advice_json": json.dumps({"action": "BUY", "reasoning": "alice-legacy"}),
         "created_by": users.alice.id,
     })
+    db.save_user_advice(
+        user_id=users.alice.id, analysis_id=aid,
+        advice={"action": "BUY", "reasoning": "alice-private"},
+        holdings_snapshot="[]",
+    )
 
     body = alice.get(f"/api/history/{aid}").get_json()
     assert body["advice"]["action"] == "BUY"
-    assert body["advice"]["reasoning"] == "alice-legacy"
+    assert body["advice"]["reasoning"] == "alice-private"
     # And still no top-level leak.
     assert "advice_json" not in body
     assert "action" not in body
