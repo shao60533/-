@@ -382,20 +382,15 @@ class TaskStore:
     def _save_analysis_result(self, task_id: str, result: dict) -> str:
         """Persist a worker's analysis result as a *shared research* row.
 
-        The advice payload (action / entry / stop / reasoning) is intentionally
-        NOT written here — it lives on a per-user table (`user_analysis_advice`)
-        because it depends on the requester's holdings. This row holds only
-        what every logged-in user is allowed to read.
+        SECURITY: any ``advice``/``_advice_payload`` data in ``result`` is
+        intentionally **dropped here**. The per-user advice payload — action,
+        entry/exit prices, stop loss, position sizing, reasoning — depends on
+        the requester's holdings and must NEVER live on a row that other
+        users can read. The TaskManager post-save hook persists it to the
+        ``user_analysis_advice`` table instead. This row holds only what
+        every logged-in user is allowed to see (reports + provenance).
         """
         self._ensure_analysis_history_table()
-
-        # Be lenient about advice in the legacy code path. Any caller still
-        # passing it gets it stored on the shared row for backward compat,
-        # but new task_manager flow strips it before calling us.
-        advice_raw = ""
-        adv = result.get("advice") or {}
-        if adv:
-            advice_raw = json.dumps(adv, ensure_ascii=False)
 
         steps_json = result.get("steps_json")
         if steps_json is None:
@@ -405,6 +400,10 @@ class TaskStore:
                     steps_json = json.dumps(steps, ensure_ascii=False)
                 except (TypeError, ValueError):
                     steps_json = None
+        # Late-bind to avoid a circular import at module load time —
+        # task_store is imported before portfolio.database in some boot
+        # sequences (CLI / migration tooling).
+        from stock_trading_system.portfolio.database import _normalize_depth
         with self._lock, self._conn() as conn:
             cur = conn.execute(
                 """INSERT INTO analysis_history
@@ -414,9 +413,10 @@ class TaskStore:
                     action, confidence, position_pct,
                     entry_low, entry_high, stop_loss, take_profit,
                     model, steps_json,
-                    created_by, provider, config_hash, task_id, duration_sec, bookmarked)
+                    created_by, provider, config_hash, task_id, duration_sec, bookmarked,
+                    depth, rendering_json)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                           ?, ?, ?, ?, ?, ?)""",
+                           ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     result.get("ticker", ""), result.get("date", ""),
                     result.get("signal", ""),
@@ -427,15 +427,17 @@ class TaskStore:
                     result.get("investment_debate", ""),
                     result.get("risk_assessment", ""),
                     result.get("trade_decision", ""),
-                    advice_raw,
-                    now_iso(),
-                    adv.get("action") if isinstance(adv, dict) else None,
-                    adv.get("confidence") if isinstance(adv, dict) else None,
-                    _safe_float(adv.get("suggested_position_pct") if isinstance(adv, dict) else None),
-                    _safe_float(adv.get("entry_price_low") if isinstance(adv, dict) else None),
-                    _safe_float(adv.get("entry_price_high") if isinstance(adv, dict) else None),
-                    _safe_float(adv.get("stop_loss") if isinstance(adv, dict) else None),
-                    _safe_float(adv.get("take_profit") if isinstance(adv, dict) else None),
+                    # Per-user advice columns are intentionally NULL on the
+                    # shared row. See class docstring above.
+                    "",                          # advice_json
+                    now_iso(),                   # created_at
+                    None,                        # action
+                    None,                        # confidence
+                    None,                        # position_pct
+                    None,                        # entry_low
+                    None,                        # entry_high
+                    None,                        # stop_loss
+                    None,                        # take_profit
                     result.get("model"),
                     steps_json,
                     result.get("created_by"),
@@ -444,6 +446,8 @@ class TaskStore:
                     result.get("task_id") or task_id,
                     _safe_float(result.get("duration_sec")),
                     0,
+                    _normalize_depth(result.get("depth")),
+                    result.get("rendering_json") or "",
                 ),
             )
             return f"analysis_history:{cur.lastrowid}"
@@ -534,7 +538,9 @@ class TaskStore:
                     config_hash TEXT,
                     task_id TEXT,
                     duration_sec REAL,
-                    bookmarked INTEGER DEFAULT 0
+                    bookmarked INTEGER DEFAULT 0,
+                    depth TEXT DEFAULT 'standard',
+                    rendering_json TEXT
                 )
             """)
             cols = {r[1] for r in conn.execute(
@@ -550,6 +556,10 @@ class TaskStore:
                 ("config_hash", "TEXT"), ("task_id", "TEXT"),
                 ("duration_sec", "REAL"),
                 ("bookmarked", "INTEGER DEFAULT 0"),
+                ("depth", "TEXT DEFAULT 'standard'"),
+                # v1.19: per-tab structured cards. JSON blob; the DTO
+                # parses it into a dict before exposing to the API.
+                ("rendering_json", "TEXT"),
             ]
             for name, typ in additions:
                 if name not in cols:

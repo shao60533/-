@@ -98,6 +98,25 @@ def _get_scheduler():
     return _scheduler
 
 
+def _parse_rendering(raw) -> dict:
+    """Best-effort decode of ``analysis_history.rendering_json``.
+
+    Returns the parsed dict on success; an empty dict for missing /
+    malformed rows. NEVER returns the raw string — the API contract
+    promises a structured object so clients can read ``rendering[tab]``
+    without re-parsing.
+    """
+    if not raw:
+        return {}
+    if isinstance(raw, dict):
+        return raw
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def _mask_secret(value: str, keep: int = 4) -> str:
     """Mask a sensitive string, keeping only the last `keep` characters."""
     if not value:
@@ -380,19 +399,30 @@ def create_app(config_path=None):
     if _multi_tenant_ready and not os.environ.get(
         "DISABLE_DAILY_SNAPSHOT_SCHEDULER"
     ):
-        from stock_trading_system.scheduler.daily_snapshot_scheduler import (
-            DailySnapshotScheduler, take_snapshot_all_users,
-        )
-
-        def _snapshot_all_users():
-            return take_snapshot_all_users(
-                _user_repo,
-                portfolio_manager_factory=lambda _uid: _get_portfolio_mgr(),
+        try:
+            from stock_trading_system.scheduler.daily_snapshot_scheduler import (
+                DailySnapshotScheduler, take_snapshot_all_users,
             )
+        except ImportError as e:
+            # APScheduler is optional. The web app must still boot when
+            # it isn't installed (e.g. minimal CI image / lightweight
+            # tests) — we just skip the daily-snapshot job and log loudly
+            # so an operator running prod without the dep notices.
+            logger.warning(
+                "Daily-snapshot scheduler disabled (missing dep: %s). "
+                "Snapshots will only run via the manual CLI/cron path.",
+                e,
+            )
+        else:
+            def _snapshot_all_users():
+                return take_snapshot_all_users(
+                    _user_repo,
+                    portfolio_manager_factory=lambda _uid: _get_portfolio_mgr(),
+                )
 
-        DailySnapshotScheduler.reset()
-        scheduler = DailySnapshotScheduler.get(_snapshot_all_users)
-        scheduler.start_if_primary()
+            DailySnapshotScheduler.reset()
+            scheduler = DailySnapshotScheduler.get(_snapshot_all_users)
+            scheduler.start_if_primary()
 
     # Public paths that don't require authentication
     PUBLIC_PREFIXES = ("/static/", "/login", "/register", "/reset",
@@ -797,11 +827,26 @@ def create_app(config_path=None):
             except ValueError:
                 days = 30
         history = pm.get_history(days=days, user_id=uid)
+        # Provenance for the equity-curve card: the React island shows
+        # an "insufficient snapshots — click 重新计算" notice when the
+        # user has holdings but the daily_snapshots table can't draw a
+        # multi-point curve. ``history_status`` lets the frontend make
+        # that decision without a separate round-trip.
+        first_date = history[0]["date"] if history else None
+        last_date = history[-1]["date"] if history else None
+        if holdings and len(history) <= 1:
+            history_status = "insufficient_snapshots"
+        else:
+            history_status = "ok"
         return jsonify({
             "pnl": pnl,
             "holdings": holdings,
             "alerts_count": len(alerts),
             "history": history,
+            "history_count": len(history),
+            "history_first_date": first_date,
+            "history_last_date": last_date,
+            "history_status": history_status,
         })
 
     # ── Portfolio API ───────────────────────────────────────────────────
@@ -1025,8 +1070,9 @@ def create_app(config_path=None):
         if not ticker:
             return jsonify({"error": "ticker required"}), 400
         from stock_trading_system.utils.helpers import today_str
+        from stock_trading_system.portfolio.database import _normalize_depth
         date = data.get("date") or today_str()
-        depth = data.get("depth") or "standard"
+        depth = _normalize_depth(data.get("depth"))
 
         tm = _get_task_manager()
         params = {
@@ -1117,8 +1163,9 @@ def create_app(config_path=None):
     def api_analysis_history():
         """List recent analyses. Frontend `/analysis` shows the top 5 as cards.
 
-        Each row gets a ``created_by_name`` JOIN so the cards can display
-        the originator. Response shape: ``{items, count}``.
+        Whitelisted DTO — the raw row contains per-user advice columns
+        (``advice_json`` / ``action`` / ``position_pct`` / ``entry_*`` /
+        ``stop_loss`` / ``take_profit``) that must not leak across users.
         """
         from stock_trading_system.portfolio.database import PortfolioDatabase
         db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
@@ -1126,22 +1173,40 @@ def create_app(config_path=None):
         ticker = request.args.get("ticker")
         limit = int(request.args.get("limit", 50))
         records = db.get_analysis_history(ticker=ticker, limit=limit)
+
         # Resolve display_name via the user repo (cache per request).
         cache: dict[int, str] = {}
-        for rec in records:
-            uid = rec.get("created_by")
+
+        def _name(uid):
             if uid is None:
-                continue
+                return None
             if uid not in cache:
                 try:
                     user = _user_repo.find_by_id(int(uid))
                     cache[uid] = (user.display_name or user.email) if user else ""
                 except Exception:  # noqa: BLE001
                     cache[uid] = ""
-            rec["created_by_name"] = cache[uid] or None
+            return cache[uid] or None
+
+        from stock_trading_system.portfolio.database import _normalize_depth
+        items = [{
+            "id":               rec.get("id"),
+            "ticker":           rec.get("ticker"),
+            "date":             rec.get("date"),
+            "signal":           rec.get("signal"),
+            "created_at":       rec.get("created_at"),
+            "created_by":       rec.get("created_by"),
+            "created_by_name":  _name(rec.get("created_by")),
+            "provider":         rec.get("provider"),
+            "model":            rec.get("model"),
+            "duration_sec":     rec.get("duration_sec"),
+            "task_id":          rec.get("task_id"),
+            "bookmarked":       bool(rec.get("bookmarked")),
+            "depth":            _normalize_depth(rec.get("depth")),
+        } for rec in records]
         # Both `items` (v1.14 contract) and `records` (legacy HistoryPage)
         # are surfaced so we don't have to refactor every caller in this PR.
-        return jsonify({"items": records, "records": records, "count": len(records)})
+        return jsonify({"items": items, "records": items, "count": len(items)})
 
     @app.route("/api/history/<int:analysis_id>")
     def api_analysis_detail(analysis_id):
@@ -1164,23 +1229,21 @@ def create_app(config_path=None):
 
         # Resolve created_by → display_name (fallback to email).
         created_by_name = None
-        if record.get("created_by"):
+        creator_id = record.get("created_by")
+        if creator_id:
             try:
-                user = _user_repo.find_by_id(int(record["created_by"]))
+                user = _user_repo.find_by_id(int(creator_id))
                 if user:
                     created_by_name = user.display_name or user.email
             except Exception as e:  # noqa: BLE001
                 logger.warning("created_by lookup failed: %s", e)
 
-        # confidence string → numeric for the gauge UI
-        conf_str = (record.get("confidence") or "").lower()
-        conf_map = {"high": 0.85, "medium": 0.5, "low": 0.25}
-        confidence_num = conf_map.get(conf_str)
-
-        # advice dict that the frontend renders. Prefer the current user's
-        # entry; fall back to the legacy ``advice_json`` blob on the shared
-        # row for pre-v1.14 records (back-compat — safe because that legacy
-        # column was set by the original requester anyway).
+        # advice is the requesting user's private row only — the shared
+        # analysis_history row no longer carries advice_json (post-v1.16
+        # migration hoists pre-existing legacy advice into
+        # user_analysis_advice keyed on the original creator). If the
+        # requester has no advice row, the response just shows an empty
+        # advice dict; another tenant's plan never leaks here.
         advice: dict = {}
         if user_advice:
             for key in ("action", "confidence", "position_pct",
@@ -1188,12 +1251,6 @@ def create_app(config_path=None):
                         "reasoning", "risk_warning"):
                 if user_advice.get(key) is not None:
                     advice[key] = user_advice[key]
-        elif record.get("advice_json"):
-            try:
-                blob = record["advice_json"]
-                advice = json.loads(blob) if isinstance(blob, str) else blob or {}
-            except (json.JSONDecodeError, TypeError):
-                advice = {}
 
         analysts = {}
         for key in ("market_report", "sentiment_report", "news_report",
@@ -1201,20 +1258,120 @@ def create_app(config_path=None):
             if record.get(key):
                 analysts[key.replace("_report", "").replace("_", " ").title()] = record[key]
 
-        record["summary"] = record.get("executive_summary") or record.get("trade_decision") or ""
-        record["recommendation"] = record.get("trade_decision") or ""
-        record["confidence"] = confidence_num
-        record["risk_level"] = advice.get("risk_level") or conf_str or "-"
-        record["analysts"] = analysts
-        record["advice"] = advice or None
-        record["bookmarked"] = bookmarked
-        record["created_by_name"] = created_by_name
+        # confidence string → numeric for the gauge UI. Pull from the
+        # per-user advice row, never the shared (and now-empty) column.
+        conf_str = (advice.get("confidence") or "").lower() if isinstance(advice.get("confidence"), str) else ""
+        conf_map = {"high": 0.85, "medium": 0.5, "low": 0.25}
+        confidence_num = conf_map.get(conf_str)
 
-        return jsonify(record)
+        # v1.20 trade-action consistency: parse the trader's explicit
+        # ``FINAL TRANSACTION PROPOSAL: **X**`` from ``trade_decision``.
+        # New rows (post-v1.20) already store the parsed action in
+        # ``signal``, so ``decision_action == signal`` for them; old
+        # rows where ``graph.process_signal`` disagreed with the
+        # trader's text surface a ``signal_mismatch=true`` flag so the
+        # frontend can correct itself + show a "已校正" hint.
+        from stock_trading_system.agents.iterative.signal_extractor import (
+            extract_trade_action,
+        )
+        decision_action = extract_trade_action(record.get("trade_decision"))
+        stored_signal = (record.get("signal") or "").strip()
+        signal_mismatch = bool(
+            decision_action
+            and stored_signal
+            and stored_signal.lower() != decision_action.lower()
+        )
+
+        # Whitelisted DTO — never echo the raw row, which carries shared
+        # advice columns whose values would have leaked across users on
+        # pre-v1.14 records.
+        from stock_trading_system.portfolio.database import _normalize_depth
+        return jsonify({
+            "id":                 record.get("id"),
+            "ticker":             record.get("ticker"),
+            "date":               record.get("date"),
+            "signal":             record.get("signal"),
+            "decision_action":    decision_action,
+            "signal_mismatch":    signal_mismatch,
+            "created_at":         record.get("created_at"),
+            "created_by":         creator_id,
+            "created_by_name":    created_by_name,
+            "provider":           record.get("provider"),
+            "model":              record.get("model"),
+            "duration_sec":       record.get("duration_sec"),
+            "task_id":            record.get("task_id"),
+            "config_hash":        record.get("config_hash"),
+            "depth":              _normalize_depth(record.get("depth")),
+            "executive_summary":  record.get("executive_summary"),
+            "summary":            record.get("executive_summary") or record.get("trade_decision") or "",
+            "recommendation":     record.get("trade_decision") or "",
+            "trade_decision":     record.get("trade_decision") or "",
+            "market_report":      record.get("market_report") or "",
+            "sentiment_report":   record.get("sentiment_report") or "",
+            "news_report":        record.get("news_report") or "",
+            "fundamentals_report": record.get("fundamentals_report") or "",
+            "investment_debate":  record.get("investment_debate") or "",
+            "risk_assessment":    record.get("risk_assessment") or "",
+            "analysts":           analysts,
+            "confidence":         confidence_num,
+            "risk_level":         advice.get("risk_level") or conf_str or "-",
+            "advice":             advice or None,
+            "bookmarked":         bookmarked,
+            # v1.19: per-tab structured cards. Always parse the stored JSON
+            # into a dict before exposing — never echo ``rendering_json``
+            # itself, that's a storage detail and could trip clients
+            # expecting structured data.
+            "rendering":          _parse_rendering(record.get("rendering_json")),
+        })
+
+    def _merge_user_advice_into_records(db, records: list[dict],
+                                         user_id: int | None) -> list[dict]:
+        """Layer this user's private advice onto shared compare/timeline rows.
+
+        The shared row never carries advice (post-v1.16) — _STRUCTURED_COLS
+        only selects shared research columns. We project the requesting
+        user's ``user_analysis_advice`` row, if any, into a nested
+        ``my_advice`` field. Other users' advice is never visible.
+        """
+        if not records:
+            return []
+        ids = [int(r["id"]) for r in records if r.get("id") is not None]
+        advice_by_id: dict[int, dict] = {}
+        if user_id is not None and ids:
+            try:
+                advice_by_id = db.get_user_advice_bulk(user_id, ids)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("get_user_advice_bulk failed: %s", e)
+                advice_by_id = {}
+        out = []
+        for r in records:
+            row = dict(r)
+            row["bookmarked"] = bool(row.get("bookmarked"))
+            adv = advice_by_id.get(int(row["id"])) if row.get("id") else None
+            if adv:
+                row["my_advice"] = {
+                    "action":        adv.get("action"),
+                    "confidence":    adv.get("confidence"),
+                    "position_pct":  adv.get("position_pct"),
+                    "entry_low":     adv.get("entry_low"),
+                    "entry_high":    adv.get("entry_high"),
+                    "stop_loss":     adv.get("stop_loss"),
+                    "take_profit":   adv.get("take_profit"),
+                }
+            else:
+                row["my_advice"] = None
+            out.append(row)
+        return out
 
     @app.route("/api/history/compare")
     def api_analysis_compare():
-        """Compare multiple analyses side-by-side. Query: ?ids=1,2,3 (up to 5)."""
+        """Compare multiple analyses side-by-side. Query: ?ids=1,2,3 (up to 5).
+
+        Shared columns only (v1.16) — per-user advice (action/confidence/
+        entry/stop/take_profit/position_pct) is never embedded directly
+        on the row. The current user's own advice, if any, is layered
+        in via ``my_advice``; other users' advice is never visible.
+        """
         from stock_trading_system.portfolio.database import PortfolioDatabase
         ids_raw = request.args.get("ids", "").strip()
         if not ids_raw:
@@ -1229,24 +1386,51 @@ def create_app(config_path=None):
             return jsonify({"error": "At most 5 records can be compared"}), 400
         db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
         db = PortfolioDatabase(db_path)
+        uid = g.user.id if getattr(g, "user", None) else None
         records = db.get_analyses_by_ids(ids)
+        records = _merge_user_advice_into_records(db, records, uid)
         return jsonify({"count": len(records), "records": records})
 
     @app.route("/api/history/timeline/<ticker>")
     def api_analysis_timeline(ticker):
-        """Structured chronological history for one ticker (drift view)."""
+        """Structured chronological history for one ticker (drift view).
+
+        See ``api_analysis_compare`` for the shared/private contract.
+        """
         from stock_trading_system.portfolio.database import PortfolioDatabase
         limit = int(request.args.get("limit", 20))
         db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
         db = PortfolioDatabase(db_path)
+        uid = g.user.id if getattr(g, "user", None) else None
         records = db.get_analysis_timeline(ticker.upper(), limit=limit)
-        return jsonify({"ticker": ticker.upper(), "count": len(records), "records": records})
+        records = _merge_user_advice_into_records(db, records, uid)
+        return jsonify({"ticker": ticker.upper(), "count": len(records),
+                         "records": records})
 
     @app.route("/api/history/<int:analysis_id>", methods=["DELETE"])
     def api_analysis_delete(analysis_id):
+        """Delete a shared analysis row.
+
+        Only the original creator (``created_by == g.user.id``) or an
+        admin may delete. Anyone else gets 403 — the analysis library is
+        shared research, not a personal scratch pad.
+        """
+        if g.user is None:
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
         from stock_trading_system.portfolio.database import PortfolioDatabase
         db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
         db = PortfolioDatabase(db_path)
+        creator_id = db.get_analysis_creator(analysis_id)
+        if creator_id is None:
+            # Could be 404 (no such row) or legacy row with no created_by.
+            # Treat both as 404; only admin may force-delete via DB tooling.
+            row = db.get_analysis_by_id(analysis_id)
+            if not row:
+                return jsonify({"ok": False, "error": "not_found"}), 404
+            if g.user.role != "admin":
+                return jsonify({"ok": False, "error": "forbidden"}), 403
+        elif creator_id != g.user.id and g.user.role != "admin":
+            return jsonify({"ok": False, "error": "forbidden"}), 403
         ok = db.delete_analysis(analysis_id)
         return jsonify({"ok": ok})
 
@@ -1560,6 +1744,46 @@ def create_app(config_path=None):
             logger.warning("News failed for %s: %s", t, e)
             return jsonify({"error": str(e)}), 500
         return jsonify(news or [])
+
+    @app.route("/api/analysis/<int:analysis_id>/quick-info")
+    def api_analysis_quick_info(analysis_id):
+        """Aggregated quick-info card for the analysis detail page.
+
+        Bundles the news + fundamentals lookups the AnalysisDetailView
+        used to fire as two separate XHRs into a single response. Both
+        upstream providers are best-effort — failures degrade to empty
+        / null rather than 500ing the whole page so the rest of the
+        detail still renders.
+        """
+        from stock_trading_system.portfolio.database import PortfolioDatabase
+        db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
+        db = PortfolioDatabase(db_path)
+        record = db.get_analysis_by_id(analysis_id)
+        if not record:
+            return jsonify({"error": "not_found"}), 404
+        ticker = (record.get("ticker") or "").upper()
+
+        news: list = []
+        if ticker:
+            try:
+                raw = _get_data_manager().get_news(ticker) or []
+                # Top 3 only — quick-info card doesn't paginate.
+                news = list(raw)[:3]
+            except Exception as e:  # noqa: BLE001
+                logger.warning("quick-info news failed for %s: %s", ticker, e)
+
+        fundamentals = None
+        if ticker:
+            try:
+                fundamentals = _get_data_manager().get_fundamentals(ticker)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("quick-info fundamentals failed for %s: %s", ticker, e)
+
+        return jsonify({
+            "ticker": ticker,
+            "news": news,
+            "fundamentals": fundamentals,
+        })
 
     # ── Portfolio Extras ────────────────────────────────────────────────
 
@@ -2244,44 +2468,42 @@ def create_app(config_path=None):
 
     @app.route("/api/paper/tickers")
     def api_paper_tickers():
+        """List tickers with their plan / position summary.
+
+        v1.16: collapsed from O(N) per-session round-trips down to 4
+        aggregated queries via ``list_ticker_sessions_summary``. The
+        list view returns only the columns the table renders; full
+        events / dailies / trades / plans are deferred to the detail
+        endpoint (``/api/paper/tickers/<ticker>``). Hit-rate is dropped
+        from the list — old code iterated events × dailies on every
+        request, costing seconds for users with many tracked tickers.
+        """
         store = _get_paper_store()
         mode_arg = (request.args.get("mode") or "forward").lower()
         mode = mode_arg if mode_arg in {"forward", "replay"} else None
-        sessions = store.list_ticker_sessions(mode=mode)
+        summaries = store.list_ticker_sessions_summary(mode=mode)
         out = []
-        for s in sessions:
-            sid = int(s["id"])
-            last = store.last_daily_stat(sid)
-            latest_evt = store.latest_strategy_event(sid)
-            events = store.list_strategy_events(sid)
-            dailies = store.list_daily_stats(sid, limit=1000)
-            spark = [float(d["total_value"]) for d in dailies[-30:]]
-            buys = [e for e in events
-                    if (e.get("new_signal") or "").upper() in ("BUY", "OVERWEIGHT")]
-            hits, total = 0, 0
-            for e in buys:
-                fwd = [d for d in dailies if d["date"] > e["event_date"]][:5]
-                if len(fwd) >= 1 and e.get("price"):
-                    total += 1
-                    if fwd[-1]["close_price"] > e["price"]:
-                        hits += 1
+        for s in summaries:
+            last = s.get("last_daily_stat") or {}
+            evt = s.get("latest_event") or {}
             out.append({
-                "id": sid,
+                "id": int(s["id"]),
                 "ticker": s["ticker"],
                 "status": s["status"],
                 "start_date": s["start_date"],
                 "last_eod": s.get("last_eod_date"),
-                "current_signal": latest_evt["new_signal"] if latest_evt else None,
-                "current_action": latest_evt["action"] if latest_evt else None,
-                "total_value": float(last["total_value"]) if last else float(s["start_capital"]),
-                "cum_pnl_pct": float(last["cum_pnl_pct"]) if last else 0,
-                "position_shares": float(last["position_shares"]) if last else 0,
-                "close_price": float(last["close_price"]) if last and last.get("close_price") else None,
-                "num_events": len(events),
-                "hit_rate": (hits / total) if total else None,
-                "hit_pretty": f"{hits}/{total}" if total else "—",
-                "sparkline": spark,
-                # v1.15 — surface plan/order/position state for the list UI
+                "current_signal": evt.get("new_signal"),
+                "current_action": evt.get("action"),
+                "total_value": float(last.get("total_value")) if last.get("total_value") is not None
+                    else float(s["start_capital"]),
+                "cum_pnl_pct": float(last.get("cum_pnl_pct") or 0),
+                "position_shares": float(last.get("position_shares") or 0),
+                "close_price": float(last["close_price"]) if last.get("close_price") else None,
+                "num_events": int(s.get("num_events") or 0),
+                # Hit-rate intentionally null in the list view — see docstring.
+                "hit_rate": None,
+                "hit_pretty": "—",
+                "sparkline": s.get("sparkline") or [],
                 "active_plan_count": int(s.get("active_plan_count") or 0),
                 "pending_orders_count": int(s.get("pending_orders_count") or 0),
                 "triggered_orders_count": int(s.get("triggered_orders_count") or 0),
@@ -2293,6 +2515,9 @@ def create_app(config_path=None):
 
     @app.route("/api/paper/tickers/<ticker>")
     def api_paper_ticker_detail(ticker: str):
+        if g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
+        uid = g.user.id
         store = _get_paper_store()
         sess = store.find_session_by_ticker(ticker.upper())
         if not sess:
@@ -2323,21 +2548,33 @@ def create_app(config_path=None):
         latest = events[0] if events else None
         latest_advice = None
         latest_trade_decision = None
-        if latest:
+        if latest and latest.get("analysis_id"):
+            analysis_id = int(latest["analysis_id"])
             try:
-                from stock_trading_system.portfolio.database import PortfolioDatabase
-                db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
-                ana = PortfolioDatabase(db_path).get_analysis_by_id(latest["analysis_id"])
+                ana = _db.get_analysis_by_id(analysis_id)
                 if ana:
                     latest_trade_decision = ana.get("trade_decision") or ""
-                    if ana.get("advice_json"):
-                        import json as _j
-                        try:
-                            latest_advice = _j.loads(ana["advice_json"])
-                        except Exception:
-                            latest_advice = None
-            except Exception:
-                pass
+            except Exception as e:  # noqa: BLE001
+                logger.warning("ticker_detail: get_analysis_by_id failed: %s", e)
+            # latest_advice MUST come from this user's private row, never
+            # the legacy advice_json on the shared analysis_history row.
+            try:
+                user_advice_row = _db.get_user_advice(uid, analysis_id)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("ticker_detail: get_user_advice failed: %s", e)
+                user_advice_row = None
+            if user_advice_row:
+                latest_advice = {
+                    "action":                  user_advice_row.get("action"),
+                    "confidence":              user_advice_row.get("confidence"),
+                    "suggested_position_pct":  user_advice_row.get("position_pct"),
+                    "entry_price_low":         user_advice_row.get("entry_low"),
+                    "entry_price_high":        user_advice_row.get("entry_high"),
+                    "stop_loss":               user_advice_row.get("stop_loss"),
+                    "take_profit":             user_advice_row.get("take_profit"),
+                    "reasoning":               user_advice_row.get("reasoning") or "",
+                    "risk_warning":            user_advice_row.get("risk_warning") or "",
+                }
         return jsonify({
             "session": sess,
             "events": events,
@@ -2367,10 +2604,18 @@ def create_app(config_path=None):
 
     @app.route("/api/paper/backfill", methods=["POST"])
     def api_paper_backfill():
+        if g.user is None:
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
         try:
             tm = _get_task_manager()
-            uid = g.user.id if g.user else None
-            task = tm.submit("paper_backfill", {}, created_by=uid)
+            uid = g.user.id
+            # Pass user_id in BOTH params (so the worker scopes advice
+            # lookups to this user) and created_by (audit trail).
+            task = tm.submit(
+                "paper_backfill",
+                {"user_id": uid},
+                created_by=uid,
+            )
             return jsonify({"ok": True, "task_id": task["id"], "task": task})
         except Exception as e:
             logger.error("Backfill submit failed: %s", e)
@@ -2392,12 +2637,17 @@ def create_app(config_path=None):
                 "error": f"Unknown task type: {task_type}",
                 "registered": tm.registered_types(),
             }), 400
-        # Inject LLM provider/model into shared research task params for cache dedup
+        # Inject LLM provider/model into shared research task params for
+        # cache dedup. Use the same per-provider resolver the analyzer uses
+        # so cache keys are stable (``qwen:qwen-plus``) rather than the
+        # legacy ``qwen:`` empty-model form.
         if task_type in ("analysis", "screen", "screen_v2", "screen_v3", "backtest"):
-            from stock_trading_system.llm.router import get_active_provider
+            from stock_trading_system.llm.router import resolve_active_model
             cfg = get_config()
-            params.setdefault("_provider", get_active_provider(cfg))
-            params.setdefault("_model", cfg.get("llm", {}).get("model", ""))
+            uid_for_resolve = g.user.id if g.user else None
+            prov, mdl = resolve_active_model(cfg, user_id=uid_for_resolve)
+            params.setdefault("_provider", prov)
+            params.setdefault("_model", mdl or "")
 
         uid = g.user.id if g.user else None
         # Inject the requester id into params so workers (e.g. analysis) can
@@ -2738,7 +2988,13 @@ def create_app(config_path=None):
 
     @app.route("/api/screen/v3/trigger", methods=["POST"])
     def api_screen_v3_trigger():
-        """Trigger a V3 screening task."""
+        """Trigger a V3 screening task.
+
+        Validates that at least one guru is selected — running the
+        agent pipeline with zero gurus is the worst kind of silent
+        failure (the result has no candidate scores and the UI shows
+        an empty list with no explanation). 400 the caller instead.
+        """
         from flask import g
         from stock_trading_system.llm.router import get_active_provider
 
@@ -2747,11 +3003,29 @@ def create_app(config_path=None):
         user_id = getattr(g, "user", None) and g.user.id
         provider = get_active_provider(cfg, user_id=user_id)
 
+        gurus_in = body.get("gurus")
+        gurus_clean = [
+            str(g).strip() for g in (gurus_in or [])
+            if g and str(g).strip()
+        ] if isinstance(gurus_in, list) else []
+        if not gurus_clean:
+            return jsonify({
+                "error": "gurus_required",
+                "message": "至少选择 1 位大师",
+            }), 400
+
+        market = (body.get("market") or "us").strip().lower()
+        if market not in ("us", "cn", "hk"):
+            return jsonify({
+                "error": "invalid_market",
+                "message": "market must be one of us / cn / hk",
+            }), 400
+
         params = {
             "nl_query": body.get("nl_query", ""),
-            "market": body.get("market", "us"),
+            "market": market,
             "candidate_n": int(body.get("candidate_n", 20)),
-            "gurus": body.get("gurus", ["buffett", "graham", "munger", "lynch"]),
+            "gurus": gurus_clean,
             "mode": body.get("mode", "agent"),
             "with_roundtable": bool(body.get("with_roundtable", False)),
             "user_id": user_id,
@@ -2777,8 +3051,23 @@ def create_app(config_path=None):
         * a task UUID  → look up via TaskStore.get(), follow ``result_ref``;
         * a positive integer → fall back to ``screen_results_v2`` row id.
 
-        Always returns ``{id, task_id, created_at, candidates, roundtable, ...}``
-        no matter which table the result lives in.
+        Schema normalization (v1.16): different worker versions write the
+        candidate list under different keys. We normalize to the canonical
+        ``candidates: [{ticker, composite_score, signal, guru_scores}]``
+        shape the React island consumes:
+
+            * payload['candidates']                → kept as-is
+            * payload['results']                   → renamed to candidates
+            * candidate['final_score']             → composite_score
+            * candidate['guru_signals'] (list)     → guru_scores (dict by guru)
+
+        The original ``results`` / ``final_score`` / ``guru_signals`` fields
+        are preserved on each candidate too so any client written against
+        the old shape keeps rendering.
+
+        Privacy: ``params`` is filtered through
+        ``_SHARED_PARAMS_WHITELIST['screen_v3']`` for non-owner viewers so
+        ``user_id`` / ``provider`` / other internals never leak.
         """
         try:
             store = _get_task_store()
@@ -2805,13 +3094,14 @@ def create_app(config_path=None):
                         "id": _result_ref_to_int(ref),
                         "task_id": task["id"],
                         "created_at": task.get("completed_at") or task.get("created_at"),
-                        "params": _params_dict(task),
-                        "candidates": payload.get("candidates") or [],
+                        "params": _v3_params_for_viewer(task),
+                        "candidates": _normalize_v3_candidates(payload),
                         "roundtable": payload.get("roundtable"),
                     }
                     # Pass through any extra fields the v3 pipeline produced.
                     for k, v in payload.items():
-                        if k not in ("candidates", "roundtable", "id", "task_id"):
+                        if k not in ("candidates", "results",
+                                     "roundtable", "id", "task_id"):
                             response.setdefault(k, v)
                     return jsonify(response)
 
@@ -2824,11 +3114,12 @@ def create_app(config_path=None):
                         "id": v2.get("id"),
                         "task_id": v2.get("task_id"),
                         "created_at": v2.get("created_at"),
-                        "candidates": inner.get("candidates") or [],
+                        "candidates": _normalize_v3_candidates(inner),
                         "roundtable": inner.get("roundtable"),
                     }
                     for k, v in inner.items():
-                        if k not in ("candidates", "roundtable", "id", "task_id"):
+                        if k not in ("candidates", "results",
+                                     "roundtable", "id", "task_id"):
                             response.setdefault(k, v)
                     return jsonify(response)
 
@@ -2836,6 +3127,52 @@ def create_app(config_path=None):
         except Exception as e:  # noqa: BLE001
             logger.exception("V3 result lookup failed")
             return jsonify({"error": str(e)}), 500
+
+    def _normalize_v3_candidates(payload: dict) -> list[dict]:
+        """Project the worker-emitted payload into the canonical
+        ``candidates`` list. Tolerates both the new ``candidates`` key and
+        the legacy ``results`` key, and rewrites ``final_score`` →
+        ``composite_score`` plus ``guru_signals`` (list) → ``guru_scores``
+        (dict keyed by guru). Originals are kept intact too.
+        """
+        raw = payload.get("candidates")
+        if not raw:
+            raw = payload.get("results") or []
+        out: list[dict] = []
+        for item in raw or []:
+            if not isinstance(item, dict):
+                continue
+            row = dict(item)
+            if "composite_score" not in row and "final_score" in row:
+                row["composite_score"] = row["final_score"]
+            if "guru_scores" not in row:
+                signals = row.get("guru_signals")
+                if isinstance(signals, list):
+                    row["guru_scores"] = {
+                        s.get("guru"): s
+                        for s in signals
+                        if isinstance(s, dict) and s.get("guru")
+                    }
+                elif isinstance(signals, dict):
+                    row["guru_scores"] = signals
+            out.append(row)
+        return out
+
+    def _v3_params_for_viewer(task: dict) -> dict:
+        """Return ``params`` filtered for the requesting viewer.
+
+        Owners and admins see every key; everyone else sees only the
+        whitelist for ``screen_v3``. Strips ``user_id`` / ``__user_id__``
+        / ``provider`` / future internal flags by default.
+        """
+        full = _params_dict(task)
+        uid = str(g.user.id) if getattr(g, "user", None) else None
+        owner = str(task.get("created_by", ""))
+        is_admin = bool(getattr(g, "user", None) and g.user.role == "admin")
+        if uid is not None and (uid == owner or is_admin):
+            return full
+        whitelist = _SHARED_PARAMS_WHITELIST.get("screen_v3") or set()
+        return {k: v for k, v in full.items() if k in whitelist}
 
     # ── Seed Data ───────────────────────────────────────────────────────
 

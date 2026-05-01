@@ -105,3 +105,87 @@ def _action_to_signal(action: str) -> str:
     return {"BUY": "BULLISH", "SELL": "BEARISH", "HOLD": "NEUTRAL"}.get(
         action.upper(), "NEUTRAL"
     )
+
+
+# ── Canonical trade-action extractor (v1.20) ─────────────────────────────
+#
+# Single source of truth for "what did the trader actually decide". Used
+# by the analyzer to override ``result.signal`` and by the detail DTO to
+# detect / report drift between the stored signal and the trade-decision
+# text. ``signal`` historically came from ``graph.process_signal`` which
+# is a separate LLM call and occasionally disagreed with the trader's
+# explicit ``FINAL TRANSACTION PROPOSAL: **X**`` line — that's the
+# "顶部 Hold, 决策正文 Sell" bug this function exists to kill.
+
+# Match ``FINAL TRANSACTION PROPOSAL: **BUY**`` (and minor variants:
+# bare without **, leading/trailing whitespace, mixed case).
+_FINAL_PROPOSAL_RE = re.compile(
+    r"FINAL\s+TRANSACTION\s+PROPOSAL\s*:\s*\*{0,2}(BUY|SELL|HOLD)\*{0,2}",
+    re.IGNORECASE,
+)
+
+# Last-resort match: a ``**BUY**`` / ``**SELL**`` / ``**HOLD**`` token
+# anywhere in the body. We deliberately require the bold markdown so a
+# lower-case mention of "buy" inside prose ("we recommend a buy bias")
+# doesn't trigger a false positive.
+_BOLD_ACTION_RE = re.compile(
+    r"\*\*\s*(BUY|SELL|HOLD)\s*\*\*",
+    re.IGNORECASE,
+)
+
+_ACTION_TITLE = {"BUY": "Buy", "SELL": "Sell", "HOLD": "Hold"}
+
+
+def extract_trade_action(text_or_dict) -> str | None:
+    """Parse the final trader action ("Buy" / "Sell" / "Hold") from a
+    ``trade_decision`` string or the ``final_trade_decision`` dict.
+
+    Returns ``None`` when no clean signal is recoverable — the caller
+    should then fall back to whatever ``graph.process_signal`` produced
+    (typically OVERWEIGHT / UNDERWEIGHT, which this function intentionally
+    doesn't try to disambiguate from BUY / SELL).
+
+    Match order — last match wins so a section that opens with an
+    intermediate proposal but closes with a corrected one resolves to the
+    final one:
+
+    1. ``FINAL TRANSACTION PROPOSAL: **BUY/SELL/HOLD**`` (canonical)
+    2. ``**BUY**`` / ``**SELL**`` / ``**HOLD**`` bolded standalone token
+
+    Falls through to ``None`` when neither pattern matches; we explicitly
+    do NOT scan plain prose for the words "buy"/"sell"/"hold" because the
+    same words appear in non-actionable context (e.g. "buy-side analysts",
+    "sell-off risk", "holding period").
+    """
+    if text_or_dict is None:
+        return None
+    if isinstance(text_or_dict, dict):
+        # ``final_trade_decision`` from TradingAgents is sometimes a dict
+        # like ``{"messages": [...], "trade_decision": "..."}``. Try the
+        # explicit text key first, then fall back to a JSON string of the
+        # whole thing so any nested message body still gets scanned.
+        text = (
+            text_or_dict.get("trade_decision")
+            or text_or_dict.get("final_trade_decision")
+            or text_or_dict.get("content")
+            or json.dumps(text_or_dict, ensure_ascii=False, default=str)
+        )
+    else:
+        text = str(text_or_dict)
+    text = text.strip()
+    if not text:
+        return None
+
+    last_action: str | None = None
+    for m in _FINAL_PROPOSAL_RE.finditer(text):
+        last_action = m.group(1).upper()
+    if last_action is not None:
+        return _ACTION_TITLE[last_action]
+
+    # No FINAL PROPOSAL — try bold standalone tokens. Same "last wins"
+    # rule because trader memos sometimes include earlier draft proposals.
+    for m in _BOLD_ACTION_RE.finditer(text):
+        last_action = m.group(1).upper()
+    if last_action is not None:
+        return _ACTION_TITLE[last_action]
+    return None

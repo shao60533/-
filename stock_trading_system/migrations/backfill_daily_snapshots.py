@@ -262,6 +262,13 @@ def _snapshot_exists(
             "SELECT 1 FROM daily_snapshots WHERE date = ? AND user_id = ?",
             (target_date, user_id),
         ).fetchone()
+    elif multi_tenant and user_id is None:
+        # Legacy / pre-multi-tenant rows live with user_id IS NULL.
+        # ``= NULL`` never matches in SQL — must use IS NULL.
+        row = conn.execute(
+            "SELECT 1 FROM daily_snapshots WHERE date = ? AND user_id IS NULL",
+            (target_date,),
+        ).fetchone()
     else:
         row = conn.execute(
             "SELECT 1 FROM daily_snapshots WHERE date = ?",
@@ -283,13 +290,37 @@ def _upsert_snapshot(
     snapshots_have_user_id: bool,
     force: bool,
 ) -> None:
-    """INSERT OR IGNORE (default) / INSERT OR REPLACE (--force).
+    """INSERT OR IGNORE (default) / DELETE+INSERT (--force).
 
-    The single-user schema doesn't have ``daily_snapshots.user_id``; the
-    multi-tenant migration adds it. Branch on the actual schema rather than
-    assuming the column exists, so we can backfill on either shape.
+    The post-multi-tenant schema declares ``UNIQUE(user_id, date)`` but
+    SQLite's UNIQUE constraint treats NULL values as DISTINCT — i.e.
+    multiple legacy rows with ``user_id IS NULL`` and the same date are
+    all considered unique, so ``INSERT OR REPLACE`` happily appends a
+    new row instead of replacing the old one. To make ``--force``
+    actually overwrite, we explicitly DELETE the matching row first
+    using ``IS NULL`` semantics.
     """
-    verb = "INSERT OR REPLACE" if force else "INSERT OR IGNORE"
+    if force:
+        if snapshots_have_user_id:
+            if user_id is None:
+                conn.execute(
+                    "DELETE FROM daily_snapshots "
+                    "WHERE date = ? AND user_id IS NULL",
+                    (target_date,),
+                )
+            else:
+                conn.execute(
+                    "DELETE FROM daily_snapshots "
+                    "WHERE date = ? AND user_id = ?",
+                    (target_date, user_id),
+                )
+        else:
+            conn.execute(
+                "DELETE FROM daily_snapshots WHERE date = ?",
+                (target_date,),
+            )
+
+    verb = "INSERT" if force else "INSERT OR IGNORE"
     if snapshots_have_user_id:
         conn.execute(
             f"""{verb} INTO daily_snapshots
@@ -385,6 +416,15 @@ def backfill_user(
             )
 
         backfilled = skipped = failed = fallback_count = 0
+        # v1.16: a ticker that has no close anywhere in the window
+        # (typical for hand-typed test tickers like TEST1/TESTX/ZZZTEST)
+        # used to abort the WHOLE day's backfill. Now we only abort the
+        # day if every position is unvalueable. We also surface which
+        # tickers needed which kind of fallback so the operator can fix
+        # the underlying ticker rather than rerunning blind.
+        missing_prices: set[str] = set()      # tickers with NO close in window
+        skipped_tickers: set[str] = set()     # tickers we couldn't even fall back on
+        fallback_prices: dict[str, str] = {}  # ticker → reason ("prior_close" / "cost_basis_fallback")
         cur_user_label = f"user={user_id}" if user_id is not None else "user=<legacy>"
 
         for i, day in enumerate(days):
@@ -408,42 +448,92 @@ def backfill_user(
 
             total_value = 0.0
             total_cost = 0.0
-            day_failed = False
             day_used_fallback = False
+            valued_positions = 0
             positions_payload: list[dict] = []
 
             for ticker, pos in positions.items():
                 series = price_cache.get(ticker)
                 close, fallback = _close_for(series, day, earliest=start_date)
-                if close is None:
-                    logger.warning(
-                        "[%s] %s: no close for %s in %d trading days, marking day failed",
-                        target_str, cur_user_label, ticker, 14,
-                    )
-                    day_failed = True
-                    break
-                if fallback:
-                    day_used_fallback = True
-                    fallback_count += 1
-                    logger.warning(
-                        "[%s] %s: %s close missing, used most recent prior close = %.4f",
-                        target_str, cur_user_label, ticker, close,
-                    )
                 cost_basis = pos["cost_basis"]
                 avg_cost = cost_basis / pos["shares"] if pos["shares"] else 0.0
-                market_value = pos["shares"] * close
+                price_source: str
+                price: float | None
+
+                if close is not None:
+                    price = close
+                    price_source = "prior_close" if fallback else "close"
+                    if fallback:
+                        day_used_fallback = True
+                        fallback_count += 1
+                        fallback_prices[ticker] = "prior_close"
+                        logger.warning(
+                            "[%s] %s: %s close missing, used most recent prior close = %.4f",
+                            target_str, cur_user_label, ticker, close,
+                        )
+                elif avg_cost > 0:
+                    # No close anywhere in the window — this is usually a
+                    # hand-typed test ticker (TEST1/TESTX) that yfinance
+                    # doesn't know about. Cost basis is the only price we
+                    # can defend valuing the position at; the resulting
+                    # row at least keeps the curve continuous.
+                    price = avg_cost
+                    price_source = "cost_basis_fallback"
+                    missing_prices.add(ticker)
+                    fallback_prices[ticker] = "cost_basis_fallback"
+                    fallback_count += 1
+                    day_used_fallback = True
+                    logger.warning(
+                        "[%s] %s: %s no close in window, falling back to "
+                        "cost basis = %.4f (price_source=cost_basis_fallback)",
+                        target_str, cur_user_label, ticker, avg_cost,
+                    )
+                else:
+                    # No close, no cost basis — drop just this ticker and
+                    # keep going. The day's row is still written if any
+                    # other position priced.
+                    missing_prices.add(ticker)
+                    skipped_tickers.add(ticker)
+                    logger.warning(
+                        "[%s] %s: %s no close AND no cost basis; "
+                        "skipping ticker (price_source=missing_skipped)",
+                        target_str, cur_user_label, ticker,
+                    )
+                    positions_payload.append({
+                        "ticker": ticker,
+                        "shares": round(pos["shares"], 6),
+                        "avg_cost": round(avg_cost, 6),
+                        "close": None,
+                        "market_value": 0.0,
+                        "fallback_price": False,
+                        "price_source": "missing_skipped",
+                    })
+                    continue
+
+                market_value = pos["shares"] * price
                 total_value += market_value
                 total_cost += cost_basis
+                valued_positions += 1
                 positions_payload.append({
                     "ticker": ticker,
                     "shares": round(pos["shares"], 6),
                     "avg_cost": round(avg_cost, 6),
-                    "close": round(close, 6),
+                    "close": round(price, 6),
                     "market_value": round(market_value, 6),
-                    "fallback_price": fallback,
+                    "fallback_price": price_source != "close",
+                    "price_source": price_source,
                 })
 
-            if day_failed:
+            # Only fail the day when EVERY held position is unvalueable.
+            # That's the genuine "no equity curve datapoint to draw"
+            # case; partial misses still write a row so the curve stays
+            # continuous and the operator can see which tickers are
+            # bad via positions_json[*].price_source.
+            if valued_positions == 0:
+                logger.warning(
+                    "[%s] %s: no position could be valued (%d held); marking day failed",
+                    target_str, cur_user_label, len(positions),
+                )
                 failed += 1
                 continue
 
@@ -461,8 +551,9 @@ def backfill_user(
             backfilled += 1
             tag = " (fallback price)" if day_used_fallback else ""
             logger.info(
-                "[%s] %s: %d positions, total=$%.2f%s ✓",
-                target_str, cur_user_label, len(positions), total_value, tag,
+                "[%s] %s: %d/%d positions valued, total=$%.2f%s ✓",
+                target_str, cur_user_label,
+                valued_positions, len(positions), total_value, tag,
             )
 
             if progress_cb:
@@ -472,6 +563,13 @@ def backfill_user(
         if not dry_run:
             conn.commit()
 
+        if missing_prices or skipped_tickers:
+            logger.warning(
+                "%s: backfill finished with missing_prices=%s skipped_tickers=%s",
+                cur_user_label,
+                sorted(missing_prices), sorted(skipped_tickers),
+            )
+
         return {
             "user_id": user_id,
             "status": "ok",
@@ -479,6 +577,11 @@ def backfill_user(
             "skipped": skipped,
             "failed": failed,
             "fallback_prices": fallback_count,
+            # New v1.16 fields — the dashboard / completion toast can
+            # surface these instead of the operator chasing logs.
+            "missing_prices": sorted(missing_prices),
+            "skipped_tickers": sorted(skipped_tickers),
+            "fallback_prices_by_ticker": dict(fallback_prices),
             "days_evaluated": len(days),
             "tickers": tickers_ever,
             "first_date": start_date.strftime("%Y-%m-%d"),

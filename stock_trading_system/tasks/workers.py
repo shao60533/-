@@ -29,6 +29,7 @@ def make_analysis_worker(get_analyzer, get_strategy_engine, get_portfolio, get_r
     def worker(params: dict, progress_cb: ProgressCb) -> dict:
         import time as _time
         from stock_trading_system.config import get_config
+        from stock_trading_system.portfolio.database import _normalize_depth
 
         t_start = _time.perf_counter()
         ticker = (params.get("ticker") or "").upper().strip()
@@ -38,6 +39,12 @@ def make_analysis_worker(get_analyzer, get_strategy_engine, get_portfolio, get_r
         if not date:
             from stock_trading_system.utils.helpers import today_str
             date = today_str()
+
+        # Depth (quick/standard/deep) drives the analyzer's iteration
+        # toggle and is persisted onto the shared analysis_history row
+        # so the detail page can show what depth the user paid for.
+        # Unknown values fall back to ``standard``.
+        depth = _normalize_depth(params.get("depth"))
 
         progress_cb(5, "初始化分析管线")
         analyzer = get_analyzer()
@@ -54,7 +61,30 @@ def make_analysis_worker(get_analyzer, get_strategy_engine, get_portfolio, get_r
                 _emit_ev(task_id, "analysis_pipeline", {"ticker": ticker, **event})
 
         progress_cb(15, "启动 7 Agent 分析")
-        raw = analyzer.analyze(ticker, date, progress_cb=_analysis_progress)
+        # Adapter compatibility: older / fake analyzers don't accept the
+        # ``progress_cb`` / ``depth`` kwargs. Try the richest call first
+        # and degrade signature-by-signature so legacy fakes still work.
+        try:
+            raw = analyzer.analyze(
+                ticker, date,
+                progress_cb=_analysis_progress, depth=depth,
+            )
+        except TypeError as e:
+            msg = str(e)
+            if "depth" in msg:
+                try:
+                    raw = analyzer.analyze(
+                        ticker, date, progress_cb=_analysis_progress,
+                    )
+                except TypeError as e2:
+                    if "progress_cb" in str(e2):
+                        raw = analyzer.analyze(ticker, date)
+                    else:
+                        raise
+            elif "progress_cb" in msg:
+                raw = analyzer.analyze(ticker, date)
+            else:
+                raise
 
         # When iteration is enabled, analyze() returns (AnalysisResult, final_state)
         final_state = None
@@ -89,6 +119,12 @@ def make_analysis_worker(get_analyzer, get_strategy_engine, get_portfolio, get_r
             "duration_sec": _time.perf_counter() - t_start,
             "task_id": task_id or None,
             "created_by": user_id,
+            "depth": depth,
+            # v1.19: best-effort structured-rendering blob serialized for
+            # storage. Empty string when the analyzer skipped extraction
+            # (extractor unavailable, error, or per-tab failures already
+            # rendered as ``None`` inside the dict).
+            "rendering_json": _serialize_rendering(getattr(result, "rendering", None)),
         }
         if final_state is not None:
             try:
@@ -96,10 +132,19 @@ def make_analysis_worker(get_analyzer, get_strategy_engine, get_portfolio, get_r
             except Exception as e:  # noqa: BLE001
                 logger.warning("final_state serialization failed: %s", e)
         # Per-user advice — written to user_analysis_advice by the post-save
-        # hook in TaskManager. NOT into analysis_history (shared row).
+        # hook in TaskManager. ``_advice_payload`` is the canonical key the
+        # hook reads; ``advice`` is kept at the top level purely for in-process
+        # callers (tests, future async tasks) and is intentionally NOT
+        # persisted into the shared ``analysis_history`` row — task_store
+        # ignores it (see ``_save_analysis_result``).
         if advice is not None:
+            advice_dict = (
+                advice if isinstance(advice, dict)
+                else getattr(advice, "__dict__", None) or {}
+            )
+            out["advice"] = advice_dict
             out["_advice_payload"] = {
-                "advice": advice,
+                "advice": advice_dict,
                 "holdings_snapshot": holdings_snapshot,
             }
         return out
@@ -108,25 +153,17 @@ def make_analysis_worker(get_analyzer, get_strategy_engine, get_portfolio, get_r
 
 
 def _resolve_active_provider_model(cfg: dict, user_id) -> tuple[str | None, str | None]:
-    """Best-effort lookup of the active LLM provider + model for the run.
+    """Thin wrapper over :func:`stock_trading_system.llm.router.resolve_active_model`.
 
-    Falls back to the global provider when the per-user override is unset.
+    Kept for backward compatibility — every other caller now imports the
+    canonical resolver directly.
     """
     try:
-        from stock_trading_system.llm.router import get_active_provider
-        provider = get_active_provider(cfg, user_id=user_id) if user_id else \
-            get_active_provider(cfg)
+        from stock_trading_system.llm.router import resolve_active_model
+        return resolve_active_model(cfg, user_id=user_id)
     except Exception as e:  # noqa: BLE001
-        logger.warning("active provider lookup failed: %s", e)
-        provider = None
-    if provider == "qwen":
-        model = (cfg.get("qwen") or {}).get("model")
-    elif provider == "gemini":
-        gem = cfg.get("gemini") or {}
-        model = gem.get("deep_think_model") or gem.get("model")
-    else:
-        model = (cfg.get("llm") or {}).get("model")
-    return provider, model
+        logger.warning("active provider/model lookup failed: %s", e)
+        return None, None
 
 
 def _hash_llm_config(cfg: dict) -> str:
@@ -160,6 +197,21 @@ def _serialize_final_state(final_state) -> str:
         # final_state may have non-serializable nested fields — fall back
         # to its string form so we at least leave a trace.
         return json.dumps({"repr": repr(final_state)}, ensure_ascii=False)
+
+
+def _serialize_rendering(rendering) -> str:
+    """JSON-encode the per-tab rendering dict for storage.
+
+    Best-effort: a missing / unserializable rendering returns ``""`` so the
+    storage layer writes an empty cell rather than crashing the whole task.
+    """
+    if not rendering:
+        return ""
+    try:
+        return json.dumps(rendering, ensure_ascii=False)
+    except (TypeError, ValueError) as e:
+        logger.warning("rendering_json serialization failed: %s", e)
+        return ""
 
 
 def _build_advice_with_snapshot(
@@ -950,7 +1002,12 @@ def make_paper_trade_worker():
 
 
 def make_paper_backfill_worker():
-    """V2: replay analysis_history → per-ticker sessions + daily stats."""
+    """V2: replay analysis_history → per-ticker sessions + daily stats.
+
+    ``params['user_id']`` scopes the run to one user's private advice.
+    Without it, only shared signal/trade_decision text drives the plan
+    (legacy advice_json on the shared row is intentionally ignored).
+    """
     def worker(params, progress_cb):
         from stock_trading_system.config import get_config
         from stock_trading_system.portfolio.database import PortfolioDatabase
@@ -961,7 +1018,13 @@ def make_paper_backfill_worker():
         db_path = cfg.get("portfolio", {}).get("db_path", "data/portfolio.db")
         store = PaperTradeStore(db_path)
         pdb = PortfolioDatabase(db_path)
-        result = backfill_all(store, pdb, cfg, progress_cb=progress_cb)
+        uid = params.get("user_id") if isinstance(params, dict) else None
+        try:
+            uid = int(uid) if uid is not None else None
+        except (TypeError, ValueError):
+            uid = None
+        result = backfill_all(store, pdb, cfg,
+                              progress_cb=progress_cb, user_id=uid)
         return result
     return worker
 

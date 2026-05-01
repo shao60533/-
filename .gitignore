@@ -29,6 +29,15 @@ build/
 .venv/
 venv/
 
+# NOTE: stock_trading_system/web/static/dist/ is INTENTIONALLY TRACKED
+# (overridden by stock_trading_system/web/.gitignore's !static/dist/
+# rule) because Railway deploys serve straight from the git checkout
+# and don't run `npm run build`. Each `vite build` rotates the asset
+# hashes — old hashes are deleted, new hashes added — so commits stay
+# diff-clean instead of accumulating cruft. If we ever move to a CI
+# build step on Railway, drop the !static/dist/ override and the dist
+# folder can join the standard `dist/` ignore above.
+
 # Pytest / test caches
 .pytest_cache/
 .coverage

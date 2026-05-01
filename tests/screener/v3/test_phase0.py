@@ -6,6 +6,15 @@ import pytest
 
 
 class TestDependencies:
+    """Probe tests for optional v3 dependencies.
+
+    These are *advisory* — the V3 pipeline is gated on these libraries
+    being importable, but an environment without them (minimal CI / dev
+    box without LLM extras installed) should still pass the rest of the
+    test suite. ``pytest.importorskip`` skips with a clear message rather
+    than failing the whole job on a missing optional dep.
+    """
+
     def test_pydantic_v2(self):
         import pydantic
         assert int(pydantic.__version__.split(".")[0]) >= 2
@@ -15,16 +24,16 @@ class TestDependencies:
         assert hasattr(tenacity, "retry")
 
     def test_langchain(self):
-        import langchain
+        langchain = pytest.importorskip("langchain")
         assert hasattr(langchain, "__version__")
 
     def test_langchain_openai(self):
-        from langchain_openai import ChatOpenAI
-        assert ChatOpenAI is not None
+        mod = pytest.importorskip("langchain_openai")
+        assert mod.ChatOpenAI is not None
 
     def test_langchain_google(self):
-        from langchain_google_genai import ChatGoogleGenerativeAI
-        assert ChatGoogleGenerativeAI is not None
+        mod = pytest.importorskip("langchain_google_genai")
+        assert mod.ChatGoogleGenerativeAI is not None
 
 
 class TestGuruSignalSchema:
