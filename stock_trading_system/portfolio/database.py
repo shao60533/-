@@ -26,6 +26,23 @@ def _coerce_float(v):
     return None
 
 
+VALID_DEPTHS = ("quick", "standard", "deep")
+
+
+def _normalize_depth(v) -> str:
+    """Coerce ``depth`` to one of {quick, standard, deep}; default standard.
+
+    Centralised so workers, save_analysis, and the API DTO all agree on
+    the canonical set. Anything we don't recognise falls back to
+    ``standard`` rather than failing loudly — depth is a UX hint, not a
+    safety-critical invariant.
+    """
+    if v is None:
+        return "standard"
+    s = str(v).strip().lower()
+    return s if s in VALID_DEPTHS else "standard"
+
+
 class PortfolioDatabase:
     """SQLite database for portfolio data."""
 
@@ -134,7 +151,12 @@ class PortfolioDatabase:
                     config_hash TEXT,
                     task_id TEXT,
                     duration_sec REAL,
-                    bookmarked INTEGER DEFAULT 0
+                    bookmarked INTEGER DEFAULT 0,
+                    -- v1.16: analysis depth UX hint (quick/standard/deep).
+                    -- Drives whether the worker enables iterative reasoning
+                    -- and is surfaced on the detail page so users see what
+                    -- they paid for.
+                    depth TEXT DEFAULT 'standard'
                 );
 
                 CREATE TABLE IF NOT EXISTS alert_history (
@@ -317,6 +339,10 @@ class PortfolioDatabase:
             ("task_id", "TEXT"),
             ("duration_sec", "REAL"),
             ("bookmarked", "INTEGER DEFAULT 0"),
+            # v1.16: depth (quick/standard/deep) — UX hint surfaced on
+            # the detail page. Old rows with NULL get treated as
+            # 'standard' by the API DTO via _normalize_depth.
+            ("depth", "TEXT DEFAULT 'standard'"),
         ]
         for name, typ in additions:
             if name not in cols:
@@ -324,36 +350,65 @@ class PortfolioDatabase:
                     conn.execute(f"ALTER TABLE analysis_history ADD COLUMN {name} {typ}")
                 except sqlite3.OperationalError as e:
                     logger.warning("Migration for column %s failed: %s", name, e)
-        # Backfill structured columns from any existing rows' advice_json.
+
+        # v1.16 SECURITY MIGRATION: pre-v1.14 rows had per-user advice
+        # baked into the shared row's advice_json + structured columns.
+        # We can't safely keep them around — any other reader would
+        # inherit the original creator's holdings-aware plan. Hoist to
+        # user_analysis_advice (keyed on the row's created_by) when we
+        # can, then null out the shared columns. If created_by is NULL
+        # we just clear the shared columns: the data is anonymous and
+        # cannot be attributed to a specific tenant.
         try:
             rows = conn.execute(
-                "SELECT id, advice_json FROM analysis_history WHERE action IS NULL AND advice_json IS NOT NULL AND advice_json != ''"
+                "SELECT id, created_by, advice_json FROM analysis_history "
+                "WHERE advice_json IS NOT NULL AND advice_json != ''"
             ).fetchall()
-            for r in rows:
+        except sqlite3.OperationalError:
+            rows = []
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        for r in rows:
+            try:
+                adv = json.loads(r["advice_json"])
+            except Exception:
+                adv = None
+            if isinstance(adv, dict) and r["created_by"] is not None:
                 try:
-                    adv = json.loads(r["advice_json"])
-                except Exception:
-                    continue
-                if not isinstance(adv, dict):
-                    continue
+                    conn.execute(
+                        """INSERT OR IGNORE INTO user_analysis_advice
+                           (user_id, analysis_id, holdings_context_snapshot,
+                            action, confidence, position_pct,
+                            entry_low, entry_high, stop_loss, take_profit,
+                            reasoning, risk_warning, created_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            int(r["created_by"]), int(r["id"]), "",
+                            adv.get("action"),
+                            adv.get("confidence"),
+                            _coerce_float(adv.get("suggested_position_pct")),
+                            _coerce_float(adv.get("entry_price_low")),
+                            _coerce_float(adv.get("entry_price_high")),
+                            _coerce_float(adv.get("stop_loss")),
+                            _coerce_float(adv.get("take_profit")),
+                            adv.get("reasoning") or "",
+                            adv.get("risk_warning") or "",
+                            ts,
+                        ),
+                    )
+                except sqlite3.OperationalError as e:
+                    logger.warning("hoist legacy advice → user_advice failed: %s", e)
+            try:
                 conn.execute(
                     """UPDATE analysis_history SET
-                         action = ?, confidence = ?, position_pct = ?,
-                         entry_low = ?, entry_high = ?, stop_loss = ?, take_profit = ?
+                         advice_json = '',
+                         action = NULL, confidence = NULL, position_pct = NULL,
+                         entry_low = NULL, entry_high = NULL,
+                         stop_loss = NULL, take_profit = NULL
                        WHERE id = ?""",
-                    (
-                        adv.get("action"),
-                        adv.get("confidence"),
-                        _coerce_float(adv.get("suggested_position_pct")),
-                        _coerce_float(adv.get("entry_price_low")),
-                        _coerce_float(adv.get("entry_price_high")),
-                        _coerce_float(adv.get("stop_loss")),
-                        _coerce_float(adv.get("take_profit")),
-                        r["id"],
-                    ),
+                    (int(r["id"]),),
                 )
-        except sqlite3.OperationalError as e:
-            logger.warning("Backfill of analysis_history failed: %s", e)
+            except sqlite3.OperationalError as e:
+                logger.warning("strip shared advice cols failed: %s", e)
 
     # ── Positions ────────────────────────────────────────────────────────
 
@@ -529,19 +584,26 @@ class PortfolioDatabase:
     # ── Analysis History ────────────────────────────────────────────────
 
     def save_analysis(self, data: dict) -> int:
-        """Insert an analysis record. Returns the new row id.
+        """Insert a *shared research* analysis row. Returns the new row id.
 
-        Structured fields (action/confidence/entry_low/high/stop_loss/take_profit/
-        position_pct) are extracted from `advice_json` automatically so downstream
-        history comparison queries don't need to re-parse JSON.
+        SECURITY contract (matches ``TaskStore._save_analysis_result``):
+        the per-user advice payload — action / entry / stop_loss /
+        take_profit / position_pct / confidence — is **never** persisted
+        on this shared row. Pre-v1.14 code used to extract those fields
+        from ``data["advice_json"]`` and write them to the shared
+        ``analysis_history`` columns, which silently leaked the original
+        creator's holdings-aware plan to every other user reading the
+        record. We now ignore any caller-supplied ``advice_json`` here:
+        ``advice_json`` is forced to ``""`` and the structured advice
+        columns are forced to NULL.
+
+        Callers that legitimately need to persist a user's advice should:
+            row_id = db.save_analysis(shared_payload)
+            db.save_user_advice(user_id, row_id, advice_dict)
+
+        That keeps the per-user payload in ``user_analysis_advice`` so
+        cross-user reads cannot inherit it.
         """
-        adv = {}
-        advice_raw = data.get("advice_json") or ""
-        if advice_raw:
-            try:
-                adv = json.loads(advice_raw) or {}
-            except Exception:
-                adv = {}
         steps_raw = data.get("steps_json") or ""
         with self._get_conn() as conn:
             cur = conn.execute(
@@ -551,9 +613,10 @@ class PortfolioDatabase:
                     risk_assessment, trade_decision, advice_json, created_at,
                     action, confidence, position_pct,
                     entry_low, entry_high, stop_loss, take_profit, model, steps_json,
-                    created_by, provider, config_hash, task_id, duration_sec, bookmarked)
+                    created_by, provider, config_hash, task_id, duration_sec, bookmarked,
+                    depth)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                           ?, ?, ?, ?, ?, ?)""",
+                           ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     data["ticker"], data["date"], data["signal"],
                     data.get("market_report", ""),
@@ -563,15 +626,15 @@ class PortfolioDatabase:
                     data.get("investment_debate", ""),
                     data.get("risk_assessment", ""),
                     data.get("trade_decision", ""),
-                    advice_raw,
+                    "",                          # advice_json — see docstring
                     data.get("created_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
-                    adv.get("action"),
-                    adv.get("confidence"),
-                    _coerce_float(adv.get("suggested_position_pct")),
-                    _coerce_float(adv.get("entry_price_low")),
-                    _coerce_float(adv.get("entry_price_high")),
-                    _coerce_float(adv.get("stop_loss")),
-                    _coerce_float(adv.get("take_profit")),
+                    None,                        # action
+                    None,                        # confidence
+                    None,                        # position_pct
+                    None,                        # entry_low
+                    None,                        # entry_high
+                    None,                        # stop_loss
+                    None,                        # take_profit
                     data.get("model"),
                     steps_raw,
                     data.get("created_by"),
@@ -580,6 +643,7 @@ class PortfolioDatabase:
                     data.get("task_id"),
                     _coerce_float(data.get("duration_sec")),
                     int(bool(data.get("bookmarked", 0))),
+                    _normalize_depth(data.get("depth")),
                 ),
             )
             return int(cur.lastrowid)
@@ -605,11 +669,18 @@ class PortfolioDatabase:
             ).fetchone()
             return dict(row) if row else None
 
-    # Columns returned by compare/timeline queries — keep heavy report text out
-    # so the comparison payload stays small and mobile-friendly.
+    # Columns returned by compare/timeline queries — keep heavy report
+    # text out so the payload stays small and mobile-friendly. The
+    # per-user advice columns (action/confidence/position_pct/entry_low/
+    # entry_high/stop_loss/take_profit) are intentionally omitted: those
+    # belong to one tenant only and live in user_analysis_advice. If a
+    # caller wants to layer the requesting user's advice onto the
+    # comparison view, they pull from get_user_advice() and merge in the
+    # API layer.
     _STRUCTURED_COLS = (
-        "id, ticker, date, signal, created_at, action, confidence, position_pct, "
-        "entry_low, entry_high, stop_loss, take_profit, model"
+        "id, ticker, date, signal, created_at, model, "
+        "provider, config_hash, task_id, duration_sec, depth, "
+        "created_by, bookmarked"
     )
 
     def get_analyses_by_ids(self, analysis_ids: list[int]) -> list[dict]:
@@ -707,6 +778,33 @@ class PortfolioDatabase:
                 (int(user_id), int(analysis_id)),
             ).fetchone()
             return dict(row) if row else None
+
+    def get_user_advice_bulk(self, user_id: int,
+                              analysis_ids: list[int]) -> dict[int, dict]:
+        """Return ``{analysis_id: advice_row}`` for every id this user
+        owns advice on. Lets compare/timeline DTOs layer the requesting
+        user's advice onto the shared rows in one query.
+        """
+        if not analysis_ids:
+            return {}
+        safe_ids = [int(i) for i in analysis_ids]
+        placeholders = ",".join("?" * len(safe_ids))
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM user_analysis_advice "
+                f"WHERE user_id = ? AND analysis_id IN ({placeholders})",
+                [int(user_id), *safe_ids],
+            ).fetchall()
+        return {int(r["analysis_id"]): dict(r) for r in rows}
+
+    def get_analysis_creator(self, analysis_id: int) -> int | None:
+        """Return ``created_by`` for this row (None when missing/legacy)."""
+        with self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT created_by FROM analysis_history WHERE id = ?",
+                (int(analysis_id),),
+            ).fetchone()
+            return int(row["created_by"]) if row and row["created_by"] is not None else None
 
     def set_bookmark(self, user_id: int, analysis_id: int, bookmarked: bool) -> bool:
         """Toggle a per-user bookmark; returns the new state."""

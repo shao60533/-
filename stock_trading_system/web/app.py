@@ -2340,6 +2340,9 @@ def create_app(config_path=None):
 
     @app.route("/api/paper/tickers/<ticker>")
     def api_paper_ticker_detail(ticker: str):
+        if g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
+        uid = g.user.id
         store = _get_paper_store()
         sess = store.find_session_by_ticker(ticker.upper())
         if not sess:
@@ -2370,21 +2373,33 @@ def create_app(config_path=None):
         latest = events[0] if events else None
         latest_advice = None
         latest_trade_decision = None
-        if latest:
+        if latest and latest.get("analysis_id"):
+            analysis_id = int(latest["analysis_id"])
             try:
-                from stock_trading_system.portfolio.database import PortfolioDatabase
-                db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
-                ana = PortfolioDatabase(db_path).get_analysis_by_id(latest["analysis_id"])
+                ana = _db.get_analysis_by_id(analysis_id)
                 if ana:
                     latest_trade_decision = ana.get("trade_decision") or ""
-                    if ana.get("advice_json"):
-                        import json as _j
-                        try:
-                            latest_advice = _j.loads(ana["advice_json"])
-                        except Exception:
-                            latest_advice = None
-            except Exception:
-                pass
+            except Exception as e:  # noqa: BLE001
+                logger.warning("ticker_detail: get_analysis_by_id failed: %s", e)
+            # latest_advice MUST come from this user's private row, never
+            # the legacy advice_json on the shared analysis_history row.
+            try:
+                user_advice_row = _db.get_user_advice(uid, analysis_id)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("ticker_detail: get_user_advice failed: %s", e)
+                user_advice_row = None
+            if user_advice_row:
+                latest_advice = {
+                    "action":                  user_advice_row.get("action"),
+                    "confidence":              user_advice_row.get("confidence"),
+                    "suggested_position_pct":  user_advice_row.get("position_pct"),
+                    "entry_price_low":         user_advice_row.get("entry_low"),
+                    "entry_price_high":        user_advice_row.get("entry_high"),
+                    "stop_loss":               user_advice_row.get("stop_loss"),
+                    "take_profit":             user_advice_row.get("take_profit"),
+                    "reasoning":               user_advice_row.get("reasoning") or "",
+                    "risk_warning":            user_advice_row.get("risk_warning") or "",
+                }
         return jsonify({
             "session": sess,
             "events": events,
@@ -2414,10 +2429,18 @@ def create_app(config_path=None):
 
     @app.route("/api/paper/backfill", methods=["POST"])
     def api_paper_backfill():
+        if g.user is None:
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
         try:
             tm = _get_task_manager()
-            uid = g.user.id if g.user else None
-            task = tm.submit("paper_backfill", {}, created_by=uid)
+            uid = g.user.id
+            # Pass user_id in BOTH params (so the worker scopes advice
+            # lookups to this user) and created_by (audit trail).
+            task = tm.submit(
+                "paper_backfill",
+                {"user_id": uid},
+                created_by=uid,
+            )
             return jsonify({"ok": True, "task_id": task["id"], "task": task})
         except Exception as e:
             logger.error("Backfill submit failed: %s", e)

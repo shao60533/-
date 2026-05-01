@@ -960,7 +960,12 @@ def make_paper_trade_worker():
 
 
 def make_paper_backfill_worker():
-    """V2: replay analysis_history → per-ticker sessions + daily stats."""
+    """V2: replay analysis_history → per-ticker sessions + daily stats.
+
+    ``params['user_id']`` scopes the run to one user's private advice.
+    Without it, only shared signal/trade_decision text drives the plan
+    (legacy advice_json on the shared row is intentionally ignored).
+    """
     def worker(params, progress_cb):
         from stock_trading_system.config import get_config
         from stock_trading_system.portfolio.database import PortfolioDatabase
@@ -971,7 +976,13 @@ def make_paper_backfill_worker():
         db_path = cfg.get("portfolio", {}).get("db_path", "data/portfolio.db")
         store = PaperTradeStore(db_path)
         pdb = PortfolioDatabase(db_path)
-        result = backfill_all(store, pdb, cfg, progress_cb=progress_cb)
+        uid = params.get("user_id") if isinstance(params, dict) else None
+        try:
+            uid = int(uid) if uid is not None else None
+        except (TypeError, ValueError):
+            uid = None
+        result = backfill_all(store, pdb, cfg,
+                              progress_cb=progress_cb, user_id=uid)
         return result
     return worker
 

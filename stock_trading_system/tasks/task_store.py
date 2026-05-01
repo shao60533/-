@@ -400,6 +400,10 @@ class TaskStore:
                     steps_json = json.dumps(steps, ensure_ascii=False)
                 except (TypeError, ValueError):
                     steps_json = None
+        # Late-bind to avoid a circular import at module load time —
+        # task_store is imported before portfolio.database in some boot
+        # sequences (CLI / migration tooling).
+        from stock_trading_system.portfolio.database import _normalize_depth
         with self._lock, self._conn() as conn:
             cur = conn.execute(
                 """INSERT INTO analysis_history
@@ -409,9 +413,10 @@ class TaskStore:
                     action, confidence, position_pct,
                     entry_low, entry_high, stop_loss, take_profit,
                     model, steps_json,
-                    created_by, provider, config_hash, task_id, duration_sec, bookmarked)
+                    created_by, provider, config_hash, task_id, duration_sec, bookmarked,
+                    depth)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                           ?, ?, ?, ?, ?, ?)""",
+                           ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     result.get("ticker", ""), result.get("date", ""),
                     result.get("signal", ""),
@@ -441,6 +446,7 @@ class TaskStore:
                     result.get("task_id") or task_id,
                     _safe_float(result.get("duration_sec")),
                     0,
+                    _normalize_depth(result.get("depth")),
                 ),
             )
             return f"analysis_history:{cur.lastrowid}"
@@ -531,7 +537,8 @@ class TaskStore:
                     config_hash TEXT,
                     task_id TEXT,
                     duration_sec REAL,
-                    bookmarked INTEGER DEFAULT 0
+                    bookmarked INTEGER DEFAULT 0,
+                    depth TEXT DEFAULT 'standard'
                 )
             """)
             cols = {r[1] for r in conn.execute(
@@ -547,6 +554,7 @@ class TaskStore:
                 ("config_hash", "TEXT"), ("task_id", "TEXT"),
                 ("duration_sec", "REAL"),
                 ("bookmarked", "INTEGER DEFAULT 0"),
+                ("depth", "TEXT DEFAULT 'standard'"),
             ]
             for name, typ in additions:
                 if name not in cols:
