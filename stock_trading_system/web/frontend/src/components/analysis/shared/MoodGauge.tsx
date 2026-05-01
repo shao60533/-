@@ -1,4 +1,5 @@
 import type { Mood } from "../types"
+import { toFiniteNumber } from "./defensive"
 
 const MOOD_LABEL: Record<Mood, string> = {
   extreme_fear: "极度恐惧",
@@ -8,10 +9,14 @@ const MOOD_LABEL: Record<Mood, string> = {
   extreme_greed: "极度贪婪",
 }
 
-/** Half-circle mood gauge, score in -100..100. Color shifts fear→greed. */
-export function MoodGauge({ mood, score }: { mood: Mood; score: number }) {
+/** Half-circle mood gauge, score in -100..100. Color shifts fear→greed.
+ *  ``score`` is sometimes a string from less-strict providers; we coerce
+ *  via ``toFiniteNumber`` and default to 0 (neutral) on bad input. */
+export function MoodGauge({ mood, score }: { mood: Mood | string | null | undefined; score: unknown }) {
+  const safeScore = toFiniteNumber(score) ?? 0
+  const safeMood = (typeof mood === "string" && mood in MOOD_LABEL ? mood : "neutral") as Mood
   // Map -100..100 → 0..180 degrees on a half circle.
-  const clamped = Math.max(-100, Math.min(100, score))
+  const clamped = Math.max(-100, Math.min(100, safeScore))
   const angle = ((clamped + 100) / 200) * 180
   // Color: red (fear) → amber → emerald (greed)
   const color =
@@ -32,8 +37,8 @@ export function MoodGauge({ mood, score }: { mood: Mood; score: number }) {
         <circle cx="60" cy="60" r="3" fill={color} />
       </svg>
       <div className="text-xs text-muted-foreground">
-        <span className="font-semibold" style={{ color }}>{MOOD_LABEL[mood]}</span>
-        <span className="font-mono ml-2">{score > 0 ? `+${score}` : score}</span>
+        <span className="font-semibold" style={{ color }}>{MOOD_LABEL[safeMood]}</span>
+        <span className="font-mono ml-2">{safeScore > 0 ? `+${safeScore}` : safeScore}</span>
       </div>
     </div>
   )

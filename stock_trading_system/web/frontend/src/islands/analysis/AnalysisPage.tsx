@@ -8,6 +8,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { PipelineDAG } from "@/components/shared/PipelineDAG"
+import { ErrorBoundary } from "@/components/shared/ErrorBoundary"
 import type { TVChartState } from "@/components/shared/TVChart"
 import { apiGet, apiPost } from "@/lib/api"
 // react-markdown + remark-gfm + rehype-sanitize together are ~70kB
@@ -126,6 +127,22 @@ function signalVariant(signal: string): "buy" | "sell" | "hold" | "default" {
 function getIdFromUrl(): string | null {
   const match = window.location.pathname.match(/\/analysis\/([^/]+)/)
   return match?.[1] ?? null
+}
+
+/** Heuristic: does this text look like a Python dict repr or raw JSON
+ *  blob that escaped the v1.20 normalizer (legacy rows or pre-fix data)?
+ *  Triggers a short banner on the raw-output panel so the user knows the
+ *  structured cards above are the canonical view. */
+function looksLikeRawDict(content: string): boolean {
+  const t = content.trim()
+  if (!t) return false
+  if (t.length > 8000) return false  // skip Markdown-with-fenced-JSON noise
+  // Python dict repr signature: starts with `{'…':` (single-quote keys)
+  // or `{"…":` and never sees a Markdown heading or paragraph.
+  const startsLikeRepr = /^\{['"][\w_]+['"]\s*:/.test(t)
+  if (!startsLikeRepr) return false
+  const hasMarkdown = /(^|\n)#{1,6}\s|\n\n[一-鿿]/.test(t)
+  return !hasMarkdown
 }
 
 /** UUID = task ID (running state); pure digits or "analysis_history:N" = completed history ID */
@@ -918,20 +935,49 @@ function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
               const hasStruct = !!struct
               return (
                 <TabsContent key={tab.key} value={tab.key} className="mt-4 space-y-4">
+                  {/* Per-tab boundary: a single malformed structured card
+                      should NOT take down the whole detail page (the
+                      production /analysis/17 white-screen). On error we
+                      hide just this tab's structured card and let the
+                      Markdown ``<details>`` below render the same
+                      content from the analyst report text. */}
                   {hasStruct ? (
-                    <Suspense fallback={<Skeleton className="h-32 w-full" />}>
-                      <AnalysisCards tabKey={tab.key} data={struct} />
-                    </Suspense>
+                    <ErrorBoundary
+                      resetKey={`${detail.id}:${tab.key}`}
+                      fallback={
+                        <div className="rounded border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs text-amber-300">
+                          结构化卡片渲染失败，已降级显示完整论述。
+                        </div>
+                      }
+                    >
+                      <Suspense fallback={<Skeleton className="h-32 w-full" />}>
+                        <AnalysisCards tabKey={tab.key} data={struct} />
+                      </Suspense>
+                    </ErrorBoundary>
                   ) : null}
                   {content ? (
                     <details className="rounded border border-border/50">
                       <summary className="cursor-pointer px-4 py-2 text-xs text-muted-foreground hover:bg-muted/30">
-                        {hasStruct ? "完整论述（点击展开）" : "完整论述"}
+                        {hasStruct
+                          ? "原始模型输出（点击展开 · 仅供调试参考）"
+                          : "原始模型输出"}
                       </summary>
                       <div className="prose prose-invert prose-sm max-w-none px-4 py-3 max-h-[600px] overflow-y-auto text-[var(--color-text-secondary)]">
-                        <Suspense fallback={<Skeleton className="h-24 w-full" />}>
-                          <MarkdownBody>{content}</MarkdownBody>
-                        </Suspense>
+                        {looksLikeRawDict(content) && (
+                          <div className="mb-3 rounded border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs text-amber-300 not-prose">
+                            原始输出格式异常（疑似 Python dict / JSON），已优先展示结构化摘要。
+                          </div>
+                        )}
+                        <ErrorBoundary
+                          resetKey={`${detail.id}:${tab.key}:md`}
+                          fallback={
+                            <pre className="text-xs whitespace-pre-wrap">{content}</pre>
+                          }
+                        >
+                          <Suspense fallback={<Skeleton className="h-24 w-full" />}>
+                            <MarkdownBody>{content}</MarkdownBody>
+                          </Suspense>
+                        </ErrorBoundary>
                       </div>
                     </details>
                   ) : (!hasStruct && (

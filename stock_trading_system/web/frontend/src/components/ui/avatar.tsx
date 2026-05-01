@@ -2,7 +2,10 @@ import * as React from "react"
 import { cn } from "@/lib/utils"
 
 interface AvatarProps extends React.HTMLAttributes<HTMLDivElement> {
-  initials: string
+  // Optional so a backend payload that omits initials renders as "??"
+  // instead of crashing. Callers can still pass it explicitly; only the
+  // safety net changed.
+  initials?: string
   color?: string
   size?: "sm" | "md" | "lg"
 }
@@ -13,6 +16,7 @@ export function Avatar({ initials, color, size = "md", className, ...props }: Av
     md: "h-10 w-10 text-sm",
     lg: "h-12 w-12 text-base",
   }
+  const safe = (initials ?? "").trim().slice(0, 2).toUpperCase() || "??"
   return (
     <div
       className={cn(
@@ -23,7 +27,7 @@ export function Avatar({ initials, color, size = "md", className, ...props }: Av
       style={{ background: color ?? "linear-gradient(135deg, oklch(56% 0.12 255), oklch(40% 0.1 250))" }}
       {...props}
     >
-      {initials.slice(0, 2).toUpperCase()}
+      {safe}
     </div>
   )
 }

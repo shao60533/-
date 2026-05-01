@@ -34,7 +34,12 @@ def test_detail_returns_rendering_dict_not_raw_json(app_client):
     body = alice.get(f"/api/history/{aid}").get_json()
     assert isinstance(body["rendering"], dict)
     assert body["rendering"]["summary"]["rating"] == "Buy"
-    assert body["rendering"]["Market"] is None
+    # v1.21 normalize contract: a non-dict card (e.g. ``Market: None``)
+    # is dropped from the response so the React island falls back to
+    # the markdown body for that tab. Old behaviour was to pass the
+    # null through, but that turned into ``data.trend`` access on
+    # ``null`` in the card and crashed the React root.
+    assert "Market" not in body["rendering"]
     # Storage detail never escapes to the API surface.
     assert "rendering_json" not in body
 

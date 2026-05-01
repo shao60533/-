@@ -15,7 +15,14 @@ interface AnalysisRecord {
   created_at: string
   summary?: string
   confidence?: number
+  // ``analysts`` is intentionally NOT rendered to users — it's the raw
+  // multi-agent dict and only useful in debug mode (?debug=1). The HistoryPage
+  // body shows the Chinese summary, signal, model info, and a deep link
+  // into the detail page where structured cards do the heavy lifting.
   analysts?: Record<string, unknown>
+  provider?: string | null
+  model?: string | null
+  duration_sec?: number | null
 }
 
 function signalVariant(signal: string): "buy" | "sell" | "hold" | "default" {
@@ -26,12 +33,20 @@ function signalVariant(signal: string): "buy" | "sell" | "hold" | "default" {
   return "default"
 }
 
+/** Debug mode flag — surface the raw analyst dict only when the user
+ *  visits ``/history?debug=1``. The default UX never sees the JSON blob. */
+function isDebugMode(): boolean {
+  if (typeof window === "undefined") return false
+  return new URLSearchParams(window.location.search).get("debug") === "1"
+}
+
 export function HistoryPage() {
   const [records, setRecords] = useState<AnalysisRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [search, setSearch] = useState("")
   const [expandedId, setExpandedId] = useState<string | null>(null)
+  const debug = isDebugMode()
 
   useEffect(() => {
     apiGet<AnalysisRecord[] | { records: AnalysisRecord[] }>("/api/history")
@@ -134,12 +149,30 @@ export function HistoryPage() {
 
                     {isExpanded && (
                       <div className="pl-11 pr-2 pb-4 space-y-2">
-                        {r.summary && (
+                        {r.summary ? (
                           <p className="text-sm text-[var(--color-text-secondary)] leading-relaxed">
                             {r.summary}
                           </p>
+                        ) : (
+                          <p className="text-xs text-muted-foreground italic">
+                            暂无摘要，请点击下方查看完整分析。
+                          </p>
                         )}
-                        {r.analysts && (
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                          {r.provider && (
+                            <span>
+                              模型：{r.provider}
+                              {r.model ? ` / ${r.model}` : ""}
+                            </span>
+                          )}
+                          {r.duration_sec != null && (
+                            <span>耗时：{Number(r.duration_sec).toFixed(1)}s</span>
+                          )}
+                          {r.created_at && <span>创建于：{r.created_at}</span>}
+                        </div>
+                        {/* analysts JSON only surfaces in /history?debug=1 — the
+                            normal user view never sees raw dicts. */}
+                        {debug && r.analysts && (
                           <pre className="text-xs bg-[var(--color-bg-secondary)] rounded p-3 overflow-x-auto max-h-60">
                             {JSON.stringify(r.analysts, null, 2)}
                           </pre>

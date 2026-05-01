@@ -1,15 +1,24 @@
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import type { MarketCardData, Trend } from "./types"
+import type {
+  MarketCardData, Trend, TechnicalIndicator, PriceLevel,
+} from "./types"
+import {
+  safeArray, fmtNumber, nonEmptyStr, toFiniteNumber,
+} from "./shared/defensive"
 
-const TREND_TONE: Record<Trend, string> = {
+const TREND_TONE: Record<string, string> = {
   bullish: "bg-emerald-600/20 text-emerald-400 border-emerald-500/40",
   bearish: "bg-red-600/20 text-red-400 border-red-500/40",
   neutral: "bg-zinc-600/20 text-zinc-300 border-zinc-500/30",
   range:   "bg-amber-600/20 text-amber-300 border-amber-500/40",
 }
-const TREND_LABEL: Record<Trend, string> = {
+const TREND_LABEL: Record<string, string> = {
   bullish: "看涨", bearish: "看跌", neutral: "中性", range: "震荡",
+}
+
+function safeTrend(t: unknown): Trend {
+  return typeof t === "string" && t in TREND_LABEL ? (t as Trend) : "neutral"
 }
 
 const SIGNAL_DOT: Record<string, string> = {
@@ -27,35 +36,48 @@ const STRENGTH_TONE: Record<string, string> = {
   weak:   "border-zinc-700/40",
 }
 
-export function MarketCard({ data }: { data: MarketCardData }) {
+export function MarketCard({ data }: { data: MarketCardData | null | undefined }) {
+  if (!data || typeof data !== "object") return null
+  const trend = safeTrend(data.trend)
+  const indicators = safeArray<TechnicalIndicator>(data.indicators)
+  // ``support_resistance``: drop entries whose price isn't a real number
+  // before sorting — the production payload had ``price: "—"`` for two
+  // levels, which crashed the descending sort with NaN comparisons.
+  const levels = safeArray<PriceLevel>(data.support_resistance)
+    .map(p => ({ ...p, _num: toFiniteNumber((p as PriceLevel)?.price) }))
+    .filter(p => p._num !== null) as Array<PriceLevel & { _num: number }>
+  levels.sort((a, b) => b._num - a._num)
+  const patterns = safeArray<string>(data.patterns).filter(nonEmptyStr)
   return (
     <div className="space-y-4">
       <Card>
         <CardContent className="pt-4 space-y-3">
           <div className="flex items-center gap-2">
             <span className="text-xs text-muted-foreground uppercase tracking-wider">趋势</span>
-            <span className={`inline-flex items-center px-2 py-0.5 rounded border text-xs font-bold ${TREND_TONE[data.trend]}`}>
-              {TREND_LABEL[data.trend]}
+            <span className={`inline-flex items-center px-2 py-0.5 rounded border text-xs font-bold ${TREND_TONE[trend]}`}>
+              {TREND_LABEL[trend]}
             </span>
           </div>
-          {data.summary && (
+          {nonEmptyStr(data.summary) && (
             <p className="text-sm leading-relaxed">{data.summary}</p>
           )}
         </CardContent>
       </Card>
 
-      {data.indicators && data.indicators.length > 0 && (
+      {indicators.length > 0 && (
         <Card>
           <CardHeader className="pb-2"><CardTitle className="text-sm">技术指标</CardTitle></CardHeader>
           <CardContent>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-              {data.indicators.map((it, i) => (
+              {indicators.map((it, i) => (
                 <div key={i} className="rounded border border-border/40 bg-card/40 p-2">
                   <div className="flex items-center gap-1.5">
-                    <span className={`inline-block w-2 h-2 rounded-full ${SIGNAL_DOT[it.signal] ?? "bg-zinc-500"}`} />
-                    <span className="text-xs text-muted-foreground">{it.name}</span>
+                    <span className={`inline-block w-2 h-2 rounded-full ${SIGNAL_DOT[it?.signal as string] ?? "bg-zinc-500"}`} />
+                    <span className="text-xs text-muted-foreground">{it?.name ?? ""}</span>
                   </div>
-                  <div className="font-mono text-sm mt-0.5">{it.value}</div>
+                  <div className="font-mono text-sm mt-0.5">
+                    {it?.value !== undefined && it?.value !== null ? String(it.value) : "—"}
+                  </div>
                 </div>
               ))}
             </div>
@@ -63,34 +85,36 @@ export function MarketCard({ data }: { data: MarketCardData }) {
         </Card>
       )}
 
-      {data.support_resistance && data.support_resistance.length > 0 && (
+      {levels.length > 0 && (
         <Card>
           <CardHeader className="pb-2"><CardTitle className="text-sm">关键价位</CardTitle></CardHeader>
           <CardContent>
             <div className="space-y-1.5">
-              {data.support_resistance
-                .slice()
-                .sort((a, b) => b.price - a.price)
-                .map((p, i) => (
-                  <div key={i} className={`flex items-center gap-3 rounded border-l-4 ${STRENGTH_TONE[p.strength ?? "medium"]} px-3 py-1.5 bg-card/30`}>
-                    <span className="font-mono text-sm">${p.price.toFixed(2)}</span>
-                    <Badge variant="muted" className="text-[10px]">
-                      {KIND_LABEL[p.kind] ?? p.kind}
-                    </Badge>
-                    {p.note && <span className="text-xs text-muted-foreground">{p.note}</span>}
-                  </div>
-                ))}
+              {levels.map((p, i) => (
+                <div
+                  key={i}
+                  className={`flex items-center gap-3 rounded border-l-4 ${STRENGTH_TONE[p.strength ?? "medium"] ?? STRENGTH_TONE.medium} px-3 py-1.5 bg-card/30`}
+                >
+                  <span className="font-mono text-sm">${fmtNumber(p._num, 2)}</span>
+                  <Badge variant="muted" className="text-[10px]">
+                    {KIND_LABEL[p.kind ?? ""] ?? (p.kind ?? "—")}
+                  </Badge>
+                  {nonEmptyStr(p.note) && (
+                    <span className="text-xs text-muted-foreground">{p.note}</span>
+                  )}
+                </div>
+              ))}
             </div>
           </CardContent>
         </Card>
       )}
 
-      {data.patterns && data.patterns.length > 0 && (
+      {patterns.length > 0 && (
         <Card>
           <CardHeader className="pb-2"><CardTitle className="text-sm">形态</CardTitle></CardHeader>
           <CardContent>
             <div className="flex flex-wrap gap-2">
-              {data.patterns.map((p, i) => (
+              {patterns.map((p, i) => (
                 <Badge key={i} variant="outline">{p}</Badge>
               ))}
             </div>

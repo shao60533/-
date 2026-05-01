@@ -1,12 +1,14 @@
 import { Star } from "lucide-react"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import type { FundamentalsCardData } from "./types"
+import { toFiniteNumber, nonEmptyStr } from "./shared/defensive"
 
-interface CellSpec { label: string; value: number | null | undefined; unit?: string }
+interface CellSpec { label: string; value: unknown; unit?: string }
 
-function fmt(v: number | null | undefined, unit = ""): string {
-  if (v === null || v === undefined || Number.isNaN(v)) return "—"
-  const rounded = Math.abs(v) >= 100 ? v.toFixed(0) : v.toFixed(2)
+function fmt(v: unknown, unit = ""): string {
+  const n = toFiniteNumber(v)
+  if (n === null) return "—"
+  const rounded = Math.abs(n) >= 100 ? n.toFixed(0) : n.toFixed(2)
   return unit ? `${rounded}${unit}` : rounded
 }
 
@@ -26,12 +28,14 @@ function MetricBlock({ title, items }: { title: string; items: CellSpec[] }) {
   )
 }
 
-export function FundamentalsCard({ data }: { data: FundamentalsCardData }) {
-  const v = data.valuation || {}
-  const g = data.growth || {}
-  const p = data.profitability || {}
-  const b = data.balance_sheet || {}
-  const score = Math.max(1, Math.min(5, data.quality_score ?? 3))
+export function FundamentalsCard({ data }: { data: FundamentalsCardData | null | undefined }) {
+  if (!data || typeof data !== "object") return null
+  const v = (data.valuation && typeof data.valuation === "object") ? data.valuation : {}
+  const g = (data.growth && typeof data.growth === "object") ? data.growth : {}
+  const p = (data.profitability && typeof data.profitability === "object") ? data.profitability : {}
+  const b = (data.balance_sheet && typeof data.balance_sheet === "object") ? data.balance_sheet : {}
+  const qsRaw = toFiniteNumber(data.quality_score)
+  const score = qsRaw === null ? 3 : Math.max(1, Math.min(5, Math.round(qsRaw)))
   return (
     <div className="space-y-4">
       <Card>
@@ -43,7 +47,7 @@ export function FundamentalsCard({ data }: { data: FundamentalsCardData }) {
                     className={`h-4 w-4 ${i <= score ? "fill-amber-400 text-amber-400" : "text-zinc-600"}`} />
             ))}
           </div>
-          {data.summary && <p className="text-sm flex-1 min-w-[200px]">{data.summary}</p>}
+          {nonEmptyStr(data.summary) && <p className="text-sm flex-1 min-w-[200px]">{data.summary}</p>}
         </CardContent>
       </Card>
 
@@ -73,7 +77,7 @@ export function FundamentalsCard({ data }: { data: FundamentalsCardData }) {
         ]} />
       </div>
 
-      {v.vs_industry && (
+      {nonEmptyStr(v.vs_industry) && (
         <div className="text-xs text-muted-foreground">
           <span className="font-semibold mr-1">行业对比:</span>{v.vs_industry}
         </div>

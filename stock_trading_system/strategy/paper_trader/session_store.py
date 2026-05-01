@@ -813,6 +813,8 @@ def _v2_methods():
 
     def list_ticker_sessions_summary(
         self, mode: str | None = None, *, spark_window: int = 30,
+        user_id: int | None = None,
+        group_by_ticker: bool = True,
     ) -> list[dict]:
         """One-shot aggregator for the ``/api/paper/tickers`` list view.
 
@@ -853,14 +855,21 @@ def _v2_methods():
             FROM paper_trade_sessions s
             WHERE s.ticker IS NOT NULL AND s.is_system = 0
         """
+        params: list = []
         if mode == "forward":
             sql += " AND (s.replay_mode IS NULL OR s.replay_mode = '')"
         elif mode == "replay":
             sql += " AND s.replay_mode IS NOT NULL AND s.replay_mode != ''"
+        if user_id is not None:
+            # Strict tenant scoping. Legacy NULL-user rows are NOT
+            # surfaced under a logged-in user — they predate v1.20's
+            # user_id column and would leak cross-user data.
+            sql += " AND s.user_id = ?"
+            params.append(int(user_id))
         sql += " ORDER BY s.created_at DESC"
 
         with self._conn() as conn:
-            rows = conn.execute(sql).fetchall()
+            rows = conn.execute(sql, params).fetchall()
             sessions = [(_row_to_session(r), r) for r in rows]
             sids = [int(r["id"]) for _, r in sessions]
             if not sids:
@@ -922,7 +931,7 @@ def _v2_methods():
                     ).fetchall()
                     spark_by_sid[sid] = [float(r["total_value"]) for r in reversed(rows_s)]
 
-        out: list[dict] = []
+        per_session: list[dict] = []
         for d, r in sessions:
             sid = int(d["id"])
             for k in ("active_plan_count", "pending_orders_count",
@@ -932,8 +941,126 @@ def _v2_methods():
             d["last_daily_stat"] = last_by_sid.get(sid)
             d["latest_event"] = evt_by_sid.get(sid)
             d["sparkline"] = spark_by_sid.get(sid, [])
-            out.append(d)
-        return out
+            per_session.append(d)
+
+        if not group_by_ticker:
+            return per_session
+
+        # ── Group siblings by (user_id, ticker) ─────────────────────────
+        # Legacy data has multiple sessions per (user, ticker) because
+        # the unique index on ``paper_trade_sessions(ticker, user_id)``
+        # only landed in v1.20. New writes always reuse one session via
+        # ``find_session_by_ticker``, but old duplicates would surface as
+        # separate cards on /paper-trade. Aggregate here so the list view
+        # shows one card per ticker; siblings stay individually queryable
+        # at the detail layer (``aggregate_ticker_session_ids``).
+        groups: dict[tuple, list[dict]] = {}
+        order: list[tuple] = []
+        for d in per_session:
+            key = (d.get("user_id"), (d.get("ticker") or "").upper())
+            if key not in groups:
+                groups[key] = []
+                order.append(key)
+            groups[key].append(d)
+
+        merged: list[dict] = []
+        for key in order:
+            siblings = groups[key]
+            # Canonical session = the EARLIEST (lowest id) so start_date
+            # reflects when the user first tracked the ticker. updated
+            # state (latest event / latest daily stat / latest plan)
+            # comes from the highest-id sibling so the card surfaces
+            # the most recent activity even if the canonical row is dormant.
+            canonical = min(siblings, key=lambda s: int(s["id"]))
+            latest    = max(siblings, key=lambda s: int(s["id"]))
+            sib_ids = sorted(int(s["id"]) for s in siblings)
+
+            # Pick the sibling whose latest_event has the most recent
+            # ``event_date``. Tie-break on event id so the result is
+            # deterministic across runs.
+            def _evt_key(s: dict) -> tuple:
+                e = s.get("latest_event") or {}
+                return (str(e.get("event_date") or ""), int(e.get("id") or 0))
+            evt_sib = max(siblings, key=_evt_key)
+            # Same idea for the most recent daily stat.
+            def _ds_key(s: dict) -> tuple:
+                ds = s.get("last_daily_stat") or {}
+                return (str(ds.get("date") or ""),)
+            ds_sib = max(siblings, key=_ds_key)
+            # Sparkline: take from the sibling with the most data points.
+            spark_sib = max(siblings, key=lambda s: len(s.get("sparkline") or []))
+
+            def _maybe_int(v):
+                try:
+                    return int(v or 0)
+                except (TypeError, ValueError):
+                    return 0
+
+            agg = dict(canonical)
+            # Identity stays canonical; ``latest_session_id`` lets the
+            # detail page route to the most recent session if a deep-link
+            # carries the old id.
+            agg["session_ids"] = sib_ids
+            agg["latest_session_id"] = int(latest["id"])
+            # Sum counters across all siblings. ``open_position_shares``
+            # uses the latest sibling's value (positions don't add).
+            agg["active_plan_count"] = sum(_maybe_int(s.get("active_plan_count")) for s in siblings)
+            agg["pending_orders_count"] = sum(_maybe_int(s.get("pending_orders_count")) for s in siblings)
+            agg["triggered_orders_count"] = sum(_maybe_int(s.get("triggered_orders_count")) for s in siblings)
+            agg["num_events"] = sum(_maybe_int(s.get("num_events")) for s in siblings)
+            ds_latest = ds_sib.get("last_daily_stat")
+            agg["open_position_shares"] = (
+                ds_latest.get("position_shares") if ds_latest is not None
+                else canonical.get("open_position_shares")
+            )
+            agg["last_daily_stat"] = ds_latest
+            agg["latest_event"] = evt_sib.get("latest_event")
+            agg["last_skip_reason"] = (
+                evt_sib.get("last_skip_reason")
+                or canonical.get("last_skip_reason")
+            )
+            agg["sparkline"] = spark_sib.get("sparkline") or []
+            # Status union: any sibling running → group running; else
+            # whatever the latest sibling says (typically completed).
+            statuses = [s.get("status") for s in siblings]
+            if any(s == "running" for s in statuses) \
+               or agg["active_plan_count"] > 0 \
+               or agg["pending_orders_count"] > 0:
+                agg["status"] = "running"
+            elif any(s == "failed" for s in statuses):
+                agg["status"] = "failed"
+            else:
+                agg["status"] = latest.get("status") or canonical.get("status")
+            # ``last_eod_date`` from whichever sibling EOD'd most recently.
+            eods = [s.get("last_eod_date") for s in siblings if s.get("last_eod_date")]
+            if eods:
+                agg["last_eod_date"] = max(eods)
+            merged.append(agg)
+        return merged
+
+    def aggregate_ticker_session_ids(
+        self, ticker: str, user_id: int | None = None,
+    ) -> list[int]:
+        """Return all session ids for ``(user_id, ticker)`` ordered earliest first.
+
+        Used by the detail endpoint to merge events / plans / orders /
+        trades across legacy duplicate sessions for the same ticker.
+        With ``user_id=None`` the lookup is unscoped (legacy display
+        compatibility) — production should always pass the requesting
+        user.
+        """
+        sql = (
+            "SELECT id FROM paper_trade_sessions "
+            "WHERE ticker = ? AND is_system = 0"
+        )
+        params: list = [ticker.upper()]
+        if user_id is not None:
+            sql += " AND user_id = ?"
+            params.append(int(user_id))
+        sql += " ORDER BY id ASC"
+        with self._conn() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [int(r["id"]) for r in rows]
 
     def update_session_last_eod(self, session_id: int, date: str) -> None:
         with self._lock, self._conn() as conn:
@@ -1266,6 +1393,7 @@ def _v2_methods():
     PaperTradeStore.create_ticker_session = create_ticker_session
     PaperTradeStore.list_ticker_sessions = list_ticker_sessions
     PaperTradeStore.list_ticker_sessions_summary = list_ticker_sessions_summary
+    PaperTradeStore.aggregate_ticker_session_ids = aggregate_ticker_session_ids
     PaperTradeStore.update_session_last_eod = update_session_last_eod
     PaperTradeStore.insert_strategy_event = insert_strategy_event
     PaperTradeStore.list_strategy_events = list_strategy_events

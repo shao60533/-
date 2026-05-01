@@ -47,9 +47,33 @@ from stock_trading_system.agents.rendering.schemas import (
     RiskCard,
     SentimentCard,
 )
+from stock_trading_system.agents.rendering.state_normalizer import (
+    normalize_state_to_text,
+)
 from stock_trading_system.utils import get_logger
 
 logger = get_logger("agents.rendering.extractor")
+
+
+# Language contract for every structured-output prompt below.
+# Without this, the model echoes the analyst-report English (TradingAgents
+# emits English even with output_language=Chinese for some sub-agents) and
+# the user-facing card surfaces raw English plus enum keys like ``bear`` /
+# ``SELL`` / ``high``. Schema enums (Literal) MUST stay English so the
+# Pydantic validator accepts them; everything user-visible (claims,
+# summaries, headlines, evidence …) MUST be Simplified Chinese.
+_LANG_CLAUSE = (
+    "所有面向用户展示的字段必须使用简体中文输出，包括 headline / detail / "
+    "summary / claim / evidence / verdict / action_direction / "
+    "one_line_summary / one_line_takeaway / neutral_synthesis / "
+    "key_disagreement / vs_industry / mitigation 等。股票代码、公司英文名、"
+    "指标缩写（PE / PB / ROE / RSI / MACD 等）可保留英文。"
+    "schema 中的枚举字段（rating / confidence / trend / mood / signal / "
+    "polarity / kind / sentiment / impact / verdict / final_action / "
+    "conviction / time_horizon / weight / probability / severity / "
+    "strength）必须用 schema 规定的英文枚举值（如 bullish / Buy / high），"
+    "前端会做中文映射。禁止输出 JSON 字符串、Python dict repr 或模型内部键名。"
+)
 
 
 _SYS_GENERIC = (
@@ -60,21 +84,25 @@ _SYS_GENERIC = (
     "1–3 concise sentences; claim 1 sentence; evidence 1–2 sentences. "
     "Do NOT include personal-portfolio advice (sizing percentages tied to "
     "user holdings, personal entry timing). Technical objective price "
-    "levels (SMA, support, resistance) are allowed."
+    "levels (SMA, support, resistance) are allowed.\n\n"
+    + _LANG_CLAUSE
 )
 
 _SYS_NEWS = (
     "Enrich the provided REAL headlines: keep title/source/date AS-IS "
     "and only fill sentiment + impact based on the LLM context. "
     "Do NOT invent headlines. Add catalysts derived from the context. "
-    "Write a 1-3 sentence summary."
+    "Write a 1-3 sentence summary.\n\n"
+    + _LANG_CLAUSE
+    + " 标题（title / source）保持原始语言不翻译，summary 与 catalysts.summary 用中文。"
 )
 
 _SYS_FUNDAMENTALS = (
     "Use the provided REAL facts AS-IS. Do NOT change pe / pb / ps / peg "
     "/ ev_ebitda / growth / profitability / balance_sheet numbers. "
     "Only write valuation.vs_industry (1 sentence comparing to sector), "
-    "quality_score (1-5 integer), and summary (1-3 sentences)."
+    "quality_score (1-5 integer), and summary (1-3 sentences).\n\n"
+    + _LANG_CLAUSE
 )
 
 
@@ -90,6 +118,25 @@ class RenderingExtractor:
         self._timeout = per_tab_timeout
 
     def extract(self, result, ticker: str = "") -> dict[str, dict | None]:
+        # ``investment_debate`` / ``risk_assessment`` / ``trade_decision``
+        # arrive as TradingAgents state dicts. ``str(d)`` would produce a
+        # Python repr (``"{'judge_decision': '...'}"``) that the LLM has to
+        # un-parse into prose; we normalise to Chinese-headed Markdown
+        # instead so the prompt context, the structured-output input, and
+        # the markdown fallback in the UI all use the same clean text.
+        debate_text = normalize_state_to_text(
+            getattr(result, "investment_debate", None),
+            kind="investment_debate",
+        )
+        risk_text = normalize_state_to_text(
+            getattr(result, "risk_assessment", None),
+            kind="risk_debate",
+        )
+        decision_text = normalize_state_to_text(
+            getattr(result, "trade_decision", None),
+            kind="trade_decision",
+        )
+
         tasks: list[tuple[str, Any, tuple]] = [
             ("summary",            self._extract_overview,     (result,)),
             ("Market",             self._extract_generic,
@@ -99,14 +146,11 @@ class RenderingExtractor:
             ("News",               self._extract_news,         (result, ticker)),
             ("Fundamentals",       self._extract_fundamentals, (result, ticker)),
             ("Investment Debate",  self._extract_generic,
-                ("Investment Debate", DebateCard,
-                 str(getattr(result, "investment_debate", "") or ""))),
+                ("Investment Debate", DebateCard, debate_text)),
             ("Risk Assessment",    self._extract_generic,
-                ("Risk Assessment", RiskCard,
-                 str(getattr(result, "risk_assessment", "") or ""))),
+                ("Risk Assessment", RiskCard, risk_text)),
             ("Decision",           self._extract_generic,
-                ("Decision", DecisionCard,
-                 str(getattr(result, "trade_decision", "") or ""))),
+                ("Decision", DecisionCard, decision_text)),
         ]
         out: dict[str, dict | None] = {}
         with ThreadPoolExecutor(max_workers=8,
@@ -140,14 +184,26 @@ class RenderingExtractor:
         return obj.model_dump(exclude_none=False, mode="json")
 
     def _extract_overview(self, result):
+        debate_text = normalize_state_to_text(
+            getattr(result, "investment_debate", None),
+            kind="investment_debate",
+        )
+        risk_text = normalize_state_to_text(
+            getattr(result, "risk_assessment", None),
+            kind="risk_debate",
+        )
+        decision_text = normalize_state_to_text(
+            getattr(result, "trade_decision", None),
+            kind="trade_decision",
+        )
         merged = "\n\n".join([
             f"## Market\n{getattr(result, 'market_report', '') or ''}",
             f"## Sentiment\n{getattr(result, 'sentiment_report', '') or ''}",
             f"## News\n{getattr(result, 'news_report', '') or ''}",
             f"## Fundamentals\n{getattr(result, 'fundamentals_report', '') or ''}",
-            f"## Debate\n{getattr(result, 'investment_debate', '') or ''}",
-            f"## Risk\n{getattr(result, 'risk_assessment', '') or ''}",
-            f"## Decision\n{getattr(result, 'trade_decision', '') or ''}",
+            f"## Debate\n{debate_text}",
+            f"## Risk\n{risk_text}",
+            f"## Decision\n{decision_text}",
         ])
         return self._extract_generic("summary", OverviewCard, merged)
 

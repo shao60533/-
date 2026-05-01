@@ -52,6 +52,9 @@ interface AllocItem { ticker: string; value: number; pct: number }
 
 function fmt(n: number) { return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }
 function fmtPct(n: number) { return `${n >= 0 ? "+" : ""}${n.toFixed(2)}%` }
+function fmtInt(n: number) { return Math.round(n).toLocaleString("en-US") }
+function fmtMoneyInt(n: number) { return `$${fmtInt(n)}` }
+function fmtPctInt(n: number) { return `${Math.round(n)}%` }
 
 type Range = "ALL" | "1Y" | "6M" | "3M" | "1M" | "7D"
 const RANGE_DAYS: Record<Range, number> = { "ALL": 99999, "1Y": 365, "6M": 180, "3M": 90, "1M": 30, "7D": 7 }
@@ -189,10 +192,55 @@ export function DashboardPage() {
     if (filteredHistory.length === 0) return null
     return {
       backgroundColor: "transparent",
-      tooltip: { trigger: "axis", axisPointer: { type: "cross" } },
+      tooltip: {
+        trigger: "axis",
+        axisPointer: {
+          type: "cross",
+          // Belt-and-braces rounding: ``valueFormatter`` covers tooltip
+          // body, this covers the floating crosshair tag on each axis.
+          // Some ECharts builds skip ``valueFormatter`` when a series
+          // has its own formatter, so we also set ``yAxis.axisPointer``
+          // below — between the three guards a long decimal can't leak.
+          label: {
+            formatter: (p: { axisDimension?: string; value?: unknown }) => {
+              if (p.axisDimension === "y" && typeof p.value === "number") {
+                return fmtInt(p.value)
+              }
+              return String(p.value ?? "")
+            },
+          },
+        },
+        // Custom callback (instead of relying on ``valueFormatter`` only)
+        // so older ECharts builds + the negative-bar codepath both round.
+        formatter: (params: unknown) => {
+          const arr = Array.isArray(params) ? params : [params]
+          const head = (arr[0] as { axisValueLabel?: string; name?: string })
+          const date = head?.axisValueLabel ?? head?.name ?? ""
+          const lines = arr.map((p) => {
+            const it = p as { marker?: string; seriesName?: string; value?: unknown }
+            const v = typeof it.value === "number" ? fmtMoneyInt(it.value)
+                    : String(it.value ?? "")
+            return `${it.marker ?? ""}${it.seriesName ?? ""}: <b>${v}</b>`
+          })
+          return [date, ...lines].join("<br/>")
+        },
+      },
       grid: { left: 60, right: 20, top: 20, bottom: filteredHistory.length > 60 ? 50 : 30 },
       xAxis: { type: "category", data: filteredHistory.map(h => h.date), axisLine: { lineStyle: { color: "#444" } } },
-      yAxis: { type: "value", axisLabel: { formatter: (v: number) => `$${(v/1000).toFixed(0)}k` }, splitLine: { lineStyle: { color: "#222" } } },
+      yAxis: {
+        type: "value",
+        axisLabel: { formatter: (v: number) => `$${(v/1000).toFixed(0)}k` },
+        splitLine: { lineStyle: { color: "#222" } },
+        // Last guard: the cross's Y-axis floating tag. Without this
+        // formatter ECharts falls back to the raw value string, which
+        // is where ``213,322.19902038574`` was leaking from.
+        axisPointer: {
+          label: {
+            formatter: (p: { value?: unknown }) =>
+              typeof p.value === "number" ? fmtMoneyInt(p.value) : String(p.value ?? ""),
+          },
+        },
+      },
       dataZoom: filteredHistory.length > 60 ? [{ type: "inside", start: 70, end: 100 }, { type: "slider", height: 20, bottom: 5 }] : [],
       series: [
         {
@@ -214,11 +262,49 @@ export function DashboardPage() {
     return {
       backgroundColor: "transparent",
       color: ["#3882ff", "#00d4ff", "#a855f7", "#00ff88", "#ff8c00", "#ff3860", "#ffd000", "#bc8cff"],
-      tooltip: { trigger: "item", formatter: "{b}: {d}%" },
+      tooltip: {
+        trigger: "item",
+        formatter: (p: any) => {
+          const name = p?.name ?? ""
+          const value = typeof p?.value === "number" ? fmtMoneyInt(p.value) : p?.value
+          // 1 decimal max — never trail a long float into the tooltip.
+          const pctRaw = typeof p?.percent === "number" ? p.percent : null
+          const pct = pctRaw != null
+            ? (pctRaw === Math.round(pctRaw) ? `${pctRaw}%` : `${pctRaw.toFixed(1)}%`)
+            : `${p?.percent ?? 0}%`
+          return `${name}: ${value} (${pct})`
+        },
+      },
+      // Pull the chart inward + boost label-line lengths so 4-letter
+      // tickers like XIACY / META / MSFT have room to render outside
+      // the pie without colliding with the card edge or each other.
+      // Center stays at 50% horizontally so left and right labels get
+      // symmetric breathing room (the previous 42% offset starved the
+      // left side and labels got clipped at the card border).
       series: [{
-        type: "pie", radius: ["40%", "70%"],
+        type: "pie",
+        radius: ["32%", "50%"],
+        center: ["50%", "55%"],
+        avoidLabelOverlap: true,
+        minShowLabelAngle: 2,
         data: alloc.map(a => ({ name: a.ticker, value: a.value })),
-        label: { color: "#e8edf5", fontSize: 12, fontFamily: "JetBrains Mono, monospace" },
+        label: {
+          color: "#e8edf5",
+          fontSize: 12,
+          fontFamily: "JetBrains Mono, monospace",
+          // Ticker only — no percent/amount to keep labels narrow.
+          formatter: "{b}",
+          // Allow label to flow past the chart edge if needed; the
+          // surrounding Card has padding that absorbs ~12px overflow.
+          overflow: "none",
+        },
+        // Longer label lines so the text endpoint sits outside the
+        // pie's "shadow" radius — `length` is the radial segment,
+        // `length2` is the horizontal jog before the text.
+        labelLine: { length: 18, length2: 36, maxSurfaceAngle: 80, smooth: true },
+        // ``moveOverlap: "shiftY"`` already on; ``hideOverlap: false``
+        // means we never silently drop a ticker (spec rule).
+        labelLayout: { hideOverlap: false, moveOverlap: "shiftY" },
         itemStyle: { borderColor: "#111a2e", borderWidth: 2 },
         emphasis: { itemStyle: { shadowBlur: 10, shadowColor: "rgba(0,0,0,0.5)" } },
       }],

@@ -124,6 +124,23 @@ _FINAL_PROPOSAL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Match ``Final Rating: Sell`` / ``Final Decision: Buy`` (English text).
+# No bold required — these are the LLM's plain-prose summaries.
+_FINAL_RATING_RE = re.compile(
+    r"Final\s+(?:Rating|Decision|Action|Recommendation|Proposal)\s*[:：]\s*"
+    r"\*{0,2}(BUY|SELL|HOLD)\*{0,2}",
+    re.IGNORECASE,
+)
+
+# Match Chinese final-rating phrasing — ``最终评级：Sell（卖出）``,
+# ``最终交易决策：买入``, ``最终决策: 持有``. The Chinese verb may be
+# followed by an English-keyword parenthetical or stand alone.
+_CN_FINAL_RE = re.compile(
+    r"最终(?:评级|决策|交易决策|建议|交易建议|动作)\s*[:：]\s*"
+    r"\*{0,2}\s*(?:(BUY|SELL|HOLD)|(买入|卖出|持有))",
+    re.IGNORECASE,
+)
+
 # Last-resort match: a ``**BUY**`` / ``**SELL**`` / ``**HOLD**`` token
 # anywhere in the body. We deliberately require the bold markdown so a
 # lower-case mention of "buy" inside prose ("we recommend a buy bias")
@@ -133,7 +150,12 @@ _BOLD_ACTION_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Last-resort match: a Chinese verb in bold (``**卖出**``). Same "must be
+# bolded" guard so the words don't trigger off prose like "可考虑买入".
+_CN_BOLD_RE = re.compile(r"\*\*\s*(买入|卖出|持有)\s*\*\*")
+
 _ACTION_TITLE = {"BUY": "Buy", "SELL": "Sell", "HOLD": "Hold"}
+_CN_ACTION_TO_EN = {"买入": "BUY", "卖出": "SELL", "持有": "HOLD"}
 
 
 def extract_trade_action(text_or_dict) -> str | None:
@@ -145,17 +167,21 @@ def extract_trade_action(text_or_dict) -> str | None:
     (typically OVERWEIGHT / UNDERWEIGHT, which this function intentionally
     doesn't try to disambiguate from BUY / SELL).
 
-    Match order — last match wins so a section that opens with an
-    intermediate proposal but closes with a corrected one resolves to the
-    final one:
+    Match order — earlier patterns win, then within a pattern the LAST
+    occurrence wins so a section that opens with a draft proposal but
+    closes with a corrected one resolves to the corrected one:
 
-    1. ``FINAL TRANSACTION PROPOSAL: **BUY/SELL/HOLD**`` (canonical)
-    2. ``**BUY**`` / ``**SELL**`` / ``**HOLD**`` bolded standalone token
+    1. ``FINAL TRANSACTION PROPOSAL: **BUY/SELL/HOLD**`` (English canonical)
+    2. ``Final Rating: Sell`` / ``Final Decision: Buy`` (English plain prose)
+    3. ``最终评级：Sell（卖出）`` / ``最终交易决策：买入`` (Chinese)
+    4. ``**BUY**`` / ``**SELL**`` / ``**HOLD**`` bolded English token
+    5. ``**买入**`` / ``**卖出**`` / ``**持有**`` bolded Chinese token
 
-    Falls through to ``None`` when neither pattern matches; we explicitly
-    do NOT scan plain prose for the words "buy"/"sell"/"hold" because the
-    same words appear in non-actionable context (e.g. "buy-side analysts",
-    "sell-off risk", "holding period").
+    Falls through to ``None`` when none match. We deliberately do NOT
+    scan plain prose for plain "buy" / "sell" / "hold" / "卖出" / "买入"
+    / "持有" — those words appear in non-actionable context all the
+    time ("buy-side analysts", "可考虑卖出风险大的标的"). Bolded or
+    "FINAL"/"最终"-prefixed mentions are the only safe signals.
     """
     if text_or_dict is None:
         return None
@@ -176,16 +202,38 @@ def extract_trade_action(text_or_dict) -> str | None:
     if not text:
         return None
 
-    last_action: str | None = None
-    for m in _FINAL_PROPOSAL_RE.finditer(text):
-        last_action = m.group(1).upper()
-    if last_action is not None:
-        return _ACTION_TITLE[last_action]
+    # Each tier scans independently; within a tier we keep the LAST
+    # match so post-correction text wins over draft proposals earlier
+    # in the body. Tiers 1-3 are tried in order and we stop at the
+    # first tier that produced any match (mixing tiers is a class of
+    # silent contradiction we'd rather not paper over).
+    for pattern in (_FINAL_PROPOSAL_RE, _FINAL_RATING_RE):
+        last: str | None = None
+        for m in pattern.finditer(text):
+            last = m.group(1).upper()
+        if last is not None:
+            return _ACTION_TITLE[last]
 
-    # No FINAL PROPOSAL — try bold standalone tokens. Same "last wins"
-    # rule because trader memos sometimes include earlier draft proposals.
+    # Chinese final-rating: groups are (english_word_or_None, cn_word_or_None).
+    last_cn: str | None = None
+    for m in _CN_FINAL_RE.finditer(text):
+        if m.group(1):
+            last_cn = m.group(1).upper()
+        elif m.group(2):
+            last_cn = _CN_ACTION_TO_EN[m.group(2)]
+    if last_cn is not None:
+        return _ACTION_TITLE[last_cn]
+
+    # Bold-only standalone fallback (English then Chinese).
+    last_bold: str | None = None
     for m in _BOLD_ACTION_RE.finditer(text):
-        last_action = m.group(1).upper()
-    if last_action is not None:
-        return _ACTION_TITLE[last_action]
+        last_bold = m.group(1).upper()
+    if last_bold is not None:
+        return _ACTION_TITLE[last_bold]
+
+    for m in _CN_BOLD_RE.finditer(text):
+        last_bold = _CN_ACTION_TO_EN[m.group(1)]
+    if last_bold is not None:
+        return _ACTION_TITLE[last_bold]
+
     return None

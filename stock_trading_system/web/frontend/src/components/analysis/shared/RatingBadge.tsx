@@ -10,14 +10,15 @@ const RATING_TONE: Record<string, string> = {
   "Strong Sell": "bg-red-700 text-red-50",
 }
 
-export function RatingBadge({ rating }: { rating: Rating | string }) {
+export function RatingBadge({ rating }: { rating: Rating | string | null | undefined }) {
+  const safe = typeof rating === "string" && rating.trim() ? rating : "—"
   return (
     <span
       className={`inline-flex items-center px-3 py-1 rounded-md text-sm font-bold ${
-        RATING_TONE[rating] ?? "bg-zinc-500 text-zinc-50"
+        RATING_TONE[safe] ?? "bg-zinc-500 text-zinc-50"
       }`}
     >
-      {rating}
+      {safe}
     </span>
   )
 }

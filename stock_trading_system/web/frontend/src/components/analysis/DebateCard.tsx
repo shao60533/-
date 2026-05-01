@@ -1,6 +1,7 @@
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import type { Argument, DebateCardData } from "./types"
+import { safeArray, nonEmptyStr } from "./shared/defensive"
 
 const WEIGHT_ORDER: Record<string, number> = { primary: 0, secondary: 1, tertiary: 2 }
 const WEIGHT_LABEL: Record<string, string> = { primary: "核心", secondary: "次要", tertiary: "次次要" }
@@ -16,37 +17,49 @@ const VERDICT_TONE: Record<string, string> = {
 }
 const VERDICT_LABEL: Record<string, string> = { bull: "多方胜", bear: "空方胜", draw: "平局" }
 
-function ArgList({ args, accent }: { args: Argument[] | undefined; accent: "bull" | "bear" }) {
-  if (!args?.length) return <div className="text-xs text-muted-foreground">无论据</div>
-  const sorted = [...args].sort(
-    (a, b) => (WEIGHT_ORDER[a.weight ?? "secondary"] - WEIGHT_ORDER[b.weight ?? "secondary"]),
-  )
+function ArgList({ args, accent }: { args: Argument[] | null | undefined; accent: "bull" | "bear" }) {
+  const list = safeArray<Argument>(args)
+  if (list.length === 0) return <div className="text-xs text-muted-foreground">无论据</div>
+  const sorted = [...list].sort((a, b) => {
+    const aw = WEIGHT_ORDER[a?.weight ?? "secondary"] ?? 1
+    const bw = WEIGHT_ORDER[b?.weight ?? "secondary"] ?? 1
+    return aw - bw
+  })
   return (
     <div className="space-y-2">
-      {sorted.map((a, i) => (
-        <div key={i} className={`rounded border-l-4 bg-card/30 px-3 py-2 ${WEIGHT_TONE[a.weight ?? "secondary"]}`}>
-          <div className="flex items-center gap-2 mb-1">
-            <Badge variant="outline" className="text-[10px]">{WEIGHT_LABEL[a.weight ?? "secondary"]}</Badge>
-            <span className={`text-[10px] uppercase tracking-wider ${accent === "bull" ? "text-emerald-400" : "text-red-400"}`}>
-              {accent === "bull" ? "多" : "空"}
-            </span>
+      {sorted.map((a, i) => {
+        const w = a?.weight ?? "secondary"
+        const tone = WEIGHT_TONE[w] ?? WEIGHT_TONE.secondary
+        return (
+          <div key={i} className={`rounded border-l-4 bg-card/30 px-3 py-2 ${tone}`}>
+            <div className="flex items-center gap-2 mb-1">
+              <Badge variant="outline" className="text-[10px]">{WEIGHT_LABEL[w] ?? w}</Badge>
+              <span className={`text-[10px] uppercase tracking-wider ${accent === "bull" ? "text-emerald-400" : "text-red-400"}`}>
+                {accent === "bull" ? "多" : "空"}
+              </span>
+            </div>
+            {nonEmptyStr(a?.claim) && <div className="text-sm">{a.claim}</div>}
+            {nonEmptyStr(a?.evidence) && (
+              <div className="text-xs text-muted-foreground mt-0.5">{a.evidence}</div>
+            )}
           </div>
-          <div className="text-sm">{a.claim}</div>
-          <div className="text-xs text-muted-foreground mt-0.5">{a.evidence}</div>
-        </div>
-      ))}
+        )
+      })}
     </div>
   )
 }
 
-export function DebateCard({ data }: { data: DebateCardData }) {
+export function DebateCard({ data }: { data: DebateCardData | null | undefined }) {
+  if (!data || typeof data !== "object") return null
+  const verdict = typeof data.verdict === "string" && data.verdict in VERDICT_LABEL
+    ? data.verdict : "draw"
   return (
     <div className="space-y-4">
       <Card>
         <CardContent className="pt-4 flex items-center gap-3 flex-wrap">
           <span className="text-xs text-muted-foreground uppercase tracking-wider">裁判判定</span>
-          <span className={`inline-flex items-center px-2.5 py-1 rounded text-xs font-bold ${VERDICT_TONE[data.verdict]}`}>
-            {VERDICT_LABEL[data.verdict]}
+          <span className={`inline-flex items-center px-2.5 py-1 rounded text-xs font-bold ${VERDICT_TONE[verdict]}`}>
+            {VERDICT_LABEL[verdict]}
           </span>
         </CardContent>
       </Card>
@@ -62,13 +75,13 @@ export function DebateCard({ data }: { data: DebateCardData }) {
         </Card>
       </div>
 
-      {data.key_disagreement && (
+      {nonEmptyStr(data.key_disagreement) && (
         <div className="rounded border-l-4 border-amber-500/60 bg-amber-500/5 px-3 py-2 text-sm">
           <span className="font-semibold mr-2">关键分歧:</span>{data.key_disagreement}
         </div>
       )}
 
-      {data.neutral_synthesis && (
+      {nonEmptyStr(data.neutral_synthesis) && (
         <Card>
           <CardHeader className="pb-2"><CardTitle className="text-sm">中立综合</CardTitle></CardHeader>
           <CardContent className="text-sm leading-relaxed">{data.neutral_synthesis}</CardContent>
