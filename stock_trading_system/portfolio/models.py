@@ -13,6 +13,7 @@ class Position:
     avg_cost: float
     added_date: str  # YYYY-MM-DD
     user_id: int | None = None  # multi-tenant
+    id: int | None = None  # surrogate PK; set by row→model deserialization
 
 
 @dataclass
@@ -38,3 +39,4 @@ class DailySnapshot:
     pnl_pct: float
     positions_json: str  # JSON string of all positions
     user_id: int | None = None  # multi-tenant
+    id: int | None = None  # surrogate PK; set by row→model deserialization

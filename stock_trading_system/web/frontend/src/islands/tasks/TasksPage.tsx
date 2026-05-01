@@ -46,12 +46,14 @@ export function TasksPage() {
   return <TaskList />
 }
 
+type TaskScope = "mine" | "shared_research" | "all"
+
 function TaskList() {
   const [tasks, setTasks] = useState<Task[]>([])
   const [total, setTotal] = useState(0)
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("")
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("")
-  const [scope, setScope] = useState<"my" | "all">("my")
+  const [scope, setScope] = useState<TaskScope>("mine")
   const [loading, setLoading] = useState(true)
   const [loadingMore, setLoadingMore] = useState(false)
 
@@ -105,10 +107,11 @@ function TaskList() {
         </Button>
       </div>
 
-      {/* Scope tabs */}
+      {/* Scope tabs — contract: mine | shared_research | all */}
       <div className="mb-3">
         <ChipRow>
-          <Chip active={scope === "my"} onClick={() => setScope("my")}>我的</Chip>
+          <Chip active={scope === "mine"} onClick={() => setScope("mine")}>我的任务</Chip>
+          <Chip active={scope === "shared_research"} onClick={() => setScope("shared_research")}>共享研究</Chip>
           <Chip active={scope === "all"} onClick={() => setScope("all")}>全部</Chip>
         </ChipRow>
       </div>

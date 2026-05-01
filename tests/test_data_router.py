@@ -40,12 +40,21 @@ class FakeAkShare:
         self.get_stock_history = MagicMock(return_value=None)
 
 
+class FakeSchwab:
+    def __init__(self, enabled=False):
+        self.enabled = enabled
+        self.get_stock_price = MagicMock(return_value=None)
+        self.get_stock_history = MagicMock(return_value=None)
+        self.token_age_days = MagicMock(return_value=None)
+
+
 def _router(config, cache=None, **overrides):
     return DataRouter(
         config,
         qwen=overrides.get("qwen", FakeQwen()),
         yfinance=overrides.get("yfinance", FakeYFinance()),
         akshare=overrides.get("akshare", FakeAkShare()),
+        schwab=overrides.get("schwab", FakeSchwab()),
         cache=cache,
     )
 
@@ -313,3 +322,57 @@ def test_bad_price_from_qwen_falls_through(cache):
     r = _router(_cfg("qwen"), cache=cache, qwen=qwen, yfinance=yf)
     result = r.get_price("AAPL")
     assert result["last"] == 150.0
+
+
+# ── DR-3.1.12 Schwab realtime primary takes precedence ──────────────────
+
+
+def test_schwab_realtime_primary_runs_first(cache):
+    schwab = FakeSchwab(enabled=True)
+    schwab.get_stock_price.return_value = {"last": 175.0}
+    qwen = FakeQwen()
+    qwen.get_stock_price.return_value = {"last": 150.0}
+    cfg = {
+        "data_routing": {
+            "primary": "qwen", "realtime_primary": "schwab",
+            "enable_cache": True,
+        },
+    }
+    r = _router(cfg, cache=cache, qwen=qwen, schwab=schwab)
+    result = r.get_price("AAPL")
+    assert result["last"] == 175.0
+    schwab.get_stock_price.assert_called_once_with("AAPL")
+    qwen.get_stock_price.assert_not_called()
+
+
+def test_schwab_disabled_falls_through_to_qwen(cache):
+    """Schwab provider disabled (no token) → use Qwen primary."""
+    schwab = FakeSchwab(enabled=False)
+    qwen = FakeQwen()
+    qwen.get_stock_price.return_value = {"last": 150.0}
+    r = _router(_cfg("qwen"), cache=cache, qwen=qwen, schwab=schwab)
+    result = r.get_price("AAPL")
+    assert result["last"] == 150.0
+    schwab.get_stock_price.assert_not_called()
+    qwen.get_stock_price.assert_called_once()
+
+
+def test_schwab_skipped_for_cn_ticker(cache):
+    schwab = FakeSchwab(enabled=True)
+    schwab.get_stock_price.return_value = {"last": 999}  # never used for CN
+    qwen = FakeQwen()
+    qwen.get_stock_price.return_value = {"last": 1500.0}
+    r = _router(_cfg("qwen"), cache=cache, qwen=qwen, schwab=schwab)
+    result = r.get_price("600519")
+    assert result["last"] == 1500.0
+    schwab.get_stock_price.assert_not_called()
+
+
+def test_routing_summary_includes_schwab(cache):
+    schwab = FakeSchwab(enabled=True)
+    schwab.token_age_days.return_value = 0.5
+    r = _router(_cfg("qwen"), cache=cache, schwab=schwab)
+    s = r.routing_summary()
+    assert s["realtime_primary"] == "schwab"
+    assert s["schwab_enabled"] is True
+    assert s["schwab_token_age_days"] == 0.5

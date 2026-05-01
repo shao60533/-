@@ -5,7 +5,7 @@ import os
 import threading
 from pathlib import Path
 
-from flask import Flask, render_template, jsonify, request, redirect, g
+from flask import Flask, render_template, jsonify, request, redirect, g, Response
 from flask_socketio import SocketIO
 
 from stock_trading_system.config import load_config, get_config, save_config
@@ -38,7 +38,7 @@ def _get_portfolio_mgr():
     global _portfolio_mgr
     if _portfolio_mgr is None:
         from stock_trading_system.portfolio.manager import PortfolioManager
-        _portfolio_mgr = PortfolioManager(get_config())
+        _portfolio_mgr = PortfolioManager(get_config(), data_manager=_get_data_manager())
     return _portfolio_mgr
 
 
@@ -54,7 +54,7 @@ def _get_data_manager():
     global _data_manager
     if _data_manager is None:
         from stock_trading_system.data.data_manager import DataManager
-        _data_manager = DataManager(get_config())
+        _data_manager = DataManager(get_config(), cache=_get_local_cache())
     return _data_manager
 
 
@@ -122,8 +122,9 @@ def _reset_config_dependent_singletons(paths: list[str]):
     touched_polygon = any(p.startswith("polygon.") for p in paths)
     touched_ib = any(p.startswith("ib.") for p in paths)
     touched_alerts = any(p.startswith("alerts.") for p in paths)
-    # Analyzer uses gemini config.
-    if touched_gemini:
+    touched_llm = any(p.startswith("llm") for p in paths)
+    # Analyzer uses LLM provider config.
+    if touched_gemini or touched_qwen or touched_llm:
         _analyzer = None
     # Data manager fans out to IB/Polygon/Qwen.
     if touched_ib or touched_polygon or touched_qwen:
@@ -284,6 +285,26 @@ def _probe_providers() -> dict:
             "error": "IB requires local TWS; not testable from a cloud probe.",
             "host": ib_cfg.get("host"), "port": ib_cfg.get("port"),
         }
+
+    if providers.get("schwab_enabled", True):
+        try:
+            from stock_trading_system.data.schwab_provider import SchwabProvider
+            sch = SchwabProvider(cfg)
+            if sch.enabled:
+                results["schwab"] = _probe(
+                    "schwab", lambda: sch.get_stock_price("AAPL"),
+                )
+                results["schwab"]["token_age_days"] = sch.token_age_days()
+            else:
+                results["schwab"] = {
+                    "ok": False, "latency_ms": 0,
+                    "error": "schwab not configured "
+                             "(missing token / app_key / disabled)",
+                    "token_age_days": sch.token_age_days(),
+                }
+        except Exception as e:  # noqa: BLE001
+            results["schwab"] = {"ok": False, "error": str(e)[:200]}
+
     return results
 
 
@@ -351,11 +372,35 @@ def create_app(config_path=None):
     from stock_trading_system.tasks.event_emitter import ensure_task_events_table
     ensure_task_events_table(db_path)
 
+    # ── Daily-snapshot scheduler ───────────────────────────────────────
+    # Auto-starts once per deployment (worker-0 / single-process wins the
+    # filesystem lock; the rest stay inert). Runs at 16:30 America/New_York
+    # right after the US close. Disable with DISABLE_DAILY_SNAPSHOT_SCHEDULER=1
+    # for tests / dev shells that don't want a background thread.
+    if _multi_tenant_ready and not os.environ.get(
+        "DISABLE_DAILY_SNAPSHOT_SCHEDULER"
+    ):
+        from stock_trading_system.scheduler.daily_snapshot_scheduler import (
+            DailySnapshotScheduler, take_snapshot_all_users,
+        )
+
+        def _snapshot_all_users():
+            return take_snapshot_all_users(
+                _user_repo,
+                portfolio_manager_factory=lambda _uid: _get_portfolio_mgr(),
+            )
+
+        DailySnapshotScheduler.reset()
+        scheduler = DailySnapshotScheduler.get(_snapshot_all_users)
+        scheduler.start_if_primary()
+
     # Public paths that don't require authentication
     PUBLIC_PREFIXES = ("/static/", "/login", "/register", "/reset",
                        "/api/auth/login", "/api/auth/register", "/api/auth/reset",
                        "/api/auth/invites-available",
-                       "/health", "/api/health", "/api/seed")
+                       "/health", "/api/health", "/api/seed",
+                       # Schwab OAuth — guarded by magic-link secret instead of session
+                       "/oauth/schwab/", "/api/schwab/")
 
     @app.before_request
     def enforce_auth():
@@ -363,10 +408,16 @@ def create_app(config_path=None):
         if _multi_tenant_ready:
             load_current_user(_user_repo)
         else:
-            # Single-user fallback: no users table yet
+            # Uninitialized: only allow public paths + migration trigger
             from flask import g
             g.user = None
-            return  # allow all access in non-migrated mode
+            path = request.path
+            if any(path.startswith(p) for p in PUBLIC_PREFIXES):
+                return
+            if path.startswith("/api/"):
+                return jsonify({"error": "not_initialized",
+                                "message": "System not initialized. Run multi-tenant migration."}), 503
+            return redirect("/login")
 
         from flask import g
         path = request.path
@@ -452,8 +503,9 @@ def create_app(config_path=None):
 
     @app.route("/api/auth/invites-available")
     def api_invites_available():
-        """Public list of currently redeemable invite codes (for the register page)."""
-        return jsonify({"codes": _invite_mgr.list_available(limit=50)})
+        """Public check: are invite codes available for registration?"""
+        codes = _invite_mgr.list_available(limit=1)
+        return jsonify({"available": len(codes) > 0, "count": len(_invite_mgr.list_available(limit=100))})
 
     @app.route("/api/auth/change-password", methods=["POST"])
     def api_change_password():
@@ -592,15 +644,159 @@ def create_app(config_path=None):
     def api_health():
         return jsonify({"status": "ok", "service": "stock-trading-system"})
 
+    # ── Schwab OAuth bootstrap (one-time per 7-day refresh window) ──────
+    # /oauth/schwab/start    → redirect to Schwab login (magic-link guarded)
+    # /oauth/schwab/callback → exchange code for token, write to Volume
+    # /api/schwab/diagnose   → smoke-test live API + report token age
+
+    def _schwab_oauth_secret_ok() -> bool:
+        cfg = get_config().get("schwab", {}) or {}
+        expected = (cfg.get("oauth_secret")
+                    or os.environ.get("SCHWAB_OAUTH_SECRET", ""))
+        if not expected:
+            return False  # Endpoint locked when no secret configured
+        return request.args.get("secret") == expected
+
+    @app.route("/oauth/schwab/start")
+    def schwab_oauth_start():
+        if not _schwab_oauth_secret_ok():
+            return jsonify({"error": "forbidden"}), 403
+        cfg = get_config().get("schwab", {}) or {}
+        api_key = cfg.get("app_key") or os.environ.get("SCHWAB_APP_KEY", "")
+        callback_url = (cfg.get("callback_url")
+                        or os.environ.get("SCHWAB_CALLBACK_URL", ""))
+        if not (api_key and callback_url):
+            return jsonify({
+                "error": "schwab not configured",
+                "missing": [k for k, v in [
+                    ("SCHWAB_APP_KEY", api_key),
+                    ("SCHWAB_CALLBACK_URL", callback_url),
+                ] if not v],
+            }), 500
+        from schwab.auth import get_auth_context
+        try:
+            ctx = get_auth_context(api_key, callback_url)
+        except Exception as e:  # noqa: BLE001
+            return jsonify({"error": "auth_context_failed", "detail": str(e)}), 500
+        from flask import session
+        session["schwab_oauth_state"] = ctx.state
+        session["schwab_oauth_callback_url"] = ctx.callback_url
+        logger.info("Schwab OAuth start — redirecting to authorization URL")
+        return redirect(ctx.authorization_url)
+
+    @app.route("/oauth/schwab/callback")
+    def schwab_oauth_callback():
+        from flask import session
+        from schwab.auth import AuthContext, client_from_received_url
+        cfg = get_config().get("schwab", {}) or {}
+        api_key = cfg.get("app_key") or os.environ.get("SCHWAB_APP_KEY", "")
+        app_secret = (cfg.get("app_secret")
+                      or os.environ.get("SCHWAB_APP_SECRET", ""))
+        token_path = (cfg.get("token_path")
+                      or os.environ.get("SCHWAB_TOKEN_PATH",
+                                        "data/schwab_token.json"))
+
+        expected_state = session.pop("schwab_oauth_state", None)
+        callback_url = session.pop("schwab_oauth_callback_url", None) \
+            or cfg.get("callback_url") \
+            or os.environ.get("SCHWAB_CALLBACK_URL", "")
+        received_state = request.args.get("state")
+        if not expected_state or expected_state != received_state:
+            logger.warning("Schwab OAuth state mismatch — rejecting callback")
+            return jsonify({"error": "state_mismatch"}), 400
+
+        Path(token_path).parent.mkdir(parents=True, exist_ok=True)
+        ctx = AuthContext(callback_url=callback_url,
+                          authorization_url="", state=expected_state)
+
+        def _writer(token, *_args, **_kwargs):
+            with open(token_path, "w") as f:
+                json.dump(token, f)
+
+        try:
+            client_from_received_url(
+                api_key=api_key, app_secret=app_secret,
+                auth_context=ctx, received_url=request.url,
+                token_write_func=_writer,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.exception("Schwab OAuth token exchange failed")
+            return jsonify({"error": "token_exchange_failed",
+                            "detail": str(e)[:300]}), 500
+
+        # Reset cached managers so they pick up the new token immediately.
+        global _data_manager, _data_router
+        _data_manager = None
+        _data_router = None
+        logger.info("Schwab OAuth success — token written to %s", token_path)
+        return jsonify({
+            "status": "ok",
+            "message": "Schwab token saved. Re-authorize within 7 days.",
+            "token_path": token_path,
+        })
+
+    @app.route("/api/schwab/diagnose")
+    def api_schwab_diagnose():
+        """Smoke test for Schwab integration. Reports realtime + history + age."""
+        import time as _t
+        if not _schwab_oauth_secret_ok():
+            return jsonify({"error": "forbidden"}), 403
+        sch = _get_data_manager().get_schwab_provider()
+        result: dict = {
+            "enabled": sch.enabled,
+            "token_age_days": sch.token_age_days(),
+        }
+        if not sch.enabled:
+            result["error"] = "schwab provider disabled (missing token / config)"
+            return jsonify(result), 503
+
+        t0 = _t.perf_counter()
+        single = sch.get_stock_price("AAPL")
+        result["single_quote_ok"] = bool(single)
+        result["single_quote_latency_ms"] = int((_t.perf_counter() - t0) * 1000)
+        if single:
+            result["single_quote_sample"] = {
+                k: single.get(k) for k in ("ticker", "last", "close")
+            }
+
+        t0 = _t.perf_counter()
+        batch = sch.get_stock_price_batch(["AAPL", "TSLA", "NVDA", "MSFT", "GOOG"])
+        result["batch_quote_ok"] = len(batch) > 0
+        result["batch_quote_count"] = len(batch)
+        result["batch_quote_latency_ms"] = int((_t.perf_counter() - t0) * 1000)
+
+        t0 = _t.perf_counter()
+        df = sch.get_stock_history("AAPL", period="1mo", interval="1d")
+        result["history_ok"] = df is not None and not df.empty
+        result["history_bars"] = int(len(df)) if df is not None else 0
+        result["history_latency_ms"] = int((_t.perf_counter() - t0) * 1000)
+
+        return jsonify(result)
+
     # ── Dashboard API ───────────────────────────────────────────────────
 
     @app.route("/api/dashboard")
     def api_dashboard():
+        if g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
+        uid = g.user.id
         pm = _get_portfolio_mgr()
-        pnl = pm.get_pnl()
-        holdings = pm.get_holdings()
-        alerts = _get_alert_monitor().list_alerts()
-        history = pm.get_history(days=30)
+        pnl = pm.get_pnl(user_id=uid)
+        holdings = pm.get_holdings(user_id=uid)
+        alerts = _get_alert_monitor().list_alerts(user_id=uid, scope="user")
+        # `history_days=all` returns the full series since the user's first
+        # snapshot; the chart's range chips do client-side filtering on top.
+        # Anything else is parsed as a positive int rolling window.
+        raw_days = (request.args.get("history_days") or "all").strip().lower()
+        if raw_days in ("", "all"):
+            days: int | None = None
+        else:
+            try:
+                parsed = int(raw_days)
+                days = parsed if parsed > 0 else None
+            except ValueError:
+                days = 30
+        history = pm.get_history(days=days, user_id=uid)
         return jsonify({
             "pnl": pnl,
             "holdings": holdings,
@@ -614,34 +810,114 @@ def create_app(config_path=None):
     def api_holdings():
         return jsonify(_get_portfolio_mgr().get_holdings())
 
+    def _validate_trade(data: dict, *, require_existing: bool,
+                         user_id: int) -> str | None:
+        """Return an error string if the trade payload is invalid, else None.
+
+        Centralised so /add and /sell both reject the same shapes:
+            * non-alphanumeric / empty ticker
+            * shares <= 0 or price <= 0
+            * (sell-only) ticker has no holding for this user, or shares
+              exceed the holding — this prevents the "phantom sell" bug
+              where /api/portfolio/sell silently recorded a transaction
+              and left the user with a SELL row but no matching BUY.
+        """
+        ticker = (data.get("ticker") or "").strip().upper()
+        # ".B" / "RDS-B" / "BRK.A" should pass; only allow alnum + . / -
+        if not ticker or not ticker.replace(".", "").replace("-", "").isalnum():
+            return "ticker required and must be alphanumeric"
+        try:
+            shares = float(data.get("shares"))
+            price = float(data.get("price"))
+        except (TypeError, ValueError):
+            return "shares and price must be numbers"
+        if shares <= 0:
+            return "shares must be > 0"
+        if price <= 0:
+            return "price must be > 0"
+        if require_existing:
+            from stock_trading_system.portfolio.database import PortfolioDatabase
+            db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
+            existing = PortfolioDatabase(db_path).get_position(ticker, user_id=user_id)
+            if existing is None:
+                return f"no position to sell for {ticker}"
+            if shares > existing.shares + 1e-9:
+                return f"sell shares ({shares}) exceeds holding ({existing.shares})"
+        return None
+
     @app.route("/api/portfolio/add", methods=["POST"])
     def api_portfolio_add():
-        data = request.json
+        if g.user is None:
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
+        data = request.json or {}
+        err = _validate_trade(data, require_existing=False, user_id=g.user.id)
+        if err:
+            return jsonify({"ok": False, "error": err}), 400
         from stock_trading_system.utils.helpers import detect_market
         pm = _get_portfolio_mgr()
-        ticker = data["ticker"].upper()
+        ticker = data["ticker"].strip().upper()
         pm.add_position(
             ticker, float(data["shares"]), float(data["price"]),
             market=detect_market(ticker),
             date=data.get("date"), notes=data.get("notes", ""),
+            user_id=g.user.id,
         )
         return jsonify({"ok": True, "message": f"BUY {data['shares']} {ticker} @ {data['price']}"})
 
     @app.route("/api/portfolio/sell", methods=["POST"])
     def api_portfolio_sell():
-        data = request.json
+        if g.user is None:
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
+        data = request.json or {}
+        err = _validate_trade(data, require_existing=True, user_id=g.user.id)
+        if err:
+            return jsonify({"ok": False, "error": err}), 400
         pm = _get_portfolio_mgr()
-        ticker = data["ticker"].upper()
+        ticker = data["ticker"].strip().upper()
         pm.sell_position(
             ticker, float(data["shares"]), float(data["price"]),
             date=data.get("date"), notes=data.get("notes", ""),
+            user_id=g.user.id,
         )
         return jsonify({"ok": True, "message": f"SELL {data['shares']} {ticker} @ {data['price']}"})
 
     @app.route("/api/portfolio/transactions")
     def api_transactions():
+        """Return this user's transactions in the contract the UI expects.
+
+        Field contract (frozen for the React island):
+            * ``action``     uppercase ``BUY`` / ``SELL`` (frontend colors
+                             buys green, sells red on the literal upper-case
+                             string)
+            * ``timestamp``  canonical YYYY-MM-DD HH:MM:SS
+            * ``date``       legacy alias of ``timestamp`` for older
+                             callers; both fields point at the same value
+        """
+        if g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
         ticker = request.args.get("ticker")
-        return jsonify(_get_portfolio_mgr().get_transactions(ticker=ticker))
+        rows = _get_portfolio_mgr().get_transactions(
+            ticker=ticker, user_id=g.user.id,
+        )
+        out = []
+        for t in rows:
+            ts = t.get("timestamp") if isinstance(t, dict) else getattr(t, "timestamp", None)
+            # PortfolioManager.get_transactions keys the timestamp as 'date'
+            # for backwards compat; canonicalise to 'timestamp' here.
+            if not ts and isinstance(t, dict):
+                ts = t.get("date")
+            action = (t.get("action") if isinstance(t, dict) else getattr(t, "action", "")) or ""
+            out.append({
+                "id":     t.get("id") if isinstance(t, dict) else getattr(t, "id", None),
+                "ticker": t.get("ticker") if isinstance(t, dict) else getattr(t, "ticker", ""),
+                "action": action.upper(),
+                "shares": t.get("shares") if isinstance(t, dict) else getattr(t, "shares", 0),
+                "price":  t.get("price") if isinstance(t, dict) else getattr(t, "price", 0),
+                "timestamp": ts,
+                "date":   ts,
+                "notes":  (t.get("notes") if isinstance(t, dict) else getattr(t, "notes", "")) or "",
+            })
+        return jsonify(out)
 
     @app.route("/api/portfolio/pnl")
     def api_pnl():
@@ -653,16 +929,65 @@ def create_app(config_path=None):
 
     @app.route("/api/portfolio/summary")
     def api_portfolio_summary():
-        """Aggregated portfolio stats for dashboard/portfolio page."""
+        """Aggregated portfolio stats for dashboard/portfolio page.
+
+        ``today_pnl`` here is the **real** today's P&L — current portfolio
+        value minus the most recent prior daily snapshot's ``total_value``.
+        Returning ``total_pnl`` under the ``today_pnl`` key (the prior bug)
+        was label-fraud: the dashboard tile said "今日 PnL" while showing
+        cumulative P&L.
+
+        ``today_pnl`` is ``None`` when there is no snapshot to diff against
+        (fresh DB / first day) — the frontend then degrades the tile to
+        "总盈亏" instead of guessing.
+        """
+        if g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
+        uid = g.user.id
         pm = _get_portfolio_mgr()
-        pnl = pm.get_pnl()
-        holdings = pm.get_holdings()
+        pnl = pm.get_pnl(user_id=uid)
+        holdings = pm.get_holdings(user_id=uid)
+        today_real = _compute_today_pnl(uid, pnl.get("total_value", 0))
         return jsonify({
-            "total_value": pnl.get("total_value", 0),
-            "today_pnl": pnl.get("total_pnl", 0),
-            "today_pnl_pct": pnl.get("total_pnl_pct", 0),
+            "total_value":    pnl.get("total_value", 0),
+            "total_pnl":      pnl.get("total_pnl", 0),
+            "total_pnl_pct":  pnl.get("total_pnl_pct", 0),
+            "today_pnl":      today_real["pnl"] if today_real else None,
+            "today_pnl_pct":  today_real["pct"] if today_real else None,
             "holdings_count": len(holdings),
         })
+
+    def _compute_today_pnl(user_id: int, current_value: float) -> dict | None:
+        """Return ``{pnl, pct}`` vs the most recent prior daily snapshot.
+
+        Returns ``None`` when no usable prior snapshot exists (fresh user,
+        only today's snapshot, or prior total_value <= 0). The caller
+        surfaces ``None`` directly so the UI can render a degraded tile
+        instead of a misleading zero.
+        """
+        from stock_trading_system.portfolio.database import PortfolioDatabase
+        from stock_trading_system.utils.helpers import today_str
+        db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
+        db = PortfolioDatabase(db_path)
+        rows = db.get_snapshots(user_id=user_id, days=2)
+        if not rows:
+            return None
+        today = today_str()
+        prev = None
+        for r in reversed(rows):
+            r_date = r.date if hasattr(r, "date") else r.get("date")
+            if r_date != today:
+                prev = r
+                break
+        if prev is None:
+            return None
+        prev_value = float(getattr(prev, "total_value", None)
+                            if hasattr(prev, "total_value")
+                            else prev.get("total_value") or 0)
+        if prev_value <= 0:
+            return None
+        diff = current_value - prev_value
+        return {"pnl": round(diff, 2), "pct": round(diff / prev_value * 100, 2)}
 
     @app.route("/api/portfolio/<ticker>", methods=["DELETE"])
     def api_portfolio_delete(ticker):
@@ -680,100 +1005,43 @@ def create_app(config_path=None):
 
     @app.route("/api/analyze", methods=["POST"])
     def api_analyze():
-        data = request.json
-        ticker = data["ticker"].upper()
-        date = data.get("date")
-        if not date:
-            from stock_trading_system.utils.helpers import today_str
-            date = today_str()
+        """Legacy /api/analyze: forwards to TaskManager.
 
-        # Run in background thread, emit result via WebSocket
-        def run_analysis():
-            try:
-                socketio.emit("analysis_status", {"ticker": ticker, "status": "running"})
+        v1.14 unifies all analysis through the same pipeline as /api/tasks/submit
+        + the analysis worker + Pipeline DAG events. Old clients that POST here
+        receive the same {task_id, status} envelope and can subscribe to
+        /api/tasks/<task_id> for progress.
 
-                def _progress(event: dict):
-                    payload = {"ticker": ticker, **event}
-                    # Use emit_event for persistence + per-user room broadcast
-                    from stock_trading_system.tasks.event_emitter import emit_event as _emit_ev
-                    _task_id = locals().get('_current_task_id', '')
-                    if _task_id:
-                        _emit_ev(_task_id, "analysis_pipeline", payload)
-                    else:
-                        socketio.emit("analysis_pipeline", payload)
+        The previous implementation spawned a daemon thread, emitted three
+        bespoke socket events (analysis_status / analysis_result /
+        analysis_error), and wrote analysis_history directly with a
+        hard-coded gemini.deep_think_model — none of which matched the
+        unified flow workers go through. All of that is gone.
+        """
+        if g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
+        data = request.json or {}
+        ticker = (data.get("ticker") or "").upper().strip()
+        if not ticker:
+            return jsonify({"error": "ticker required"}), 400
+        from stock_trading_system.utils.helpers import today_str
+        date = data.get("date") or today_str()
+        depth = data.get("depth") or "standard"
 
-                analyzer = _get_analyzer()
-                result = analyzer.analyze(ticker, date, progress_cb=_progress)
-
-                # Also generate strategy advice
-                advice = None
-                try:
-                    engine = _get_strategy_engine()
-                    pm = _get_portfolio_mgr()
-                    holdings = pm.get_holdings()
-                    # Get current price for strategy calculation
-                    price_data = _get_data_manager().get_price(ticker)
-                    current_price = None
-                    if price_data:
-                        current_price = price_data.get("last") or price_data.get("close")
-                    advice_obj = engine.generate_advice(result, holdings, current_price)
-                    advice = {
-                        "action": advice_obj.action,
-                        "confidence": advice_obj.confidence,
-                        "suggested_position_pct": advice_obj.suggested_position_pct,
-                        "entry_price_low": advice_obj.entry_price_low,
-                        "entry_price_high": advice_obj.entry_price_high,
-                        "stop_loss": advice_obj.stop_loss,
-                        "take_profit": advice_obj.take_profit,
-                        "reasoning": advice_obj.reasoning,
-                        "risk_warning": advice_obj.risk_warning,
-                    }
-                except Exception as e:
-                    logger.warning("Strategy advice failed: %s", e)
-
-                result_data = {
-                    "ticker": ticker,
-                    "date": date,
-                    "signal": result.signal,
-                    "market_report": result.market_report,
-                    "sentiment_report": result.sentiment_report,
-                    "news_report": result.news_report,
-                    "fundamentals_report": result.fundamentals_report,
-                    "investment_debate": str(result.investment_debate),
-                    "risk_assessment": str(result.risk_assessment),
-                    "trade_decision": str(result.trade_decision),
-                    "advice": advice,
-                    "steps": result.steps,
-                }
-                socketio.emit("analysis_result", result_data)
-
-                # Save to history
-                try:
-                    import json as _json
-                    from stock_trading_system.portfolio.database import PortfolioDatabase
-                    db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
-                    db = PortfolioDatabase(db_path)
-                    # Record which LLM actually produced this run so the history
-                    # page can show provenance for cross-model comparisons.
-                    gemini_cfg = get_config().get("gemini", {}) or {}
-                    model_name = gemini_cfg.get("deep_think_model") or gemini_cfg.get("model", "")
-                    db.save_analysis({
-                        **result_data,
-                        "advice_json": _json.dumps(advice, ensure_ascii=False) if advice else "",
-                        "steps_json": _json.dumps(result.steps, ensure_ascii=False),
-                        "model": model_name,
-                        "created_at": __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    })
-                    logger.info("Analysis saved to history: %s", ticker)
-                except Exception as save_err:
-                    logger.warning("Failed to save analysis history: %s", save_err)
-            except Exception as e:
-                logger.error("Analysis failed for %s: %s", ticker, e)
-                socketio.emit("analysis_error", {"ticker": ticker, "error": str(e)})
-
-        thread = threading.Thread(target=run_analysis, daemon=True)
-        thread.start()
-        return jsonify({"ok": True, "message": f"Analysis started for {ticker}"})
+        tm = _get_task_manager()
+        params = {
+            "ticker": ticker,
+            "date": date,
+            "depth": depth,
+            "__user_id__": g.user.id,
+        }
+        task = tm.submit(
+            task_type="analysis",
+            params=params,
+            title=f"AI 分析 · {ticker}",
+            created_by=g.user.id,
+        )
+        return jsonify({"task_id": task["id"], "status": "queued"})
 
     # ── Screener API ────────────────────────────────────────────────────
 
@@ -801,13 +1069,22 @@ def create_app(config_path=None):
 
     @app.route("/api/alerts")
     def api_alerts():
-        return jsonify(_get_alert_monitor().list_alerts())
+        if g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
+        return jsonify(_get_alert_monitor().list_alerts(
+            user_id=g.user.id, scope="user",
+        ))
 
     @app.route("/api/alerts/add", methods=["POST"])
     def api_alert_add():
+        if g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
         data = request.json
         monitor = _get_alert_monitor()
-        monitor.add_alert(data["ticker"].upper(), data["condition"], float(data["threshold"]))
+        monitor.add_alert(
+            data["ticker"].upper(), data["condition"], float(data["threshold"]),
+            user_id=g.user.id,
+        )
         return jsonify({"ok": True, "message": f"Alert added: {data['ticker']} {data['condition']} {data['threshold']}"})
 
     @app.route("/api/alerts/remove", methods=["POST"])
@@ -818,7 +1095,11 @@ def create_app(config_path=None):
 
     @app.route("/api/alerts/check", methods=["POST"])
     def api_alert_check():
-        triggered = _get_alert_monitor().check_alerts()
+        if g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
+        triggered = _get_alert_monitor().check_alerts(
+            user_id=g.user.id, scope="user",
+        )
         return jsonify({"triggered": triggered})
 
     @app.route("/api/alerts/history")
@@ -834,12 +1115,33 @@ def create_app(config_path=None):
 
     @app.route("/api/history")
     def api_analysis_history():
+        """List recent analyses. Frontend `/analysis` shows the top 5 as cards.
+
+        Each row gets a ``created_by_name`` JOIN so the cards can display
+        the originator. Response shape: ``{items, count}``.
+        """
         from stock_trading_system.portfolio.database import PortfolioDatabase
         db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
         db = PortfolioDatabase(db_path)
         ticker = request.args.get("ticker")
-        records = db.get_analysis_history(ticker=ticker)
-        return jsonify(records)
+        limit = int(request.args.get("limit", 50))
+        records = db.get_analysis_history(ticker=ticker, limit=limit)
+        # Resolve display_name via the user repo (cache per request).
+        cache: dict[int, str] = {}
+        for rec in records:
+            uid = rec.get("created_by")
+            if uid is None:
+                continue
+            if uid not in cache:
+                try:
+                    user = _user_repo.find_by_id(int(uid))
+                    cache[uid] = (user.display_name or user.email) if user else ""
+                except Exception:  # noqa: BLE001
+                    cache[uid] = ""
+            rec["created_by_name"] = cache[uid] or None
+        # Both `items` (v1.14 contract) and `records` (legacy HistoryPage)
+        # are surfaced so we don't have to refactor every caller in this PR.
+        return jsonify({"items": records, "records": records, "count": len(records)})
 
     @app.route("/api/history/<int:analysis_id>")
     def api_analysis_detail(analysis_id):
@@ -850,17 +1152,48 @@ def create_app(config_path=None):
         if not record:
             return jsonify({"error": "Not found"}), 404
 
-        # Map DB columns to frontend-expected fields
+        # Per-user advice (v1.14): the shared row no longer holds a
+        # holdings-aware position-sizing payload. Pull the current user's
+        # row out of user_analysis_advice instead.
+        user_id = g.user.id if g.user else None
+        user_advice = None
+        bookmarked = False
+        if user_id is not None:
+            user_advice = db.get_user_advice(user_id, analysis_id)
+            bookmarked = db.is_bookmarked(user_id, analysis_id)
+
+        # Resolve created_by → display_name (fallback to email).
+        created_by_name = None
+        if record.get("created_by"):
+            try:
+                user = _user_repo.find_by_id(int(record["created_by"]))
+                if user:
+                    created_by_name = user.display_name or user.email
+            except Exception as e:  # noqa: BLE001
+                logger.warning("created_by lookup failed: %s", e)
+
+        # confidence string → numeric for the gauge UI
         conf_str = (record.get("confidence") or "").lower()
         conf_map = {"high": 0.85, "medium": 0.5, "low": 0.25}
         confidence_num = conf_map.get(conf_str)
 
-        advice = {}
-        if record.get("advice_json"):
+        # advice dict that the frontend renders. Prefer the current user's
+        # entry; fall back to the legacy ``advice_json`` blob on the shared
+        # row for pre-v1.14 records (back-compat — safe because that legacy
+        # column was set by the original requester anyway).
+        advice: dict = {}
+        if user_advice:
+            for key in ("action", "confidence", "position_pct",
+                        "entry_low", "entry_high", "stop_loss", "take_profit",
+                        "reasoning", "risk_warning"):
+                if user_advice.get(key) is not None:
+                    advice[key] = user_advice[key]
+        elif record.get("advice_json"):
             try:
-                advice = json.loads(record["advice_json"]) if isinstance(record["advice_json"], str) else record["advice_json"]
+                blob = record["advice_json"]
+                advice = json.loads(blob) if isinstance(blob, str) else blob or {}
             except (json.JSONDecodeError, TypeError):
-                pass
+                advice = {}
 
         analysts = {}
         for key in ("market_report", "sentiment_report", "news_report",
@@ -873,6 +1206,9 @@ def create_app(config_path=None):
         record["confidence"] = confidence_num
         record["risk_level"] = advice.get("risk_level") or conf_str or "-"
         record["analysts"] = analysts
+        record["advice"] = advice or None
+        record["bookmarked"] = bookmarked
+        record["created_by_name"] = created_by_name
 
         return jsonify(record)
 
@@ -913,6 +1249,134 @@ def create_app(config_path=None):
         db = PortfolioDatabase(db_path)
         ok = db.delete_analysis(analysis_id)
         return jsonify({"ok": ok})
+
+    # ── E of v1.14: export + bookmark + track ────────────────────────────
+
+    def _render_analysis_markdown(rec: dict) -> str:
+        """Stitch the 8 report sections into one markdown blob.
+
+        Used by the export endpoint. Pure formatting — no HTML, no script
+        injection surface; rehype-sanitize on the read path is the second
+        layer if anyone ever pipes this back through Markdown.
+        """
+        ticker = rec.get("ticker", "")
+        date = rec.get("date", "")
+        signal = rec.get("signal", "")
+        provider = rec.get("provider") or ""
+        model = rec.get("model") or ""
+        lines = [
+            f"# {ticker} · AI 分析",
+            "",
+            f"- **日期**: {date}",
+            f"- **信号**: {signal}",
+            f"- **Provider**: {provider} / {model}".rstrip(" /"),
+            f"- **生成时间**: {rec.get('created_at', '')}",
+            "",
+        ]
+        for header, key in [
+            ("市场 / 技术面", "market_report"),
+            ("情绪面", "sentiment_report"),
+            ("新闻", "news_report"),
+            ("基本面", "fundamentals_report"),
+            ("多空辩论", "investment_debate"),
+            ("风险评估", "risk_assessment"),
+            ("决策", "trade_decision"),
+        ]:
+            body = rec.get(key) or ""
+            if body:
+                lines.append(f"## {header}")
+                lines.append("")
+                lines.append(str(body))
+                lines.append("")
+        return "\n".join(lines)
+
+    @app.route("/api/history/<int:analysis_id>/export")
+    def api_history_export(analysis_id):
+        if g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
+        fmt = (request.args.get("format") or "md").lower()
+        from stock_trading_system.portfolio.database import PortfolioDatabase
+        db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
+        db = PortfolioDatabase(db_path)
+        rec = db.get_analysis_by_id(analysis_id)
+        if not rec:
+            return jsonify({"error": "not found"}), 404
+
+        md = _render_analysis_markdown(rec)
+        filename_base = f"{rec.get('ticker', 'analysis')}-{rec.get('date', 'undated')}"
+        if fmt == "md":
+            return Response(
+                md, mimetype="text/markdown",
+                headers={
+                    "Content-Disposition":
+                        f'attachment; filename="{filename_base}.md"',
+                },
+            )
+        if fmt == "pdf":
+            try:
+                # WeasyPrint is heavy + has system deps. We treat it as
+                # opt-in; the markdown export always works and is the
+                # safer default.
+                from weasyprint import HTML  # type: ignore[import-not-found]
+                import markdown as md_lib  # type: ignore[import-not-found]
+            except ImportError:
+                return jsonify({
+                    "error": "pdf_unavailable",
+                    "message": "PDF export requires weasyprint + markdown; "
+                               "install via `pip install weasyprint markdown` "
+                               "and restart. Markdown export still works.",
+                }), 501
+            html = md_lib.markdown(md, extensions=["tables", "fenced_code"])
+            pdf_bytes = HTML(string=html).write_pdf()
+            return Response(
+                pdf_bytes, mimetype="application/pdf",
+                headers={
+                    "Content-Disposition":
+                        f'attachment; filename="{filename_base}.pdf"',
+                },
+            )
+        return jsonify({"error": "format must be md|pdf"}), 400
+
+    @app.route("/api/history/<int:analysis_id>/bookmark", methods=["POST"])
+    def api_bookmark_toggle(analysis_id):
+        if g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
+        body = request.get_json(silent=True) or {}
+        bookmarked = bool(body.get("bookmarked", True))
+        from stock_trading_system.portfolio.database import PortfolioDatabase
+        db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
+        db = PortfolioDatabase(db_path)
+        # Confirm the analysis exists; otherwise the FK constraint would
+        # mask the real "wrong id" with a generic error.
+        if not db.get_analysis_by_id(analysis_id):
+            return jsonify({"error": "not found"}), 404
+        new_state = db.set_bookmark(g.user.id, analysis_id, bookmarked)
+        return jsonify({"ok": True, "bookmarked": new_state})
+
+    @app.route("/api/portfolio/track", methods=["POST"])
+    def api_portfolio_track():
+        """Add a ticker to the user's lightweight watchlist + audit-link
+        the originating analysis. Does NOT touch the paper-trade session
+        store — that integration lives in /api/paper/track and is heavier.
+        """
+        if g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
+        body = request.get_json(silent=True) or {}
+        ticker = (body.get("ticker") or "").upper().strip()
+        analysis_id = body.get("analysis_id")
+        if not ticker:
+            return jsonify({"error": "ticker required"}), 400
+        try:
+            analysis_id_int = int(analysis_id) if analysis_id is not None else None
+        except (TypeError, ValueError):
+            return jsonify({"error": "analysis_id must be int"}), 400
+        from stock_trading_system.portfolio.database import PortfolioDatabase
+        db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
+        db = PortfolioDatabase(db_path)
+        db.add_to_watchlist(
+            user_id=g.user.id, ticker=ticker, analysis_id=analysis_id_int,
+        )
+        return jsonify({"ok": True, "ticker": ticker, "analysis_id": analysis_id_int})
 
     # ── Reports API ─────────────────────────────────────────────────────
 
@@ -962,6 +1426,70 @@ def create_app(config_path=None):
         })
 
     # ── Chart / Fundamentals / News ─────────────────────────────────────
+
+    def _days_to_period(days: int) -> str:
+        """Map a day window to the closest yfinance/Schwab `period` string."""
+        if days <= 7:
+            return "5d"
+        if days <= 31:
+            return "1mo"
+        if days <= 95:
+            return "3mo"
+        if days <= 190:
+            return "6mo"
+        if days <= 380:
+            return "1y"
+        if days <= 760:
+            return "2y"
+        return "5y"
+
+    def _ohlcv_rows(df) -> list[dict]:
+        df = df.copy()
+        df.columns = [str(c).lower() for c in df.columns]
+        rows: list[dict] = []
+        for idx, row in df.iterrows():
+            try:
+                date_str = idx.strftime("%Y-%m-%d") if hasattr(idx, "strftime") else str(idx)
+            except Exception:
+                date_str = str(idx)
+            rows.append({
+                "date": date_str,
+                "open": float(row.get("open", 0) or 0),
+                "high": float(row.get("high", 0) or 0),
+                "low": float(row.get("low", 0) or 0),
+                "close": float(row.get("close", 0) or 0),
+                "volume": float(row.get("volume", 0) or 0),
+            })
+        return rows
+
+    @app.route("/api/quote/history")
+    def api_quote_history():
+        """OHLCV bars for K-line rendering (TVChart / lightweight-charts).
+
+        Query params:
+            ticker: required, stock symbol
+            days:   rolling window size (default 90); mapped to provider period
+
+        Returns ``{ticker, days, bars: [{date,open,high,low,close,volume}, ...]}``.
+        Empty ``bars`` (rather than 404) lets the frontend show the chart
+        skeleton without tripping its error path.
+        """
+        ticker = (request.args.get("ticker") or "").strip().upper()
+        if not ticker:
+            return jsonify({"error": "ticker required"}), 400
+        try:
+            days = int(request.args.get("days", 90))
+        except (TypeError, ValueError):
+            days = 90
+        days = max(1, min(days, 1825))  # clamp to ~5y
+        period = _days_to_period(days)
+        try:
+            df = _get_data_manager().get_history(ticker, period=period, interval="1d")
+        except Exception as e:  # noqa: BLE001
+            logger.warning("/api/quote/history failed for %s: %s", ticker, e)
+            return jsonify({"ticker": ticker, "days": days, "bars": [], "error": str(e)}), 200
+        bars = _ohlcv_rows(df) if (df is not None and len(df) > 0) else []
+        return jsonify({"ticker": ticker, "days": days, "bars": bars})
 
     @app.route("/api/chart/<ticker>")
     def api_chart(ticker):
@@ -1055,18 +1583,101 @@ def create_app(config_path=None):
         pm.take_snapshot()
         return jsonify({"ok": True, "message": "Snapshot saved"})
 
+    @app.route("/api/portfolio/snapshots/backfill", methods=["POST"])
+    def api_portfolio_snapshots_backfill():
+        """Submit a backfill task that replays transactions into daily_snapshots.
+
+        Body: ``{"from": "earliest" | "<YYYY-MM-DD>", "force": bool}``
+        Returns ``{"task_id": "...", "task": {...}}`` so the frontend can
+        subscribe to its progress through the unified-progress stream.
+        """
+        if g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
+        body = request.get_json(silent=True) or {}
+        params = {
+            "user_id": g.user.id,
+            "from": body.get("from", "earliest"),
+            "force": bool(body.get("force", False)),
+        }
+        tm = _get_task_manager()
+        task = tm.submit(
+            "backfill_snapshots", params,
+            title=f"回填净值快照 · user={g.user.id}",
+            created_by=g.user.id,
+        )
+        return jsonify({"ok": True, "task_id": task["id"], "task": task})
+
     # ── Scheduler Control ───────────────────────────────────────────────
+
+    def _last_snapshot_at(uid: int | None) -> str | None:
+        """MAX(date) FROM daily_snapshots — surfaced in /api/scheduler/status."""
+        import sqlite3 as _sql
+        path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
+        try:
+            conn = _sql.connect(path)
+        except _sql.OperationalError:
+            return None
+        try:
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(daily_snapshots)").fetchall()}
+            if uid is not None and "user_id" in cols:
+                row = conn.execute(
+                    "SELECT MAX(date) FROM daily_snapshots WHERE user_id = ?", (uid,),
+                ).fetchone()
+            else:
+                row = conn.execute("SELECT MAX(date) FROM daily_snapshots").fetchone()
+            return row[0] if row else None
+        finally:
+            conn.close()
+
+    def _daily_snapshot_scheduler():
+        """Return the APScheduler singleton if the boot path wired it up."""
+        from stock_trading_system.scheduler.daily_snapshot_scheduler import (
+            DailySnapshotScheduler,
+        )
+        try:
+            return DailySnapshotScheduler.get()
+        except RuntimeError:
+            return None
 
     @app.route("/api/scheduler/status")
     def api_scheduler_status():
+        """Combined status: legacy alert/report scheduler + APScheduler daily job."""
         global _scheduler_thread
         sched = _get_scheduler()
         alive = _scheduler_thread is not None and _scheduler_thread.is_alive()
-        return jsonify({
+        legacy = {
             "running": bool(alive and sched.is_running),
             "thread_alive": bool(alive),
             "alert_interval": sched._alert_interval,
+        }
+        # APScheduler daily-snapshot details (the field /api/scheduler/run-now
+        # actually fires).
+        apsched_payload: dict
+        ap = _daily_snapshot_scheduler()
+        if ap is None:
+            apsched_payload = {"running": False, "jobs": [], "primary": False, "pid": None}
+        else:
+            apsched_payload = ap.status()
+        uid = g.user.id if g.user else None
+        return jsonify({
+            **legacy,
+            "running": bool(legacy["running"] or apsched_payload.get("running")),
+            "jobs": apsched_payload.get("jobs", []),
+            "primary": apsched_payload.get("primary", False),
+            "pid": apsched_payload.get("pid"),
+            "last_run": _last_snapshot_at(uid),
+            "legacy": legacy,
         })
+
+    @app.route("/api/scheduler/run-now", methods=["POST"])
+    @admin_required
+    def api_scheduler_run_now():
+        """Fire the daily-snapshot job immediately (admin-only)."""
+        ap = _daily_snapshot_scheduler()
+        if ap is None:
+            return jsonify({"ok": False, "error": "scheduler not initialized"}), 503
+        result = ap.run_now()
+        return jsonify({"ok": True, "result": result})
 
     @app.route("/api/scheduler/start", methods=["POST"])
     def api_scheduler_start():
@@ -1245,8 +1856,15 @@ def create_app(config_path=None):
 
         Query: ?q=<substring>&limit=<per-group>
         Returns: { q, positions, transactions, analyses, alerts } — each a list.
-        Matching is case-insensitive substring against ticker plus
-        category-specific fields (action/signal/condition/notes).
+
+        Per-user isolation: positions / transactions / alerts are scoped to
+        ``g.user.id`` so two users with overlapping tickers cannot leak rows
+        across tenants. ``analysis_history`` stays shared (it's the research
+        library — per-user advice lives in ``user_analysis_advice``).
+
+        Transactions DO NOT index ``notes`` — those are private free-text
+        and indexing them would expose another user's thesis through any
+        casual substring query.
         """
         raw = (request.args.get("q") or "").strip()
         if not raw:
@@ -1260,11 +1878,12 @@ def create_app(config_path=None):
         from stock_trading_system.portfolio.database import PortfolioDatabase
         db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
         db = PortfolioDatabase(db_path)
+        uid = g.user.id if getattr(g, "user", None) else None
 
         # Positions — read rows directly so we don't trigger live price fetches.
         positions_out = []
         try:
-            for p in db.get_all_positions():
+            for p in db.get_all_positions(user_id=uid):
                 if q in p.ticker.lower():
                     positions_out.append({
                         "ticker": p.ticker,
@@ -1277,14 +1896,15 @@ def create_app(config_path=None):
             logger.warning("search positions failed: %s", e)
         positions_out = positions_out[:limit]
 
-        # Transactions — ticker, action, notes.
+        # Transactions — ticker + action only. Notes are private; never index.
         transactions_out = []
         try:
-            for t in db.get_transactions():
-                hay = f"{t.ticker} {t.action} {t.notes or ''}".lower()
+            for t in db.get_transactions(user_id=uid):
+                hay = f"{t.ticker} {t.action}".lower()
                 if q in hay:
                     transactions_out.append({
-                        "id": t.id, "ticker": t.ticker, "action": t.action,
+                        "id": t.id, "ticker": t.ticker,
+                        "action": (t.action or "").upper(),
                         "shares": t.shares, "price": t.price,
                         "timestamp": t.timestamp, "notes": t.notes,
                     })
@@ -1293,21 +1913,21 @@ def create_app(config_path=None):
         except Exception as e:
             logger.warning("search transactions failed: %s", e)
 
-        # Analysis history — ticker, signal, action. Keep payload small.
+        # Analysis history — shared research library, no per-user filter.
+        # Per-user advice fields (action/confidence) live in user_analysis_advice
+        # so we deliberately don't surface them here in a cross-user search.
         analyses_out = []
         try:
-            # Pull a reasonable window and filter in Python; avoids full-table scans
-            # while still matching against the structured columns already stored.
             for r in db.get_analysis_history(limit=500):
-                hay = " ".join(str(r.get(k) or "") for k in ("ticker", "signal", "action", "confidence", "model")).lower()
+                hay = " ".join(
+                    str(r.get(k) or "") for k in ("ticker", "signal", "model")
+                ).lower()
                 if q in hay:
                     analyses_out.append({
                         "id": r.get("id"),
                         "ticker": r.get("ticker"),
                         "date": r.get("date"),
                         "signal": r.get("signal"),
-                        "action": r.get("action"),
-                        "confidence": r.get("confidence"),
                         "model": r.get("model"),
                         "created_at": r.get("created_at"),
                     })
@@ -1319,7 +1939,7 @@ def create_app(config_path=None):
         # Alerts — match ticker or condition (e.g. "price_above").
         alerts_out = []
         try:
-            for a in db.get_active_alerts():
+            for a in db.get_active_alerts(user_id=uid):
                 hay = f"{a.get('ticker','')} {a.get('condition','')}".lower()
                 if q in hay:
                     alerts_out.append({
@@ -1372,6 +1992,8 @@ def create_app(config_path=None):
             label = "Qwen" if provider == "qwen" else "Gemini"
             return jsonify({"reason": "missing_api_key", "message": f"{label} 未配置 API key"}), 400
         save_config({"llm_provider": provider})
+        # Reset analyzer so next analysis uses new provider
+        _reset_config_dependent_singletons(["llm_provider"])
         return jsonify({"active": provider, "source": "user_config"})
 
     # ── Screen V2 (async task-based) ────────────────────────────────────
@@ -1390,7 +2012,8 @@ def create_app(config_path=None):
         }
         try:
             tm = _get_task_manager()
-            task = tm.submit("screen_v2", params)
+            uid = g.user.id if g.user else None
+            task = tm.submit("screen_v2", params, created_by=uid)
             return jsonify({"ok": True, "task_id": task["id"], "task": task})
         except Exception as e:
             logger.error("Screen V2 submit failed: %s", e)
@@ -1473,7 +2096,8 @@ def create_app(config_path=None):
     def api_paper_run(session_id: int):
         try:
             tm = _get_task_manager()
-            task = tm.submit("paper_trade", {"session_id": session_id})
+            uid = g.user.id if g.user else None
+            task = tm.submit("paper_trade", {"session_id": session_id}, created_by=uid)
             return jsonify({"ok": True, "task_id": task["id"], "task": task})
         except Exception as e:
             logger.error("Paper run submit failed: %s", e)
@@ -1520,24 +2144,84 @@ def create_app(config_path=None):
 
     @app.route("/api/paper/track", methods=["POST"])
     def api_paper_track_create():
+        """Generate a paper-trade plan + planned_orders for the requesting user.
+
+        Reads the user's per-user advice (NOT the shared ``advice_json``),
+        feeds it into ``process_analysis``, and surfaces
+        ``plan_id`` / ``num_orders`` / ``triggered`` so the UI can show
+        "已生成 / 立即成交 / 待触发" instead of an opaque ``tracked_id``.
+        """
+        if g.user is None:
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
         data = request.json or {}
         analysis_id = data.get("analysis_id")
-        session_id = data.get("session_id")
-        if not analysis_id or not session_id:
-            return jsonify({"ok": False, "error": "analysis_id + session_id required"}), 400
+        if not analysis_id:
+            return jsonify({"ok": False, "error": "analysis_id required"}), 400
+        try:
+            aid = int(analysis_id)
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "analysis_id must be int"}), 400
+
         from stock_trading_system.portfolio.database import PortfolioDatabase
+        from stock_trading_system.strategy.paper_trader import process_analysis
         db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
-        db = PortfolioDatabase(db_path)
-        ana = db.get_analysis_by_id(analysis_id)
+        pdb = PortfolioDatabase(db_path)
+        ana = pdb.get_analysis_by_id(aid)
         if not ana:
             return jsonify({"ok": False, "error": "Analysis not found"}), 404
+
+        user_advice = pdb.get_user_advice(g.user.id, aid) or {}
         store = _get_paper_store()
-        from stock_trading_system.strategy.paper_trader import manual_track
-        tid = manual_track(store, analysis_id=analysis_id, ticker=ana["ticker"],
-                           session_id=int(session_id), notes=data.get("notes"))
-        if tid is None:
-            return jsonify({"ok": False, "error": "Failed to create tracking record"}), 500
-        return jsonify({"ok": True, "tracked_id": tid})
+        current_price = None
+        try:
+            router = _get_data_router()
+            if router:
+                pd = router.get_price(ana["ticker"])
+                if pd:
+                    current_price = pd.get("last") or pd.get("close")
+        except Exception as e:  # noqa: BLE001
+            logger.warning("price lookup for /api/paper/track failed: %s", e)
+
+        res = process_analysis(
+            store,
+            analysis_id=aid,
+            ticker=ana["ticker"],
+            analysis_date=ana.get("date") or "",
+            signal=ana.get("signal", ""),
+            advice=user_advice,
+            current_price=current_price,
+            user_id=g.user.id,
+            analysis_blob={
+                "trade_decision":    ana.get("trade_decision") or "",
+                "risk_assessment":   ana.get("risk_assessment") or "",
+                "investment_debate": ana.get("investment_debate") or "",
+            },
+        )
+        if not res.get("ok"):
+            return jsonify({
+                "ok": False,
+                "error": res.get("error", "process_analysis failed"),
+            }), 500
+
+        # Audit log: keep ``analysis_tracked`` writes so the existing
+        # tracking timeline UI still has its history rows.
+        try:
+            from stock_trading_system.strategy.paper_trader import manual_track
+            manual_track(
+                store, analysis_id=aid, ticker=ana["ticker"],
+                session_id=int(res["session_id"]),
+                notes=data.get("notes"),
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("manual_track audit log failed: %s", e)
+
+        return jsonify({
+            "ok": True,
+            "session_id": res.get("session_id"),
+            "plan_id": res.get("plan_id"),
+            "num_orders": res.get("num_orders", 0),
+            "triggered": len(res.get("triggered") or []),
+        })
 
     @app.route("/api/paper/track/<int:tracked_id>", methods=["DELETE"])
     def api_paper_track_delete(tracked_id: int):
@@ -1561,7 +2245,9 @@ def create_app(config_path=None):
     @app.route("/api/paper/tickers")
     def api_paper_tickers():
         store = _get_paper_store()
-        sessions = store.list_ticker_sessions()
+        mode_arg = (request.args.get("mode") or "forward").lower()
+        mode = mode_arg if mode_arg in {"forward", "replay"} else None
+        sessions = store.list_ticker_sessions(mode=mode)
         out = []
         for s in sessions:
             sid = int(s["id"])
@@ -1595,6 +2281,13 @@ def create_app(config_path=None):
                 "hit_rate": (hits / total) if total else None,
                 "hit_pretty": f"{hits}/{total}" if total else "—",
                 "sparkline": spark,
+                # v1.15 — surface plan/order/position state for the list UI
+                "active_plan_count": int(s.get("active_plan_count") or 0),
+                "pending_orders_count": int(s.get("pending_orders_count") or 0),
+                "triggered_orders_count": int(s.get("triggered_orders_count") or 0),
+                "open_position_shares": float(s["open_position_shares"])
+                    if s.get("open_position_shares") is not None else None,
+                "last_skip_reason": s.get("last_skip_reason"),
             })
         return jsonify(out)
 
@@ -1676,7 +2369,8 @@ def create_app(config_path=None):
     def api_paper_backfill():
         try:
             tm = _get_task_manager()
-            task = tm.submit("paper_backfill", {})
+            uid = g.user.id if g.user else None
+            task = tm.submit("paper_backfill", {}, created_by=uid)
             return jsonify({"ok": True, "task_id": task["id"], "task": task})
         except Exception as e:
             logger.error("Backfill submit failed: %s", e)
@@ -1698,29 +2392,55 @@ def create_app(config_path=None):
                 "error": f"Unknown task type: {task_type}",
                 "registered": tm.registered_types(),
             }), 400
+        # Inject LLM provider/model into shared research task params for cache dedup
+        if task_type in ("analysis", "screen", "screen_v2", "screen_v3", "backtest"):
+            from stock_trading_system.llm.router import get_active_provider
+            cfg = get_config()
+            params.setdefault("_provider", get_active_provider(cfg))
+            params.setdefault("_model", cfg.get("llm", {}).get("model", ""))
+
+        uid = g.user.id if g.user else None
+        # Inject the requester id into params so workers (e.g. analysis) can
+        # capture per-user provenance + per-user advice without each route
+        # remembering. Underscore-prefixed key matches __task_id__ etc.
+        if uid is not None:
+            params.setdefault("__user_id__", uid)
         try:
-            task = tm.submit(task_type, params, title=title)
+            task = tm.submit(task_type, params, title=title, created_by=uid)
         except Exception as e:  # noqa: BLE001
             logger.exception("Failed to submit task")
             return jsonify({"error": str(e)}), 500
         return jsonify(task)
+
+    VALID_TASK_SCOPES = {"mine", "shared_research", "all"}
 
     @app.route("/api/tasks", methods=["GET"])
     def api_tasks_list():
         tm = _get_task_manager()
         task_type = request.args.get("type")
         status = request.args.get("status")
+        scope = (request.args.get("scope") or "mine").strip()
+        # Reject unknown scopes — never silently fall through to "no filter".
+        if scope not in VALID_TASK_SCOPES:
+            scope = "mine"
         limit = min(int(request.args.get("limit", 50)), 200)
         offset = max(int(request.args.get("offset", 0)), 0)
+        uid = g.user.id if g.user else None
+        # Only admin can see 'all'; everyone else is downgraded to shared_research.
+        if scope == "all" and (not g.user or g.user.role != "admin"):
+            scope = "shared_research"
         items = tm.list(task_type=task_type, status=status,
-                        limit=limit, offset=offset)
-        total = tm.count(task_type=task_type, status=status) if hasattr(tm, "count") else len(items)
+                        limit=limit, offset=offset,
+                        created_by=uid, scope=scope)
+        total = tm.count(task_type=task_type, status=status,
+                         created_by=uid, scope=scope)
         return jsonify({
             "tasks": items,
             "items": items,  # backward compat
             "total": total,
             "limit": limit,
             "offset": offset,
+            "scope": scope,
         })
 
     @app.route("/api/tasks/<task_id>", methods=["GET"])
@@ -1729,7 +2449,98 @@ def create_app(config_path=None):
         task = tm.get(task_id)
         if not task:
             return jsonify({"error": "Task not found"}), 404
-        return jsonify(task)
+        # Enforce ownership: shared_research types are readable by any logged-in
+        # user; private types (paper_trade, alerts, batch_analysis, ...) are
+        # owner-or-admin only. Sensitive params on shared tasks are masked
+        # before returning so we don't leak per-user context (user_id, etc.).
+        err = _check_task_ownership(task)
+        if err:
+            return err
+        return jsonify(_sanitize_shared_task(task))
+
+    def _result_ref_to_int(ref: str) -> int | None:
+        """Extract the trailing integer from a `<table>:<id>` result_ref."""
+        if not ref or ":" not in ref:
+            return None
+        try:
+            return int(ref.rsplit(":", 1)[1])
+        except (ValueError, TypeError):
+            return None
+
+    def _params_dict(task: dict) -> dict:
+        """Decode params_json on a task row, returning {} for malformed rows."""
+        try:
+            raw = json.loads(task.get("params_json") or "{}")
+            return raw if isinstance(raw, dict) else {}
+        except (TypeError, json.JSONDecodeError):
+            return {}
+
+    def _check_task_ownership(task, require_owner=False):
+        """Check if current user can read/mutate a task. Returns error response or None.
+
+        Rules (default-deny — only ``SHARED_TYPES`` is an allow-list):
+
+            * If ``task.type in TaskStore.SHARED_TYPES`` → any logged-in user
+              may read detail/result. Mutations still require owner/admin.
+            * Otherwise (``PRIVATE_TYPES`` *and* anything not classified yet,
+              e.g. ``qwen_fundamentals``, ``meta_evolution``, ``echo``,
+              future task types we haven't added to either list) → only
+              owner/admin may even read it.
+            * ``require_owner=True`` (cancel/delete/retry) always requires
+              owner/admin, regardless of the type's classification.
+        """
+        from stock_trading_system.tasks.task_store import TaskStore
+        uid = str(g.user.id) if g.user else None
+        is_admin = bool(g.user and g.user.role == "admin")
+        owner = str(task.get("created_by", ""))
+        ttype = task.get("type", "")
+        is_shared = TaskStore.is_shared_type(ttype)
+        is_owner = uid is not None and owner == uid
+        if require_owner and not is_owner and not is_admin:
+            return jsonify({"error": "forbidden", "message": "Not task owner"}), 403
+        if not is_shared and not is_owner and not is_admin:
+            return jsonify({"error": "forbidden", "message": "Private task"}), 403
+        return None
+
+    # Per-task-type whitelist of params keys that are safe to expose to other
+    # users on shared research tasks. Anything else is stripped so we don't
+    # leak user_id, internal flags, or per-user context.
+    _SHARED_PARAMS_WHITELIST = {
+        "analysis":  {"ticker", "date", "_provider", "_model"},
+        "screen":    {"market", "strategy", "_provider", "_model"},
+        "screen_v2": {"market", "strategy", "enabled_gurus", "nl_query",
+                      "final_count", "max_universe", "_provider", "_model"},
+        "screen_v3": {"market", "candidate_n", "gurus", "mode",
+                      "with_roundtable", "nl_query", "_provider", "_model"},
+        "backtest":  {"ticker", "strategy_id", "period",
+                      "initial_capital", "params", "_provider", "_model"},
+        "report":    {"type", "_provider", "_model"},
+    }
+
+    def _sanitize_shared_task(task: dict) -> dict:
+        """Mask sensitive params on shared task detail when viewer is not the owner."""
+        from stock_trading_system.tasks.task_store import TaskStore
+        ttype = task.get("type", "")
+        if not TaskStore.is_shared_type(ttype):
+            return task
+        uid = str(g.user.id) if g.user else None
+        owner = str(task.get("created_by", ""))
+        is_admin = bool(g.user and g.user.role == "admin")
+        if owner == uid or is_admin:
+            return task
+        whitelist = _SHARED_PARAMS_WHITELIST.get(ttype)
+        if whitelist is None:
+            return task
+        try:
+            raw = json.loads(task.get("params_json") or "{}")
+        except (TypeError, json.JSONDecodeError):
+            return task
+        if not isinstance(raw, dict):
+            return task
+        filtered = {k: v for k, v in raw.items() if k in whitelist}
+        cleaned = dict(task)
+        cleaned["params_json"] = json.dumps(filtered, ensure_ascii=False)
+        return cleaned
 
     @app.route("/api/tasks/<task_id>/result", methods=["GET"])
     def api_task_result(task_id):
@@ -1737,6 +2548,9 @@ def create_app(config_path=None):
         task = tm.get(task_id)
         if not task:
             return jsonify({"error": "Task not found"}), 404
+        err = _check_task_ownership(task)
+        if err:
+            return err
         if task["status"] != "success" or not task.get("result_ref"):
             return jsonify({"status": task["status"], "message": "Result not ready"}), 404
         result = tm.get_result(task_id)
@@ -1747,6 +2561,12 @@ def create_app(config_path=None):
     @app.route("/api/tasks/<task_id>/retry", methods=["POST"])
     def api_task_retry(task_id):
         tm = _get_task_manager()
+        task = tm.get(task_id)
+        if not task:
+            return jsonify({"error": "Task not found"}), 404
+        err = _check_task_ownership(task, require_owner=True)
+        if err:
+            return err
         try:
             new_task = tm.retry(task_id)
         except ValueError as e:
@@ -1759,6 +2579,9 @@ def create_app(config_path=None):
         task = tm.get(task_id)
         if not task:
             return jsonify({"error": "Task not found"}), 404
+        err = _check_task_ownership(task, require_owner=True)
+        if err:
+            return err
         if task["status"] not in ("pending", "running"):
             return jsonify({"error": f"Cannot cancel task in status '{task['status']}'"}), 409
         ok = tm.cancel(task_id)
@@ -1767,6 +2590,12 @@ def create_app(config_path=None):
     @app.route("/api/tasks/<task_id>", methods=["DELETE"])
     def api_task_delete(task_id):
         tm = _get_task_manager()
+        task = tm.get(task_id)
+        if not task:
+            return jsonify({"error": "Task not found"}), 404
+        err = _check_task_ownership(task, require_owner=True)
+        if err:
+            return err
         ok = tm.delete(task_id)
         if not ok:
             return jsonify({"error": "Task not found"}), 404
@@ -1934,27 +2763,84 @@ def create_app(config_path=None):
             task_type="screen_v3",
             params=params,
             title=f"V3 选股: {params['nl_query'][:30] or '默认'}",
+            created_by=user_id,
         )
         return jsonify({"task_id": task["id"], "estimated": params})
 
-    @app.route("/api/screen/v3/results/<result_id>")
-    def api_screen_v3_result(result_id):
-        """Return full V3 screening result."""
+    @app.route("/api/screen/v3/results/<task_or_result_id>")
+    def api_screen_v3_result(task_or_result_id):
+        """Return a V3 screening result.
+
+        Frontend hits /screener-v3?result=<id>, where ``<id>`` is the
+        ``task.id`` (UUID) returned by /trigger. We accept either:
+
+        * a task UUID  → look up via TaskStore.get(), follow ``result_ref``;
+        * a positive integer → fall back to ``screen_results_v2`` row id.
+
+        Always returns ``{id, task_id, created_at, candidates, roundtable, ...}``
+        no matter which table the result lives in.
+        """
         try:
-            from stock_trading_system.screener.v2.result_store import ScreenResultStore
-            store = ScreenResultStore(
-                get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
-            )
-            result = store.get_by_id(int(result_id))
-            if not result:
-                return jsonify({"error": "not found"}), 404
-            return jsonify(result)
-        except Exception as e:
+            store = _get_task_store()
+
+            # 1) Task-UUID path: this is the only shape the V3 frontend ever
+            #    produces today. result_ref can point to either
+            #    ``screen_results_v2:N`` (when the worker chose to pre-persist)
+            #    or ``task_results_generic:N`` (default for screen_v3).
+            task = store.get(task_or_result_id)
+            if task and task.get("result_ref"):
+                ref = str(task["result_ref"])
+                payload: dict | None = None
+                if ref.startswith("screen_results_v2:"):
+                    sid = _result_ref_to_int(ref)
+                    if sid is not None:
+                        v2 = store.get_screen_v2_result(sid)
+                        if v2:
+                            payload = v2.get("results") or {}
+                else:
+                    raw = store.load_result(ref)
+                    payload = raw if isinstance(raw, dict) else None
+                if payload is not None:
+                    response = {
+                        "id": _result_ref_to_int(ref),
+                        "task_id": task["id"],
+                        "created_at": task.get("completed_at") or task.get("created_at"),
+                        "params": _params_dict(task),
+                        "candidates": payload.get("candidates") or [],
+                        "roundtable": payload.get("roundtable"),
+                    }
+                    # Pass through any extra fields the v3 pipeline produced.
+                    for k, v in payload.items():
+                        if k not in ("candidates", "roundtable", "id", "task_id"):
+                            response.setdefault(k, v)
+                    return jsonify(response)
+
+            # 2) Bare integer path: legacy / direct v2 result lookup.
+            if str(task_or_result_id).isdigit():
+                v2 = store.get_screen_v2_result(int(task_or_result_id))
+                if v2:
+                    inner = v2.get("results") or {}
+                    response = {
+                        "id": v2.get("id"),
+                        "task_id": v2.get("task_id"),
+                        "created_at": v2.get("created_at"),
+                        "candidates": inner.get("candidates") or [],
+                        "roundtable": inner.get("roundtable"),
+                    }
+                    for k, v in inner.items():
+                        if k not in ("candidates", "roundtable", "id", "task_id"):
+                            response.setdefault(k, v)
+                    return jsonify(response)
+
+            return jsonify({"error": "result_not_found"}), 404
+        except Exception as e:  # noqa: BLE001
+            logger.exception("V3 result lookup failed")
             return jsonify({"error": str(e)}), 500
 
     # ── Seed Data ───────────────────────────────────────────────────────
 
     @app.route("/api/seed", methods=["POST"])
+    @admin_required
     def api_seed():
         from stock_trading_system.web.seed_data import seed_msft_analysis
         seed_msft_analysis()

@@ -16,13 +16,43 @@ logger = get_logger("portfolio.manager")
 class PortfolioManager:
     """Portfolio manager with manual position entry and real-time P&L."""
 
-    def __init__(self, config: dict):
-        self._config = config
-        db_path = config.get("portfolio", {}).get("db_path", "data/portfolio.db")
+    def __init__(
+        self,
+        config: dict | str,
+        data_manager: DataManager | None = None,
+    ):
+        """Accepts either a config dict (production path) or a raw db_path
+        string (lightweight test/CLI path).
+
+        The string form is used by integration tests that just want to
+        exercise add/sell/snapshot flows against a temp SQLite file
+        without bootstrapping a full provider config. In that mode we
+        still construct a DataManager but with an empty config, so the
+        provider fan-out fails fast and ``get_holdings`` falls back to
+        ``current_price=0`` instead of trying to hit a real network.
+        """
+        if isinstance(config, str):
+            db_path = config
+            self._config = {"portfolio": {"db_path": db_path}}
+        else:
+            self._config = config
+            db_path = config.get("portfolio", {}).get("db_path", "data/portfolio.db")
         self._db = PortfolioDatabase(db_path)
-        self._data_manager = DataManager(config)
+        self._data_manager = data_manager or DataManager(self._config)
 
     # ── Manual Entry ─────────────────────────────────────────────────────
+
+    def _user_id(self, user_id: int | None = None) -> int | None:
+        """Resolve user_id: explicit param > flask g.user > None."""
+        if user_id is not None:
+            return user_id
+        try:
+            from flask import g, has_request_context
+            if has_request_context() and hasattr(g, "user") and g.user:
+                return g.user.id
+        except ImportError:
+            pass
+        return None
 
     def add_position(
         self,
@@ -32,24 +62,21 @@ class PortfolioManager:
         market: str | None = None,
         date: str | None = None,
         notes: str = "",
+        user_id: int | None = None,
     ):
-        """Record a buy and update position.
-
-        If position exists, calculates new average cost.
-        """
+        """Record a buy and update position."""
+        uid = self._user_id(user_id)
         market = market or detect_market(ticker)
         date = date or datetime.now().strftime("%Y-%m-%d")
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        # Record transaction
         txn = Transaction(
             id=None, ticker=ticker, action="buy",
-            shares=shares, price=price, timestamp=timestamp, notes=notes,
+            shares=shares, price=price, timestamp=timestamp, notes=notes, user_id=uid,
         )
         self._db.add_transaction(txn)
 
-        # Update position
-        existing = self._db.get_position(ticker)
+        existing = self._db.get_position(ticker, user_id=uid)
         if existing:
             total_cost = existing.shares * existing.avg_cost + shares * price
             new_shares = existing.shares + shares
@@ -60,11 +87,11 @@ class PortfolioManager:
         else:
             pos = Position(
                 ticker=ticker, market=market,
-                shares=shares, avg_cost=price, added_date=date,
+                shares=shares, avg_cost=price, added_date=date, user_id=uid,
             )
             self._db.upsert_position(pos)
 
-        logger.info("Added: BUY %s %s @ %s", shares, ticker, price)
+        logger.info("Added: BUY %s %s @ %s (user=%s)", shares, ticker, price, uid)
 
     def sell_position(
         self,
@@ -73,67 +100,113 @@ class PortfolioManager:
         price: float,
         date: str | None = None,
         notes: str = "",
+        user_id: int | None = None,
     ):
         """Record a sell and update position.
 
-        Removes position if all shares sold.
+        Validates the holding *before* writing the transaction so a sell
+        against a non-existent or under-held position raises instead of
+        leaving an orphan SELL row in transactions. Web callers
+        (``/api/portfolio/sell``) repeat this check at the route layer
+        for a 400 with a clean error message; this guard is the
+        last-resort defence for non-web callers.
         """
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        uid = self._user_id(user_id)
+        existing = self._db.get_position(ticker, user_id=uid)
+        if existing is None:
+            raise ValueError(f"No position to sell for {ticker} (user={uid})")
+        if shares > existing.shares + 1e-9:
+            raise ValueError(
+                f"Sell shares ({shares}) exceeds holding ({existing.shares})"
+            )
 
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         txn = Transaction(
             id=None, ticker=ticker, action="sell",
-            shares=shares, price=price, timestamp=timestamp, notes=notes,
+            shares=shares, price=price, timestamp=timestamp, notes=notes, user_id=uid,
         )
         self._db.add_transaction(txn)
 
-        existing = self._db.get_position(ticker)
-        if existing:
-            remaining = existing.shares - shares
-            if remaining <= 0:
-                self._db.delete_position(ticker)
-                logger.info("Sold all: %s %s @ %s (position closed)", shares, ticker, price)
-            else:
-                existing.shares = remaining
-                self._db.upsert_position(existing)
-                logger.info("Sold: %s %s @ %s (remaining: %s)", shares, ticker, price, remaining)
+        remaining = existing.shares - shares
+        if remaining <= 1e-9:
+            self._db.delete_position(ticker, user_id=uid)
+            logger.info("Sold all: %s %s @ %s (closed, user=%s)", shares, ticker, price, uid)
         else:
-            logger.warning("No position found for %s, recording transaction only", ticker)
+            existing.shares = remaining
+            self._db.upsert_position(existing)
+            logger.info("Sold: %s %s @ %s (remaining=%s, user=%s)",
+                        shares, ticker, price, remaining, uid)
 
-    def update_cost(self, ticker: str, avg_cost: float):
+    def remove_position(self, ticker: str, user_id: int | None = None):
+        """Remove a position entirely without recording a transaction."""
+        uid = self._user_id(user_id)
+        self._db.delete_position(ticker, user_id=uid)
+        logger.info("Removed position: %s (user=%s)", ticker, uid)
+
+    def update_cost(self, ticker: str, avg_cost: float, user_id: int | None = None):
         """Manually correct the average cost for a position."""
-        existing = self._db.get_position(ticker)
+        uid = self._user_id(user_id)
+        existing = self._db.get_position(ticker, user_id=uid)
         if existing:
             existing.avg_cost = avg_cost
             self._db.upsert_position(existing)
-            logger.info("Updated avg cost for %s to %s", ticker, avg_cost)
+            logger.info("Updated avg cost for %s to %s (user=%s)", ticker, avg_cost, uid)
 
     # ── Queries ──────────────────────────────────────────────────────────
 
-    def get_holdings(self) -> list[dict]:
+    def get_holdings(self, user_id: int | None = None) -> list[dict]:
         """Get all positions with real-time price and P&L.
 
-        Fetches prices concurrently to avoid serial network delays.
+        Fast path: when Schwab is enabled, fetch all US tickers in one batch
+        quote (up to 500 symbols/request). Misses + CN positions fall back to
+        per-ticker concurrent fetch via DataManager (which has provider
+        failover and a 60s LocalCache TTL).
+
+        Also uses Flask request-scoped cache (flask.g) to avoid duplicate
+        fetches within a single HTTP request (dashboard calls this twice).
         """
+        uid = self._user_id(user_id)
+
+        try:
+            from flask import g, has_request_context
+            if has_request_context() and hasattr(g, "_holdings_cache"):
+                return g._holdings_cache
+        except ImportError:
+            pass
+
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
-        positions = self._db.get_all_positions()
+        positions = self._db.get_all_positions(user_id=uid)
         if not positions:
             return []
 
-        # Fetch all prices in parallel
-        def _fetch_price(pos):
+        # 1) Schwab batch for US tickers — one network call replaces N calls.
+        prices: dict[str, float] = {}
+        us_tickers = [p.ticker for p in positions if p.market == "us"]
+        if us_tickers:
             try:
-                data = self._data_manager.get_price(pos.ticker, market=pos.market)
-                return pos.ticker, (data.get("last") or data.get("close") or 0) if data else 0
-            except Exception:
-                return pos.ticker, 0
+                batch = self._data_manager.get_prices_batch(us_tickers, market="us")
+            except Exception:  # noqa: BLE001
+                batch = {}
+            for ticker, quote in (batch or {}).items():
+                if quote:
+                    prices[ticker] = quote.get("last") or quote.get("close") or 0
 
-        prices = {}
-        with ThreadPoolExecutor(max_workers=min(len(positions), 8)) as pool:
-            futures = {pool.submit(_fetch_price, p): p for p in positions}
-            for f in as_completed(futures):
-                ticker, price = f.result()
-                prices[ticker] = price
+        # 2) Whatever the batch missed (and any CN positions) → per-ticker fallback.
+        missing = [p for p in positions if p.ticker not in prices]
+        if missing:
+            def _fetch_price(pos):
+                try:
+                    data = self._data_manager.get_price(pos.ticker, market=pos.market)
+                    return pos.ticker, (data.get("last") or data.get("close") or 0) if data else 0
+                except Exception:
+                    return pos.ticker, 0
+
+            with ThreadPoolExecutor(max_workers=min(len(missing), 8)) as pool:
+                futures = {pool.submit(_fetch_price, p): p for p in missing}
+                for f in as_completed(futures):
+                    ticker, price = f.result()
+                    prices[ticker] = price
 
         holdings = []
         for pos in positions:
@@ -154,11 +227,19 @@ class PortfolioManager:
                 "added_date": pos.added_date,
             })
 
+        try:
+            from flask import g, has_request_context
+            if has_request_context():
+                g._holdings_cache = holdings
+        except ImportError:
+            pass
+
         return holdings
 
-    def get_transactions(self, ticker: str | None = None) -> list[dict]:
+    def get_transactions(self, ticker: str | None = None, user_id: int | None = None) -> list[dict]:
         """Get transaction history."""
-        txns = self._db.get_transactions(ticker)
+        uid = self._user_id(user_id)
+        txns = self._db.get_transactions(ticker, user_id=uid)
         return [
             {
                 "id": t.id,
@@ -172,9 +253,9 @@ class PortfolioManager:
             for t in txns
         ]
 
-    def get_pnl(self) -> dict:
+    def get_pnl(self, user_id: int | None = None) -> dict:
         """Get portfolio-level P&L summary."""
-        holdings = self.get_holdings()
+        holdings = self.get_holdings(user_id=user_id)
 
         total_cost = sum(h["cost_basis"] for h in holdings)
         total_value = sum(h["market_value"] for h in holdings)
@@ -189,9 +270,9 @@ class PortfolioManager:
             "positions": len(holdings),
         }
 
-    def get_allocation(self) -> list[dict]:
+    def get_allocation(self, user_id: int | None = None) -> list[dict]:
         """Get position allocation breakdown."""
-        holdings = self.get_holdings()
+        holdings = self.get_holdings(user_id=user_id)
         total_value = sum(h["market_value"] for h in holdings)
 
         if total_value == 0:
@@ -209,10 +290,11 @@ class PortfolioManager:
 
     # ── Snapshots ────────────────────────────────────────────────────────
 
-    def take_snapshot(self):
+    def take_snapshot(self, user_id: int | None = None):
         """Save a daily portfolio snapshot."""
-        holdings = self.get_holdings()
-        pnl = self.get_pnl()
+        uid = self._user_id(user_id)
+        holdings = self.get_holdings(user_id=uid)
+        pnl = self.get_pnl(user_id=uid)
 
         snapshot = DailySnapshot(
             date=datetime.now().strftime("%Y-%m-%d"),
@@ -221,13 +303,24 @@ class PortfolioManager:
             pnl=pnl["total_pnl"],
             pnl_pct=pnl["total_pnl_pct"],
             positions_json=json.dumps(holdings, default=str),
+            user_id=uid,
         )
         self._db.save_snapshot(snapshot)
-        logger.info("Snapshot saved for %s", snapshot.date)
+        logger.info("Snapshot saved for %s (user=%s)", snapshot.date, uid)
 
-    def get_history(self, days: int = 30) -> list[dict]:
-        """Get historical portfolio snapshots."""
-        snapshots = self._db.get_snapshots(days)
+    def get_history(
+        self,
+        days: int | None = 30,
+        user_id: int | None = None,
+    ) -> list[dict]:
+        """Get historical portfolio snapshots.
+
+        Pass ``days=None`` for the entire series since the user's first
+        snapshot. The result is ordered ascending so consumers can plot it
+        as an equity curve without resorting.
+        """
+        uid = self._user_id(user_id)
+        snapshots = self._db.get_snapshots(days, user_id=uid)
         return [
             {
                 "date": s.date,

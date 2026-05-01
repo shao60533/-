@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo } from "react"
 import {
   TrendingUp, Wallet, Target, Bell,
-  Sparkles, Activity, FileText, BarChart3,
+  Sparkles, Activity, FileText, BarChart3, RefreshCw,
 } from "lucide-react"
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -10,13 +10,18 @@ import { Stat } from "@/components/ui/stat"
 import { Chip, ChipRow } from "@/components/ui/chip"
 import { ChartPanel } from "@/components/shared/ChartPanel"
 import type { EChartsOption } from "@/lib/echarts"
-import { apiGet } from "@/lib/api"
+import { apiGet, apiPost } from "@/lib/api"
+import { subscribeTaskStream } from "@/lib/socket"
 import { cn } from "@/lib/utils"
 
 interface DashData {
   pnl: { total_value: number; total_pnl: number; total_pnl_pct: number }
   alerts_count: number
-  holdings: { ticker: string; shares: number; pnl_pct: number; market_value: number; avg_cost: number; current_price: number; market: string }[]
+  holdings: {
+    ticker: string; shares: number
+    pnl: number; pnl_pct: number
+    market_value: number; avg_cost: number; current_price: number; market: string
+  }[]
   history: { date: string; total_value: number; pnl: number }[]
 }
 
@@ -29,19 +34,32 @@ interface AllocItem { ticker: string; value: number; pct: number }
 function fmt(n: number) { return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }
 function fmtPct(n: number) { return `${n >= 0 ? "+" : ""}${n.toFixed(2)}%` }
 
-type Range = "7D" | "1M" | "3M" | "1Y"
-const RANGE_DAYS: Record<Range, number> = { "7D": 7, "1M": 30, "3M": 90, "1Y": 365 }
+type Range = "ALL" | "1Y" | "6M" | "3M" | "1M" | "7D"
+const RANGE_DAYS: Record<Range, number> = { "ALL": 99999, "1Y": 365, "6M": 180, "3M": 90, "1M": 30, "7D": 7 }
 
 export function DashboardPage() {
   const [data, setData] = useState<DashData | null>(null)
   const [tasks, setTasks] = useState<TaskRow[]>([])
   const [alloc, setAlloc] = useState<AllocItem[]>([])
   const [loading, setLoading] = useState(true)
-  const [range, setRange] = useState<Range>("1M")
+  const [range, setRange] = useState<Range>("ALL")
+  const [backfilling, setBackfilling] = useState(false)
+  const [backfillMsg, setBackfillMsg] = useState<string | null>(null)
+
+  // Pull /api/dashboard separately so the ↻ button can refresh it without
+  // re-fetching the whole bundle.
+  const reloadDashboard = async () => {
+    const d = await apiGet<DashData>("/api/dashboard?history_days=all")
+      .catch(() => null)
+    setData(d)
+  }
 
   useEffect(() => {
+    // history_days=all → backend returns the full daily_snapshots series so
+    // the range chips below can do client-side filtering on the complete
+    // history. Without this the chart would clip to a 30-day window.
     Promise.all([
-      apiGet<DashData>("/api/dashboard").catch(() => null),
+      apiGet<DashData>("/api/dashboard?history_days=all").catch(() => null),
       apiGet<TaskRow[]>("/api/tasks?limit=10&offset=0").catch(() => []),
       apiGet<AllocItem[]>("/api/portfolio/allocation").catch(() => []),
     ]).then(([d, t, a]) => {
@@ -51,6 +69,41 @@ export function DashboardPage() {
       setLoading(false)
     })
   }, [])
+
+  const handleBackfill = async () => {
+    setBackfilling(true)
+    setBackfillMsg("正在回填历史净值，约 1 分钟…")
+    try {
+      const res = await apiPost<{ task_id: string }>(
+        "/api/portfolio/snapshots/backfill",
+        { from: "earliest" },
+      )
+      const taskId = res.task_id
+      // Subscribe to the unified-progress channel; refresh on terminal events.
+      const sub = subscribeTaskStream({
+        taskIds: [taskId],
+        onEvent: async (env) => {
+          if (env.event === "task_completed") {
+            sub.destroy()
+            setBackfillMsg("✓ 回填完成，刷新中…")
+            await reloadDashboard()
+            setBackfilling(false)
+            setTimeout(() => setBackfillMsg(null), 2500)
+          } else if (env.event === "task_failed") {
+            sub.destroy()
+            setBackfilling(false)
+            setBackfillMsg(`回填失败：${(env.payload as any)?.error_message || "unknown"}`)
+            setTimeout(() => setBackfillMsg(null), 5000)
+          }
+        },
+        onStatusChange: () => {},
+      })
+    } catch (err: unknown) {
+      setBackfilling(false)
+      setBackfillMsg(err instanceof Error ? `回填失败：${err.message}` : "回填失败")
+      setTimeout(() => setBackfillMsg(null), 5000)
+    }
+  }
 
   const pnl = data?.pnl || { total_value: 0, total_pnl: 0, total_pnl_pct: 0 }
   const holdings = data?.holdings || []
@@ -69,9 +122,10 @@ export function DashboardPage() {
     return {
       backgroundColor: "transparent",
       tooltip: { trigger: "axis", axisPointer: { type: "cross" } },
-      grid: { left: 60, right: 20, top: 20, bottom: 30 },
+      grid: { left: 60, right: 20, top: 20, bottom: filteredHistory.length > 60 ? 50 : 30 },
       xAxis: { type: "category", data: filteredHistory.map(h => h.date), axisLine: { lineStyle: { color: "#444" } } },
       yAxis: { type: "value", axisLabel: { formatter: (v: number) => `$${(v/1000).toFixed(0)}k` }, splitLine: { lineStyle: { color: "#222" } } },
+      dataZoom: filteredHistory.length > 60 ? [{ type: "inside", start: 70, end: 100 }, { type: "slider", height: 20, bottom: 5 }] : [],
       series: [
         {
           name: "净值", type: "line", data: filteredHistory.map(h => h.total_value), smooth: true,
@@ -129,14 +183,31 @@ export function DashboardPage() {
         {/* Equity chart */}
         <Card className="lg:col-span-2">
           <CardHeader>
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-2">
               <CardTitle className="text-sm">净值曲线</CardTitle>
-              <ChipRow>
-                {(["7D", "1M", "3M", "1Y"] as Range[]).map(r => (
-                  <Chip key={r} active={range === r} onClick={() => setRange(r)}>{r}</Chip>
-                ))}
-              </ChipRow>
+              <div className="flex items-center gap-2">
+                <ChipRow>
+                  {(["ALL", "1Y", "6M", "3M", "1M", "7D"] as Range[]).map(r => (
+                    <Chip key={r} active={range === r} onClick={() => setRange(r)}>{r}</Chip>
+                  ))}
+                </ChipRow>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleBackfill}
+                  disabled={backfilling}
+                  title="按交易日重新计算所有历史净值"
+                  aria-label="重新计算历史净值"
+                  className="h-7 px-2 text-xs"
+                >
+                  <RefreshCw className={cn("h-3.5 w-3.5 mr-1", backfilling && "animate-spin")} />
+                  {backfilling ? "回填中" : "重新计算"}
+                </Button>
+              </div>
             </div>
+            {backfillMsg && (
+              <div className="text-xs text-muted-foreground mt-1">{backfillMsg}</div>
+            )}
           </CardHeader>
           <CardContent>
             <ChartPanel option={equityOption} height={280} loading={filteredHistory.length === 0} />
@@ -164,23 +235,34 @@ export function DashboardPage() {
               <p className="text-muted-foreground text-sm py-4 text-center">暂无持仓</p>
             ) : (
               <div className="space-y-2">
-                {holdings.map(h => (
-                  <div key={h.ticker} className="flex items-center justify-between text-sm border border-border rounded-lg px-4 py-2.5">
-                    <div className="flex items-center gap-3">
-                      <span className="font-mono font-semibold">{h.ticker}</span>
-                      <span className="text-xs text-muted-foreground">{h.market?.toUpperCase()}</span>
-                      <span className="text-xs text-muted-foreground">{h.shares} 股</span>
+                {holdings.map(h => {
+                  const pnlAbs = h.pnl ?? 0
+                  const pnlClass = pnlAbs > 0
+                    ? "text-[var(--color-accent-green)]"
+                    : pnlAbs < 0
+                      ? "text-[var(--color-accent-red)]"
+                      : "text-muted-foreground"
+                  return (
+                    <div key={h.ticker} className="flex items-center justify-between text-sm border border-border rounded-lg px-4 py-2.5">
+                      <div className="flex items-center gap-3">
+                        <span className="font-mono font-semibold">{h.ticker}</span>
+                        <span className="text-xs text-muted-foreground">{h.market?.toUpperCase()}</span>
+                        <span className="text-xs text-muted-foreground">{h.shares} 股</span>
+                      </div>
+                      <div className="flex items-center gap-4 text-xs">
+                        <span className="text-muted-foreground font-mono hidden md:inline">成本 ${fmt(h.avg_cost || 0)}</span>
+                        <span className="text-muted-foreground font-mono hidden md:inline">现价 ${fmt(h.current_price || 0)}</span>
+                        <span className={cn("font-mono tabular-nums", pnlClass)}>
+                          {pnlAbs >= 0 ? "+" : ""}${fmt(pnlAbs)}
+                        </span>
+                        <span className={cn("font-mono tabular-nums",
+                          h.pnl_pct >= 0 ? "text-[var(--color-accent-green)]" : "text-[var(--color-accent-red)]")}>
+                          {fmtPct(h.pnl_pct)}
+                        </span>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-4 text-xs">
-                      <span className="text-muted-foreground font-mono hidden md:inline">成本 ${fmt(h.avg_cost || 0)}</span>
-                      <span className="text-muted-foreground font-mono hidden md:inline">现价 ${fmt(h.current_price || 0)}</span>
-                      <span className={cn("font-mono tabular-nums",
-                        h.pnl_pct >= 0 ? "text-[var(--color-accent-green)]" : "text-[var(--color-accent-red)]")}>
-                        {fmtPct(h.pnl_pct)}
-                      </span>
-                    </div>
-                  </div>
-                ))}
+                  )
+                })}
               </div>
             )}
             <div className="mt-3 text-right">

@@ -41,17 +41,26 @@ class PortfolioDatabase:
 
     def _init_tables(self):
         with self._get_conn() as conn:
+            # Private tables embed user_id from creation. Composite UNIQUE
+            # over (user_id, ticker|date) is what `upsert_position` /
+            # `save_snapshot` ON CONFLICT clauses target — without it,
+            # two users with the same ticker (or same-day snapshot) collide
+            # on the legacy single-tenant primary key.
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS positions (
-                    ticker TEXT PRIMARY KEY,
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    ticker TEXT NOT NULL,
                     market TEXT NOT NULL,
                     shares REAL NOT NULL,
                     avg_cost REAL NOT NULL,
-                    added_date TEXT NOT NULL
+                    added_date TEXT NOT NULL,
+                    UNIQUE(user_id, ticker)
                 );
 
                 CREATE TABLE IF NOT EXISTS transactions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
                     ticker TEXT NOT NULL,
                     action TEXT NOT NULL,
                     shares REAL NOT NULL,
@@ -61,22 +70,35 @@ class PortfolioDatabase:
                 );
 
                 CREATE TABLE IF NOT EXISTS daily_snapshots (
-                    date TEXT PRIMARY KEY,
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    date TEXT NOT NULL,
                     total_value REAL NOT NULL,
                     total_cost REAL NOT NULL,
                     pnl REAL NOT NULL,
                     pnl_pct REAL NOT NULL,
-                    positions_json TEXT NOT NULL
+                    positions_json TEXT NOT NULL,
+                    UNIQUE(user_id, date)
                 );
 
                 CREATE TABLE IF NOT EXISTS alerts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
                     ticker TEXT NOT NULL,
                     condition TEXT NOT NULL,
                     threshold REAL NOT NULL,
                     created TEXT NOT NULL,
                     triggered INTEGER DEFAULT 0
                 );
+
+                CREATE INDEX IF NOT EXISTS ix_positions_user
+                    ON positions(user_id, ticker);
+                CREATE INDEX IF NOT EXISTS ix_transactions_user
+                    ON transactions(user_id, timestamp DESC);
+                CREATE INDEX IF NOT EXISTS ix_daily_snapshots_user
+                    ON daily_snapshots(user_id, date DESC);
+                CREATE INDEX IF NOT EXISTS ix_alerts_user
+                    ON alerts(user_id, ticker);
 
                 CREATE TABLE IF NOT EXISTS analysis_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -100,7 +122,19 @@ class PortfolioDatabase:
                     stop_loss REAL,
                     take_profit REAL,
                     model TEXT,
-                    steps_json TEXT
+                    steps_json TEXT,
+                    -- v1.14 provenance: who ran this, with which LLM, hashed
+                    -- LLM config so the same prompt+model collapses to one
+                    -- cache hit, plus task_id back-reference and timing.
+                    -- bookmarked is a per-row legacy bit; the canonical
+                    -- per-user bookmark lives in `analysis_bookmarks` so
+                    -- two users can independently star the same shared row.
+                    created_by INTEGER,
+                    provider TEXT,
+                    config_hash TEXT,
+                    task_id TEXT,
+                    duration_sec REAL,
+                    bookmarked INTEGER DEFAULT 0
                 );
 
                 CREATE TABLE IF NOT EXISTS alert_history (
@@ -154,8 +188,112 @@ class PortfolioDatabase:
 
                 CREATE INDEX IF NOT EXISTS idx_analysis_ticker_time
                     ON analysis_history(ticker, created_at DESC);
+
+                -- v1.14: split per-user advice from shared research.
+                -- analysis_history holds the shared report; this table
+                -- holds the holdings-aware position-sizing advice that
+                -- depends on the requester's portfolio. Per-user UNIQUE
+                -- so a user can re-run advice on the same shared row
+                -- (e.g. after adding a position) and replace cleanly.
+                CREATE TABLE IF NOT EXISTS user_analysis_advice (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    analysis_id INTEGER NOT NULL,
+                    holdings_context_snapshot TEXT,
+                    action TEXT,
+                    confidence TEXT,
+                    position_pct REAL,
+                    entry_low REAL,
+                    entry_high REAL,
+                    stop_loss REAL,
+                    take_profit REAL,
+                    reasoning TEXT,
+                    risk_warning TEXT,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(user_id, analysis_id),
+                    FOREIGN KEY(analysis_id)
+                        REFERENCES analysis_history(id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_uaa_user
+                    ON user_analysis_advice(user_id, created_at DESC);
+
+                -- v1.14: per-user bookmarks. Two users can independently
+                -- star the same shared analysis row.
+                CREATE TABLE IF NOT EXISTS analysis_bookmarks (
+                    user_id INTEGER NOT NULL,
+                    analysis_id INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY(user_id, analysis_id),
+                    FOREIGN KEY(analysis_id)
+                        REFERENCES analysis_history(id) ON DELETE CASCADE
+                );
+
+                -- v1.14: lightweight per-user watchlist. Receives the
+                -- analyses the "加入持仓追踪" button targets when the
+                -- user hasn't (yet) wired paper_trade.
+                CREATE TABLE IF NOT EXISTS user_watchlist (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    ticker TEXT NOT NULL,
+                    analysis_id INTEGER,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(user_id, ticker)
+                );
             """)
+            self._migrate_private_tables_user_id(conn)
             self._migrate_analysis_history(conn)
+
+    def _migrate_private_tables_user_id(self, conn: sqlite3.Connection):
+        """Add user_id to legacy single-tenant private tables.
+
+        Legacy DBs (pre-multi-tenant) created ``positions``/``transactions``/
+        ``daily_snapshots``/``alerts`` without ``user_id``. ALTER TABLE ADD
+        COLUMN is idempotent enough — once the column exists this is a no-op.
+        Composite UNIQUE indices restore per-user identity (same ticker
+        owned by two users no longer collides on the legacy ticker PK).
+
+        NULL ``user_id`` rows are backfilled to the first active user
+        (typically admin) so existing data isn't orphaned and remains
+        visible to *some* tenant rather than vanishing under the new
+        per-user filters.
+        """
+        for table in ("positions", "transactions", "daily_snapshots", "alerts"):
+            cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+            if "user_id" not in cols:
+                try:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN user_id INTEGER")
+                except sqlite3.OperationalError as e:
+                    logger.warning("ALTER %s.user_id failed: %s", table, e)
+
+        for sql in (
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_positions_user_ticker "
+            "ON positions(user_id, ticker)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_snapshots_user_date "
+            "ON daily_snapshots(user_id, date)",
+        ):
+            try:
+                conn.execute(sql)
+            except sqlite3.OperationalError as e:
+                logger.warning("create unique idx failed: %s", e)
+
+        try:
+            row = conn.execute(
+                "SELECT id FROM users WHERE status='active' "
+                "ORDER BY id ASC LIMIT 1"
+            ).fetchone()
+            default_uid = row["id"] if row else None
+        except sqlite3.OperationalError:
+            default_uid = None
+        if default_uid is not None:
+            for table in ("positions", "transactions", "daily_snapshots", "alerts"):
+                try:
+                    conn.execute(
+                        f"UPDATE {table} SET user_id = ? WHERE user_id IS NULL",
+                        (default_uid,),
+                    )
+                except sqlite3.OperationalError as e:
+                    logger.warning("backfill %s.user_id failed: %s", table, e)
 
     def _migrate_analysis_history(self, conn: sqlite3.Connection):
         """Idempotently add structured columns to pre-existing analysis_history."""
@@ -170,6 +308,15 @@ class PortfolioDatabase:
             ("take_profit", "REAL"),
             ("model", "TEXT"),
             ("steps_json", "TEXT"),
+            # v1.14 provenance columns. ALTER TABLE ADD COLUMN is idempotent
+            # — pre-existing rows get NULL, fine for a shared library that
+            # didn't capture this metadata before.
+            ("created_by", "INTEGER"),
+            ("provider", "TEXT"),
+            ("config_hash", "TEXT"),
+            ("task_id", "TEXT"),
+            ("duration_sec", "REAL"),
+            ("bookmarked", "INTEGER DEFAULT 0"),
         ]
         for name, typ in additions:
             if name not in cols:
@@ -210,53 +357,70 @@ class PortfolioDatabase:
 
     # ── Positions ────────────────────────────────────────────────────────
 
-    def get_position(self, ticker: str) -> Position | None:
+    def get_position(self, ticker: str, user_id: int | None = None) -> Position | None:
         with self._get_conn() as conn:
-            row = conn.execute("SELECT * FROM positions WHERE ticker = ?", (ticker,)).fetchone()
+            if user_id is not None:
+                row = conn.execute(
+                    "SELECT * FROM positions WHERE ticker = ? AND user_id = ?", (ticker, user_id)
+                ).fetchone()
+            else:
+                row = conn.execute("SELECT * FROM positions WHERE ticker = ?", (ticker,)).fetchone()
             if row:
                 return Position(**dict(row))
         return None
 
-    def get_all_positions(self) -> list[Position]:
+    def get_all_positions(self, user_id: int | None = None) -> list[Position]:
         with self._get_conn() as conn:
-            rows = conn.execute("SELECT * FROM positions ORDER BY ticker").fetchall()
+            if user_id is not None:
+                rows = conn.execute(
+                    "SELECT * FROM positions WHERE user_id = ? ORDER BY ticker", (user_id,)
+                ).fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM positions ORDER BY ticker").fetchall()
             return [Position(**dict(r)) for r in rows]
 
     def upsert_position(self, position: Position):
         with self._get_conn() as conn:
             conn.execute(
-                """INSERT INTO positions (ticker, market, shares, avg_cost, added_date)
-                   VALUES (?, ?, ?, ?, ?)
-                   ON CONFLICT(ticker) DO UPDATE SET
+                """INSERT INTO positions (user_id, ticker, market, shares, avg_cost, added_date)
+                   VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(user_id, ticker) DO UPDATE SET
                      shares = excluded.shares,
                      avg_cost = excluded.avg_cost""",
-                (position.ticker, position.market, position.shares, position.avg_cost, position.added_date),
+                (position.user_id, position.ticker, position.market,
+                 position.shares, position.avg_cost, position.added_date),
             )
 
-    def delete_position(self, ticker: str):
+    def delete_position(self, ticker: str, user_id: int | None = None):
         with self._get_conn() as conn:
-            conn.execute("DELETE FROM positions WHERE ticker = ?", (ticker,))
+            if user_id is not None:
+                conn.execute("DELETE FROM positions WHERE ticker = ? AND user_id = ?", (ticker, user_id))
+            else:
+                conn.execute("DELETE FROM positions WHERE ticker = ?", (ticker,))
 
     # ── Transactions ─────────────────────────────────────────────────────
 
     def add_transaction(self, txn: Transaction):
         with self._get_conn() as conn:
             conn.execute(
-                """INSERT INTO transactions (ticker, action, shares, price, timestamp, notes)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (txn.ticker, txn.action, txn.shares, txn.price, txn.timestamp, txn.notes),
+                """INSERT INTO transactions (ticker, action, shares, price, timestamp, notes, user_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (txn.ticker, txn.action, txn.shares, txn.price, txn.timestamp, txn.notes, txn.user_id),
             )
 
-    def get_transactions(self, ticker: str | None = None) -> list[Transaction]:
+    def get_transactions(self, ticker: str | None = None, user_id: int | None = None) -> list[Transaction]:
         with self._get_conn() as conn:
+            clauses, params = [], []
             if ticker:
-                rows = conn.execute(
-                    "SELECT * FROM transactions WHERE ticker = ? ORDER BY timestamp DESC", (ticker,)
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    "SELECT * FROM transactions ORDER BY timestamp DESC"
-                ).fetchall()
+                clauses.append("ticker = ?")
+                params.append(ticker)
+            if user_id is not None:
+                clauses.append("user_id = ?")
+                params.append(user_id)
+            where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+            rows = conn.execute(
+                f"SELECT * FROM transactions{where} ORDER BY timestamp DESC", params
+            ).fetchall()
             return [Transaction(**dict(r)) for r in rows]
 
     # ── Snapshots ────────────────────────────────────────────────────────
@@ -264,39 +428,70 @@ class PortfolioDatabase:
     def save_snapshot(self, snapshot: DailySnapshot):
         with self._get_conn() as conn:
             conn.execute(
-                """INSERT INTO daily_snapshots (date, total_value, total_cost, pnl, pnl_pct, positions_json)
-                   VALUES (?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(date) DO UPDATE SET
+                """INSERT INTO daily_snapshots
+                   (user_id, date, total_value, total_cost, pnl, pnl_pct, positions_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(user_id, date) DO UPDATE SET
                      total_value = excluded.total_value,
                      total_cost = excluded.total_cost,
                      pnl = excluded.pnl,
                      pnl_pct = excluded.pnl_pct,
                      positions_json = excluded.positions_json""",
-                (snapshot.date, snapshot.total_value, snapshot.total_cost,
-                 snapshot.pnl, snapshot.pnl_pct, snapshot.positions_json),
+                (snapshot.user_id, snapshot.date, snapshot.total_value,
+                 snapshot.total_cost, snapshot.pnl, snapshot.pnl_pct,
+                 snapshot.positions_json),
             )
 
-    def get_snapshots(self, days: int = 30) -> list[DailySnapshot]:
+    def get_snapshots(
+        self,
+        days: int | None = 30,
+        user_id: int | None = None,
+    ) -> list[DailySnapshot]:
+        """Return snapshots ordered ascending (oldest → newest) for charting.
+
+        ``days=None`` returns the full series so the dashboard equity curve
+        can render every snapshot since the user's first day. A positive
+        integer restricts to that rolling window (today minus N days).
+        """
+        from datetime import date as _date, timedelta as _td
+
+        clauses: list[str] = []
+        params: list = []
+        if user_id is not None:
+            clauses.append("user_id = ?")
+            params.append(user_id)
+        if days is not None:
+            cutoff = (_date.today() - _td(days=int(days))).strftime("%Y-%m-%d")
+            clauses.append("date >= ?")
+            params.append(cutoff)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         with self._get_conn() as conn:
             rows = conn.execute(
-                "SELECT * FROM daily_snapshots ORDER BY date DESC LIMIT ?", (days,)
+                f"SELECT * FROM daily_snapshots {where} ORDER BY date ASC",
+                params,
             ).fetchall()
             return [DailySnapshot(**dict(r)) for r in rows]
 
     # ── Alerts ───────────────────────────────────────────────────────────
 
-    def add_alert(self, ticker: str, condition: str, threshold: float):
+    def add_alert(self, ticker: str, condition: str, threshold: float, user_id: int | None = None):
         with self._get_conn() as conn:
             conn.execute(
-                "INSERT INTO alerts (ticker, condition, threshold, created) VALUES (?, ?, ?, ?)",
-                (ticker, condition, threshold, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+                "INSERT INTO alerts (ticker, condition, threshold, created, user_id) VALUES (?, ?, ?, ?, ?)",
+                (ticker, condition, threshold, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), user_id),
             )
 
-    def get_active_alerts(self) -> list[dict]:
+    def get_active_alerts(self, user_id: int | None = None) -> list[dict]:
         with self._get_conn() as conn:
-            rows = conn.execute(
-                "SELECT * FROM alerts WHERE triggered = 0 ORDER BY created DESC"
-            ).fetchall()
+            if user_id is not None:
+                rows = conn.execute(
+                    "SELECT * FROM alerts WHERE triggered = 0 AND user_id = ? ORDER BY created DESC",
+                    (user_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM alerts WHERE triggered = 0 ORDER BY created DESC"
+                ).fetchall()
             return [dict(r) for r in rows]
 
     def trigger_alert(self, alert_id: int):
@@ -355,8 +550,10 @@ class PortfolioDatabase:
                     news_report, fundamentals_report, investment_debate,
                     risk_assessment, trade_decision, advice_json, created_at,
                     action, confidence, position_pct,
-                    entry_low, entry_high, stop_loss, take_profit, model, steps_json)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    entry_low, entry_high, stop_loss, take_profit, model, steps_json,
+                    created_by, provider, config_hash, task_id, duration_sec, bookmarked)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                           ?, ?, ?, ?, ?, ?)""",
                 (
                     data["ticker"], data["date"], data["signal"],
                     data.get("market_report", ""),
@@ -377,6 +574,12 @@ class PortfolioDatabase:
                     _coerce_float(adv.get("take_profit")),
                     data.get("model"),
                     steps_raw,
+                    data.get("created_by"),
+                    data.get("provider"),
+                    data.get("config_hash"),
+                    data.get("task_id"),
+                    _coerce_float(data.get("duration_sec")),
+                    int(bool(data.get("bookmarked", 0))),
                 ),
             )
             return int(cur.lastrowid)
@@ -443,3 +646,111 @@ class PortfolioDatabase:
         with self._get_conn() as conn:
             cur = conn.execute("DELETE FROM analysis_history WHERE id = ?", (analysis_id,))
             return cur.rowcount > 0
+
+    # ── User-scoped advice + bookmarks (v1.14) ───────────────────────────
+
+    def save_user_advice(
+        self,
+        user_id: int,
+        analysis_id: int,
+        advice: dict,
+        holdings_snapshot: str | None = None,
+    ) -> int:
+        """UPSERT this user's advice for this shared analysis row.
+
+        Replaces any prior advice for (user_id, analysis_id) so re-running
+        with a fresh holdings snapshot stays single-row.
+        """
+        adv = advice or {}
+        with self._get_conn() as conn:
+            cur = conn.execute(
+                """INSERT INTO user_analysis_advice
+                   (user_id, analysis_id, holdings_context_snapshot,
+                    action, confidence, position_pct,
+                    entry_low, entry_high, stop_loss, take_profit,
+                    reasoning, risk_warning, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(user_id, analysis_id) DO UPDATE SET
+                     holdings_context_snapshot = excluded.holdings_context_snapshot,
+                     action = excluded.action,
+                     confidence = excluded.confidence,
+                     position_pct = excluded.position_pct,
+                     entry_low = excluded.entry_low,
+                     entry_high = excluded.entry_high,
+                     stop_loss = excluded.stop_loss,
+                     take_profit = excluded.take_profit,
+                     reasoning = excluded.reasoning,
+                     risk_warning = excluded.risk_warning,
+                     created_at = excluded.created_at""",
+                (
+                    int(user_id), int(analysis_id), holdings_snapshot or "",
+                    adv.get("action"),
+                    adv.get("confidence"),
+                    _coerce_float(adv.get("suggested_position_pct")),
+                    _coerce_float(adv.get("entry_price_low")),
+                    _coerce_float(adv.get("entry_price_high")),
+                    _coerce_float(adv.get("stop_loss")),
+                    _coerce_float(adv.get("take_profit")),
+                    adv.get("reasoning") or "",
+                    adv.get("risk_warning") or "",
+                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                ),
+            )
+            return int(cur.lastrowid)
+
+    def get_user_advice(self, user_id: int, analysis_id: int) -> dict | None:
+        """Return the requesting user's per-analysis advice (or None)."""
+        with self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM user_analysis_advice "
+                "WHERE user_id = ? AND analysis_id = ?",
+                (int(user_id), int(analysis_id)),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def set_bookmark(self, user_id: int, analysis_id: int, bookmarked: bool) -> bool:
+        """Toggle a per-user bookmark; returns the new state."""
+        with self._get_conn() as conn:
+            if bookmarked:
+                conn.execute(
+                    "INSERT OR IGNORE INTO analysis_bookmarks "
+                    "(user_id, analysis_id, created_at) VALUES (?, ?, ?)",
+                    (int(user_id), int(analysis_id),
+                     datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+                )
+                return True
+            conn.execute(
+                "DELETE FROM analysis_bookmarks "
+                "WHERE user_id = ? AND analysis_id = ?",
+                (int(user_id), int(analysis_id)),
+            )
+            return False
+
+    def is_bookmarked(self, user_id: int, analysis_id: int) -> bool:
+        with self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM analysis_bookmarks "
+                "WHERE user_id = ? AND analysis_id = ?",
+                (int(user_id), int(analysis_id)),
+            ).fetchone()
+            return row is not None
+
+    def add_to_watchlist(
+        self,
+        user_id: int,
+        ticker: str,
+        analysis_id: int | None = None,
+    ) -> int:
+        """Idempotent — same (user, ticker) just refreshes the timestamp."""
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with self._get_conn() as conn:
+            cur = conn.execute(
+                """INSERT INTO user_watchlist
+                   (user_id, ticker, analysis_id, created_at)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(user_id, ticker) DO UPDATE SET
+                     analysis_id = excluded.analysis_id,
+                     created_at = excluded.created_at""",
+                (int(user_id), ticker.upper(), analysis_id, ts),
+            )
+            return int(cur.lastrowid or 0)

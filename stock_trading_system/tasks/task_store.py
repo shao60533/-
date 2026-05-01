@@ -62,12 +62,29 @@ def now_iso() -> str:
 
 
 def hash_params(task_type: str, params: dict) -> str:
-    """Stable hash of (task_type, params) — key order independent."""
+    """Stable hash of (task_type, params) — key order independent.
+
+    Underscore-prefixed keys (``__user_id__``, ``__task_id__``,
+    ``__cancel_event__``) are TaskManager internals injected by the
+    submit / run layer; including them would make alice's "AAPL today"
+    a different cache entry from bob's, defeating shared-research dedup.
+    """
+    public = {k: v for k, v in (params or {}).items() if not str(k).startswith("__")}
     payload = json.dumps(
-        {"t": task_type, "p": params},
+        {"t": task_type, "p": public},
         sort_keys=True, ensure_ascii=False, separators=(",", ":"),
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def _safe_float(v) -> float | None:
+    """Coerce best-effort to float; None / unparseable → None."""
+    if v is None or v == "":
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
 
 
 def _parse_iso(s: str | None) -> datetime | None:
@@ -174,12 +191,75 @@ class TaskStore:
             cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
             return cur.rowcount > 0
 
+    # Allow-list of task types whose results are shared research artefacts.
+    # Any logged-in user may *read* a task of one of these types created by
+    # another user. Mutations (cancel/delete/retry) still require owner/admin.
+    # Covers: AI analysis, all screener variants, backtests, public reports.
+    SHARED_TYPES = frozenset([
+        "analysis", "screen", "screen_v2", "screen_v3",
+        "backtest", "report",
+    ])
+    # Documented private types — kept for the ``shared_research`` listing
+    # filter and as a reminder of which categories are user-specific. NOTE
+    # that this is **not** the access-check source of truth: the web layer
+    # now default-denies anything that is not in SHARED_TYPES. So new task
+    # types that nobody has classified yet stay owner-only by default.
+    PRIVATE_TYPES = frozenset([
+        "portfolio_batch", "batch_analysis", "personal_advice",
+        "alerts", "paper_trade", "paper_backfill",
+        "backfill_snapshots",
+    ])
+
+    VALID_SCOPES = frozenset({"mine", "shared_research", "all"})
+
+    @classmethod
+    def is_shared_type(cls, task_type: str) -> bool:
+        """Single source of truth for "is this task type cross-user readable?"
+
+        The web ownership check defers to this so adding a new type to
+        ``SHARED_TYPES`` is enough — no parallel allow-list to keep in sync.
+        """
+        return task_type in cls.SHARED_TYPES
+
+    def _scope_clause(
+        self,
+        scope: str | None,
+        created_by: int | None,
+    ) -> tuple[str | None, list[Any]]:
+        """Return (sql_fragment, params) for the given scope.
+
+        Contract:
+            * ``scope=None`` = programmatic / admin listing — no scope filter
+              applied. The HTTP layer is expected to never forward a None.
+            * ``scope="all"`` = explicit no-filter (admin only at HTTP layer).
+            * ``scope="shared_research"`` = restrict to SHARED_TYPES.
+            * ``scope="mine"`` = restrict to ``created_by``. With no caller id
+              we return an impossible predicate rather than leaking everything.
+            * Any other (unknown) scope falls through to "mine" semantics so a
+              typo at a future API caller can never bypass filtering and leak
+              other users' private tasks.
+        """
+        if scope is None:
+            return None, []
+        if scope == "all":
+            return None, []
+        if scope == "shared_research":
+            types = sorted(self.SHARED_TYPES)
+            placeholders = ",".join("?" * len(types))
+            return f"type IN ({placeholders})", list(types)
+        # "mine" or unknown → defensive owner filter
+        if created_by is None:
+            return "1 = 0", []
+        return "created_by = ?", [str(created_by)]
+
     def list(
         self,
         task_type: str | None = None,
         status: str | None = None,
         limit: int = 50,
         offset: int = 0,
+        created_by: int | None = None,
+        scope: str | None = None,
     ) -> list[dict]:
         clauses: list[str] = []
         params: list[Any] = []
@@ -189,6 +269,10 @@ class TaskStore:
         if status:
             clauses.append("status = ?")
             params.append(status)
+        scope_sql, scope_params = self._scope_clause(scope, created_by)
+        if scope_sql:
+            clauses.append(scope_sql)
+            params.extend(scope_params)
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         params.extend([int(limit), int(offset)])
         with self._conn() as conn:
@@ -198,6 +282,30 @@ class TaskStore:
                 params,
             ).fetchall()
             return [dict(r) for r in rows]
+
+    def count(
+        self,
+        task_type: str | None = None,
+        status: str | None = None,
+        created_by: int | None = None,
+        scope: str | None = None,
+    ) -> int:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if task_type:
+            clauses.append("type = ?")
+            params.append(task_type)
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        scope_sql, scope_params = self._scope_clause(scope, created_by)
+        if scope_sql:
+            clauses.append(scope_sql)
+            params.extend(scope_params)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        with self._conn() as conn:
+            row = conn.execute(f"SELECT COUNT(*) FROM tasks {where}", params).fetchone()
+            return row[0] if row else 0
 
     # ── Idempotency ──────────────────────────────────────────────────────
 
@@ -272,14 +380,43 @@ class TaskStore:
             return dict(row) if row else None
 
     def _save_analysis_result(self, task_id: str, result: dict) -> str:
+        """Persist a worker's analysis result as a *shared research* row.
+
+        The advice payload (action / entry / stop / reasoning) is intentionally
+        NOT written here — it lives on a per-user table (`user_analysis_advice`)
+        because it depends on the requester's holdings. This row holds only
+        what every logged-in user is allowed to read.
+        """
         self._ensure_analysis_history_table()
+
+        # Be lenient about advice in the legacy code path. Any caller still
+        # passing it gets it stored on the shared row for backward compat,
+        # but new task_manager flow strips it before calling us.
+        advice_raw = ""
+        adv = result.get("advice") or {}
+        if adv:
+            advice_raw = json.dumps(adv, ensure_ascii=False)
+
+        steps_json = result.get("steps_json")
+        if steps_json is None:
+            steps = result.get("steps")
+            if steps is not None:
+                try:
+                    steps_json = json.dumps(steps, ensure_ascii=False)
+                except (TypeError, ValueError):
+                    steps_json = None
         with self._lock, self._conn() as conn:
             cur = conn.execute(
                 """INSERT INTO analysis_history
                    (ticker, date, signal, market_report, sentiment_report,
                     news_report, fundamentals_report, investment_debate,
-                    risk_assessment, trade_decision, advice_json, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    risk_assessment, trade_decision, advice_json, created_at,
+                    action, confidence, position_pct,
+                    entry_low, entry_high, stop_loss, take_profit,
+                    model, steps_json,
+                    created_by, provider, config_hash, task_id, duration_sec, bookmarked)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                           ?, ?, ?, ?, ?, ?)""",
                 (
                     result.get("ticker", ""), result.get("date", ""),
                     result.get("signal", ""),
@@ -290,9 +427,23 @@ class TaskStore:
                     result.get("investment_debate", ""),
                     result.get("risk_assessment", ""),
                     result.get("trade_decision", ""),
-                    json.dumps(result.get("advice"), ensure_ascii=False)
-                    if result.get("advice") else "",
+                    advice_raw,
                     now_iso(),
+                    adv.get("action") if isinstance(adv, dict) else None,
+                    adv.get("confidence") if isinstance(adv, dict) else None,
+                    _safe_float(adv.get("suggested_position_pct") if isinstance(adv, dict) else None),
+                    _safe_float(adv.get("entry_price_low") if isinstance(adv, dict) else None),
+                    _safe_float(adv.get("entry_price_high") if isinstance(adv, dict) else None),
+                    _safe_float(adv.get("stop_loss") if isinstance(adv, dict) else None),
+                    _safe_float(adv.get("take_profit") if isinstance(adv, dict) else None),
+                    result.get("model"),
+                    steps_json,
+                    result.get("created_by"),
+                    result.get("provider"),
+                    result.get("config_hash"),
+                    result.get("task_id") or task_id,
+                    _safe_float(result.get("duration_sec")),
+                    0,
                 ),
             )
             return f"analysis_history:{cur.lastrowid}"
@@ -346,11 +497,14 @@ class TaskStore:
     def _ensure_analysis_history_table(self):
         """Mirror of PortfolioDatabase.analysis_history schema — same file.
 
-        Safe to call repeatedly thanks to IF NOT EXISTS. Having it here keeps
-        TaskStore self-contained (TaskManager can save analysis results even
-        before PortfolioDatabase has been initialized).
+        Safe to call repeatedly thanks to IF NOT EXISTS + idempotent ALTERs.
+        Having the schema here keeps TaskStore self-contained: TaskManager
+        can save analysis results even before PortfolioDatabase has been
+        initialized this process. The ALTER pass is the same shape as
+        PortfolioDatabase._migrate_analysis_history so a worker process
+        booting first doesn't leave a stripped-down table behind.
         """
-        with self._conn() as conn:
+        with self._lock, self._conn() as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS analysis_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -365,9 +519,43 @@ class TaskStore:
                     risk_assessment TEXT,
                     trade_decision TEXT,
                     advice_json TEXT,
-                    created_at TEXT NOT NULL
+                    created_at TEXT NOT NULL,
+                    action TEXT,
+                    confidence TEXT,
+                    position_pct REAL,
+                    entry_low REAL,
+                    entry_high REAL,
+                    stop_loss REAL,
+                    take_profit REAL,
+                    model TEXT,
+                    steps_json TEXT,
+                    created_by INTEGER,
+                    provider TEXT,
+                    config_hash TEXT,
+                    task_id TEXT,
+                    duration_sec REAL,
+                    bookmarked INTEGER DEFAULT 0
                 )
             """)
+            cols = {r[1] for r in conn.execute(
+                "PRAGMA table_info(analysis_history)"
+            ).fetchall()}
+            additions = [
+                ("action", "TEXT"), ("confidence", "TEXT"),
+                ("position_pct", "REAL"),
+                ("entry_low", "REAL"), ("entry_high", "REAL"),
+                ("stop_loss", "REAL"), ("take_profit", "REAL"),
+                ("model", "TEXT"), ("steps_json", "TEXT"),
+                ("created_by", "INTEGER"), ("provider", "TEXT"),
+                ("config_hash", "TEXT"), ("task_id", "TEXT"),
+                ("duration_sec", "REAL"),
+                ("bookmarked", "INTEGER DEFAULT 0"),
+            ]
+            for name, typ in additions:
+                if name not in cols:
+                    conn.execute(
+                        f"ALTER TABLE analysis_history ADD COLUMN {name} {typ}"
+                    )
 
     def _ensure_screen_table(self):
         with self._conn() as conn:

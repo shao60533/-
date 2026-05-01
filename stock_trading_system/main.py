@@ -308,7 +308,8 @@ def alert_list():
 
     config = get_config()
     monitor = AlertMonitor(config)
-    alerts = monitor.list_alerts()
+    # CLI is admin/operator-style — show every tenant's alerts.
+    alerts = monitor.list_alerts(scope="all")
 
     table = Table(title="Active Alerts")
     table.add_column("ID", style="dim")

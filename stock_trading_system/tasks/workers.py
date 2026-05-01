@@ -27,6 +27,10 @@ def make_analysis_worker(get_analyzer, get_strategy_engine, get_portfolio, get_r
     """Factory that builds an analysis worker bound to the given getters."""
 
     def worker(params: dict, progress_cb: ProgressCb) -> dict:
+        import time as _time
+        from stock_trading_system.config import get_config
+
+        t_start = _time.perf_counter()
         ticker = (params.get("ticker") or "").upper().strip()
         if not ticker:
             raise ValueError("Missing 'ticker' in params")
@@ -38,6 +42,9 @@ def make_analysis_worker(get_analyzer, get_strategy_engine, get_portfolio, get_r
         progress_cb(5, "初始化分析管线")
         analyzer = get_analyzer()
         task_id = params.get("__task_id__", "")
+        # The web layer injects __user_id__ at submit time so the per-user
+        # advice writer downstream knows whose holdings snapshot to take.
+        user_id = params.get("__user_id__")
 
         # Pipeline progress callback — emit events for real-time frontend updates
         from stock_trading_system.tasks.event_emitter import emit_event as _emit_ev
@@ -56,16 +63,16 @@ def make_analysis_worker(get_analyzer, get_strategy_engine, get_portfolio, get_r
         else:
             result = raw
 
-        # Record per-agent scorecards if iteration module is enabled
-        if final_state is not None:
-            _record_agent_scores(result, final_state, ticker, date, get_router)
-
         progress_cb(85, "生成策略建议")
-        advice = _build_advice(result, ticker, get_strategy_engine, get_portfolio,
-                               get_router)
+        advice, holdings_snapshot = _build_advice_with_snapshot(
+            result, ticker, get_strategy_engine, get_portfolio, get_router,
+        )
 
         progress_cb(98, "整理结果")
-        return {
+        cfg = get_config()
+        provider, model = _resolve_active_provider_model(cfg, user_id)
+
+        out: dict = {
             "ticker": ticker,
             "date": date,
             "signal": result.signal,
@@ -76,16 +83,109 @@ def make_analysis_worker(get_analyzer, get_strategy_engine, get_portfolio, get_r
             "investment_debate": str(result.investment_debate),
             "risk_assessment": str(result.risk_assessment),
             "trade_decision": str(result.trade_decision),
-            "advice": advice,
+            "model": model,
+            "provider": provider,
+            "config_hash": _hash_llm_config(cfg),
+            "duration_sec": _time.perf_counter() - t_start,
+            "task_id": task_id or None,
+            "created_by": user_id,
         }
+        if final_state is not None:
+            try:
+                out["_final_state_json"] = _serialize_final_state(final_state)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("final_state serialization failed: %s", e)
+        # Per-user advice — written to user_analysis_advice by the post-save
+        # hook in TaskManager. NOT into analysis_history (shared row).
+        if advice is not None:
+            out["_advice_payload"] = {
+                "advice": advice,
+                "holdings_snapshot": holdings_snapshot,
+            }
+        return out
 
     return worker
 
 
-def _build_advice(result, ticker, get_strategy_engine, get_portfolio, get_router):
+def _resolve_active_provider_model(cfg: dict, user_id) -> tuple[str | None, str | None]:
+    """Best-effort lookup of the active LLM provider + model for the run.
+
+    Falls back to the global provider when the per-user override is unset.
+    """
+    try:
+        from stock_trading_system.llm.router import get_active_provider
+        provider = get_active_provider(cfg, user_id=user_id) if user_id else \
+            get_active_provider(cfg)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("active provider lookup failed: %s", e)
+        provider = None
+    if provider == "qwen":
+        model = (cfg.get("qwen") or {}).get("model")
+    elif provider == "gemini":
+        gem = cfg.get("gemini") or {}
+        model = gem.get("deep_think_model") or gem.get("model")
+    else:
+        model = (cfg.get("llm") or {}).get("model")
+    return provider, model
+
+
+def _hash_llm_config(cfg: dict) -> str:
+    """SHA-1 of the LLM-relevant slice of the config.
+
+    The cache layer keys analysis results on (ticker, date, config_hash);
+    rotating a key or switching models invalidates without manual nudging.
+    """
+    import hashlib
+    payload = {
+        "llm": cfg.get("llm") or {},
+        "qwen_model": (cfg.get("qwen") or {}).get("model"),
+        "qwen_base_url": (cfg.get("qwen") or {}).get("base_url"),
+        "gemini_model": (cfg.get("gemini") or {}).get("model"),
+        "gemini_deep": (cfg.get("gemini") or {}).get("deep_think_model"),
+        "llm_provider": cfg.get("llm_provider"),
+    }
+    raw = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _serialize_final_state(final_state) -> str:
+    """Convert TradingAgents' final_state into a JSON-safe blob.
+
+    The recorder downstream rebuilds it into whatever shape `record_analysis`
+    needs; we only need round-trip preservation here.
+    """
+    try:
+        return json.dumps(final_state, default=str, ensure_ascii=False)
+    except (TypeError, ValueError):
+        # final_state may have non-serializable nested fields — fall back
+        # to its string form so we at least leave a trace.
+        return json.dumps({"repr": repr(final_state)}, ensure_ascii=False)
+
+
+def _build_advice_with_snapshot(
+    result, ticker, get_strategy_engine, get_portfolio, get_router,
+) -> tuple[dict | None, str | None]:
+    """Build per-user advice + capture the holdings snapshot at advice time.
+
+    The snapshot is what user_analysis_advice.holdings_context_snapshot stores
+    — needed so an audit trail can replay why a particular position-sizing
+    recommendation was made later.
+    """
     try:
         engine = get_strategy_engine()
-        holdings = get_portfolio().get_holdings()
+        portfolio = get_portfolio()
+        holdings = portfolio.get_holdings()
+        snapshot = json.dumps(
+            [
+                {
+                    "ticker": h.get("ticker") if isinstance(h, dict) else getattr(h, "ticker", None),
+                    "shares": h.get("shares") if isinstance(h, dict) else getattr(h, "shares", None),
+                    "avg_cost": h.get("avg_cost") if isinstance(h, dict) else getattr(h, "avg_cost", None),
+                }
+                for h in holdings
+            ],
+            ensure_ascii=False,
+        )
         router = get_router()
         price_data = router.get_price(ticker) if router else None
         current_price = None
@@ -102,14 +202,28 @@ def _build_advice(result, ticker, get_strategy_engine, get_portfolio, get_router
             "take_profit": advice_obj.take_profit,
             "reasoning": advice_obj.reasoning,
             "risk_warning": advice_obj.risk_warning,
-        }
+        }, snapshot
     except Exception as e:  # noqa: BLE001 — advice is best-effort
         logger.warning("Strategy advice failed for %s: %s", ticker, e)
-        return None
+        return None, None
 
 
-def _record_agent_scores(result, final_state, ticker, date, get_router):
-    """Best-effort: record per-agent scorecards after a successful analysis."""
+def record_agent_scores_for_analysis(
+    analysis_id: int,
+    final_state,
+    ticker: str,
+    date: str,
+    get_router,
+    db_path: str,
+) -> None:
+    """Record per-agent scorecards against an *existing* analysis row.
+
+    The previous version of this function called ``db.save_analysis(...)``
+    inside the worker just to get an id, which then collided with the
+    canonical row written by ``_save_analysis_result`` — every successful
+    iterated analysis ended up double-recorded. The fix: this function is
+    now invoked *after* the canonical row exists, and reuses its id.
+    """
     try:
         from stock_trading_system.config import get_config
         from stock_trading_system.agents.iterative.config import load_iteration_config
@@ -120,33 +234,27 @@ def _record_agent_scores(result, final_state, ticker, date, get_router):
         if not iter_config.enabled:
             return
 
-        db_path = cfg.get("portfolio", {}).get("db_path", "data/portfolio.db")
-
-        # Get price at call
         price_at_call = None
         try:
             router = get_router()
             price_data = router.get_price(ticker) if router else None
             if price_data:
                 price_at_call = price_data.get("last") or price_data.get("close")
-        except Exception:
-            pass
-
-        # Save analysis to get an ID, then record scorecards
-        from stock_trading_system.portfolio.database import PortfolioDatabase
-        db = PortfolioDatabase(db_path)
-        analysis_id = db.save_analysis({
-            "ticker": ticker, "date": date, "signal": result.signal,
-            "market_report": result.market_report,
-            "sentiment_report": result.sentiment_report,
-            "news_report": result.news_report,
-            "fundamentals_report": result.fundamentals_report,
-        })
+        except Exception as e:  # noqa: BLE001 — price is optional context
+            logger.warning("price_at_call lookup failed for %s: %s", ticker, e)
 
         scorer = AgentScorer(db_path, iter_config)
         scorer.record_analysis(analysis_id, ticker, date, final_state, price_at_call)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — scoring must never break analysis save
         logger.warning("Agent score recording failed (non-fatal): %s", e)
+
+
+def deserialize_final_state(blob: str):
+    """Inverse of ``_serialize_final_state`` — best-effort JSON load."""
+    try:
+        return json.loads(blob)
+    except (TypeError, ValueError):
+        return None
 
 
 def make_score_update_worker(get_router):
@@ -637,7 +745,10 @@ def echo_worker(params: dict, progress_cb: ProgressCb) -> dict:
     progress_cb(10, "开始")
     progress_cb(50, "处理中")
     progress_cb(90, "即将完成")
-    return {"echoed": params}
+    # Strip TaskManager-injected fields (e.g. __cancel_event__ — a threading.Event
+    # which is not JSON-serializable) so the result can be persisted.
+    safe_params = {k: v for k, v in params.items() if not str(k).startswith("__")}
+    return {"echoed": safe_params}
 
 
 # ── Registration helper ──────────────────────────────────────────────────────
@@ -689,6 +800,9 @@ def register_default_workers(tm, deps: WorkerDeps) -> None:
     # ── Paper Trade (replay AI signals against historical prices) ──
     tm.register("paper_trade", make_paper_trade_worker())
     tm.register("paper_backfill", make_paper_backfill_worker())
+
+    # ── Daily-snapshot backfill (dashboard "↻ 重新计算" button) ──
+    tm.register("backfill_snapshots", make_backfill_snapshots_worker())
 
     if deps.get_report_gen:
         tm.register("report", make_report_worker(deps.get_report_gen))
@@ -803,7 +917,10 @@ def make_paper_trade_worker():
             cfg = get_config()
             db_path = cfg.get("portfolio", {}).get("db_path", "data/portfolio.db")
             store = PaperTradeStore(db_path)
-            signals = SignalLoader(db_path)
+            # Replay simulator runs over all historical analyses without a
+            # per-user lens; opt into the legacy ``advice_json`` fallback so
+            # pre-v1.13 rows continue to feed the backtest.
+            signals = SignalLoader(db_path, allow_legacy_no_user=True)
             local = None
             if LocalCache is not None:
                 try:
@@ -845,5 +962,50 @@ def make_paper_backfill_worker():
         store = PaperTradeStore(db_path)
         pdb = PortfolioDatabase(db_path)
         result = backfill_all(store, pdb, cfg, progress_cb=progress_cb)
+        return result
+    return worker
+
+
+def make_backfill_snapshots_worker():
+    """Replay transactions + yfinance into daily_snapshots for one user.
+
+    Wraps the migration script's per-user entry point so the dashboard
+    "↻ 重新计算" button can run it through the existing TaskManager event
+    pipeline (progress + completion broadcast).
+
+    params:
+        user_id (int):  resolved from g.user.id at submit time
+        from   (str):   "earliest" (default) — earliest transaction; or an
+                        ISO date string to start later.
+        force  (bool):  pass-through to the migration's --force semantics.
+    """
+    def worker(params, progress_cb):
+        from datetime import datetime as _dt
+        from stock_trading_system.config import get_config
+        from stock_trading_system.migrations.backfill_daily_snapshots import (
+            backfill_user, backfill_all_users,
+        )
+        cfg = get_config()
+        db_path = cfg.get("portfolio", {}).get("db_path", "data/portfolio.db")
+        user_id = params.get("user_id")
+        force = bool(params.get("force", False))
+
+        progress_cb(2, "解析交易日窗口")
+        if user_id is None:
+            # No logged-in user (CLI / cron) — fall back to all-users mode.
+            results = backfill_all_users(
+                db_path,
+                force=force,
+                progress_cb=lambda pct, step: progress_cb(int(pct), step),
+            )
+            progress_cb(100, "完成")
+            return {"results": results, "ran_at": _dt.utcnow().isoformat() + "Z"}
+
+        result = backfill_user(
+            db_path, int(user_id),
+            force=force,
+            progress_cb=lambda pct, step: progress_cb(int(pct), step),
+        )
+        progress_cb(100, "完成")
         return result
     return worker

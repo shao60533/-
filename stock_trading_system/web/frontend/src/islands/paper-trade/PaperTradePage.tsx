@@ -1,7 +1,7 @@
-import { useEffect, useState, useMemo } from "react"
+import React, { useEffect, useState, useMemo } from "react"
 import {
-  CheckCircle2, Clock4, TrendingUp, AlertCircle,
-  Sparkles, ExternalLink, XCircle, Loader2, BarChart3,
+  CheckCircle2, Clock4, AlertCircle,
+  Sparkles, XCircle, BarChart3,
 } from "lucide-react"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -65,11 +65,45 @@ const STATUS_ICONS: Record<string, React.ReactNode> = {
 }
 
 export function PaperTradePage() {
-  const ticker = window.location.pathname.split("/").pop()?.toUpperCase() || ""
+  return (
+    <ErrorBoundary>
+      <PaperTradeContent />
+    </ErrorBoundary>
+  )
+}
+
+function ErrorBoundary({ children }: { children: React.ReactNode }) {
+  const [hasError, setHasError] = useState(false)
+  if (hasError) {
+    return (
+      <div className="p-6 max-w-3xl mx-auto">
+        <Alert><AlertCircle className="w-4 h-4" /> 页面渲染异常，请刷新</Alert>
+        <Button variant="outline" className="mt-4" onClick={() => window.location.reload()}>刷新页面</Button>
+      </div>
+    )
+  }
+  return (
+    <ErrorCatcher onError={() => setHasError(true)}>{children}</ErrorCatcher>
+  )
+}
+
+class ErrorCatcher extends React.Component<{ children: React.ReactNode; onError: () => void }> {
+  componentDidCatch() { this.props.onError() }
+  render() { return this.props.children }
+}
+
+function PaperTradeContent() {
+  const m = window.location.pathname.match(/\/paper-trade\/([^/?#]+)/)
+  const ticker = m?.[1]?.toUpperCase() || ""
   const [data, setData] = useState<PaperPayload | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")
   const [recordView, setRecordView] = useState<"plan" | "event">("plan")
+  // mainTab MUST be declared before any conditional return — otherwise React
+  // re-renders this component with a different number of hooks, throws
+  // "Rendered more hooks than during the previous render", and the
+  // ErrorBoundary upstream shows "页面渲染异常" instead of the real UI.
+  const [mainTab, setMainTab] = useState<"strategy" | "daily">("strategy")
 
   useEffect(() => {
     if (!ticker) { setError("未指定股票代码"); setLoading(false); return }
@@ -91,15 +125,14 @@ export function PaperTradePage() {
   )
 
   const plan = data.active_plan
-  const orders = data.active_orders || []
+  const orders = data.active_orders ?? []
   const sess = data.session
-  const [mainTab, setMainTab] = useState<"strategy" | "daily">("strategy")
 
   return (
     <div className="p-4 md:p-6 space-y-6 max-w-5xl mx-auto">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-bold">{ticker} 纸面交易</h1>
-        <Badge variant={sess.status === "running" ? "default" : "secondary"}>{sess.status}</Badge>
+        <Badge variant={sess.status === "running" ? "default" : "muted"}>{sess.status}</Badge>
       </div>
 
       {/* Main tab switch */}
@@ -112,7 +145,7 @@ export function PaperTradePage() {
         </Chip>
       </ChipRow>
 
-      {mainTab === "daily" && <DailyDataTab dailies={data.dailies || []} startCapital={sess.start_capital} />}
+      {mainTab === "daily" && <DailyDataTab dailies={data.dailies ?? []} startCapital={sess.start_capital ?? 0} />}
       {mainTab === "strategy" && (<>
       {/* BEGIN strategy tab */}
 
@@ -123,7 +156,7 @@ export function PaperTradePage() {
           <CardHeader>
             <div className="flex items-center justify-between">
               <CardTitle className="text-sm">当前策略</CardTitle>
-              {plan && <Badge variant={plan.rating === "BUY" || plan.rating === "Buy" ? "buy" : plan.rating === "SELL" ? "sell" : "secondary"}>
+              {plan && <Badge variant={plan.rating === "BUY" || plan.rating === "Buy" ? "buy" : plan.rating === "SELL" ? "sell" : "muted"}>
                 {plan.rating || "—"}
               </Badge>}
             </div>
@@ -149,7 +182,7 @@ export function PaperTradePage() {
           <CardContent>
             <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm">
               <div className="text-muted-foreground">初始资金</div>
-              <div className="font-mono text-right">${fmt(sess.start_capital)}</div>
+              <div className="font-mono text-right">${fmt(sess.start_capital ?? 0)}</div>
             </div>
           </CardContent>
         </Card>
@@ -170,24 +203,32 @@ export function PaperTradePage() {
             <p className="text-sm text-muted-foreground">无计划档位</p>
           ) : (
             <div className="space-y-2">
-              {orders.sort((a, b) => a.sequence - b.sequence).map(o => (
-                <div key={o.id} className={cn(
-                  "flex items-center gap-3 rounded-lg border px-4 py-3",
-                  o.status === "triggered" ? "border-green-500/30 bg-green-500/5" : "border-border",
-                )}>
-                  {STATUS_ICONS[o.status] || <Clock4 className="w-4 h-4" />}
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm font-medium">{ORDER_LABELS[o.order_type] || o.order_type}</div>
-                    <div className="text-xs text-muted-foreground">{o.description || o.trigger_kind}</div>
+              {[...orders]
+                .sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0))
+                .map(o => (
+                  <div key={o.id} className={cn(
+                    "flex items-center gap-3 rounded-lg border px-4 py-3",
+                    o.status === "triggered" ? "border-green-500/30 bg-green-500/5" : "border-border",
+                  )}>
+                    {STATUS_ICONS[o.status] ?? <Clock4 className="w-4 h-4" />}
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium">
+                        {ORDER_LABELS[o.order_type] ?? (o.order_type || "—")}
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        {o.description || o.trigger_kind || ""}
+                      </div>
+                    </div>
+                    {(o.pct_target_total ?? 0) > 0 && (
+                      <span className="text-xs font-mono">{o.pct_target_total}%</span>
+                    )}
+                    {o.triggered_date && (
+                      <span className="text-xs text-muted-foreground">
+                        {o.triggered_date} @ ${o.triggered_price ?? "—"}
+                      </span>
+                    )}
                   </div>
-                  {o.pct_target_total > 0 && (
-                    <span className="text-xs font-mono">{o.pct_target_total}%</span>
-                  )}
-                  {o.triggered_date && (
-                    <span className="text-xs text-muted-foreground">{o.triggered_date} @ ${o.triggered_price}</span>
-                  )}
-                </div>
-              ))}
+                ))}
             </div>
           )}
         </CardContent>
@@ -239,7 +280,7 @@ export function PaperTradePage() {
 
 /* ── Daily Data Tab ─────────────────────────────────────────── */
 
-function DailyDataTab({ dailies, startCapital }: { dailies: Daily[]; startCapital: number }) {
+function DailyDataTab({ dailies }: { dailies: Daily[]; startCapital: number }) {
   const latest = dailies.length > 0 ? dailies[dailies.length - 1] : null
   const maxDrawdown = dailies.length > 0 ? Math.min(...dailies.map(d => d.drawdown_pct)) : 0
 
@@ -393,7 +434,7 @@ function PlanHistory({ plans }: { plans: Plan[] }) {
           p.status === "active" ? "border-primary/30" : "border-border opacity-70",
         )}>
           <div className="flex items-center gap-2 mb-1">
-            <Badge variant={p.status === "active" ? "default" : "secondary"}>
+            <Badge variant={p.status === "active" ? "default" : "muted"}>
               {p.rating || "—"}
             </Badge>
             <span className="text-xs font-medium">Plan #{p.id}</span>
@@ -421,7 +462,7 @@ function EventTimeline({ events }: { events: Event[] }) {
     <div className="space-y-2">
       {events.map(e => (
         <div key={e.id} className="flex items-center gap-3 text-sm border-b border-border/50 pb-2">
-          <Badge variant={e.signal === "BUY" ? "buy" : e.signal === "SELL" ? "sell" : "secondary"} className="text-[10px]">
+          <Badge variant={e.signal === "BUY" ? "buy" : e.signal === "SELL" ? "sell" : "muted"} className="text-[10px]">
             {e.signal}
           </Badge>
           <span className="text-xs text-muted-foreground">{e.created_at}</span>

@@ -52,8 +52,30 @@ class AgentScorer:
         self._db_path = db_path
         self._config = config
         self._llm_call = llm_call
-        # In-memory weight cache: {agent_id: float}
+        self._ensure_weights_table()
+        # Load weights from DB, fall back to 1.0 for missing agents
         self._weights: dict[str, float] = {aid: 1.0 for aid in AGENT_MAP}
+        self._weights.update(self._load_weights_from_db())
+
+    def _ensure_weights_table(self):
+        """Create agent_weights table if not exists."""
+        conn = self._get_conn()
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS agent_weights (
+                agent_id TEXT PRIMARY KEY,
+                weight REAL NOT NULL DEFAULT 1.0,
+                updated_at TEXT,
+                updated_by_task_id TEXT
+            )
+        """)
+        conn.commit()
+        conn.close()
+
+    def _load_weights_from_db(self) -> dict[str, float]:
+        conn = self._get_conn()
+        rows = conn.execute("SELECT agent_id, weight FROM agent_weights").fetchall()
+        conn.close()
+        return {r["agent_id"]: r["weight"] for r in rows}
 
     def _get_conn(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._db_path)
@@ -259,8 +281,21 @@ class AgentScorer:
     def get_weight(self, agent_id: str) -> float:
         return self._weights.get(agent_id, 1.0)
 
-    def save_weight(self, agent_id: str, weight: float) -> None:
+    def save_weight(self, agent_id: str, weight: float, task_id: str | None = None) -> None:
         self._weights[agent_id] = weight
+        from datetime import datetime
+        conn = self._get_conn()
+        conn.execute(
+            """INSERT INTO agent_weights (agent_id, weight, updated_at, updated_by_task_id)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(agent_id) DO UPDATE SET
+                 weight = excluded.weight,
+                 updated_at = excluded.updated_at,
+                 updated_by_task_id = excluded.updated_by_task_id""",
+            (agent_id, weight, datetime.now().isoformat(), task_id),
+        )
+        conn.commit()
+        conn.close()
 
     def get_all_weights(self) -> dict[str, float]:
         return dict(self._weights)

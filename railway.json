@@ -4,7 +4,7 @@
     "builder": "NIXPACKS"
   },
   "deploy": {
-    "startCommand": "python -m stock_trading_system.main web",
+    "startCommand": "gunicorn -k eventlet -w 1 --timeout 120 --bind 0.0.0.0:$PORT \"stock_trading_system.web.app:create_app()\"",
     "healthcheckPath": "/api/health",
     "healthcheckTimeout": 120,
     "restartPolicyType": "ON_FAILURE",

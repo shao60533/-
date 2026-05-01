@@ -42,6 +42,7 @@ import pandas as pd
 from stock_trading_system.data.akshare_provider import AkShareProvider
 from stock_trading_system.data.local_cache import LocalCache
 from stock_trading_system.data.qwen_provider import QwenProvider
+from stock_trading_system.data.schwab_provider import SchwabProvider
 from stock_trading_system.data.validators import (
     validate_fundamentals, validate_news, validate_quote,
 )
@@ -53,7 +54,26 @@ logger = get_logger("data.router")
 
 
 class DataRouter:
-    """Qwen-first data router with local fallback and SQLite caching."""
+    """Qwen-first data router with local fallback and SQLite caching.
+
+    Provider capability matrix:
+
+    | Capability        | Schwab | yfinance | AkShare | Qwen |
+    |-------------------|--------|----------|---------|------|
+    | realtime_price    |   ✓    |    ✓     |   ✓ CN  |  ✓   |
+    | batch_quotes      |   ✓    |          |         |      |
+    | historical_bars   |        |    ✓     |   ✓ CN  |      |
+    | fundamentals      |        |    ✓     |   ✓ CN  |  ✓   |
+    | news              |        |    ✓     |   ✓ CN  |  ✓   |
+    | account_positions |   ✓    |          |         |      |
+    """
+
+    PROVIDER_CAPABILITIES = {
+        "schwab":   {"realtime_price", "batch_quotes", "account_positions"},
+        "yfinance": {"realtime_price", "historical_bars", "fundamentals", "news"},
+        "akshare":  {"realtime_price", "historical_bars", "fundamentals", "news"},  # CN only
+        "qwen":     {"realtime_price", "fundamentals", "news"},
+    }
 
     def __init__(
         self,
@@ -62,18 +82,22 @@ class DataRouter:
         yfinance: YFinanceProvider | None = None,
         akshare: AkShareProvider | None = None,
         cache: LocalCache | None = None,
+        schwab: SchwabProvider | None = None,
     ):
         self._config = config
         routing = (config.get("data_routing") or {})
         self._primary = routing.get("primary", "qwen")
+        self._realtime_primary = routing.get("realtime_primary", "schwab")
         self._enable_cache = bool(routing.get("enable_cache", True))
         providers = (config.get("providers") or {})
         self._yf_enabled = providers.get("yfinance_enabled", True)
         self._akshare_enabled = providers.get("akshare_enabled", True)
+        self._schwab_enabled = providers.get("schwab_enabled", True)
 
         self._qwen = qwen or QwenProvider(config)
         self._yfinance = yfinance or YFinanceProvider()
         self._akshare = akshare or AkShareProvider()
+        self._schwab = schwab or SchwabProvider(config)
         self._cache = cache  # injected from web layer; may be None in tests
 
     # ── Price ────────────────────────────────────────────────────────────
@@ -87,6 +111,17 @@ class DataRouter:
         cached = self._cache_get("price_quote", ticker)
         if cached is not None:
             return cached
+
+        # Realtime: Schwab first when configured (US only).
+        if (market == "us"
+                and self._realtime_primary == "schwab"
+                and self._schwab_enabled
+                and self._schwab.enabled):
+            q = validate_quote(self._schwab.get_stock_price(ticker))
+            if q:
+                self._cache_set("price_quote", ticker, q)
+                return q
+            logger.info("Schwab miss for %s — falling through", ticker)
 
         # Primary: Qwen
         if self._primary == "qwen" and self._qwen.enabled:
@@ -249,11 +284,18 @@ class DataRouter:
     def qwen(self) -> QwenProvider:
         return self._qwen
 
+    @property
+    def schwab(self) -> SchwabProvider:
+        return self._schwab
+
     def routing_summary(self) -> dict:
         return {
             "primary": self._primary,
+            "realtime_primary": self._realtime_primary,
             "cache_enabled": self._enable_cache,
             "qwen_enabled": self._qwen.enabled,
             "yfinance_enabled": self._yf_enabled,
             "akshare_enabled": self._akshare_enabled,
+            "schwab_enabled": self._schwab_enabled and self._schwab.enabled,
+            "schwab_token_age_days": self._schwab.token_age_days(),
         }

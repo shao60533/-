@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react"
 import { Wallet, TrendingUp, Target, Package, Plus, Search, DollarSign, ArrowDownToLine } from "lucide-react"
-import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
+import { Card, CardHeader, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Stat } from "@/components/ui/stat"
@@ -16,12 +16,35 @@ interface Holding {
 }
 
 interface Transaction {
-  id: number; ticker: string; action: string; shares: number
-  price: number; timestamp: string; notes: string
+  id: number
+  ticker: string
+  // Backend canonical contract is uppercase BUY/SELL; we still accept the
+  // legacy lowercase from older deploys so a client cache miss does not
+  // ship a colourless row.
+  action: 'BUY' | 'SELL' | 'buy' | 'sell' | string
+  shares: number
+  price: number
+  // ``timestamp`` is canonical; ``date`` is the legacy alias kept around
+  // for any pre-v1.16 payload that might still arrive from a stale cache.
+  timestamp?: string
+  date?: string
+  notes: string
 }
 
+const isBuy = (a: string): boolean => (a || '').toUpperCase() === 'BUY'
+const tsLabel = (t: Transaction): string => (t.timestamp || t.date || '')
+
 interface Summary {
-  total_value: number; today_pnl: number; today_pnl_pct: number; holdings_count: number
+  total_value: number
+  total_pnl: number
+  total_pnl_pct: number
+  // ``today_pnl`` is the *real* day-over-day P&L vs the prior snapshot,
+  // and is ``null`` whenever there is no prior snapshot to diff against
+  // (fresh DB / first day). The UI must NOT display 0 in that case —
+  // it falls back to ``total_pnl`` and relabels the tile accordingly.
+  today_pnl: number | null
+  today_pnl_pct: number | null
+  holdings_count: number
 }
 
 function fmt(n: number) { return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }
@@ -82,14 +105,22 @@ export function PortfolioPage() {
       </div>
 
       {/* Stats */}
-      {summary && (
-        <div className="grid grid-cols-2 gap-4 md:grid-cols-4 grid-collapse-mobile">
-          <Stat label="总值" value={`$${fmt(summary.total_value)}`} icon={<Wallet className="h-4 w-4" />} />
-          <Stat label="今日 PnL" value={`$${fmt(summary.today_pnl)}`} delta={summary.today_pnl_pct} icon={<TrendingUp className="h-4 w-4" />} />
-          <Stat label="收益率" value={fmtPct(summary.today_pnl_pct)} icon={<Target className="h-4 w-4" />} />
-          <Stat label="持仓数" value={String(summary.holdings_count)} icon={<Package className="h-4 w-4" />} />
-        </div>
-      )}
+      {summary && (() => {
+        // When today_pnl is null (no prior snapshot), degrade to total_pnl
+        // and relabel the tile rather than displaying a misleading 0.
+        const showToday = summary.today_pnl != null && summary.today_pnl_pct != null
+        const pnlValue = showToday ? (summary.today_pnl as number) : summary.total_pnl
+        const pnlPct   = showToday ? (summary.today_pnl_pct as number) : summary.total_pnl_pct
+        const pnlLabel = showToday ? "今日 PnL" : "总盈亏"
+        return (
+          <div className="grid grid-cols-2 gap-4 md:grid-cols-4 grid-collapse-mobile">
+            <Stat label="总值" value={`$${fmt(summary.total_value)}`} icon={<Wallet className="h-4 w-4" />} />
+            <Stat label={pnlLabel} value={`$${fmt(pnlValue)}`} delta={pnlPct} icon={<TrendingUp className="h-4 w-4" />} />
+            <Stat label="收益率" value={fmtPct(pnlPct)} icon={<Target className="h-4 w-4" />} />
+            <Stat label="持仓数" value={String(summary.holdings_count)} icon={<Package className="h-4 w-4" />} />
+          </div>
+        )
+      })()}
 
       {/* Holdings + Transactions tabs */}
       <Tabs defaultValue="holdings">
@@ -127,7 +158,8 @@ export function PortfolioPage() {
                       <th className="text-right py-2 px-2">成本</th>
                       <th className="text-right py-2 px-2">现价</th>
                       <th className="text-right py-2 px-2">市值</th>
-                      <th className="text-right py-2 px-2">盈亏</th>
+                      <th className="text-right py-2 px-2">盈亏 $</th>
+                      <th className="text-right py-2 px-2">盈亏 %</th>
                       <th className="text-right py-2 px-2"></th>
                     </tr>
                   </thead>
@@ -141,6 +173,11 @@ export function PortfolioPage() {
                             onClick={() => setCostTarget(h)}>${fmt(h.avg_cost)}</td>
                         <td className="text-right py-2.5 px-2 font-mono">${fmt(h.current_price || 0)}</td>
                         <td className="text-right py-2.5 px-2 font-mono">${fmt(h.market_value || 0)}</td>
+                        <td className={cn("text-right py-2.5 px-2 font-mono truncate",
+                          (h.pnl || 0) > 0 ? "text-[var(--color-accent-green)]" : (h.pnl || 0) < 0 ? "text-[var(--color-accent-red)]" : "text-muted-foreground")}
+                          style={{ fontVariantNumeric: "tabular-nums" }}>
+                          {(h.pnl || 0) >= 0 ? "+" : ""}${fmt(h.pnl || 0)}
+                        </td>
                         <td className={cn("text-right py-2.5 px-2 font-mono",
                           h.pnl_pct >= 0 ? "text-[var(--color-accent-green)]" : "text-[var(--color-accent-red)]")}>
                           {fmtPct(h.pnl_pct)}
@@ -176,6 +213,9 @@ export function PortfolioPage() {
                     </div>
                     <div className="flex justify-between text-xs text-muted-foreground mt-1">
                       <span>成本 ${fmt(h.avg_cost)}</span>
+                      <span className={cn("font-mono", (h.pnl || 0) >= 0 ? "text-[var(--color-accent-green)]" : "text-[var(--color-accent-red)]")}>
+                        盈亏 {(h.pnl || 0) >= 0 ? "+" : ""}${fmt(h.pnl || 0)}
+                      </span>
                       <span>现价 ${fmt(h.current_price || 0)}</span>
                     </div>
                     <div className="flex gap-2 mt-2">
@@ -215,11 +255,11 @@ export function PortfolioPage() {
                       <tbody>
                         {transactions.map(t => (
                           <tr key={t.id} className="border-b border-border/50 hover:bg-muted/30">
-                            <td className="py-2 px-2 text-xs text-muted-foreground font-mono">{t.timestamp?.slice(0, 16)}</td>
+                            <td className="py-2 px-2 text-xs text-muted-foreground font-mono">{tsLabel(t).slice(0, 16)}</td>
                             <td className="py-2 px-2 font-mono font-semibold">{t.ticker}</td>
                             <td className="py-2 px-2">
-                              <span className={cn("text-xs font-medium", t.action === "BUY" ? "text-[var(--color-accent-green)]" : "text-[var(--color-accent-red)]")}>
-                                {t.action}
+                              <span className={cn("text-xs font-medium", isBuy(t.action) ? "text-[var(--color-accent-green)]" : "text-[var(--color-accent-red)]")}>
+                                {t.action.toUpperCase()}
                               </span>
                             </td>
                             <td className="text-right py-2 px-2 font-mono">{t.shares}</td>
@@ -236,11 +276,11 @@ export function PortfolioPage() {
                       <div key={t.id} className="border rounded-lg p-3">
                         <div className="flex justify-between items-center">
                           <span className="font-mono font-semibold">{t.ticker}</span>
-                          <span className={cn("text-xs font-medium", t.action === "BUY" ? "text-[var(--color-accent-green)]" : "text-[var(--color-accent-red)]")}>
-                            {t.action} {t.shares} @ ${fmt(t.price)}
+                          <span className={cn("text-xs font-medium", isBuy(t.action) ? "text-[var(--color-accent-green)]" : "text-[var(--color-accent-red)]")}>
+                            {t.action.toUpperCase()} {t.shares} @ ${fmt(t.price)}
                           </span>
                         </div>
-                        <div className="text-xs text-muted-foreground mt-1">{t.timestamp?.slice(0, 16)}</div>
+                        <div className="text-xs text-muted-foreground mt-1">{tsLabel(t).slice(0, 16)}</div>
                       </div>
                     ))}
                   </div>

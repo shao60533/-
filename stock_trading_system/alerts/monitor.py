@@ -34,23 +34,55 @@ class AlertMonitor:
             from stock_trading_system.alerts.email_notifier import EmailNotifier
             self._notifiers.append(EmailNotifier(email_cfg))
 
-    def add_alert(self, ticker: str, condition: str, threshold: float):
-        """Add a new alert."""
-        self._db.add_alert(ticker, condition, threshold)
-        logger.info("Alert added: %s %s %s", ticker, condition, threshold)
+    def add_alert(self, ticker: str, condition: str, threshold: float,
+                   user_id: int | None = None):
+        """Add a new alert.
+
+        ``user_id`` scopes the alert so the listing/check API can return
+        only this user's alerts. ``None`` is allowed for legacy callers
+        but the dashboard / web layer always passes ``g.user.id``.
+        """
+        self._db.add_alert(ticker, condition, threshold, user_id=user_id)
+        logger.info("Alert added: %s %s %s (user=%s)", ticker, condition, threshold, user_id)
 
     def remove_alert(self, alert_id: int):
         """Remove an alert by ID."""
         self._db.remove_alert(alert_id)
         logger.info("Alert removed: %d", alert_id)
 
-    def list_alerts(self) -> list[dict]:
-        """List all active alerts."""
-        return self._db.get_active_alerts()
+    def list_alerts(self, user_id: int | None = None,
+                     scope: str = "user") -> list[dict]:
+        """Return active alerts for a tenant.
 
-    def check_alerts(self) -> list[dict]:
-        """Check all active alerts and return triggered ones."""
-        alerts = self._db.get_active_alerts()
+        ``scope='user'`` (default) requires ``user_id`` and returns only
+        that user's alerts — what the dashboard shows. ``scope='all'``
+        returns every active alert and is reserved for the background
+        scheduler / admin tooling.
+        """
+        if scope not in ("user", "all"):
+            raise ValueError(f"scope must be 'user' or 'all', got {scope!r}")
+        if scope == "user" and user_id is None:
+            raise ValueError("scope='user' requires user_id")
+        return self._db.get_active_alerts(
+            user_id=None if scope == "all" else user_id,
+        )
+
+    def check_alerts(self, user_id: int | None = None,
+                      scope: str = "all") -> list[dict]:
+        """Check active alerts and return triggered ones.
+
+        Default ``scope='all'`` matches the cron/scheduler path which
+        evaluates every user's alerts in one pass. Web-triggered checks
+        from a logged-in dashboard pass ``user_id=g.user.id``,
+        ``scope='user'`` so users only retrigger their own alerts.
+        """
+        if scope not in ("user", "all"):
+            raise ValueError(f"scope must be 'user' or 'all', got {scope!r}")
+        if scope == "user" and user_id is None:
+            raise ValueError("scope='user' requires user_id")
+        alerts = self._db.get_active_alerts(
+            user_id=None if scope == "all" else user_id,
+        )
         triggered = []
 
         for alert in alerts:

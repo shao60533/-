@@ -64,6 +64,12 @@ def _apply_env_overrides(config: dict) -> dict:
         # Overridable SQLite path — used for PaaS deployments where only a
         # specific mounted volume is writable (e.g. Railway Volume at /data).
         "STOCK_DB_PATH": ("portfolio", "db_path"),
+        "SCHWAB_APP_KEY": ("schwab", "app_key"),
+        "SCHWAB_APP_SECRET": ("schwab", "app_secret"),
+        "SCHWAB_CALLBACK_URL": ("schwab", "callback_url"),
+        "SCHWAB_TOKEN_PATH": ("schwab", "token_path"),
+        "SCHWAB_OAUTH_SECRET": ("schwab", "oauth_secret"),
+        "SCHWAB_ACCOUNT_HASH": ("schwab", "account_hash"),
     }
 
     for env_var, path in env_map.items():
@@ -83,6 +89,12 @@ def _apply_env_overrides(config: dict) -> dict:
         config.setdefault("qwen", {})
         if config["qwen"].get("enabled") is not True:
             config["qwen"]["enabled"] = True
+
+    # Auto-enable Schwab when both app key and secret are provided via env.
+    if os.environ.get("SCHWAB_APP_KEY") and os.environ.get("SCHWAB_APP_SECRET"):
+        config.setdefault("schwab", {})
+        if config["schwab"].get("enabled") is not True:
+            config["schwab"]["enabled"] = True
 
     return config
 

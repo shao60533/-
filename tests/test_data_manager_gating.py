@@ -95,7 +95,10 @@ def test_master_switch_default_keeps_legacy_behaviour():
          patch("stock_trading_system.data.data_manager.PolygonProvider") as PG, \
          patch("stock_trading_system.data.data_manager.YFinanceProvider"), \
          patch("stock_trading_system.data.data_manager.AkShareProvider"), \
-         patch("stock_trading_system.data.data_manager.QwenProvider"):
+         patch("stock_trading_system.data.data_manager.QwenProvider"), \
+         patch("stock_trading_system.data.data_manager.SchwabProvider") as SCH:
+        sch = SCH.return_value
+        sch.enabled = False
         pg_inst = PG.return_value
         pg_inst.get_stock_price = MagicMock(return_value={"last": 9})
         dm = DataManager(cfg)
@@ -104,3 +107,117 @@ def test_master_switch_default_keeps_legacy_behaviour():
         # Polygon still gets called when no master switch is set
         pg_inst.get_stock_price.assert_called_once()
         assert result["last"] == 9
+
+
+def test_schwab_preferred_when_enabled():
+    cfg = _config(ib_enabled=True, polygon_enabled=True)
+    cfg["schwab"] = {"enabled": True}
+    cfg["providers"]["schwab_enabled"] = True
+    with patch("stock_trading_system.data.data_manager.IBProvider") as IB, \
+         patch("stock_trading_system.data.data_manager.PolygonProvider") as PG, \
+         patch("stock_trading_system.data.data_manager.YFinanceProvider"), \
+         patch("stock_trading_system.data.data_manager.AkShareProvider"), \
+         patch("stock_trading_system.data.data_manager.QwenProvider"), \
+         patch("stock_trading_system.data.data_manager.SchwabProvider") as SCH:
+        sch = SCH.return_value
+        sch.enabled = True
+        sch.get_stock_price = MagicMock(return_value={"last": 100, "source": "schwab"})
+        ib_inst = IB.return_value
+        ib_inst.get_stock_price = MagicMock(return_value={"last": 101})
+        pg_inst = PG.return_value
+        pg_inst.get_stock_price = MagicMock(return_value={"last": 102})
+
+        dm = DataManager(cfg)
+        dm._fail_count = {"ib": 0, "polygon": 0, "schwab": 0}
+        result = dm.get_price("AAPL")
+
+        sch.get_stock_price.assert_called_once_with("AAPL")
+        ib_inst.get_stock_price.assert_not_called()
+        pg_inst.get_stock_price.assert_not_called()
+        assert result["last"] == 100
+
+
+def test_schwab_falls_through_on_failure():
+    cfg = _config(ib_enabled=False, polygon_enabled=True)
+    cfg["schwab"] = {"enabled": True}
+    cfg["providers"]["schwab_enabled"] = True
+    with patch("stock_trading_system.data.data_manager.IBProvider"), \
+         patch("stock_trading_system.data.data_manager.PolygonProvider") as PG, \
+         patch("stock_trading_system.data.data_manager.YFinanceProvider"), \
+         patch("stock_trading_system.data.data_manager.AkShareProvider"), \
+         patch("stock_trading_system.data.data_manager.QwenProvider"), \
+         patch("stock_trading_system.data.data_manager.SchwabProvider") as SCH:
+        sch = SCH.return_value
+        sch.enabled = True
+        sch.get_stock_price = MagicMock(return_value=None)  # Schwab miss
+        pg_inst = PG.return_value
+        pg_inst.get_stock_price = MagicMock(return_value={"last": 200})
+
+        dm = DataManager(cfg)
+        dm._fail_count = {"ib": 1, "polygon": 0, "schwab": 0}
+        result = dm.get_price("AAPL")
+
+        sch.get_stock_price.assert_called_once()
+        pg_inst.get_stock_price.assert_called_once()
+        assert result["last"] == 200
+
+
+def test_schwab_master_switch_off_skips_schwab():
+    cfg = _config(ib_enabled=False, polygon_enabled=True)
+    cfg["schwab"] = {"enabled": True}
+    cfg["providers"]["schwab_enabled"] = False  # explicitly disabled
+    with patch("stock_trading_system.data.data_manager.IBProvider"), \
+         patch("stock_trading_system.data.data_manager.PolygonProvider") as PG, \
+         patch("stock_trading_system.data.data_manager.YFinanceProvider"), \
+         patch("stock_trading_system.data.data_manager.AkShareProvider"), \
+         patch("stock_trading_system.data.data_manager.QwenProvider"), \
+         patch("stock_trading_system.data.data_manager.SchwabProvider") as SCH:
+        sch = SCH.return_value
+        sch.enabled = True
+        sch.get_stock_price = MagicMock(return_value={"last": 100})
+        pg_inst = PG.return_value
+        pg_inst.get_stock_price = MagicMock(return_value={"last": 200})
+        dm = DataManager(cfg)
+        dm._fail_count = {}
+        result = dm.get_price("AAPL")
+        sch.get_stock_price.assert_not_called()
+        pg_inst.get_stock_price.assert_called_once()
+        assert result["last"] == 200
+
+
+def test_get_prices_batch_uses_schwab_when_enabled():
+    cfg = _config(ib_enabled=False, polygon_enabled=False)
+    cfg["schwab"] = {"enabled": True}
+    cfg["providers"]["schwab_enabled"] = True
+    with patch("stock_trading_system.data.data_manager.IBProvider"), \
+         patch("stock_trading_system.data.data_manager.PolygonProvider"), \
+         patch("stock_trading_system.data.data_manager.YFinanceProvider"), \
+         patch("stock_trading_system.data.data_manager.AkShareProvider"), \
+         patch("stock_trading_system.data.data_manager.QwenProvider"), \
+         patch("stock_trading_system.data.data_manager.SchwabProvider") as SCH:
+        sch = SCH.return_value
+        sch.enabled = True
+        sch.get_stock_price_batch = MagicMock(return_value={
+            "AAPL": {"last": 100}, "TSLA": {"last": 200},
+        })
+        dm = DataManager(cfg)
+        dm._fail_count = {"schwab": 0}
+        out = dm.get_prices_batch(["AAPL", "TSLA"])
+        assert out == {"AAPL": {"last": 100}, "TSLA": {"last": 200}}
+        sch.get_stock_price_batch.assert_called_once_with(["AAPL", "TSLA"])
+
+
+def test_get_prices_batch_returns_empty_when_schwab_disabled():
+    cfg = _config(ib_enabled=False, polygon_enabled=False)
+    cfg["providers"]["schwab_enabled"] = False
+    with patch("stock_trading_system.data.data_manager.IBProvider"), \
+         patch("stock_trading_system.data.data_manager.PolygonProvider"), \
+         patch("stock_trading_system.data.data_manager.YFinanceProvider"), \
+         patch("stock_trading_system.data.data_manager.AkShareProvider"), \
+         patch("stock_trading_system.data.data_manager.QwenProvider"), \
+         patch("stock_trading_system.data.data_manager.SchwabProvider") as SCH:
+        sch = SCH.return_value
+        sch.enabled = True
+        dm = DataManager(cfg)
+        out = dm.get_prices_batch(["AAPL", "TSLA"])
+        assert out == {}

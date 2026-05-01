@@ -80,6 +80,14 @@ class UserRepository:
             ).fetchall()
             return [self._row_to_user(r) for r in rows]
 
+    def list_active(self) -> list[User]:
+        """Active users only — what the scheduler / backfill iterate over."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM users WHERE status = 'active' ORDER BY id ASC"
+            ).fetchall()
+            return [self._row_to_user(r) for r in rows]
+
     def count(self) -> int:
         with self._conn() as conn:
             return conn.execute("SELECT COUNT(*) FROM users WHERE status='active'").fetchone()[0]

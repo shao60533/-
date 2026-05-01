@@ -1,44 +1,20 @@
-"""TC-MS-A1 ~ A10: LLM provider API tests."""
+"""TC-MS-A1 ~ A10: LLM provider API tests.
+
+Run against an authenticated Flask test client backed by a temp DB and a
+temp ``STOCK_CONFIG_DIR`` so we never touch the developer's real config.
+"""
 
 from __future__ import annotations
 
 import pytest
 
-from stock_trading_system.web import app as app_module
-
 
 @pytest.fixture
-def client(tmp_path, monkeypatch):
-    """Flask test client with both API keys configured."""
+def client(app_client, monkeypatch):
+    """Logged-in alice client with both Qwen and Gemini API keys configured."""
     monkeypatch.delenv("LLM_PROVIDER", raising=False)
-    db_path = tmp_path / "portfolio.db"
-
-    for attr in (
-        "_task_manager", "_task_store", "_local_cache",
-        "_portfolio_mgr", "_alert_monitor", "_data_manager",
-        "_analyzer", "_screener", "_report_gen", "_strategy_engine",
-        "_scheduler", "_scheduler_thread",
-    ):
-        if hasattr(app_module, attr):
-            setattr(app_module, attr, None)
-
-    app = app_module.create_app()
-    app.config["TESTING"] = True
-
-    from stock_trading_system.config import get_config
-    cfg = get_config()
-    cfg["portfolio"] = {"db_path": str(db_path)}
-    cfg["qwen"] = {"api_key": "sk-test", "model": "qwen-plus",
-                    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-                    "enabled": True}
-    cfg["gemini"] = {"api_key": "AIza-test", "model": "gemini-2.5-flash"}
-
-    with app.test_client() as c:
-        yield c
-
-    tm = getattr(app_module, "_task_manager", None)
-    if tm is not None:
-        tm.shutdown()
+    users = app_client["users"]
+    return app_client["make_client"](users.alice_email, users.alice_password)
 
 
 # ── TC-MS-A1: GET returns current provider + key status ──────────
@@ -76,6 +52,18 @@ def test_post_valid_switch(client, monkeypatch):
     assert resp.status_code == 200
     body = resp.get_json()
     assert body["active"] == "gemini"
+
+
+def test_post_resets_analyzer_singleton(client, monkeypatch):
+    """After switching, the lazy analyzer singleton must be cleared."""
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    from stock_trading_system.web import app as app_module
+    # Force the analyzer to be set so we can verify it gets reset.
+    app_module._analyzer = object()
+    resp = client.post("/api/settings/llm-provider",
+                       json={"provider": "gemini"})
+    assert resp.status_code == 200
+    assert app_module._analyzer is None
 
 
 # ── TC-MS-A4: POST invalid provider → 400 ────────────────────────
@@ -160,3 +148,18 @@ def test_consecutive_switches(client, monkeypatch):
     # Verify current state
     r3 = client.get("/api/settings/llm-provider")
     assert r3.get_json()["active"] == "qwen"
+
+
+# ── Anonymous calls must be denied ───────────────────────────────
+
+
+def test_anonymous_get_redirects_or_401(app_client):
+    anon = app_client["make_client"]()
+    resp = anon.get("/api/settings/llm-provider")
+    assert resp.status_code == 401
+
+
+def test_anonymous_post_denied(app_client):
+    anon = app_client["make_client"]()
+    resp = anon.post("/api/settings/llm-provider", json={"provider": "qwen"})
+    assert resp.status_code == 401

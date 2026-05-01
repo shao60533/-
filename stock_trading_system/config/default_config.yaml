@@ -2,7 +2,7 @@ llm_provider: null   # null -> legacy auto-detect; "qwen" | "gemini" -> force
 
 gemini:
   api_key: ""
-  model: "gemini-3.1-flash-lite-preview"
+  model: "gemini-3.1-pro-preview"
   deep_think_model: "gemini-3.1-pro-preview"
   thinking_level: "high"
 
@@ -30,6 +30,18 @@ ib:
   client_id: 1
   enabled: false
 
+# Charles Schwab Trader API — primary US realtime source when configured.
+# Requires OAuth bootstrap via /oauth/schwab/start on Railway. App key/secret
+# come from env (SCHWAB_APP_KEY / SCHWAB_APP_SECRET); token persists to Volume.
+schwab:
+  enabled: false
+  app_key: ""              # or env SCHWAB_APP_KEY
+  app_secret: ""           # or env SCHWAB_APP_SECRET
+  callback_url: ""         # e.g. https://<app>.up.railway.app/oauth/schwab/callback
+  token_path: "data/schwab_token.json"
+  oauth_secret: ""         # magic-link guard for /oauth/schwab/start; or env SCHWAB_OAUTH_SECRET
+  account_hash: ""         # optional; required only for account-level endpoints (P2)
+
 # Provider-level master switches (preferred over per-provider .enabled flags).
 # DataRouter consults these first to skip even initialization in cloud envs.
 providers:
@@ -37,10 +49,12 @@ providers:
   polygon_enabled: true
   yfinance_enabled: true
   akshare_enabled: true
+  schwab_enabled: true     # gated by schwab.enabled + token file existence
 
 # DataRouter routing & caching policy (see ARCHITECTURE_UPGRADE_PROPOSAL §4).
 data_routing:
   primary: "qwen"          # "qwen" or "local"; first source to try
+  realtime_primary: "schwab"  # "schwab" preferred for live US quotes when configured
   enable_cache: true
   cache_ttl:
     price_quote: 60        # 1 min

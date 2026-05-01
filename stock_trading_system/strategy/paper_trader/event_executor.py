@@ -37,6 +37,7 @@ def process_analysis(
     recent_bars=None,
     qwen_provider=None,
     analysis_blob: dict | None = None,
+    user_id: int | None = None,
 ) -> dict:
     try:
         return _inner(store, analysis_id=analysis_id, ticker=ticker,
@@ -44,7 +45,8 @@ def process_analysis(
                        advice=advice, current_price=current_price,
                        today_bar=today_bar, recent_bars=recent_bars,
                        qwen_provider=qwen_provider,
-                       analysis_blob=analysis_blob)
+                       analysis_blob=analysis_blob,
+                       user_id=user_id)
     except Exception as e:
         logger.warning("process_analysis failed for %s #%s: %s",
                        ticker, analysis_id, e)
@@ -52,11 +54,13 @@ def process_analysis(
 
 
 def _inner(store, *, analysis_id, ticker, analysis_date, signal, advice,
-            current_price, today_bar, recent_bars, qwen_provider, analysis_blob):
+            current_price, today_bar, recent_bars, qwen_provider, analysis_blob,
+            user_id):
     if (signal or "").upper() == "ERROR":
         return {"ok": True, "action": "skipped", "reason": "ERROR signal"}
 
-    sess = ensure_ticker_session(store, ticker, start_date=analysis_date)
+    sess = ensure_ticker_session(store, ticker, start_date=analysis_date,
+                                  user_id=user_id)
     sid = int(sess["id"])
     start_capital = float(sess["start_capital"])
 

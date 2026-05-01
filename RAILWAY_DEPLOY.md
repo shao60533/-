@@ -35,6 +35,11 @@
 | `EMAIL_PASSWORD` | `app-password` | 配合上面 |
 | `EMAIL_TO` | `you@gmail.com` | 配合上面 |
 | `POLYGON_API_KEY` | `...` | **不推荐**：免费层限流，云端用没意义 |
+| `SCHWAB_APP_KEY` | `HA9s...` | Schwab Trader API 实时行情，强烈推荐 |
+| `SCHWAB_APP_SECRET` | `ain1...` | 配合上面 |
+| `SCHWAB_CALLBACK_URL` | `https://<app>.up.railway.app/oauth/schwab/callback` | 必须与 developer.schwab.com 上配置完全一致 |
+| `SCHWAB_OAUTH_SECRET` | `<random 32 chars>` | magic-link 守卫 OAuth 引导端点 |
+| `SCHWAB_TOKEN_PATH` | `/app/data/schwab_token.json` | token 落盘到 Volume,默认值 |
 
 ---
 
@@ -62,6 +67,51 @@ Railway 容器文件系统是临时的，重启会丢数据。**必须挂载 Vol
 3. **Size**: 1 GB 起步够用（持仓+任务记录+缓存）
 
 挂载后，自动生效（`portfolio.db_path` 默认 `data/portfolio.db`，会被持久化）。
+
+Schwab token (`schwab_token.json`) 也写在这个 Volume,所以 `SCHWAB_TOKEN_PATH=/app/data/schwab_token.json` 跨重启保留。
+
+---
+
+## 4.5 Schwab Trader API 接入（实时行情）
+
+**为什么强烈推荐**：Polygon 免费档限流、yfinance 是延迟数据,IB 云端不可用 —— Schwab 是云端**唯一**真·实时 NBBO 数据源,对个人开发者免费。
+
+### 一次性 OAuth 引导
+
+1. 在 [developer.schwab.com](https://developer.schwab.com) 创建 Individual Developer App
+   - **Callback URL** 必须是: `https://<your-railway-domain>/oauth/schwab/callback`
+   - 提交后等审核通过(状态变成 "Ready for Use",通常几小时)
+2. 拿到 `App Key` 和 `App Secret`
+3. Railway → Variables 配置:
+   ```
+   SCHWAB_APP_KEY=<App Key>
+   SCHWAB_APP_SECRET=<App Secret>
+   SCHWAB_CALLBACK_URL=https://<your-railway-domain>/oauth/schwab/callback
+   SCHWAB_OAUTH_SECRET=<随机 32 字符,例如 openssl rand -hex 16>
+   SCHWAB_TOKEN_PATH=/app/data/schwab_token.json
+   ```
+4. 部署生效后浏览器访问:
+   ```
+   https://<your-railway-domain>/oauth/schwab/start?secret=<SCHWAB_OAUTH_SECRET>
+   ```
+   会跳转到 Schwab 登录 → 输账号密码 → Allow → 跳回显示 "Schwab token saved"
+5. 验证: 访问 `https://<your-railway-domain>/api/schwab/diagnose?secret=<SCHWAB_OAUTH_SECRET>`,应看到 `single_quote_ok=true`、`batch_quote_count=5`、`history_ok=true`
+
+### 7 天 refresh-token 续期
+
+Schwab 的 refresh-token **每 7 天必须重新人工授权**(平台硬性要求,无法绕过)。在过期前重新走第 4 步即可,token 文件会被覆盖。
+
+`/api/provider-probe` 返回的 `schwab.token_age_days` 字段可用于监控,接近 7 天时手动续期。
+
+### 故障排除
+
+| 现象 | 原因 | 修复 |
+|------|------|------|
+| `/oauth/schwab/start` → 403 | `secret` 参数缺失/错误 | 检查 SCHWAB_OAUTH_SECRET |
+| `/oauth/schwab/start` → 500 missing | 缺 APP_KEY 或 CALLBACK_URL | 补环境变量 |
+| 跳转 Schwab 后 redirect_uri mismatch | App 配置 callback != 环境变量 | 改回 developer.schwab.com,精确到大小写斜杠 |
+| Callback → state_mismatch | session 在跳转中丢失或多 worker 不共享 session | 确认 Railway 单进程或共享 session 后端 |
+| Diagnose → enabled=false | 还没跑 `/oauth/schwab/start` 或 token 文件路径错 | 检查 Volume 挂载点和 SCHWAB_TOKEN_PATH |
 
 ---
 
