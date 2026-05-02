@@ -945,9 +945,78 @@ const KV = ({ k, v }: { k: string; v: string }) => (
 | API key 缺失（Polygon 关，仅 yfinance）| `data_manager.get_news` 已有 fallback 链；data_sources.py 不感知 |
 | LLM 仍幻觉 headlines / 改了真数字 | 提取后做 hard guard：headlines 必须 title 命中真集合；valuation/growth/profitability/balance_sheet 字典直接以 facts 覆盖 LLM |
 
+## 14. v1.6 增量：Executive Summary 入 OverviewCard 操作建议位
+
+### 14.1 现状
+
+详情页 `/analysis/<id>` 概览 tab `<OverviewCard>` Decision banner 当前布局（[OverviewCard.tsx:48-65](../../stock_trading_system/web/frontend/src/components/analysis/OverviewCard.tsx)）：
+1. RatingBadge (`Overweight`) + ConfidenceMeter (`中置信`)
+2. 📍 action_direction (`分批建仓`)
+3. KpiRow (PE / 现金流 / SMA / MACD / ATR …)
+
+后端 DTO `history_detail_dto` 已 expose `executive_summary`（[app.py:1564](../../stock_trading_system/web/app.py)），来自 [paper-trade v1.3 F3](./paper-trade.md) 的 `with_structured_output(ExecutiveSummary)` 抽取列。但前端：
+- AnalysisPage.tsx 仅在 `reportContent["summary"] = detail.summary` 把它塞进 markdown body 折叠区（line 772）
+- 截图中"轻松支撑 645 亿美元的 AI 资本支出"零散小字脱离 Decision banner —— 没有视觉容器
+- OverviewCard 不接收 executive_summary，banner 内只有 action_direction 一句话方向，缺**具体可执行的操作建议**段落
+
+### 14.2 改动
+
+**目标**：把 `executive_summary` 移到 OverviewCard Decision banner 内、`action_direction` 下方、`KpiRow` 上方，结构化展示作为「操作建议」。
+
+布局调整：
+```
+┌─Decision Banner──────────────────────────────────┐
+│  [Overweight] [Conf 中置信]                       │
+│  📍 分批建仓                                       │
+│  ┌─📋 执行总结──────────────────────────────────┐ │ ← 新增
+│  │ 微软当前估值合理 + AI 资本支出 645 亿美元   │ │
+│  │ 支撑长期增长动能；建议在 50 SMA $396 附近   │ │
+│  │ 分批建仓，关注 MACD 与净利润率边际变化       │ │
+│  └────────────────────────────────────────────────┘│
+│  [KPI Row: PE 21.45 / 现金流 / SMA / MACD / ATR]  │
+└────────────────────────────────────────────────────┘
+```
+
+视觉规则：
+- 标题行：`<ScrollText className="h-4 w-4 text-[var(--color-accent-blue)]" />` + `执行总结`
+- 主体：left border accent (`border-l-4 border-primary/60`) + `bg-primary/5` + 段落正文
+- 字号：`text-sm leading-relaxed`，最长 `line-clamp-4` 不滚动（保持 banner 紧凑）
+- 完整段落仍保留在折叠 markdown body —— 这里只是结构化露出关键操作建议
+
+### 14.3 数据流
+
+后端不需要改 —— `executive_summary` 已在 detail DTO（v1.0/v1.1 落地后无破坏）。
+
+前端：
+- `OverviewCardData` 类型保持不变（Pydantic mirror）
+- `<OverviewCard>` 加可选 prop `executiveSummary?: string | null`（不进 schema，避免污染 rendering JSON）
+- AnalysisPage.tsx 渲染 OverviewCard 时把 `detail.executive_summary` 作为 prop 透传：
+  ```tsx
+  <OverviewCard data={rendering.summary} executiveSummary={detail.executive_summary} />
+  ```
+- 兼容路径：`AnalysisCards` lazy-bundle dispatcher 接收并透传该 prop（对其它 7 tab 无副作用）
+- 留 markdown body 不动 —— `executive_summary` 仍在折叠区可访问（双展示无害，因为 banner 是结构化卡，markdown 是完整原文）
+
+### 14.4 边界
+
+- 不动 OverviewCard schema / Pydantic / extractor / rendering_json 存储
+- 不动其它 7 tab Card
+- `executiveSummary` 缺失（老分析没跑 paper-trade v1.3 F3 抽取）→ 静默不渲染该子卡（与现有 `nonEmptyStr` defensive 风格一致）
+- 不引入新 LLM call、不发明新端点
+- 不改 `detail.summary` 字段含义（仍是 `executive_summary || trade_decision` fallback 链，给 markdown body / inbox 行展开摘要用）
+
+### 14.5 测试
+
+`tests/frontend/src/components/analysis/__tests__/OverviewCard.executive.test.tsx`（新增）：
+- `renders executive summary block when prop provided` — render `<OverviewCard data={...} executiveSummary="...">` → 断言 DOM 含「执行总结」标题 + summary 文本
+- `omits executive summary block when prop empty` — render with `executiveSummary={null}` 或 `""` → 断言无「执行总结」标题
+- `executive summary positioned between action_direction and KpiRow` — 断言 DOM 顺序: action_direction 元素 < executive 元素 < KpiRow 元素
+- `falls back gracefully on whitespace-only string` — `executiveSummary="   "` → 静默（用 `nonEmptyStr`）
+
 ## 12. 版本历史
 
 | 版本 | 日期 | 变更 |
 |---|---|---|
 | v1.0 | 2026-05-01 | 初版：8 tab × Pydantic schema（Overview/Market/Sentiment/News/Fundamentals/Debate/Risk/Decision）+ `analysis_history.rendering_json` 单列 JSON 存储 + RenderingExtractor 并发 8 calls + 8 Card 组件 + folded markdown 主体 + 单 tab 失败隔离降级 |
 | v1.1 | 2026-05-01 | News / Fundamentals 改混合源：直接调 `data_manager.get_news / get_fundamentals` 拿真实头条 + 真实数字（PE/PB/ROE/D/E/营收增长全套来自 yfinance .info / Polygon news），LLM 仅做 sentiment/impact 标注 + catalysts + summary + vs_industry + quality_score；Hard guard 防 LLM 改真数字（valuation/growth/profitability/balance_sheet 字典覆盖）+ 防 LLM 编造头条（title 必须命中真集合）；前端 quick-info 三卡（最近新闻 / 基本面指标 / 多空辩论）改为直接拉 `/api/news` `/api/fundamentals`，删除 `extractFundamentals` regex / `newsSnippet.slice(0,200)` / `extractDebateCount` 三个脆弱函数；多空辩论卡改用 `detail.rendering["Investment Debate"]` schema |
+| v1.6 | 2026-05-03 | Executive Summary 入 OverviewCard 操作建议位（用户截图反馈）：现状概览 tab 顶部"轻松支撑 645 亿美元的 AI 资本支出"零散小字（来自 `detail.executive_summary`，paper-trade v1.3 F3 抽取列）脱离 Decision banner，无视觉容器；banner 内仅 `action_direction`（"分批建仓"）一句话方向，缺具体可执行操作建议。后端 DTO 已 expose（`app.py:1564 history_detail_dto.executive_summary`），改动仅前端：(A) `<OverviewCard>` 加可选 prop `executiveSummary?: string \| null`，渲染在 `action_direction` 下方、`KpiRow` 上方，视觉 = `<ScrollText>` 图标 + "执行总结" 标题 + left border accent (`border-l-4 border-primary/60` + `bg-primary/5`) + `text-sm leading-relaxed line-clamp-4` 段落；(B) AnalysisPage.tsx 渲染 OverviewCard 时透传 `detail.executive_summary`；(C) `AnalysisCards` lazy-bundle dispatcher 接收并向 OverviewCard 透传，对其它 7 tab 无副作用；(D) 缺失或纯空白时静默不渲染（用现有 `nonEmptyStr` defensive helper）；(E) markdown body 折叠区保留原 `executive_summary`（双展示无害，banner 结构化、body 完整）。**不动** OverviewCard Pydantic schema / RenderingExtractor / `rendering_json` 存储 / 其它 7 tab Card / `detail.summary` 字段含义 / inbox 行展开摘要逻辑。新增 4 个 vitest case 验证位置/缺失降级/whitespace 兜底 |
