@@ -27,8 +27,27 @@ class RecordingSocketIO:
             return [e for e, _ in self.events]
 
     def by_name(self, name: str) -> list[dict]:
+        """Return the legacy flat payload for tests pre-dating the
+        analysis-progress-truth-source v1.0 envelope. TaskManager._emit
+        now broadcasts ``{task_id, user_id, seq, event, payload, ...}``
+        instead of the raw payload; this helper auto-unwraps ``payload``
+        when the emit is recognized as an envelope. Tests that need to
+        inspect envelope fields (seq, emitted_at) read ``self.events``."""
         with self._lock:
-            return [p for n, p in self.events if n == name]
+            out: list[dict] = []
+            for n, p in self.events:
+                if n != name:
+                    continue
+                if (
+                    isinstance(p, dict)
+                    and "payload" in p
+                    and "task_id" in p
+                    and isinstance(p["payload"], dict)
+                ):
+                    out.append(p["payload"])
+                else:
+                    out.append(p)
+            return out
 
 
 @pytest.fixture

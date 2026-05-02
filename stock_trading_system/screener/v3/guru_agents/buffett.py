@@ -34,6 +34,22 @@ class BuffettAgent(BaseGuruAgent):
     # on these dimensions (not on theme-fit) so every guru's card reads
     # distinctly in the UI.
     framework_lead = "护城河 / 自由现金流 / 安全边际"
+    # v1.5 prompt-personalisation blocks (clean-room composed phrases,
+    # no verbatim Berkshire-letter quotes).
+    anti_patterns = [
+        "10 岁孩子无法用一句话解释这家公司在做什么 —— 我会跳过。",
+        "估值溢价超过 5 年盈利平均的 25 倍，即使公司是好生意。",
+        "管理层在年报中频繁吹嘘资本动作（回购/收购）但 5 年期 ROIC 没改善。",
+    ]
+    decision_style = [
+        "我会问：'我愿意以这个价格买下整家公司并持有 10 年吗？'犹豫则跳过。",
+        "我会问：'若纽交所明天关闭 10 年，我还安心持有吗？'",
+        "我会问：'5 年后这家公司的护城河会比现在更宽还是更窄？'",
+    ]
+    evidence_demands = (
+        "reasoning 第二段必须引用以下具体数字: ROE 5 年中位数 / "
+        "FCF margin / 净负债率（debt_to_equity）/ 收益的稳定性（vs 行业波动）。"
+    )
     principles = [
         "寻找具有持久竞争优势的企业",
         "以合理价格购买优秀企业",
@@ -57,9 +73,7 @@ class BuffettAgent(BaseGuruAgent):
 分析时你会从 8 个维度打分（0-10），然后综合给出 0-100 的总分。
 最终输出 bullish / bearish / neutral 和 0-1 信心度。
 
-在本系统中，你的任务不是单独判断一家公司是否优秀，而是判断它是否符合用户指定主题下的投资机会。
-如果公司不符合用户主题，应先指出主题不匹配，再按你的投资哲学给出保守结论。
-即使公司护城河强，如果它不属于用户指定行业/主题，也不能因为"优秀企业"而给出 bullish。"""
+"""
 
     def evaluate_deep(
         self, ticker: str, full_data: dict, context: dict,

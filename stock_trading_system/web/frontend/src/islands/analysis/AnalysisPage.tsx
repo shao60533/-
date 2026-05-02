@@ -337,6 +337,15 @@ export function AnalysisPage() {
   // /history page.
   const [inbox, setInbox] = useState<InboxRow[]>([])
   const [runningTotal, setRunningTotal] = useState(0)
+  // analysis-progress-truth-source v1.0: live progress overlay for
+  // running task rows, keyed by task_id. Populated from task_progress
+  // / analysis_pipeline events on the unified envelope stream and
+  // merged into RunningRow's percent + step text so the row stays in
+  // sync with the pipeline DAG without round-tripping /api/history.
+  // Cleared on terminal events (handled by the inbox subscription).
+  const [liveProgress, setLiveProgress] = useState<
+    Record<string, { pct: number; step: string | null; stage: string | null }>
+  >({})
   // Client-side ticker filter — instant feedback while typing. Backend
   // supports ``ticker`` query param too (used for prefiltering when
   // arriving with a deep-link like ``/analysis?ticker=AAPL``).
@@ -443,11 +452,17 @@ export function AnalysisPage() {
     return () => window.clearTimeout(t)
   }, [taskAnchor, inbox.length])
 
-  // After a task settles (websocket task_completed/task_failed for one
-  // of our running rows), pull a fresh inbox so the row flips from
-  // "运行中" to a completed analysis card. socket.io is lazy-imported
-  // (matches the pattern used by the running-view subscription below)
-  // so the inbox view doesn't pay for it on first paint.
+  // analysis-progress-truth-source v1.0: subscribe to the unified task
+  // envelope stream and merge progress into a local map keyed by task_id.
+  // We render `liveProgress[task_id] ?? row.progress_pct` so the inbox
+  // row percent / step text track the analyzer pipeline in real time
+  // without waiting for refreshInbox(). On terminal events we still
+  // refreshInbox() to flip 运行中 → CompletedRow.
+  //
+  // The seven-stage pipeline is mapped to 5%→85% by the analysis worker
+  // (advice=90%, finalize=98%, success=100%); analysis_pipeline events
+  // are kept as a redundant fallback so a single dropped task_progress
+  // does not freeze the row.
   useEffect(() => {
     if (detailId || taskId) return
     const taskIds = inbox
@@ -463,7 +478,63 @@ export function AnalysisPage() {
       sub = subscribeTaskStream({
         taskIds,
         onEvent: (env) => {
-          if (env.event === "task_completed" || env.event === "task_failed") {
+          const tid = env.task_id
+          if (!tid) return
+          const p = (env.payload || {}) as Record<string, unknown>
+          if (env.event === "task_progress") {
+            const pct = typeof p.progress === "number" ? p.progress : null
+            const step = typeof p.step === "string" ? p.step : null
+            const stage = typeof p.stage === "string" ? p.stage : null
+            if (pct == null) return
+            setLiveProgress(prev => ({
+              ...prev,
+              [tid]: {
+                pct: Math.max(prev[tid]?.pct ?? 0, pct),
+                step: step ?? prev[tid]?.step ?? null,
+                stage: stage ?? prev[tid]?.stage ?? null,
+              },
+            }))
+          } else if (env.event === "analysis_pipeline") {
+            // Fallback: if task_progress was dropped we still nudge the
+            // pct off the floor when we see step_done / pipeline_done.
+            const ptype = typeof p.type === "string" ? p.type : ""
+            if (ptype === "step_done") {
+              const idx = typeof p.index === "number" ? p.index : 0
+              const total = typeof p.total === "number" && p.total > 0 ? p.total : 7
+              const pct = 5 + Math.round(((idx + 1) / total) * 80)
+              const step = typeof p.label === "string" ? p.label : null
+              const stage = typeof p.step === "string" ? p.step : null
+              setLiveProgress(prev => ({
+                ...prev,
+                [tid]: {
+                  pct: Math.max(prev[tid]?.pct ?? 0, pct),
+                  step: step ?? prev[tid]?.step ?? null,
+                  stage: stage ?? prev[tid]?.stage ?? null,
+                },
+              }))
+            } else if (ptype === "pipeline_done") {
+              setLiveProgress(prev => ({
+                ...prev,
+                [tid]: {
+                  pct: Math.max(prev[tid]?.pct ?? 0, 85),
+                  step: "整理结果中",
+                  stage: "pipeline_done",
+                },
+              }))
+            }
+          } else if (
+            env.event === "task_completed"
+            || env.event === "task_failed"
+            || env.event === "task_cancelled"
+          ) {
+            // Drop the live entry — the next /api/history pull will
+            // replace the row with a CompletedRow / failure row.
+            setLiveProgress(prev => {
+              if (!(tid in prev)) return prev
+              const next = { ...prev }
+              delete next[tid]
+              return next
+            })
             refreshInbox()
           }
         },
@@ -621,6 +692,7 @@ export function AnalysisPage() {
                 <RunningRow
                   key={it.task_id}
                   row={it}
+                  live={liveProgress[it.task_id]}
                   highlight={taskAnchor === it.task_id}
                   onSettled={refreshInbox}
                 />
@@ -1296,6 +1368,121 @@ function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
           })()}
         </QuickInfoCard>
       </div>
+
+      {/* K-line chart — viewport-gated. The container always mounts so
+          IntersectionObserver has something to watch; TVChart itself is
+          lazy-loaded only after the section scrolls into view, and the
+          /api/quote/history fetch fires from the same observer. */}
+      <Card ref={klineSectionRef}>
+        <CardHeader><CardTitle className="text-sm">K 线走势（近 3 个月）</CardTitle></CardHeader>
+        <CardContent>
+          {klineVisible ? (
+            <Suspense fallback={<Skeleton className="w-full" style={{ height: 380 }} />}>
+              <TVChart data={klineData} state={klineState} onRetry={refetchKline} height={380} />
+            </Suspense>
+          ) : (
+            <Skeleton className="w-full" style={{ height: 380 }} />
+          )}
+        </CardContent>
+      </Card>
+
+      {/* 7-tab report */}
+      <Card ref={tabsRef}>
+        <CardContent className="pt-6">
+          <Tabs value={activeTab} onValueChange={setActiveTab}>
+            <TabsList className="tabs-scrollable w-full justify-start bg-transparent border-b rounded-none pb-0 gap-0">
+              {REPORT_TABS.map(tab => (
+                <TabsTrigger key={tab.key} value={tab.key}
+                  className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent px-3 pb-2">
+                  {tab.label}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+            {REPORT_TABS.map(tab => {
+              const content = reportContent[tab.key] || ""
+              // Pass raw struct straight through — the lazy-bundle
+              // dispatcher does its own client-side normalize. Doing
+              // it here would force ``defensive.ts`` into this entry
+              // chunk and re-create the lazy/entry import cycle.
+              const struct = detail.rendering?.[tab.key as keyof RenderingDict]
+              const hasStruct = !!struct
+              return (
+                <TabsContent key={tab.key} value={tab.key} className="mt-4 space-y-4">
+                  {/* Per-tab boundary: a single malformed structured card
+                      should NOT take down the whole detail page (the
+                      production /analysis/17 white-screen). On error we
+                      hide just this tab's structured card and let the
+                      Markdown ``<details>`` below render the same
+                      content from the analyst report text. */}
+                  {hasStruct ? (
+                    <ErrorBoundary
+                      resetKey={`${detail.id}:${tab.key}`}
+                      onError={(err) => {
+                        // Telemetry only — never echo report bodies.
+                        // The shape helper walks one level deep and
+                        // emits field name + type so an operator can
+                        // diagnose which key is malformed without us
+                        // leaking PII or analyst conclusions to logs.
+                        // eslint-disable-next-line no-console
+                        console.error("[analysis card] render failed", {
+                          analysis_id: detail.id,
+                          tab_key: tab.key,
+                          error_name: err.name,
+                          error_message: err.message,
+                          struct_shape: describeShapeForTelemetry(struct),
+                        })
+                      }}
+                      fallback={({ error }) => (
+                        <CardFallback error={error} />
+                      )}
+                    >
+                      <Suspense fallback={<Skeleton className="h-32 w-full" />}>
+                        <AnalysisCards
+                          tabKey={tab.key}
+                          data={struct}
+                          executiveSummary={
+                            tab.key === "summary"
+                              ? (detail.executive_summary ?? null)
+                              : undefined
+                          }
+                        />
+                      </Suspense>
+                    </ErrorBoundary>
+                  ) : null}
+                  {content ? (
+                    <details className="rounded border border-border/50">
+                      <summary className="cursor-pointer px-4 py-2 text-xs text-muted-foreground hover:bg-muted/30">
+                        {hasStruct
+                          ? "原始模型输出（点击展开 · 仅供调试参考）"
+                          : "原始模型输出"}
+                      </summary>
+                      <div className="prose prose-invert prose-sm max-w-none px-4 py-3 max-h-[600px] overflow-y-auto text-[var(--color-text-secondary)]">
+                        {looksLikeRawDict(content) && (
+                          <div className="mb-3 rounded border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs text-amber-300 not-prose">
+                            原始输出格式异常（疑似 Python dict / JSON），已优先展示结构化摘要。
+                          </div>
+                        )}
+                        <ErrorBoundary
+                          resetKey={`${detail.id}:${tab.key}:md`}
+                          fallback={
+                            <pre className="text-xs whitespace-pre-wrap">{content}</pre>
+                          }
+                        >
+                          <Suspense fallback={<Skeleton className="h-24 w-full" />}>
+                            <MarkdownBody>{content}</MarkdownBody>
+                          </Suspense>
+                        </ErrorBoundary>
+                      </div>
+                    </details>
+                  ) : (!hasStruct && (
+                    <p className="text-sm text-muted-foreground py-8 text-center">暂无数据</p>
+                  ))}
+                </TabsContent>
+              )
+            })}
+          </Tabs>
+        </CardContent>
+      </Card>
     </div>
   )
 }

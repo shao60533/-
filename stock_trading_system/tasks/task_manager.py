@@ -202,21 +202,35 @@ class TaskManager:
         self._fail_started_at = getattr(self, "_fail_started_at", {})
         self._fail_started_at[task_id] = started
         self._store.update(task_id, status="running", started_at=now_iso(), progress=0)
-        self._emit("task_started", {"id": task_id})
+        self._emit("task_started", {"id": task_id, "task_id": task_id})
 
         def progress_cb(
             percent: float | int,
             step_desc: str | None = None,
             partial: Any = None,
+            stage: str | None = None,
         ) -> None:
+            """Persist + broadcast a task_progress envelope.
+
+            ``stage`` (analysis-progress-truth-source v1.0) is the
+            structural step id (``"market"`` / ``"advice"`` /
+            ``"finalize"`` …) that lets the inbox row align with the
+            analyzer pipeline DAG. ``step_desc`` is the human label
+            shown in the UI.
+            """
             try:
                 pct = max(0, min(99, int(percent)))  # reserve 100 for completion
             except (TypeError, ValueError):
                 pct = 0
             self._store.update(task_id, progress=pct, progress_step=step_desc)
             self._emit("task_progress", {
-                "id": task_id, "progress": pct,
-                "step": step_desc, "partial": partial,
+                "id": task_id,
+                "task_id": task_id,
+                "progress": pct,
+                "step": step_desc,
+                "stage": stage,
+                "status": "running",
+                "partial": partial,
             })
 
         try:
@@ -255,14 +269,16 @@ class TaskManager:
                 completed_at=now_iso(),
                 duration_ms=duration_ms,
             )
-            self._emit("task_completed", {"id": task_id, "result_ref": result_ref})
+            self._emit("task_completed", {
+                "id": task_id, "task_id": task_id, "result_ref": result_ref,
+            })
         except _CancelledError as e:
             self._store.update(
                 task_id, status="cancelled",
                 completed_at=now_iso(),
                 error_message=str(e),
             )
-            self._emit("task_cancelled", {"id": task_id})
+            self._emit("task_cancelled", {"id": task_id, "task_id": task_id})
         except Exception as e:  # noqa: BLE001 — capture all worker failures
             self._fail(task_id, str(e), traceback.format_exc())
 
@@ -285,7 +301,7 @@ class TaskManager:
                 pass
         self._store.update(task_id, **update_fields)
         self._emit("task_failed", {
-            "id": task_id, "error_message": error_message,
+            "id": task_id, "task_id": task_id, "error_message": error_message,
         })
 
     def _cleanup_running(self, task_id: str) -> None:
@@ -380,19 +396,30 @@ class TaskManager:
     # ── Plumbing ─────────────────────────────────────────────────────────
 
     def _emit(self, event: str, payload: dict) -> None:
-        """Emit a lifecycle event.
+        """Emit a lifecycle event using the unified envelope.
 
-        Three concerns the implementation honors:
-            1. Persist to task_events so reconnecting clients can catch up.
-            2. Broadcast on the *injected* socketio so tests and per-app
-               instances both see every event — never reach for the module-
-               level global, which would skip the test recorder.
-            3. Scope the broadcast to ``user:{created_by}`` when we know the
-               owner, so users only see their own task lifecycle events.
+        analysis-progress-truth-source v1.0:
+            1. Persist to task_events so reconnecting clients can catch up
+               (event_emitter.persist_event returns the canonical envelope
+               with seq + emitted_at stamped).
+            2. Broadcast THE SAME envelope on the *injected* socketio —
+               the legacy raw payload would be filtered out by
+               ``subscribeTaskStream.onAny`` (it requires ``task_id`` at
+               envelope top level), and live updates would never reach
+               the listener.
+            3. Tests using RecordingSocketIO see whatever shape we emit;
+               the test fixture's ``by_name`` auto-unwraps ``payload``
+               so legacy assertions about flat ``progress`` / ``id``
+               keys still hold.
+            4. Scope the broadcast to ``user:{created_by}`` when we know
+               the owner, so users only see their own task lifecycle.
         """
         task_id = payload.get("task_id") or payload.get("id", "")
 
         # Persist (best effort; no-op when task_events table is absent).
+        # ``persist_event`` returns the canonical envelope — that's what
+        # we broadcast, never the raw payload.
+        envelope: dict | None = None
         user_id: int | str | None = None
         if task_id:
             try:
@@ -401,21 +428,33 @@ class TaskManager:
                 )
                 db_path = _resolve_db_path(getattr(self._store, "_db_path", None))
                 user_id = _resolve_user_id(db_path, task_id)
-                persist_event(
+                envelope = persist_event(
                     task_id, event, payload,
                     db_path=db_path, user_id=user_id,
                 )
             except Exception as e:  # pragma: no cover
                 logger.debug("persist_event failed for %s: %s", event, e)
 
-        # Broadcast on the injected socketio. Use a per-user room when we know
-        # the owner so cross-user leakage doesn't happen in production; tests
-        # using RecordingSocketIO ignore the `to=` kwarg.
+        # Fallback envelope when persist couldn't resolve user_id (tests
+        # without DB rows, pre-table runs). Same shape so subscribers
+        # parse uniformly.
+        if envelope is None:
+            envelope = {
+                "task_id": task_id,
+                "user_id": user_id if user_id is not None else "",
+                "seq": 0,
+                "event": event,
+                "payload": payload,
+                "emitted_at": datetime.utcnow().strftime(
+                    "%Y-%m-%dT%H:%M:%S.%f"
+                )[:-3] + "Z",
+            }
+
         try:
             if user_id is not None:
-                self._socketio.emit(event, payload, to=f"user:{user_id}")
+                self._socketio.emit(event, envelope, to=f"user:{user_id}")
             else:
-                self._socketio.emit(event, payload)
+                self._socketio.emit(event, envelope)
         except Exception as e:  # pragma: no cover
             logger.warning("WS emit failed for %s: %s", event, e)
 

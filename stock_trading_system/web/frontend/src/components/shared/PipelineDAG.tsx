@@ -39,17 +39,32 @@ interface TaskEventEnvelope {
 
 interface PipelineDAGProps {
   taskId: string
+  /** analysis-progress-truth-source v1.0: optional initial step map so a
+   *  page that already knows the running state (e.g. from /api/history's
+   *  ``progress_step``) can bootstrap the DAG without waiting for the
+   *  first websocket event. Unknown step ids fall back to "pending". */
+  initialSteps?: Partial<Record<StageId, StageStatus>>
   onAllDone?: () => void
+  /** Notify the parent whenever a step transition produces a new percent
+   *  estimate. Lets an inbox row align its pct with the DAG state when
+   *  the unified ``task_progress`` envelope is in flight. */
+  onProgress?: (info: { pct: number; stage: StageId | null }) => void
 }
 
-function buildInitialStages(): Record<StageId, StageStatus> {
+function buildInitialStages(
+  override?: Partial<Record<StageId, StageStatus>>,
+): Record<StageId, StageStatus> {
   const init: Record<string, StageStatus> = {}
-  for (const s of STAGES) init[s.id] = "pending"
+  for (const s of STAGES) init[s.id] = override?.[s.id] ?? "pending"
   return init as Record<StageId, StageStatus>
 }
 
-export function PipelineDAG({ taskId, onAllDone }: PipelineDAGProps) {
-  const [stages, setStages] = useState<Record<StageId, StageStatus>>(buildInitialStages)
+export function PipelineDAG({
+  taskId, initialSteps, onAllDone, onProgress,
+}: PipelineDAGProps) {
+  const [stages, setStages] = useState<Record<StageId, StageStatus>>(
+    () => buildInitialStages(initialSteps),
+  )
   const [reasoning, setReasoning] = useState<Record<string, string>>({})
   const [expanded, setExpanded] = useState<string | null>(null)
   const allDoneFired = useRef(false)
@@ -110,11 +125,23 @@ export function PipelineDAG({ taskId, onAllDone }: PipelineDAGProps) {
             if (note) {
               setReasoning(prev => ({ ...prev, [stepId]: note }))
             }
+            // Mirror the worker's 5%→85% mapping so a parent inbox can
+            // show the same percent as the row's unified task_progress.
+            const idx = typeof p.index === "number" ? p.index : -1
+            const total = typeof p.total === "number" && p.total > 0 ? p.total : 7
+            if (idx >= 0) {
+              const pct = 5 + Math.round(((idx + 1) / total) * 80)
+              onProgress?.({ pct, stage: stepId as StageId })
+            }
             return
           }
 
           // pipeline_done / pipeline_error: terminal markers.
           if (evtType === "pipeline_done") {
+            // Bump the parent's percent to at least 85% so the inbox row
+            // never lags the all-green DAG. The worker's advice (90%) +
+            // finalize (98%) frames will arrive via task_progress shortly.
+            onProgress?.({ pct: 85, stage: null })
             markAllDone()
             return
           }
@@ -193,7 +220,7 @@ export function PipelineDAG({ taskId, onAllDone }: PipelineDAGProps) {
       destroyStream?.()
       clearInterval(poll)
     }
-  }, [taskId, onAllDone])
+  }, [taskId, onAllDone, onProgress])
 
   return (
     <div className="rounded-lg border border-border bg-[var(--color-bg-card)] p-4">

@@ -14,6 +14,20 @@ class GrahamAgent(BaseGuruAgent):
     philosophy = "深度价值 · 净净股 · 安全边际之父"
     # v1.4 reasoning lead — see BaseGuruAgent.framework_lead.
     framework_lead = "估值（PE/PB/NCAV）/ 资产负债安全 / 安全边际"
+    anti_patterns = [
+        "PE 超过 15 或 PB 超过 1.5 —— 即便是稳健成长股，也已超出我的纪律线。",
+        "当前流动比率低于 1.5 或长期债务超过净流动资产 —— 财务安全不足。",
+        "5 年中有任意 1 年的盈利亏损 —— 一致性失败，不进入选股池。",
+    ]
+    decision_style = [
+        "我会问：'当前价格相对清算价值还有多少安全边际？至少 33% 才下手。'",
+        "我会问：'这只股票适合防御型还是进取型投资者？我心中的客户是哪类？'",
+        "我会问：'如果市场明天闭市 10 年，靠资产负债表能不能扛过去？'",
+    ]
+    evidence_demands = (
+        "reasoning 第二段必须引用以下数字: PE / PB / 当前流动比率 / "
+        "长期债务 vs 净流动资产 / NCAV (流动资产 - 全部负债)。"
+    )
     principles = ["以低于清算价值买入", "严格的财务安全标准", "分散化降低风险", "市场先生是仆人不是主人"]
     motto = "投资的秘诀在于安全边际"
     avatar_initials = "BG"
@@ -29,9 +43,7 @@ class GrahamAgent(BaseGuruAgent):
 6. 盈利增长：5 年复合增长 > 通胀率
 分析时从 6 个维度打分（0-10），然后综合 0-100 总分。
 
-在本系统中，你的任务不是单独判断一家公司是否优秀，而是判断它是否符合用户指定主题下的投资机会。
-如果公司不符合用户主题，应先指出主题不匹配，再按你的投资哲学给出保守结论。
-低估值不能弥补主题不匹配；主题不匹配时，最多 neutral。"""
+"""
 
     def evaluate_deep(self, ticker: str, full_data: dict, context: dict) -> GuruSignal:
         f = full_data.get("fundamentals_current", {})

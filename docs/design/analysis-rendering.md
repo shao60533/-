@@ -945,60 +945,6 @@ const KV = ({ k, v }: { k: string; v: string }) => (
 | API key 缺失（Polygon 关，仅 yfinance）| `data_manager.get_news` 已有 fallback 链；data_sources.py 不感知 |
 | LLM 仍幻觉 headlines / 改了真数字 | 提取后做 hard guard：headlines 必须 title 命中真集合；valuation/growth/profitability/balance_sheet 字典直接以 facts 覆盖 LLM |
 
-## 15. v1.8 增量：详情页板块顺序调整（AI 内容优先）
-
-### 15.1 现状
-
-[`AnalysisDetailView`](../../stock_trading_system/web/frontend/src/islands/analysis/AnalysisPage.tsx) 当前从上到下：
-
-1. Header（ticker / Badge / 操作按钮 / Provenance 行 / actionMsg）
-2. PipelineDAG（仅 running）
-3. **Stats 3 卡**：分析日期 / 信号 / 风险等级
-4. **Quick-info 3 卡**：最近新闻 / 基本面指标 / 多空辩论
-5. **K 线 TVChart**（近 3 个月）
-6. **8 Tab 报告**（OverviewCard 在 summary tab 内 + 7 tab）
-
-问题（用户截图反馈）：
-- AI 分析的核心结论（OverviewCard 的 Rating / 执行总结 v1.6 / 三派辩论 / 决策依据 + 8 tab 完整论述）被埋在 K 线**之下**，第一屏看不到
-- Stats 3 卡信息**全部冗余**：分析日期 = Provenance 行「创建于」；信号 = Header `<Badge>`；风险等级 = OverviewCard.ConfidenceMeter
-- Quick-info 三卡（新闻/基本面/多空辩论）是次要参考，但被放在 AI 内容之上 + K 线之前
-
-### 15.2 调整
-
-新顺序：
-
-```
-1. Header (Title / Badges / 操作按钮 / Provenance 行 / actionMsg)
-2. PipelineDAG (仅 running)
-3. ★ 8 Tab 报告 (AI 分析核心: OverviewCard 概览 + 7 tab)
-4. K 线 TVChart (近 3 个月)
-5. Quick-info 3 卡 (新闻 / 基本面 / 多空辩论 — 次要参考)
-```
-
-视觉决策：
-- **删除** Stats 3 卡 row —— 信号/日期/风险已在 Header + OverviewCard + Provenance 行表达，三卡纯重复
-- 8 Tab 上移到 K 线之前，让用户进页第一屏即看到 OverviewCard 的执行总结 + 决策依据
-- K 线移到 Tab 之后作为参考价格走势
-- Quick-info 卡放最末，保留 `onClick → scrollToTab(...)` —— 因 Tab 在上方，`scrollIntoView({block:"start"})` 自然向上滚
-
-### 15.3 不动
-
-- `<AnalysisDetailView>` 顶部 Header / Provenance 行 / 操作按钮组顺序
-- `PipelineDAG` 仅 running 显示逻辑
-- `<OverviewCard>` 内部布局（v1.6 已加执行总结）+ 其它 7 Card 内部
-- 8 Tab 内部 `<TabsContent>` + 折叠 markdown body
-- TVChart 懒加载 + IntersectionObserver gating（仅容器位置变，行为不变）
-- Quick-info 卡 `onClick → scrollToTab` + 内部内容
-- 移动端布局类（`grid-collapse-mobile` 等保持）
-
-### 15.4 测试
-
-`stock_trading_system/web/frontend/src/islands/analysis/__tests__/AnalysisDetailView.order.test.tsx`（新增）：
-- `renders 8-tab block before K-line container`：DOM 中 `[data-testid="analysis-tabs"]` index < `[data-testid="kline-section"]` index
-- `renders K-line before quick-info row`：DOM 中 `[data-testid="kline-section"]` index < `[data-testid="quickinfo-row"]` index
-- `does not render stats 3-card row`：DOM 不含独立的 `分析日期` / `风险等级` 标签卡（除非来自 Provenance 行 / OverviewCard 内部）
-- `quickinfo onClick still scrolls to tabs`：mock `scrollIntoView`，点击 quick-info 任意卡 → 触发 `scrollIntoView({block:"start"})`
-
 ## 14. v1.6 增量：Executive Summary 入 OverviewCard 操作建议位
 
 ### 14.1 现状
@@ -1074,5 +1020,3 @@ const KV = ({ k, v }: { k: string; v: string }) => (
 | v1.0 | 2026-05-01 | 初版：8 tab × Pydantic schema（Overview/Market/Sentiment/News/Fundamentals/Debate/Risk/Decision）+ `analysis_history.rendering_json` 单列 JSON 存储 + RenderingExtractor 并发 8 calls + 8 Card 组件 + folded markdown 主体 + 单 tab 失败隔离降级 |
 | v1.1 | 2026-05-01 | News / Fundamentals 改混合源：直接调 `data_manager.get_news / get_fundamentals` 拿真实头条 + 真实数字（PE/PB/ROE/D/E/营收增长全套来自 yfinance .info / Polygon news），LLM 仅做 sentiment/impact 标注 + catalysts + summary + vs_industry + quality_score；Hard guard 防 LLM 改真数字（valuation/growth/profitability/balance_sheet 字典覆盖）+ 防 LLM 编造头条（title 必须命中真集合）；前端 quick-info 三卡（最近新闻 / 基本面指标 / 多空辩论）改为直接拉 `/api/news` `/api/fundamentals`，删除 `extractFundamentals` regex / `newsSnippet.slice(0,200)` / `extractDebateCount` 三个脆弱函数；多空辩论卡改用 `detail.rendering["Investment Debate"]` schema |
 | v1.6 | 2026-05-03 | Executive Summary 入 OverviewCard 操作建议位（用户截图反馈）：现状概览 tab 顶部"轻松支撑 645 亿美元的 AI 资本支出"零散小字（来自 `detail.executive_summary`，paper-trade v1.3 F3 抽取列）脱离 Decision banner，无视觉容器；banner 内仅 `action_direction`（"分批建仓"）一句话方向，缺具体可执行操作建议。后端 DTO 已 expose（`app.py:1564 history_detail_dto.executive_summary`），改动仅前端：(A) `<OverviewCard>` 加可选 prop `executiveSummary?: string \| null`，渲染在 `action_direction` 下方、`KpiRow` 上方，视觉 = `<ScrollText>` 图标 + "执行总结" 标题 + left border accent (`border-l-4 border-primary/60` + `bg-primary/5`) + `text-sm leading-relaxed line-clamp-4` 段落；(B) AnalysisPage.tsx 渲染 OverviewCard 时透传 `detail.executive_summary`；(C) `AnalysisCards` lazy-bundle dispatcher 接收并向 OverviewCard 透传，对其它 7 tab 无副作用；(D) 缺失或纯空白时静默不渲染（用现有 `nonEmptyStr` defensive helper）；(E) markdown body 折叠区保留原 `executive_summary`（双展示无害，banner 结构化、body 完整）。**不动** OverviewCard Pydantic schema / RenderingExtractor / `rendering_json` 存储 / 其它 7 tab Card / `detail.summary` 字段含义 / inbox 行展开摘要逻辑。新增 4 个 vitest case 验证位置/缺失降级/whitespace 兜底 |
-| v1.8 | 2026-05-03 | 详情页板块顺序调整 AI 内容优先（用户 2026-05-03 截图反馈）：现状从上到下 Header → Stats 3 卡（分析日期/信号/风险等级，**全部冗余**信号已在 Header Badge / 日期已在 Provenance / 风险等级已在 OverviewCard.ConfidenceMeter）→ Quick-info 3 卡（新闻/基本面/多空辩论）→ K 线 → 8 Tab 报告。AI 分析的核心结论（OverviewCard 的 Rating + 执行总结 v1.6 + 三派辩论 + 决策依据 + 8 tab 完整论述）被埋在 K 线**之下**，第一屏看不到。新顺序：1. Header (含 Provenance + 操作按钮) → 2. PipelineDAG (仅 running) → 3. **8 Tab 报告（AI 内容上移）** → 4. K 线 TVChart → 5. Quick-info 3 卡 (新闻/基本面/多空辩论 — 次要参考)。**删除** Stats 3 卡 row（信号/日期/风险等级三处重复）。Quick-info 卡 `onClick → scrollToTab` 行为不变（Tab 在上方，`scrollIntoView({block:"start"})` 自然向上滚）。**不动** Header / Provenance / 操作按钮 / OverviewCard 内部布局（v1.6 执行总结）/ 其它 7 Card / TVChart 懒加载 IntersectionObserver gating / 移动端布局类。新增 4 个 vitest case 锁顺序契约（tabs 在 kline 之前 / kline 在 quickinfo 之前 / 不渲染独立 stats 卡 / quickinfo onClick 仍滚动到 tabs）。自写 ~30 LOC（含测试） |
-| v1.7 | 2026-05-03 | **AI 分析置信度统一来源 LLM 结构化输出（用户 2026-05-03 提，~1.5h）**。线性根因：现状两套置信度并存——(a) 详情页顶部 `detail.confidence` 来自 `user_analysis_advice.confidence`，由 `strategy_engine._assess_confidence` 启发式生成（BUY/SELL 几乎固定 medium，HOLD 固定 low），与 LLM 实际判断无关且与个人持仓 advice 绑定；(b) 结构化摘要卡 `rendering.summary.confidence` 来自 `OverviewCard` schema（`ConfLiteral = "high"\|"medium"\|"low"`），是 LLM 真实结构化输出。两者语义混淆——共享分析的"AI 置信度"被个人化的执行启发式覆盖。方案（**只做语义解耦、不删 advice.confidence**）：(A) 后端新增 `_extract_llm_confidence(record) -> tuple[level\|None, num\|None]` helper：解析 `record["rendering_json"]`，优先读 `rendering["summary"]["confidence"]`（OverviewCard 字段名），缺失时回落到 `rendering["Decision"]["conviction"]`（DecisionCard 字段名）；level∈{high,medium,low} 映射 num∈{0.85, 0.5, 0.25}，缺失返 (None, None) — **不再回落到 advice.confidence**，否则语义又混回去；(B) `/api/history/<id>` detail DTO 改用 helper：`confidence = num`、新增 `confidence_level = level`、新增 `confidence_source = "llm_structured_output"`；为避免 `_parse_rendering` 重复调用，DTO 同一 rendering 对象既走 helper 又作为 `rendering` 字段返回；(C) `/api/history` 列表 DTO（含 inbox 完成行）同样从 `rendering_json` 提取，`get_analysis_history SELECT *` 已带该列，无需改 DB 查询；(D) `user_analysis_advice.confidence` 字段保留，但语义文档改为"execution_confidence / 操作建议置信度"——仅供纸面交易/个人执行建议使用，**不再用于** AI 分析详情顶部、分析记录卡、共享研究库；(E) 前端 `AnalysisPage.tsx` 详情页顶部 `detail.confidence` 来源切到后端新字段，缺失时显示"置信度暂无"而不是 fallback 到 advice；可选展示 `confidence_level` 中文标签（高/中/低置信）；(F) 历史 row 无 `rendering_json`（pre-v1.0）→ 三字段全 null，前端隐藏整个置信度区块。验收：`tests/web/test_analysis_detail.py` 新增 3 case 锁契约——`summary.confidence=high → 0.85 + level=high + source=llm_structured_output`；`summary` 缺失但 `Decision.conviction=low → 0.25`；无 `rendering_json` → `confidence/confidence_level=None` 且**不**读 `user_analysis_advice.confidence`（即使存在也不能影响 detail.confidence）；list endpoint 加 1 case 验证 confidence_level 透传。**不动** OverviewCard/DecisionCard schema、`_parse_rendering` 实现、`user_analysis_advice` 表结构、StrategyEngine `_assess_confidence`（保留供纸面交易使用）|

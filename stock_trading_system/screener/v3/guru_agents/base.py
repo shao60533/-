@@ -170,22 +170,58 @@ def _build_data_coverage_caveat(bundle: dict | None) -> str:
     )
 
 
+def _build_anti_pattern_block(anti_patterns: list[str]) -> str:
+    """v1.5: 立刻拒绝信号块。
+
+    Each guru declares 3 ``anti_patterns`` — patterns that, when present,
+    must produce ``bearish`` or ``neutral`` regardless of how shiny the
+    rest of the financials look.
+    """
+    if not anti_patterns:
+        return ""
+    items = "\n".join(f"- {p}" for p in anti_patterns)
+    return f"""
+
+你的反例守则（满足任一立刻给 bearish 或 neutral，无论财务多漂亮）：
+{items}
+若命中任一反例，必须在 reasoning 段三或段四明确指出，并在 sub_analyses
+新增一项 {{"name": "anti_pattern_hit", "score": 0-3, "details": "..."}}。
+"""
+
+
+def _build_decision_style_block(decision_style: list[str]) -> str:
+    """v1.5: 招牌自问块。Forces the reasoning lead to embed at least one
+    quoted self-question so each guru's card reads distinctly."""
+    if not decision_style:
+        return ""
+    items = "\n".join(f"- {s}" for s in decision_style)
+    return f"""
+
+你的决策对白（在 reasoning 段一中至少融入一条，用引号包起来如 "我会问自己：…"）：
+{items}
+"""
+
+
+def _build_evidence_demand_block(evidence_demands: str) -> str:
+    """v1.5: 数字引用要求块. Names the sub_analysis fields the guru must
+    quote in reasoning §2; missing data is logged as evidence_gap rather
+    than fabricated."""
+    if not (evidence_demands or "").strip():
+        return ""
+    return f"""
+
+证据要求：{evidence_demands.strip()}
+若关键数字缺失，请在 sub_analyses 中新增 {{"name": "evidence_gap", "score": 0-3, "details": "缺什么"}}，
+不要凭空编造数字；reasoning 段二明确指出"基于现有数据 X，但缺乏 Y"。
+"""
+
+
 def _build_reasoning_format_instruction(framework_lead: str) -> str:
     """Force the LLM to structure ``reasoning`` so each guru sounds like
     themselves and not a templated theme-fit statement.
 
-    The shape was driven by the v1.4 "大师评分详情同质化" report — every
-    guru's first 120 characters was the same theme-mismatch sentence
-    because both the system prompt and the theme instruction told them
-    to lead with theme content. We now reserve the lead for the guru's
-    own framework conclusion (Buffett → moat/cash-flow/margin-of-safety,
-    Lynch → growth-stage/PEG/retail-friendly, Graham → valuation/balance-
-    sheet/safety, Munger → quality/competitive-advantage/complexity, etc.)
-    and push theme content into sub_analyses.
-
-    ``framework_lead`` is the per-guru hint pulled off
-    ``BaseGuruAgent.framework_lead``. It's a short Chinese phrase that
-    names the dimensions the LLM must conclude on first.
+    v1.5: bumped from 3 sections to 4 — the new §4 "what new fact would
+    change my mind" forces a falsifiable reversal condition.
     """
     lead = framework_lead.strip() or "你的核心投资框架"
     return f"""
@@ -193,13 +229,14 @@ def _build_reasoning_format_instruction(framework_lead: str) -> str:
 reasoning 结构要求（必须严格遵守）：
 1. reasoning 第一句必须以你的投资框架结论开头 —— {lead}。
    不能用"该公司主题匹配 …"、"该 ticker 与用户主题 …"作开头。
-2. reasoning 整体按下面 3 段组织（用句号或换行分隔即可，不要用编号）：
-   段一(必须，1-2 句): 你的框架结论（基于 {lead}）。
-   段二(必须，1-3 句): 1-2 条核心依据，引用具体子分析或数字。
-   段三(必须，1-2 句): 主要风险或反方观点（最弱子分析、估值担忧、主题契合度等）。
+2. reasoning 整体按下面 4 段组织（用句号或换行分隔即可，不要用编号）：
+   段一(必须，1-2 句): 你的框架结论（基于 {lead}）+ 至少融入 1 条招牌自问（用引号包起）。
+   段二(必须，2-3 句): 引用 sub_analyses 中的具体数字（按 evidence_demands 要求的字段）。
+   段三(必须，1-2 句): 主要风险或反方观点（含 anti_pattern 命中提示，若有）。
+   段四(必须，1 句): "何种新事实会改变我的结论" —— 明确说出 1-2 个可观察的反转条件。
 3. 主题契合度的描述只放进 sub_analyses[name=theme_fit]，不要放进 reasoning 段一。
 4. 不要在 reasoning 中重复 sub_analyses 的所有打分；挑最关键的 2-3 项就够了。
-5. reasoning 全文 240-480 字；过短会被认为没说理，过长会被截断。
+5. reasoning 全文 280-540 字（4 段比 3 段允许略长）；过短会被认为没说理，过长会被截断。
 """
 
 
@@ -380,6 +417,13 @@ class BaseGuruAgent:
     # (buffett/lynch/graham/munger) override explicitly so the lead
     # phrasing matches the user's expectations.
     framework_lead: str = ""
+    # v1.5 — three new prompt-personalisation attrs. Subclasses populate
+    # ``anti_patterns`` (3 items) and ``decision_style`` (2-3 items) and
+    # ``evidence_demands`` (single string). Empty defaults so legacy
+    # tests with ad-hoc subclasses don't blow up.
+    anti_patterns: list[str] = []
+    decision_style: list[str] = []
+    evidence_demands: str = ""
 
     def evaluate_deep(
         self, ticker: str, full_data: dict, context: dict,
@@ -469,13 +513,23 @@ class BaseGuruAgent:
             f"Example output:\n{_GURU_SIGNAL_EXAMPLE}"
         )
 
+        # v1.5 — per-guru anti-pattern / decision-style / evidence-demand
+        # blocks. Each is empty when the guru hasn't populated the
+        # matching class attribute, so legacy stubs are unaffected.
+        anti_pattern_block = _build_anti_pattern_block(self.anti_patterns)
+        decision_style_block = _build_decision_style_block(self.decision_style)
+        evidence_demand_block = _build_evidence_demand_block(self.evidence_demands)
+
         messages = [
             SystemMessage(content=(
                 system_prompt
-                + theme_instruction
-                + coverage_caveat
-                + reasoning_format
-                + schema_instruction
+                + anti_pattern_block      # v1.5
+                + decision_style_block    # v1.5
+                + evidence_demand_block   # v1.5
+                + theme_instruction       # v1.3
+                + coverage_caveat         # v1.4
+                + reasoning_format        # v1.4 升级到 4 段
+                + schema_instruction      # v1.0
             )),
             HumanMessage(content=user_prompt),
         ]
