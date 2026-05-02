@@ -67,10 +67,12 @@ export function ScreenerV3Page() {
 }
 
 function ScreenerHomeView({ prefillId }: { prefillId: string | null }) {
+  // analysis-inbox v1.1 + screener-history v1.2 全局规则：
+  // 「表单 + 历史」混合主页统一 表单在上（主动作）、历史在下（次要参考）
   return (
     <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-6">
-      <RecentScreensCard />
       <ScreenerForm prefillTaskId={prefillId} />
+      <RecentScreensCard />
     </div>
   )
 }

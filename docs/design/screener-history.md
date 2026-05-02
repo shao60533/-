@@ -3,7 +3,7 @@
 | 项 | 值 |
 |---|---|
 | Feature | `screener-history` |
-| 版本 | v1.1 |
+| 版本 | v1.2 |
 | 日期 | 2026-05-02 |
 | 关联 | [screener-v3 v1.0](./screener-v3.md)（主体）+ [v1.2](./screener-v3.md) 决策透明化 + [v1.3](./screener-v3.md) 主题污染修复 + [analysis-inbox v1.0](./analysis-inbox.md)（用户体验对照） |
 | 关联测试 | `tests/web/test_screen_v3_history.py`、`tests/web/test_screener_v3_running_route.py` |
