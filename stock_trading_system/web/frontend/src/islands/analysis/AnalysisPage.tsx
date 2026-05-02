@@ -1603,8 +1603,9 @@ function InboxToolbar({ ticker, onTicker, total }: {
  *  a status bar by default; desktop expands. ``onSettled`` fires when
  *  PipelineDAG signals all-done so the parent can refresh the inbox
  *  and flip the row to a CompletedRow. */
-function RunningRow({ row, highlight, onSettled }: {
+function RunningRow({ row, live, highlight, onSettled }: {
   row: Extract<InboxRow, { kind: "task" }>
+  live?: { pct: number; step: string | null; stage: string | null }
   highlight?: boolean
   onSettled: () => void
 }) {
@@ -1614,6 +1615,12 @@ function RunningRow({ row, highlight, onSettled }: {
   )
   const isFailure = row.status === "failed" || row.status === "cancelled"
   const label = TASK_STATUS_LABEL[row.status] ?? row.status
+
+  // analysis-progress-truth-source v1.0: prefer the live websocket
+  // value, fall back to /api/history's last-known persisted percent.
+  // Never let the displayed pct go backwards across re-renders.
+  const displayedPct = Math.max(live?.pct ?? 0, row.progress_pct ?? 0)
+  const displayedStep = live?.step ?? row.progress_step ?? null
 
   const cancel = async () => {
     if (!confirm(`确认取消 ${row.ticker} 的分析?`)) return
@@ -1648,9 +1655,17 @@ function RunningRow({ row, highlight, onSettled }: {
         >
           {label}
         </Badge>
-        {!isFailure && row.progress_pct > 0 && (
+        {!isFailure && displayedPct > 0 && (
           <span className="text-xs text-muted-foreground font-mono">
-            {row.progress_pct}%
+            {displayedPct}%
+          </span>
+        )}
+        {!isFailure && displayedStep && (
+          <span
+            className="text-xs text-muted-foreground truncate max-w-[14rem]"
+            title={displayedStep}
+          >
+            {displayedStep}
           </span>
         )}
         <span className="text-xs text-muted-foreground ml-auto">
@@ -1691,11 +1706,11 @@ function RunningRow({ row, highlight, onSettled }: {
           <PipelineDAG taskId={row.task_id} onAllDone={onSettled} />
         </div>
       )}
-      {!isFailure && collapsed && row.progress_pct > 0 && (
+      {!isFailure && collapsed && displayedPct > 0 && (
         <div className="h-1 bg-muted rounded overflow-hidden">
           <div
             className="h-full bg-primary transition-all"
-            style={{ width: `${Math.min(100, row.progress_pct)}%` }}
+            style={{ width: `${Math.min(100, displayedPct)}%` }}
           />
         </div>
       )}
