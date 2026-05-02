@@ -574,6 +574,18 @@ def make_screen_v3_worker():
                 emit_event(task_id, "guru_unit_done", event, user_id=user_id)
             elif evt_type in ("roundtable_start", "roundtable_done"):
                 emit_event(task_id, evt_type, event, user_id=user_id)
+            elif evt_type in (
+                "screen_v3_stage_start",
+                "screen_v3_stage_done",
+                "aggregate_done",
+            ):
+                # screener-history v1.1: V3-shaped stage timeline events.
+                # Frontend ``ScreenerV3Progress`` consumes these to advance
+                # the per-stage timeline (parse / universe / bundle / guru
+                # / roundtable / aggregate). No progress_cb update — the
+                # bundle_progress + guru_unit_done branches above already
+                # drive the linear percent.
+                emit_event(task_id, evt_type, event, user_id=user_id)
 
         try:
             from stock_trading_system.data.local_cache import LocalCache
