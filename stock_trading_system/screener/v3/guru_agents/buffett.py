@@ -30,6 +30,10 @@ class BuffettAgent(BaseGuruAgent):
     name = "buffett"
     display_name = "Warren Buffett"
     philosophy = "价值投资 · 护城河 · 安全边际"
+    # v1.4 reasoning lead — first sentence of ``reasoning`` must conclude
+    # on these dimensions (not on theme-fit) so every guru's card reads
+    # distinctly in the UI.
+    framework_lead = "护城河 / 自由现金流 / 安全边际"
     principles = [
         "寻找具有持久竞争优势的企业",
         "以合理价格购买优秀企业",

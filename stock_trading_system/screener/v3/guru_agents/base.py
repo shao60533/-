@@ -75,6 +75,13 @@ def _build_theme_instruction(query: str | None, spec: dict | None) -> str:
     of whether we detected a theme. Empty inputs degrade gracefully:
     the LLM sees ``"用户原始筛选意图: "`` and ``"结构化筛选条件: {}"``
     and the cap-rules become no-ops because theme_fit defaults to 5.
+
+    v1.4 — Theme-fit content lives in ``sub_analyses[name="theme_fit"]``
+    ONLY. The earlier version told the LLM to lead ``reasoning`` with
+    a theme-mismatch paragraph, which made every guru's first 120
+    characters say the same thing for off-theme tickers (the
+    "大师评分详情同质化" bug). The lead is now reserved for the
+    per-guru framework conclusion (see ``_build_reasoning_format_instruction``).
     """
     q = query or ""
     s = spec if isinstance(spec, dict) else {}
@@ -89,10 +96,8 @@ def _build_theme_instruction(query: str | None, spec: dict | None) -> str:
 3. "龙头股"表示用户指定主题/行业内的龙头，不是全市场市值龙头。
 4. 如果 ticker 与用户主题明显无关，即使财务指标优秀，也应降低 total_score，
    并将 signal 设为 neutral 或 bearish。
-5. reasoning 必须明确说明：
-   - 该公司与用户主题是否直接相关
-   - 主题相关性的证据
-   - 若不相关，为什么不能作为该主题候选
+5. 主题匹配性的说明放在 sub_analyses 的 theme_fit 项里，不要写在 reasoning 开头。
+   reasoning 第一句必须是你自己投资框架的结论（详见下面的"reasoning 结构要求"）。
 6. 必须在 sub_analyses 中包含一项:
    {{"name": "theme_fit", "score": 0-10, "details": "该公司与用户主题的直接相关性说明"}}
 7. 如果 theme_fit < 4，total_score 不应超过 60。
@@ -104,6 +109,39 @@ def _build_theme_instruction(query: str | None, spec: dict | None) -> str:
     可作为产业链相关但需说明理由的公司：MRVL, INTC, AMD, NVDA, AVGO。
     无直接相关性的公司示例：BRK-B, JPM, V, MA, PG, WMT, UNH。
     除非用户明确写"云存储/云计算/对象存储"，否则 AMZN/MSFT/GOOGL 不应被默认视为存储龙头。
+"""
+
+
+def _build_reasoning_format_instruction(framework_lead: str) -> str:
+    """Force the LLM to structure ``reasoning`` so each guru sounds like
+    themselves and not a templated theme-fit statement.
+
+    The shape was driven by the v1.4 "大师评分详情同质化" report — every
+    guru's first 120 characters was the same theme-mismatch sentence
+    because both the system prompt and the theme instruction told them
+    to lead with theme content. We now reserve the lead for the guru's
+    own framework conclusion (Buffett → moat/cash-flow/margin-of-safety,
+    Lynch → growth-stage/PEG/retail-friendly, Graham → valuation/balance-
+    sheet/safety, Munger → quality/competitive-advantage/complexity, etc.)
+    and push theme content into sub_analyses.
+
+    ``framework_lead`` is the per-guru hint pulled off
+    ``BaseGuruAgent.framework_lead``. It's a short Chinese phrase that
+    names the dimensions the LLM must conclude on first.
+    """
+    lead = framework_lead.strip() or "你的核心投资框架"
+    return f"""
+
+reasoning 结构要求（必须严格遵守）：
+1. reasoning 第一句必须以你的投资框架结论开头 —— {lead}。
+   不能用"该公司主题匹配 …"、"该 ticker 与用户主题 …"作开头。
+2. reasoning 整体按下面 3 段组织（用句号或换行分隔即可，不要用编号）：
+   段一(必须，1-2 句): 你的框架结论（基于 {lead}）。
+   段二(必须，1-3 句): 1-2 条核心依据，引用具体子分析或数字。
+   段三(必须，1-2 句): 主要风险或反方观点（最弱子分析、估值担忧、主题契合度等）。
+3. 主题契合度的描述只放进 sub_analyses[name=theme_fit]，不要放进 reasoning 段一。
+4. 不要在 reasoning 中重复 sub_analyses 的所有打分；挑最关键的 2-3 项就够了。
+5. reasoning 全文 240-480 字；过短会被认为没说理，过长会被截断。
 """
 
 
@@ -274,6 +312,16 @@ class BaseGuruAgent:
     motto: str = ""
     avatar_initials: str = ""
     avatar_color: str = "#888"
+    # v1.4 — short Chinese phrase naming the dimensions this guru must
+    # conclude on first inside ``reasoning``. Drives
+    # ``_build_reasoning_format_instruction`` so every guru's leading
+    # sentence sounds like itself and not a templated theme-fit
+    # statement. Subclasses MUST override; falling back to ``philosophy``
+    # is OK for the 10 less-named gurus (philosophy is already distinct
+    # per guru) but the four leads called out in the spec
+    # (buffett/lynch/graham/munger) override explicitly so the lead
+    # phrasing matches the user's expectations.
+    framework_lead: str = ""
 
     def evaluate_deep(
         self, ticker: str, full_data: dict, context: dict,
@@ -333,6 +381,17 @@ class BaseGuruAgent:
             spec=(context or {}).get("filter_spec"),
         )
 
+        # v1.4 — per-guru reasoning-format instruction. Forces the
+        # leading sentence of ``reasoning`` to be the framework
+        # conclusion (e.g. Buffett's moat/cash-flow/margin-of-safety)
+        # so the four cards in the UI read distinctly per guru. Falls
+        # back to ``self.philosophy`` for any guru that hasn't set its
+        # own ``framework_lead`` explicitly — every guru already has a
+        # distinct philosophy string.
+        reasoning_format = _build_reasoning_format_instruction(
+            self.framework_lead or self.philosophy or "你的核心投资框架",
+        )
+
         # Build messages with explicit schema example
         schema_instruction = (
             f"\n\nYou MUST respond with a valid JSON object matching this exact schema. "
@@ -344,7 +403,9 @@ class BaseGuruAgent:
         )
 
         messages = [
-            SystemMessage(content=system_prompt + theme_instruction + schema_instruction),
+            SystemMessage(content=(
+                system_prompt + theme_instruction + reasoning_format + schema_instruction
+            )),
             HumanMessage(content=user_prompt),
         ]
 

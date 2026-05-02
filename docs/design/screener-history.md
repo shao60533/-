@@ -410,9 +410,59 @@ window.location.href = `/screener-v3?task=${data.task_id}`
 | [ui-react-island-regression](./ui-react-island-regression.md) v1.18 R-fix-12G | HistoryPage 行渲染 / 工具栏 / 多选对比逻辑直接抽取复用 |
 | [tasks 任务中心](./architecture-upgrade.md) | **保持不变**——跨类型 task 总览，screen_v3 类型 task 仍可见可排查 |
 
+## 12. v1.2 主页板块顺序对齐 analysis-inbox
+
+### 12.1 现状
+
+[ScreenerV3Page.tsx:69-74](../../stock_trading_system/web/frontend/src/islands/screener-v3/ScreenerV3Page.tsx) 当前实施：
+```tsx
+function ScreenerHomeView({ prefillId }) {
+  return (
+    <div ...>
+      <RecentScreensCard />     // ← 最近 3 卡在上
+      <ScreenerForm ... />      // ← 表单在下
+    </div>
+  )
+}
+```
+
+而 [analysis-inbox v1.1 line 478](./analysis-inbox.md) 已实施：发起分析卡在前，分析记录卡在后。两个主入口规则不一致 —— 用户每次切换页面都要适应一次顺序，且**主动作（提交新任务）**应该位于第一屏不需滚动可见。
+
+### 12.2 调整
+
+`<ScreenerHomeView>` 顺序调换：
+
+```tsx
+function ScreenerHomeView({ prefillId }) {
+  return (
+    <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-6">
+      <ScreenerForm prefillTaskId={prefillId} />  // ← 表单在上（主动作）
+      <RecentScreensCard />                        // ← 最近 3 卡在下（次要）
+    </div>
+  )
+}
+```
+
+`<RecentScreensCard>` 内部不变；表单 prefill banner 与 form 字段位置不变。
+
+### 12.3 与 analysis-inbox 对齐的全局规则
+
+凡是「表单 + 历史」混合主页，统一 **表单在上，历史/记录在下**：
+
+| 主页 | 顺序 | 实施位置 |
+|---|---|---|
+| `/analysis` | `<AnalysisFormHeader>` → `<AnalysisInboxList>` | analysis-inbox v1.1 ✓ |
+| `/screener-v3` | `<ScreenerForm>` → `<RecentScreensCard>` | screener-history v1.2（本节）|
+
+理由：
+- 主页第一屏应放主动作（提交新任务），不需要滚动可见
+- 历史是次要参考，放在下方按时间倒序浏览自然
+- 两个入口规则一致，降低用户切换成本
+
 ## 11. 版本历史
 
 | 版本 | 日期 | 变更 |
 |---|---|---|
+| v1.2 | 2026-05-02 | 主页板块顺序对齐 analysis-inbox（用户反馈）：v1.0 `<ScreenerHomeView>` 实施时 `<RecentScreensCard>`（最近 3 卡）在上、`<ScreenerForm>`（表单）在下，与 analysis-inbox v1.1（发起分析在上、记录在下）规则不一致。调整：`ScreenerHomeView` 两块换序为 `<ScreenerForm>` → `<RecentScreensCard>`，主动作（提交新选股）位于第一屏不需滚动可见，最近记录降为下方次要参考。同时确立全局规则：所有「表单 + 历史」混合主页统一 **表单在上、历史在下**（analysis-inbox / screener-history 两个入口对齐）。`<RecentScreensCard>` 内部不变；`<ScreenerForm>` prefill banner 与字段位置不变；其它路由（`?task=` / `?result=` / `/screener-v3/history`）不变。无 schema / API / 后端改动 |
 | v1.1 | 2026-05-02 | **运行中视图换 V3 专属进度组件（用户截图反馈）**：v1.0 `<ScreenerRunningView>` 复用 AI 分析的 `<PipelineDAG>` → 渲染出 `技术面 / 情绪面 / 新闻 / 基本面 / 多空辩论 / 风险评估 / 最终决策` 7 节点，**与选股链路无关**，且 agent_rt 模式下圆桌辩论阶段完全不可见。根因（线性）：(a) `PipelineDAG` 内部 `STAGES` 常量硬编码 analyzer 的 7 步 + 仅监听 `analysis_pipeline` 事件，对 V3 的 `bundle_progress / guru_unit_done` 不响应；(b) `ScreenerV3Pipeline` 内 6 phase 没有自己的 stage_start/stage_done 事件；(c) `_run_roundtable` 内置实现（pipeline.py:326）虽然 `roundtable.run_roundtable` 模块函数有 `roundtable_start/done` 事件，但 pipeline 没调它，事件永远不发；(d) worker `_on_progress` 已经准备好转发 `roundtable_start/done`（workers.py:481）但上游不发就空转。方案（**纯增量、不动** 14 大师、aggregator、RoundtableResult、`ResultsView`、screen_v3 schema、unified-progress 协议）：(A) `ScreenerV3Pipeline.run` 在每 phase 头尾发 `screen_v3_stage_start / screen_v3_stage_done` 事件，stage∈{`parse / universe / bundle / guru / roundtable / aggregate`}；`_run_roundtable` 内部按 ticker 进度发 `roundtable_start({tickers})` 一次 + `roundtable_done({ticker, consensus, dissent})` 每 ticker 一次；管线末尾发 `aggregate_done({results_count})`；(B) `workers.py make_screen_v3_worker._on_progress` 加分支转发 `screen_v3_stage_start / screen_v3_stage_done / aggregate_done`；`bundle_progress / guru_unit_done / roundtable_start / roundtable_done` 不变；(C) 前端新建 `components/shared/ScreenerV3Progress.tsx`（独立组件，不复用 `<PipelineDAG>`），STAGES = `[解析条件 / 构建股票池 / 拉取行情 / 大师并行评分 / 圆桌辩论 / 生成结果]`；圆桌阶段仅 `mode === "agent_rt"` 时显示，否则显示 muted "未启用圆桌"；状态机消费 `screen_v3_stage_start/done` 推进 stage 主线，消费 `bundle_progress` 显示 `准备数据 X/Y`，消费 `guru_unit_done` 显示 `Buffett · AAPL ✓`，消费 `roundtable_start/done` 显示圆桌 ticker 进度；socket 断开时每 5s `GET /api/tasks/<task_id>` 兜底 status，terminal 走既有 task_completed 跳转；(D) `<ScreenerRunningView>` 渲染 `<ScreenerV3Progress mode={mode} taskId={taskId} />` + 既有 `<GuruParallelProgress>`（大师矩阵保留作 detail），**移除 `<PipelineDAG>`**；mode 从 task params_json 读（catch-up GET 已返 params_json）。验收：(1) `/screener-v3?task=<id>` 不再出现 "技术面/情绪面/新闻/基本面/风险评估/最终决策" 文字；(2) agent_rt 跑通后进度区看到 "圆桌辩论 ✓"；(3) agent 模式圆桌阶段显示 muted "未启用圆桌"；(4) 大师矩阵保留并实时推进。后端测试 `tests/screener/v3/test_pipeline_progress_events.py`：mock on_progress 收集事件 → assert `screen_v3_stage_start{stage=parse}` + `_done{stage=guru}` + `aggregate_done` 至少一条；mode=agent_rt 时 assert `roundtable_start` 至少一条。**不动** unified-progress per-user room、socket 协议、TaskStore schema |
 | v1.0 | 2026-05-02 | 初版：3 入口结构（`/screener-v3` 主页 + `?task=<id>` 运行中视图 + `?result=<id>` 结果视图 + `/screener-v3/history` 完整记录列表 + `?prefill=<id>` 预填表单），不学 analysis-inbox 单页合并；后端 `TaskStore.list_screen_v3_history(user_id, modes, markets, limit, offset, include_failed)` + `get_screen_v3_history_one(task_id, user_id)` 新方法；`/api/screen/v3/history` `/api/screen/v3/history/<task_id>` 新端点（多租户隔离 v1.18 R-fix-12 边界）；前端 `<RecentScreensCard>` 顶部 3 卡 + [查看全部 →] 链接；`<ScreenerHistoryList>` 复用 v1.18 HistoryPage 工具栏/行/多选 + 加 mode/market 多选筛选 + [复制配置重跑] 跳 `?prefill=<task_id>`；`<ScreenerRunningView>` 同页内 PipelineDAG + `<GuruParallelProgress>` 大师并发矩阵 + 完成 replaceState 到 `?result=<task_id>` + 失败留在运行中页带返回；`<ScreenerForm>` 加 `prefillTaskId` useEffect 拉 history one 预填字段 + banner 提示；提交后从 `/tasks/<id>` 改为 `/screener-v3?task=<id>`；Sidebar 不动（不新增"选股记录"项）；`<ResultsView>` v1.0+v1.2+v1.3 / `<ScreenerForm>` 既有字段提交逻辑 / 任务中心 / screen_v3 schema 全部不动。复用 v1.18 HistoryPage ~70% 代码 + unified-progress + shadcn 组件库；自写 ~700 LOC |

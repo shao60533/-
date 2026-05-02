@@ -16,6 +16,8 @@ class LynchAgent(BaseGuruAgent):
     name = "lynch"
     display_name = "Peter Lynch"
     philosophy = "了解你买的东西 · PEG 估值 · 合理价格的成长股"
+    # v1.4 reasoning lead — see BaseGuruAgent.framework_lead.
+    framework_lead = "成长阶段分类 / PEG / 散户可理解性"
     principles = [
         "PEG < 1 是理想目标，< 2 尚可接受",
         "将股票分类：慢速、稳健、快速、周期、困境反转、资产隐蔽",
