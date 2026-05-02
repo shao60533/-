@@ -1,6 +1,6 @@
 import type { ReactNode } from "react"
 import type { Stance } from "../types"
-import { nonEmptyStr } from "./defensive"
+import { nonEmptyStr, safeText } from "./defensive"
 
 const RING: Record<string, string> = {
   aggressive:   "border-orange-500/40",
@@ -40,19 +40,19 @@ export function StanceCard({
           {claim && (
             <div>
               <div className="text-[10px] uppercase opacity-60">论点</div>
-              <div className="text-xs leading-relaxed">{claim}</div>
+              <div className="text-xs leading-relaxed">{safeText(claim)}</div>
             </div>
           )}
           {evidence && (
             <div>
               <div className="text-[10px] uppercase opacity-60">证据</div>
-              <div className="text-xs leading-relaxed">{evidence}</div>
+              <div className="text-xs leading-relaxed">{safeText(evidence)}</div>
             </div>
           )}
           {limitation && (
             <div>
               <div className="text-[10px] uppercase opacity-60">局限</div>
-              <div className="text-xs leading-relaxed opacity-80">{limitation}</div>
+              <div className="text-xs leading-relaxed opacity-80">{safeText(limitation)}</div>
             </div>
           )}
         </>

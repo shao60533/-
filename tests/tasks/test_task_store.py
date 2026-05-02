@@ -348,3 +348,50 @@ def test_count_by_status(store):
     assert counts.get("success") == 2
     assert counts.get("failed") == 1
     assert counts.get("running") == 1
+
+
+# ── Save-analysis advice isolation (R-fix-2) ────────────────────────────────
+
+
+def test_save_analysis_result_keeps_shared_row_advice_free(tmp_path):
+    """Even when a worker mistakenly attaches per-user advice fields to
+    its result dict, ``_save_analysis_result`` MUST persist them as
+    NULL on the shared ``analysis_history`` row. The per-user advice
+    has its own table (``user_analysis_advice``); leaking it onto the
+    shared row exposes another tenant's holdings-aware plan.
+    """
+    import sqlite3
+    store = TaskStore(str(tmp_path / "tasks.db"))
+    ref = store.save_result("analysis", "task-r2", {
+        "ticker": "AAPL", "date": "2026-04-15", "signal": "BUY",
+        "trade_decision": "Buy with conviction",
+        "market_report": "shared notes",
+        "depth": "standard",
+        # Adversarial: legacy worker still ships these fields.
+        "advice": {
+            "action": "BUY", "confidence": "high",
+            "suggested_position_pct": 25,
+            "entry_price_low": 150, "entry_price_high": 152,
+            "stop_loss": 145, "take_profit": 170,
+            "reasoning": "leak-attempt",
+        },
+        "_advice_payload": {
+            "advice": {"action": "BUY"}, "holdings_snapshot": "[]",
+        },
+        "created_by": 9, "provider": "qwen", "model": "qwen-plus",
+    })
+    rid = int(ref.split(":", 1)[1])
+    with sqlite3.connect(str(tmp_path / "tasks.db")) as c:
+        c.row_factory = sqlite3.Row
+        row = c.execute(
+            "SELECT advice_json, action, confidence, position_pct, "
+            "entry_low, entry_high, stop_loss, take_profit, depth "
+            "FROM analysis_history WHERE id = ?",
+            (rid,),
+        ).fetchone()
+    assert row["advice_json"] == ""
+    for col in ("action", "confidence", "position_pct",
+                "entry_low", "entry_high", "stop_loss", "take_profit"):
+        assert row[col] is None, f"{col} leaked into shared analysis_history"
+    # Shared research metadata still flows through.
+    assert row["depth"] == "standard"

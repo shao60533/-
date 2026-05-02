@@ -38,6 +38,7 @@ export default defineConfig({
       output: {
         manualChunks: {
           "react-vendor": ["react", "react-dom"],
+          "icons-vendor": ["lucide-react"],
           "echarts-vendor": ["echarts/core", "echarts/charts", "echarts/components", "echarts/renderers"],
         },
       },

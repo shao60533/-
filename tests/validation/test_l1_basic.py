@@ -57,7 +57,7 @@ class TestAuthPages:
 class TestReactIslands:
     @pytest.mark.parametrize("url", [
         "/", "/dashboard", "/screener-v3", "/tasks",
-        "/portfolio", "/history", "/alerts",
+        "/portfolio", "/alerts",
         "/analysis", "/reports", "/settings",
     ])
     def test_react_island_loads(self, client, url):
@@ -65,6 +65,13 @@ class TestReactIslands:
         assert resp.status_code == 200
         html = resp.data.decode()
         assert "react-root" in html
+
+    def test_history_redirects_to_analysis_inbox(self, client):
+        """v1.22: ``/history`` was retired as a standalone island and
+        now 301-redirects to the unified ``/analysis`` inbox."""
+        resp = client.get("/history", follow_redirects=False)
+        assert resp.status_code == 301
+        assert resp.headers["Location"].endswith("/analysis")
 
     def test_legacy_spa_loads(self, client):
         resp = client.get("/app")

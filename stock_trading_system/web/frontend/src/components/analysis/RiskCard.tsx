@@ -1,8 +1,8 @@
 import { Flame, Shield, Scale } from "lucide-react"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
-import type { RiskCardData, TopRisk } from "./types"
+import type { RiskCardData, TopRisk, Stance } from "./types"
 import { StanceCard } from "./shared/StanceCard"
-import { safeArray, nonEmptyStr } from "./shared/defensive"
+import { safeArray, nonEmptyStr, safeText, isRecord, safeRecord } from "./shared/defensive"
 
 const PROB_LABEL: Record<string, string> = { high: "高", medium: "中", low: "低" }
 
@@ -17,8 +17,12 @@ function cellTone(prob: unknown, sev: unknown): string {
 }
 
 export function RiskCard({ data }: { data: RiskCardData | null | undefined }) {
-  if (!data || typeof data !== "object") return null
-  const top = safeArray<TopRisk>(data.top_risks)
+  const rec = safeRecord(data)
+  if (!rec) return null
+  const aggressive = safeRecord(rec.aggressive) as Stance | null
+  const conservative = safeRecord(rec.conservative) as Stance | null
+  const neutral = safeRecord(rec.neutral) as Stance | null
+  const top = safeArray<unknown>(rec.top_risks).filter(isRecord) as unknown as TopRisk[]
   return (
     <div className="space-y-4">
       <Card>
@@ -26,15 +30,15 @@ export function RiskCard({ data }: { data: RiskCardData | null | undefined }) {
         <CardContent className="space-y-3">
           <div className="grid gap-3 md:grid-cols-3">
             <StanceCard title="激进派" icon={<Flame className="h-4 w-4" />}
-                         stance={data.aggressive} accent="aggressive" />
+                         stance={aggressive} accent="aggressive" />
             <StanceCard title="保守派" icon={<Shield className="h-4 w-4" />}
-                         stance={data.conservative} accent="conservative" />
+                         stance={conservative} accent="conservative" />
             <StanceCard title="中立派" icon={<Scale className="h-4 w-4" />}
-                         stance={data.neutral} accent="neutral" />
+                         stance={neutral} accent="neutral" />
           </div>
-          {nonEmptyStr(data.verdict) && (
+          {nonEmptyStr(rec.verdict) && (
             <div className="rounded border-l-4 border-primary bg-primary/5 px-3 py-2 text-sm">
-              <span className="font-semibold mr-2">风险综合:</span>{data.verdict}
+              <span className="font-semibold mr-2">风险综合:</span>{safeText(rec.verdict)}
             </div>
           )}
         </CardContent>
@@ -46,14 +50,14 @@ export function RiskCard({ data }: { data: RiskCardData | null | undefined }) {
           <CardContent>
             <div className="space-y-2">
               {top.map((r, i) => (
-                <div key={i} className={`rounded border px-3 py-2 ${cellTone(r?.probability, r?.severity)}`}>
+                <div key={i} className={`rounded border px-3 py-2 ${cellTone(r.probability, r.severity)}`}>
                   <div className="flex items-center gap-2 mb-1 text-xs">
-                    <span className="font-semibold flex-1">{r?.risk ?? ""}</span>
-                    <span className="font-mono">概率 {PROB_LABEL[r?.probability as string] ?? "—"}</span>
-                    <span className="font-mono">严重 {PROB_LABEL[r?.severity as string] ?? "—"}</span>
+                    <span className="font-semibold flex-1">{safeText(r.risk)}</span>
+                    <span className="font-mono">概率 {PROB_LABEL[r.probability as string] ?? "—"}</span>
+                    <span className="font-mono">严重 {PROB_LABEL[r.severity as string] ?? "—"}</span>
                   </div>
-                  {nonEmptyStr(r?.mitigation) && (
-                    <div className="text-xs opacity-80">缓解: {r.mitigation}</div>
+                  {nonEmptyStr(r.mitigation) && (
+                    <div className="text-xs opacity-80">缓解: {safeText(r.mitigation)}</div>
                   )}
                 </div>
               ))}

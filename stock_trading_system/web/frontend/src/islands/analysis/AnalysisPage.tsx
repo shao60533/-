@@ -1,5 +1,8 @@
 import { useEffect, useState, useRef, useCallback, lazy, Suspense } from "react"
-import { Sparkles, Send, ArrowLeft, Clock, Newspaper, BarChart3, Scale, ExternalLink } from "lucide-react"
+import {
+  Sparkles, Send, ArrowLeft, Clock, Newspaper, BarChart3, Scale,
+  ExternalLink, ChevronDown, ChevronRight,
+} from "lucide-react"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -10,7 +13,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { PipelineDAG } from "@/components/shared/PipelineDAG"
 import { ErrorBoundary } from "@/components/shared/ErrorBoundary"
 import type { TVChartState } from "@/components/shared/TVChart"
-import { apiGet, apiPost } from "@/lib/api"
+import { apiGet, apiPost, apiDel } from "@/lib/api"
 // react-markdown + remark-gfm + rehype-sanitize together are ~70kB
 // gzipped — we only need them on the analysis-detail tabs body, never
 // on the form page or the running view. Lazy-load via React.lazy so
@@ -26,6 +29,9 @@ const TVChart = lazy(() =>
 // one chunk keeps the entry small while preserving render simplicity.
 const AnalysisCards = lazy(() => import("@/components/analysis/lazy-bundle"))
 import type { RenderingDict } from "@/components/analysis"
+import {
+  normalizeCardForClient, describeShape,
+} from "@/components/analysis/shared/defensive"
 
 interface AnalysisDetail {
   id: string; ticker: string; signal: string; date: string
@@ -69,6 +75,59 @@ function canonicalSignal(detail: Pick<AnalysisDetail, "decision_action" | "signa
 interface RecentAnalysisRow {
   id: number; ticker: string; signal: string; date: string
   created_at?: string; created_by_name?: string | null
+}
+
+/** v1.22 unified inbox row. ``/api/history?include_running=true`` returns
+ *  a discriminated list mixing in-flight tasks with completed analyses. */
+type InboxRow =
+  | {
+      kind: "task"
+      task_id: string
+      ticker: string
+      depth: "quick" | "standard" | "deep" | null
+      status: "pending" | "running" | "failed" | "cancelled" | string
+      submitted_at: string | null
+      progress_pct: number
+      progress_step?: string | null
+      error: string | null
+      created_by_name: string | null
+    }
+  | {
+      kind: "analysis"
+      id: number
+      ticker: string
+      signal: string
+      date: string
+      created_at: string
+      created_by_name: string | null
+      provider: string | null
+      model: string | null
+      duration_sec: number | null
+      task_id: string | null
+      depth: "quick" | "standard" | "deep" | null
+      bookmarked: boolean
+    }
+
+function inboxSortKey(row: InboxRow): string {
+  return row.kind === "task"
+    ? (row.submitted_at ?? "")
+    : (row.created_at ?? "")
+}
+
+function fmtRelative(iso: string | null | undefined): string {
+  if (!iso) return ""
+  const t = Date.parse(iso.replace(" ", "T") + "Z")
+  if (Number.isNaN(t)) return ""
+  const dt = Date.now() - t
+  if (dt < 60_000) return "刚刚"
+  if (dt < 3_600_000) return `${Math.floor(dt / 60_000)} 分钟前`
+  if (dt < 86_400_000) return `${Math.floor(dt / 3_600_000)} 小时前`
+  return new Date(t).toLocaleDateString("zh-CN")
+}
+
+const TASK_STATUS_LABEL: Record<string, string> = {
+  pending: "排队中", running: "运行中",
+  failed: "失败",   cancelled: "已取消",
 }
 
 type AnalysisDepth = "quick" | "standard" | "deep"
@@ -168,16 +227,40 @@ const DEPTH_OPTIONS: { value: AnalysisDepth; label: string; hint: string }[] = [
   { value: "deep",     label: "深度", hint: "~5min · ~$0.80 · 启用迭代" },
 ]
 
+/** v1.22: legacy ``/analysis/<task_uuid>`` URLs are folded into the
+ *  unified inbox. We replaceState to ``/analysis?task=<uuid>`` so the
+ *  bookmark resolves correctly + the inbox auto-scrolls to the matching
+ *  row. Done at module init so the first paint already has the clean
+ *  URL. Returns the anchor uuid (or null) for the inbox to scroll to. */
+function consumeLegacyTaskUuid(urlId: string | null): string | null {
+  if (!urlId || !isTaskId(urlId)) {
+    return new URLSearchParams(window.location.search).get("task")
+  }
+  try {
+    window.history.replaceState(null, "", `/analysis?task=${urlId}`)
+  } catch (e) {
+    // history API blocked (rare — tests / sandboxed iframes). The URL
+    // stays as-is; inbox still renders. Surface so we notice in dev.
+    // eslint-disable-next-line no-console
+    console.warn("inbox: replaceState for legacy /analysis/<uuid> failed", e)
+  }
+  return urlId
+}
+
 export function AnalysisPage() {
   const [urlId] = useState<string | null>(getIdFromUrl)
   const [detail, setDetail] = useState<AnalysisDetail | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // Running-state: when URL has a task UUID
-  const [taskId, setTaskId] = useState<string | null>(
-    urlId && isTaskId(urlId) ? urlId : null
-  )
+  // v1.22: legacy task-uuid path is now a query-string anchor, not its
+  // own running-view route. Capture once at mount so further inbox
+  // refreshes don't re-trigger the scroll.
+  const [taskAnchor] = useState<string | null>(() => consumeLegacyTaskUuid(urlId))
+  // Detail-route taskId still tracked for the (now-unreachable from URL)
+  // running view fallback path. Keeps the existing AnalysisRunningView
+  // component callable for any code path that pre-set it.
+  const [taskId, setTaskId] = useState<string | null>(null)
   const [taskTicker, setTaskTicker] = useState<string>("")
 
   // Form state
@@ -185,8 +268,17 @@ export function AnalysisPage() {
   const [date, setDate] = useState(new Date().toISOString().slice(0, 10))
   const [depth, setDepth] = useState<AnalysisDepth>("standard")
   const [submitting, setSubmitting] = useState(false)
-  // Recent shared-research cards on the form page (top 5).
-  const [recent, setRecent] = useState<RecentAnalysisRow[]>([])
+  // v1.22 unified inbox: in-flight tasks + completed analyses in one
+  // list. Replaces the old "最近分析" 5-card strip + the standalone
+  // /history page.
+  const [inbox, setInbox] = useState<InboxRow[]>([])
+  const [runningTotal, setRunningTotal] = useState(0)
+  // Client-side ticker filter — instant feedback while typing. Backend
+  // supports ``ticker`` query param too (used for prefiltering when
+  // arriving with a deep-link like ``/analysis?ticker=AAPL``).
+  const [inboxTickerQ, setInboxTickerQ] = useState(
+    () => new URLSearchParams(window.location.search).get("ticker") ?? "",
+  )
 
   // Completed analysis ID (numeric) — strip "analysis_history:" prefix if present
   const detailId = urlId && !isTaskId(urlId)
@@ -219,36 +311,108 @@ export function AnalysisPage() {
   const handleSubmit = async () => {
     if (!ticker.trim()) return
     setSubmitting(true); setError(null)
+    const submittedTicker = ticker.toUpperCase()
     try {
       const res = await apiPost<TaskSubmitResult>("/api/tasks/submit", {
         type: "analysis",
-        params: { ticker: ticker.toUpperCase(), date, depth },
+        params: { ticker: submittedTicker, date, depth },
       })
-      // Navigate to /analysis/<task_id> to show running DAG
       if (res.task_id) {
-        window.history.replaceState(null, "", `/analysis/${res.task_id}`)
-        setTaskId(res.task_id)
-        setTaskTicker(ticker.toUpperCase())
+        // v1.22: stay on the inbox; prepend an optimistic running row
+        // so the user sees feedback immediately. The websocket
+        // subscription wired below refreshes the row to a completed
+        // analysis card once the task settles.
+        const optimistic: InboxRow = {
+          kind: "task",
+          task_id: res.task_id,
+          ticker: submittedTicker,
+          depth,
+          status: "pending",
+          submitted_at: new Date().toISOString().slice(0, 19).replace("T", " "),
+          progress_pct: 0,
+          progress_step: null,
+          error: null,
+          created_by_name: null,
+        }
+        setInbox(prev => [optimistic, ...prev])
+        setRunningTotal(n => n + 1)
+        setTicker("")
       }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "提交失败")
     } finally { setSubmitting(false) }
   }
 
-  // Pull the top 5 most recent analyses for the form-page "最近分析" cards.
-  // Only fired on the form view (no detailId, no taskId) to avoid wasted
-  // bandwidth on the detail / running screens.
+  // v1.22: unified inbox fetch. Pulls running tasks (this user only,
+  // server-side scoped) merged with the latest completed analyses.
+  // Only fires on the form view — detail / running views don't need it.
+  const refreshInbox = useCallback(() => {
+    apiGet<{
+      items: InboxRow[]
+      running_total?: number
+      completed_total?: number
+    }>("/api/history?include_running=true&limit=20")
+      .then(r => {
+        const items = Array.isArray(r.items) ? r.items : []
+        items.sort((a, b) => inboxSortKey(b).localeCompare(inboxSortKey(a)))
+        setInbox(items)
+        setRunningTotal(r.running_total ?? 0)
+      })
+      .catch(() => setInbox([]))
+  }, [])
+
   useEffect(() => {
     if (detailId || taskId) return
-    apiGet<{ items?: RecentAnalysisRow[]; records?: RecentAnalysisRow[] }>(
-      "/api/history?limit=5",
-    )
-      .then((r) => {
-        const items = r.items ?? r.records ?? []
-        setRecent(items.slice(0, 5))
+    refreshInbox()
+  }, [detailId, taskId, refreshInbox])
+
+  // v1.22 task anchor: arriving via legacy ``/analysis/<task_uuid>`` URL
+  // (now folded into ``?task=<uuid>``) — once the inbox lands, scroll
+  // the matching row into view so the user lands on it directly. Runs
+  // once after the first refresh populates ``inbox``.
+  useEffect(() => {
+    if (!taskAnchor || inbox.length === 0) return
+    const t = window.setTimeout(() => {
+      const el = document.querySelector(`[data-task-id="${taskAnchor}"]`)
+      el?.scrollIntoView({ behavior: "smooth", block: "center" })
+    }, 250)
+    return () => window.clearTimeout(t)
+  }, [taskAnchor, inbox.length])
+
+  // After a task settles (websocket task_completed/task_failed for one
+  // of our running rows), pull a fresh inbox so the row flips from
+  // "运行中" to a completed analysis card. socket.io is lazy-imported
+  // (matches the pattern used by the running-view subscription below)
+  // so the inbox view doesn't pay for it on first paint.
+  useEffect(() => {
+    if (detailId || taskId) return
+    const taskIds = inbox
+      .filter((it): it is Extract<InboxRow, { kind: "task" }> =>
+        it.kind === "task" && (it.status === "pending" || it.status === "running"),
+      )
+      .map(it => it.task_id)
+    if (taskIds.length === 0) return
+    let cancelled = false
+    let sub: { destroy: () => void } | null = null
+    import("@/lib/socket").then(({ subscribeTaskStream }) => {
+      if (cancelled) return
+      sub = subscribeTaskStream({
+        taskIds,
+        onEvent: (env) => {
+          if (env.event === "task_completed" || env.event === "task_failed") {
+            refreshInbox()
+          }
+        },
+        onStatusChange: () => {},
       })
-      .catch(() => setRecent([]))
-  }, [detailId, taskId])
+    }).catch(e => {
+      // Socket transport unavailable — surface the failure but don't
+      // block the page; the manual refresh button still works.
+      // eslint-disable-next-line no-console
+      console.warn("inbox: socket subscribe failed", e)
+    })
+    return () => { cancelled = true; sub?.destroy() }
+  }, [inbox, detailId, taskId, refreshInbox])
 
   // ── Running state: show PipelineDAG ─────────────────────────
   if (taskId) {
@@ -294,31 +458,64 @@ export function AnalysisPage() {
         <h1 className="text-xl font-bold">AI 分析</h1>
       </div>
 
-      {recent.length > 0 && (
-        <div>
-          <div className="text-sm font-semibold mb-2">最近分析</div>
-          <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-5">
-            {recent.map((a) => (
-              <a
-                key={a.id}
-                href={`/analysis/${a.id}`}
-                className="rounded-lg border border-border bg-card hover:border-primary/40 transition-colors p-3 block"
-              >
-                <div className="font-mono text-base font-bold">{a.ticker}</div>
-                <div className="mt-1">
-                  <Badge variant={signalVariant(a.signal || "")} className="text-[10px]">
-                    {a.signal || "—"}
-                  </Badge>
-                </div>
-                <div className="mt-2 text-xs text-muted-foreground truncate">
-                  {a.created_by_name ?? "—"}
-                </div>
-                <div className="text-xs text-muted-foreground">{a.date}</div>
-              </a>
-            ))}
+      {/* v1.22 unified inbox: running tasks + completed analyses in
+          one list. Replaces the standalone /history page; /history now
+          301-redirects here. Inline ``PipelineDAG`` for running rows
+          gives users live progress without leaving the page. */}
+      <Card>
+        <CardHeader className="pb-2 flex flex-row items-center justify-between">
+          <CardTitle className="text-sm">分析记录</CardTitle>
+          <div className="flex items-center gap-2">
+            {runningTotal > 0 && (
+              <Badge variant="default" className="text-[10px]">
+                <Clock className="h-3 w-3 mr-1 animate-spin" />
+                {runningTotal} 运行中
+              </Badge>
+            )}
+            <Button variant="ghost" size="sm" onClick={refreshInbox}>
+              刷新
+            </Button>
           </div>
-        </div>
-      )}
+        </CardHeader>
+        <CardContent className="space-y-2">
+          <InboxToolbar
+            ticker={inboxTickerQ}
+            onTicker={setInboxTickerQ}
+            total={inbox.length}
+          />
+          {inbox.length === 0 ? (
+            <p className="text-sm text-muted-foreground py-6 text-center">
+              暂无分析记录，下方提交一个新分析开始
+            </p>
+          ) : (() => {
+              const filterUpper = inboxTickerQ.trim().toUpperCase()
+              const visible = filterUpper
+                ? inbox.filter(it => it.ticker.includes(filterUpper))
+                : inbox
+              if (visible.length === 0) {
+                return (
+                  <p className="text-sm text-muted-foreground py-6 text-center">
+                    无匹配记录
+                  </p>
+                )
+              }
+              return visible.map(it => it.kind === "task" ? (
+                <RunningRow
+                  key={it.task_id}
+                  row={it}
+                  highlight={taskAnchor === it.task_id}
+                  onSettled={refreshInbox}
+                />
+              ) : (
+                <CompletedRow
+                  key={it.id}
+                  row={it}
+                  onChanged={refreshInbox}
+                />
+              ))
+            })()}
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader><CardTitle>发起分析</CardTitle></CardHeader>
@@ -931,7 +1128,16 @@ function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
             </TabsList>
             {REPORT_TABS.map(tab => {
               const content = reportContent[tab.key] || ""
-              const struct = detail.rendering?.[tab.key as keyof RenderingDict]
+              const rawStruct = detail.rendering?.[tab.key as keyof RenderingDict]
+              // Defense-in-depth: even if production DB still has a stale
+              // payload that the backend ``_normalize_card`` didn't
+              // sanitise (or a future regression bypasses it), we
+              // re-normalise client-side before the card sees it. The
+              // post-normalise structure is null when the input is
+              // unrecoverably malformed (e.g. ``Market: "string"``).
+              const struct = rawStruct
+                ? normalizeCardForClient(tab.key, rawStruct)
+                : null
               const hasStruct = !!struct
               return (
                 <TabsContent key={tab.key} value={tab.key} className="mt-4 space-y-4">
@@ -944,11 +1150,24 @@ function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
                   {hasStruct ? (
                     <ErrorBoundary
                       resetKey={`${detail.id}:${tab.key}`}
-                      fallback={
-                        <div className="rounded border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs text-amber-300">
-                          结构化卡片渲染失败，已降级显示完整论述。
-                        </div>
-                      }
+                      onError={(err) => {
+                        // Telemetry only — never echo report bodies.
+                        // ``describeShape`` walks two levels deep and
+                        // emits field name + type so an operator can
+                        // diagnose which key is malformed without us
+                        // leaking PII or analyst conclusions to logs.
+                        // eslint-disable-next-line no-console
+                        console.error("[analysis card] render failed", {
+                          analysis_id: detail.id,
+                          tab_key: tab.key,
+                          error_name: err.name,
+                          error_message: err.message,
+                          struct_shape: describeShape(struct),
+                        })
+                      }}
+                      fallback={({ error }) => (
+                        <CardFallback error={error} />
+                      )}
                     >
                       <Suspense fallback={<Skeleton className="h-32 w-full" />}>
                         <AnalysisCards tabKey={tab.key} data={struct} />
@@ -993,6 +1212,33 @@ function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
   )
 }
 
+/* ── Fallback used when a structured card render throws ───── */
+
+/** Per-tab fallback shown when ``AnalysisCards`` throws inside the
+ *  ErrorBoundary. The user-facing copy is intentionally generic — a
+ *  structured-card failure is not actionable for end users; the
+ *  Markdown ``<details>`` below this fallback always renders the full
+ *  analyst body so users still see the conclusion. The expandable
+ *  ``<details>`` underneath reveals the error name+message so an
+ *  operator (or developer hitting F12) can diagnose without leaving
+ *  the page; we do NOT print the error stack or struct payload — that
+ *  goes to ``console.error`` where it's filterable. */
+function CardFallback({ error }: { error: Error }) {
+  return (
+    <div className="rounded border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs text-amber-300">
+      <div>结构化摘要暂不可用，已显示完整论述。</div>
+      <details className="mt-1">
+        <summary className="cursor-pointer text-[10px] opacity-70">
+          错误详情（开发者）
+        </summary>
+        <code className="block mt-1 text-[10px] font-mono whitespace-pre-wrap opacity-80">
+          {error.name}: {error.message}
+        </code>
+      </details>
+    </div>
+  )
+}
+
 /* ── Quick-info card ─────────────────────────────────────── */
 
 function QuickInfoCard({ icon, title, onClick, children }: {
@@ -1028,6 +1274,283 @@ function KV({ k, v }: { k: string; v: string }) {
     <div className="flex items-center justify-between">
       <span className="text-muted-foreground">{k}</span>
       <span>{v}</span>
+    </div>
+  )
+}
+
+/* ── v1.22 inbox toolbar + rows ─────────────────────────────── */
+
+/** Inbox toolbar — ticker filter + total count. Spec calls for richer
+ *  scope/bookmark/provider/signal filters; this minimum surface keeps
+ *  the path open without committing to backend additions that don't
+ *  yet exist on /api/history (scope/bookmark filters need new query
+ *  params + tests). */
+function InboxToolbar({ ticker, onTicker, total }: {
+  ticker: string
+  onTicker: (v: string) => void
+  total: number
+}) {
+  return (
+    <div className="flex items-center gap-2 pb-2 border-b border-border/40">
+      <div className="relative flex-1 max-w-xs">
+        <Input
+          value={ticker}
+          onChange={e => onTicker(e.target.value.toUpperCase())}
+          placeholder="按股票代码筛选"
+          className="h-8 text-sm"
+        />
+      </div>
+      <span className="text-xs text-muted-foreground ml-auto">
+        共 {total} 条
+      </span>
+    </div>
+  )
+}
+
+/** v1.22 RunningRow — embeds the live ``PipelineDAG`` so users can
+ *  see step progress without leaving /analysis. Mobile collapses to
+ *  a status bar by default; desktop expands. ``onSettled`` fires when
+ *  PipelineDAG signals all-done so the parent can refresh the inbox
+ *  and flip the row to a CompletedRow. */
+function RunningRow({ row, highlight, onSettled }: {
+  row: Extract<InboxRow, { kind: "task" }>
+  highlight?: boolean
+  onSettled: () => void
+}) {
+  const [collapsed, setCollapsed] = useState(() =>
+    typeof window !== "undefined"
+      && window.matchMedia?.("(max-width: 575.98px)").matches,
+  )
+  const isFailure = row.status === "failed" || row.status === "cancelled"
+  const label = TASK_STATUS_LABEL[row.status] ?? row.status
+
+  const cancel = async () => {
+    if (!confirm(`确认取消 ${row.ticker} 的分析?`)) return
+    try {
+      await apiPost(`/api/tasks/${row.task_id}/cancel`, {})
+      onSettled()
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn("inbox: cancel failed", e)
+    }
+  }
+
+  return (
+    <div
+      data-task-id={row.task_id}
+      className={
+        "rounded border bg-card/40 px-3 py-2 text-sm space-y-2 " +
+        (highlight ? "border-primary/60 ring-1 ring-primary/30" : "border-border/50")
+      }
+    >
+      <div className="flex items-center gap-3 flex-wrap">
+        {isFailure
+          ? <span className="h-2 w-2 rounded-full bg-destructive shrink-0" />
+          : <Clock className="h-3.5 w-3.5 text-primary animate-spin shrink-0" />}
+        <span className="font-mono font-semibold">{row.ticker || "—"}</span>
+        <Badge variant="muted" className="text-[10px]">
+          {depthLabel(row.depth)}
+        </Badge>
+        <Badge
+          variant={isFailure ? "sell" : "default"}
+          className="text-[10px]"
+        >
+          {label}
+        </Badge>
+        {!isFailure && row.progress_pct > 0 && (
+          <span className="text-xs text-muted-foreground font-mono">
+            {row.progress_pct}%
+          </span>
+        )}
+        <span className="text-xs text-muted-foreground ml-auto">
+          {fmtRelative(row.submitted_at)}
+        </span>
+        {!isFailure && (
+          <Button
+            variant="ghost" size="sm"
+            onClick={() => setCollapsed(c => !c)}
+            title={collapsed ? "展开管线" : "折叠管线"}
+            className="h-6 px-1.5"
+          >
+            {collapsed
+              ? <ChevronRight className="h-3.5 w-3.5" />
+              : <ChevronDown className="h-3.5 w-3.5" />}
+          </Button>
+        )}
+        {!isFailure && (
+          <Button
+            variant="ghost" size="sm" onClick={cancel}
+            title="取消" className="h-6 px-1.5"
+          >
+            取消
+          </Button>
+        )}
+        <a
+          href={`/tasks/${row.task_id}`}
+          className="text-xs text-[var(--color-accent-blue)] hover:underline shrink-0"
+        >
+          详情
+        </a>
+      </div>
+      {/* Inline pipeline DAG — visible on desktop / when expanded.
+          Mobile collapsed view drops to a thin progress bar so the
+          inbox stays scannable on a small screen. */}
+      {!isFailure && !collapsed && (
+        <div className="pl-1">
+          <PipelineDAG taskId={row.task_id} onAllDone={onSettled} />
+        </div>
+      )}
+      {!isFailure && collapsed && row.progress_pct > 0 && (
+        <div className="h-1 bg-muted rounded overflow-hidden">
+          <div
+            className="h-full bg-primary transition-all"
+            style={{ width: `${Math.min(100, row.progress_pct)}%` }}
+          />
+        </div>
+      )}
+      {isFailure && row.error && (
+        <p className="text-xs text-destructive">{row.error}</p>
+      )}
+    </div>
+  )
+}
+
+/** v1.22 CompletedRow — extracted from the v1.18 HistoryPage logic.
+ *  Click-row to expand reveals trade-decision summary + provider/model
+ *  metadata; bookmark toggle + delete (creator/admin) are inline. */
+function CompletedRow({ row, onChanged }: {
+  row: Extract<InboxRow, { kind: "analysis" }>
+  onChanged: () => void
+}) {
+  const [expanded, setExpanded] = useState(false)
+  const [detail, setDetail] = useState<AnalysisDetail | null>(null)
+  const [bookmarked, setBookmarked] = useState(row.bookmarked)
+  const [busy, setBusy] = useState(false)
+
+  // Lazy-fetch the row's detail when first expanded so the inbox
+  // doesn't pay for /api/history/<id> N+1 requests up front.
+  const toggle = async () => {
+    const next = !expanded
+    setExpanded(next)
+    if (next && !detail) {
+      try {
+        const d = await apiGet<AnalysisDetail>(`/api/history/${row.id}`)
+        setDetail(d)
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn("inbox: detail fetch failed", e)
+      }
+    }
+  }
+
+  const toggleBookmark = async (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (busy) return
+    setBusy(true)
+    const next = !bookmarked
+    setBookmarked(next)  // optimistic
+    try {
+      await apiPost(`/api/history/${row.id}/bookmark`, { bookmarked: next })
+    } catch (err) {
+      setBookmarked(!next)  // rollback
+      // eslint-disable-next-line no-console
+      console.warn("inbox: bookmark toggle failed", err)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const remove = async (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (!confirm(`删除 #${row.id} ${row.ticker} 的分析记录?`)) return
+    try {
+      await apiDel(`/api/history/${row.id}`)
+      onChanged()
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn("inbox: delete failed", err)
+    }
+  }
+
+  return (
+    <div
+      className="rounded border border-border/50 bg-card/40 hover:border-primary/40 transition-colors"
+    >
+      <div
+        onClick={toggle}
+        className="flex items-center gap-3 px-3 py-2 text-sm cursor-pointer"
+      >
+        {expanded
+          ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+          : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />}
+        <span className="font-mono font-semibold">{row.ticker}</span>
+        <Badge variant={signalVariant(row.signal || "")} className="text-[10px]">
+          {row.signal || "—"}
+        </Badge>
+        <Badge variant="muted" className="text-[10px]">{depthLabel(row.depth)}</Badge>
+        <span className="text-xs text-muted-foreground">{row.date}</span>
+        {row.created_by_name && (
+          <span className="text-xs text-muted-foreground hidden sm:inline">
+            · {row.created_by_name}
+          </span>
+        )}
+        <span className="text-xs text-muted-foreground ml-auto">
+          {fmtRelative(row.created_at)}
+        </span>
+        <button
+          type="button"
+          onClick={toggleBookmark}
+          disabled={busy}
+          className={
+            "text-xs shrink-0 px-1.5 py-0.5 rounded hover:bg-muted/40 " +
+            (bookmarked ? "text-amber-400" : "text-muted-foreground")
+          }
+          title={bookmarked ? "取消收藏" : "收藏"}
+        >
+          {bookmarked ? "★" : "☆"}
+        </button>
+        <a
+          href={`/analysis/${row.id}`}
+          onClick={e => e.stopPropagation()}
+          className="text-xs text-[var(--color-accent-blue)] hover:underline shrink-0"
+        >
+          打开
+        </a>
+        <button
+          type="button"
+          onClick={remove}
+          className="text-xs text-destructive/80 hover:text-destructive shrink-0 px-1.5 py-0.5 rounded hover:bg-destructive/10"
+          title="删除"
+        >
+          删除
+        </button>
+      </div>
+      {expanded && (
+        <div className="px-3 pb-3 pt-1 text-xs text-muted-foreground border-t border-border/30 space-y-1">
+          {detail?.trade_decision ? (
+            <p className="leading-relaxed line-clamp-6 whitespace-pre-line">
+              {detail.trade_decision.slice(0, 600)}
+              {detail.trade_decision.length > 600 && "…"}
+            </p>
+          ) : (
+            <p className="italic">加载摘要…</p>
+          )}
+          <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px]">
+            {row.provider && (
+              <span>模型: {row.provider}{row.model ? ` / ${row.model}` : ""}</span>
+            )}
+            {row.duration_sec != null && (
+              <span>耗时: {Number(row.duration_sec).toFixed(1)}s</span>
+            )}
+            {row.task_id && (
+              <a href={`/tasks/${row.task_id}`}
+                 className="text-[var(--color-accent-blue)] hover:underline">
+                源任务
+              </a>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

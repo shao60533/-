@@ -96,14 +96,24 @@ class ScreenerV3Pipeline:
             registry[g]() for g in selected_guru_names if g in registry
         ]
 
+        # ── Phase 1+2: NL Parse + Universe (reuse v2) ──
+        # Pull candidates first so the resolved FilterSpec / universe
+        # source can be threaded into ``context`` for the guru agents
+        # and roundtable. Without this, gurus would have to guess what
+        # the user typed and the theme override clause never fires.
+        candidates, filter_spec, universe_source = await self._get_candidates(
+            nl_query, market, candidate_n,
+        )
+
         context = {
             "provider": self._provider,
             "config": self._config,
             "user_id": self._user_id,
+            "nl_query": nl_query or "",
+            "market": market,
+            "filter_spec": filter_spec,
+            "universe_source": universe_source,
         }
-
-        # ── Phase 1+2: NL Parse + Universe (reuse v2) ──
-        candidates = await self._get_candidates(nl_query, market, candidate_n)
 
         if self._cancel_check():
             return {"status": "cancelled", "phase": "candidates"}
@@ -167,6 +177,8 @@ class ScreenerV3Pipeline:
             "candidates_count": len(candidates),
             "selected_gurus": selected_guru_names,
             "results": results,
+            "universe_source": universe_source,
+            "filter_spec": filter_spec,
             "metrics": {
                 "duration_sec": round(elapsed, 1),
                 "llm_calls": len(units),
@@ -175,8 +187,24 @@ class ScreenerV3Pipeline:
             },
         }
 
-    async def _get_candidates(self, nl_query, market, n) -> list[str]:
-        """Phase 1+2: reuse v2 NL parser + universe filter."""
+    async def _get_candidates(
+        self, nl_query, market, n,
+    ) -> tuple[list[str], dict, str]:
+        """Phase 1+2: reuse v2 NL parser + universe filter.
+
+        Returns ``(tickers, filter_spec_dict, universe_source)`` so the
+        downstream guru / roundtable layer can show the user exactly
+        what was screened on. ``filter_spec`` is the raw FilterSpec dict
+        (intent_summary / sectors / themes / criteria / natural_fallback)
+        — guru agents inject this into their LLM prompt verbatim, so a
+        themed query never silently degenerates into pure financial
+        analysis.
+
+        Theme-aware fallback: when v2 throws on a themed query (storage,
+        cloud-storage, ...), the storage_semiconductor / cloud_storage
+        universes from ``UniverseFilter._THEME_FALLBACKS_US`` take
+        priority over the broad mega-cap default list.
+        """
         try:
             from stock_trading_system.screener.v2.nl_parser import NLParser
             from stock_trading_system.screener.v2.universe import UniverseFilter
@@ -186,14 +214,33 @@ class ScreenerV3Pipeline:
             uf = UniverseFilter(self._config)
             tickers, source = uf.filter_by_spec(spec, max_universe=n)
             logger.info("V3 candidates: %d tickers (source=%s)", len(tickers), source)
-            return tickers
+            return tickers, spec.to_dict(), source
         except Exception as e:
             logger.warning("V2 pipeline failed, using defaults: %s", e)
+            try:
+                from stock_trading_system.screener.v2.universe import (
+                    UniverseFilter as _UF,
+                    _THEME_FALLBACKS_US,
+                    _STORAGE_KEYWORDS,
+                    _CLOUD_STORAGE_KEYWORDS,
+                )
+
+                q_lower = (nl_query or "").lower()
+                if any(k in q_lower for k in _CLOUD_STORAGE_KEYWORDS):
+                    on_theme = list(_THEME_FALLBACKS_US["cloud_storage"])
+                    logger.info("V3 themed fallback: cloud_storage")
+                    return on_theme[:n], {}, "theme_fallback"
+                if any(k in q_lower for k in _STORAGE_KEYWORDS):
+                    on_theme = list(_THEME_FALLBACKS_US["storage_semiconductor"])
+                    logger.info("V3 themed fallback: storage_semiconductor")
+                    return on_theme[:n], {}, "theme_fallback"
+            except Exception:  # pragma: no cover — defensive
+                pass
+
             defaults = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META",
-                         "TSLA", "JPM", "V", "MA", "UNH", "JNJ",
-                         "WMT", "PG", "HD", "AVGO", "COST", "NFLX",
-                         "AMD", "CRM"]
-            return defaults[:n]
+                         "TSLA", "AVGO", "COST", "NFLX",
+                         "AMD", "CRM", "ORCL", "ADBE", "QCOM"]
+            return defaults[:n], {}, "default"
 
     _BUNDLE_CONCURRENCY = 5
 
@@ -277,7 +324,16 @@ class ScreenerV3Pipeline:
         }
 
     async def _run_roundtable(self, signals, top_tickers, context) -> dict:
-        """Phase 5: simplified round-table (full implementation in roundtable.py)."""
+        """Phase 5: simplified round-table (full implementation in roundtable.py).
+
+        v1.23 minimal-fix: even without the LLM judge wired in, the
+        snippets surface the user's query + structured spec so the
+        front-end can show the user that the round table is anchored to
+        their actual subject — not a generic bull/bear screen.
+        """
+        query = (context or {}).get("nl_query") or ""
+        spec = (context or {}).get("filter_spec") or {}
+
         # Group signals by ticker
         by_ticker: dict[str, list[GuruSignal]] = {}
         for s in signals:
@@ -288,11 +344,19 @@ class ScreenerV3Pipeline:
             sigs = by_ticker.get(ticker, [])
             bullish = [s for s in sigs if s.signal == "bullish"]
             bearish = [s for s in sigs if s.signal == "bearish"]
-            results[ticker] = {
+            entry: dict = {
                 "consensus": [s.guru for s in bullish] if len(bullish) >= len(bearish) else [s.guru for s in bearish],
                 "dissent": [s.guru for s in bearish] if len(bullish) >= len(bearish) else [s.guru for s in bullish],
                 "split": len(bullish) == len(bearish),
             }
+            if query:
+                entry["query"] = query
+                entry["filter_spec"] = spec
+                entry["debate_snippets"] = [
+                    f"用户查询：{query}",
+                    "圆桌需优先判断该股票是否符合筛选主题，再看投资价值。",
+                ]
+            results[ticker] = entry
         return results
 
     def _estimate_cost(self, guru_calls: int, with_roundtable: bool) -> float:

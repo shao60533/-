@@ -1,32 +1,66 @@
 import { Flame, Shield, Scale, MapPin } from "lucide-react"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
-import type { OverviewCardData, DecisionDriver } from "./types"
+import type { OverviewCardData, DecisionDriver, KeyMetric, Stance } from "./types"
 import { RatingBadge } from "./shared/RatingBadge"
 import { ConfidenceMeter } from "./shared/ConfidenceMeter"
 import { KpiRow } from "./shared/KpiRow"
 import { StanceCard } from "./shared/StanceCard"
-import { safeArray, nonEmptyStr } from "./shared/defensive"
+import { isRecord, safeRecord, nonEmptyStr, safeText } from "./shared/defensive"
 
+/**
+ * Overview tab — the most-broken card on production /analysis/17.
+ *
+ * Defensive contract (every layer below assumes upstream gave us slop):
+ *   * ``data`` may be an array, string, null — collapse to ``null``.
+ *   * ``debate_synthesis`` may be an array/string — collapse to ``null``.
+ *   * Each stance inside the synthesis may be string/array — drop it
+ *     individually so the other two stances still render.
+ *   * ``decision_drivers`` / ``key_metrics`` may contain string/null
+ *     items — keep only records so children never see a non-object.
+ */
 export function OverviewCard({ data }: { data: OverviewCardData | null | undefined }) {
-  if (!data || typeof data !== "object") return null
-  const synth = data.debate_synthesis ?? null
-  const drivers = safeArray<DecisionDriver>(data.decision_drivers)
+  // ``typeof === "object"`` was the bug: arrays + null both pass it,
+  // and the rest of this function then read ``.rating`` / ``.confidence``
+  // off an array, producing undefined, which the badges tolerated —
+  // but ``data.debate_synthesis`` on an array's prototype chain made
+  // ``synth`` truthy with no ``.aggressive`` field, throwing inside
+  // StanceCard. ``safeRecord`` collapses all of that to a clean null.
+  const rec = safeRecord(data)
+  if (!rec) return null
+
+  const synth = safeRecord(rec.debate_synthesis)
+  // Each stance must be a record on its own, or StanceCard's
+  // ``stance.claim`` access returns garbage on a string/array.
+  const aggressive = synth ? (safeRecord(synth.aggressive) as Stance | null) : null
+  const conservative = synth ? (safeRecord(synth.conservative) as Stance | null) : null
+  const neutral = synth ? (safeRecord(synth.neutral) as Stance | null) : null
+
+  // Note: ``Record<string, unknown>`` doesn't statically satisfy the
+  // narrow Pydantic-mirrored interfaces — the LLM can omit any field.
+  // We cast through ``unknown`` because every downstream read goes
+  // through ``safeText`` / optional chaining, so a missing ``headline``
+  // collapses to ``""`` rather than crashing.
+  const drivers = (Array.isArray(rec.decision_drivers) ? rec.decision_drivers : [])
+    .filter(isRecord) as unknown as DecisionDriver[]
+  const keyMetrics = (Array.isArray(rec.key_metrics) ? rec.key_metrics : [])
+    .filter(isRecord) as unknown as KeyMetric[]
+
   return (
     <div className="space-y-4">
       {/* Decision banner */}
       <Card>
         <CardContent className="pt-4 space-y-3">
           <div className="flex items-center gap-3 flex-wrap">
-            <RatingBadge rating={data.rating} />
-            <ConfidenceMeter level={data.confidence} />
+            <RatingBadge rating={typeof rec.rating === "string" ? rec.rating : null} />
+            <ConfidenceMeter level={typeof rec.confidence === "string" ? rec.confidence : null} />
           </div>
-          {nonEmptyStr(data.action_direction) && (
+          {nonEmptyStr(rec.action_direction) && (
             <div className="flex items-start gap-2 text-sm">
               <MapPin className="h-4 w-4 text-[var(--color-accent-blue)] mt-0.5 shrink-0" />
-              <span>{data.action_direction}</span>
+              <span>{safeText(rec.action_direction)}</span>
             </div>
           )}
-          <KpiRow items={data.key_metrics} />
+          <KpiRow items={keyMetrics} />
         </CardContent>
       </Card>
 
@@ -41,25 +75,26 @@ export function OverviewCard({ data }: { data: OverviewCardData | null | undefin
             <div className="grid gap-3 md:grid-cols-3">
               <StanceCard
                 title="激进派" icon={<Flame className="h-4 w-4" />}
-                stance={synth.aggressive} accent="aggressive" />
+                stance={aggressive} accent="aggressive" />
               <StanceCard
                 title="保守派" icon={<Shield className="h-4 w-4" />}
-                stance={synth.conservative} accent="conservative" />
+                stance={conservative} accent="conservative" />
               <StanceCard
                 title="中立派" icon={<Scale className="h-4 w-4" />}
-                stance={synth.neutral} accent="neutral" />
+                stance={neutral} accent="neutral" />
             </div>
             {nonEmptyStr(synth.verdict) && (
               <div className="rounded border-l-4 border-primary bg-primary/5 px-3 py-2 text-sm">
                 <span className="font-semibold mr-2">综合判断:</span>
-                {synth.verdict}
+                {safeText(synth.verdict)}
               </div>
             )}
           </CardContent>
         </Card>
       )}
 
-      {/* Decision drivers */}
+      {/* Decision drivers — array items already filtered to records, so
+          ``d.headline`` access never lands on a string/null. */}
       {drivers.length > 0 && (
         <Card>
           <CardHeader className="pb-2">
@@ -72,10 +107,10 @@ export function OverviewCard({ data }: { data: OverviewCardData | null | undefin
                   {i + 1}
                 </span>
                 <div>
-                  <div className="font-semibold text-sm">{d?.headline ?? ""}</div>
-                  {nonEmptyStr(d?.detail) && (
+                  <div className="font-semibold text-sm">{safeText(d.headline)}</div>
+                  {nonEmptyStr(d.detail) && (
                     <div className="text-xs text-muted-foreground leading-relaxed mt-0.5">
-                      {d.detail}
+                      {safeText(d.detail)}
                     </div>
                   )}
                 </div>
@@ -85,9 +120,9 @@ export function OverviewCard({ data }: { data: OverviewCardData | null | undefin
         </Card>
       )}
 
-      {nonEmptyStr(data.one_line_takeaway) && (
+      {nonEmptyStr(rec.one_line_takeaway) && (
         <div className="text-center text-sm text-muted-foreground italic">
-          “{data.one_line_takeaway}”
+          “{safeText(rec.one_line_takeaway)}”
         </div>
       )}
     </div>

@@ -10,8 +10,13 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Avatar } from "@/components/ui/avatar"
 import { Stat } from "@/components/ui/stat"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert"
+import { PipelineDAG } from "@/components/shared/PipelineDAG"
 import { GURUS as STATIC_GURUS, type Guru } from "@/data/gurus"
 import { apiGet } from "@/lib/api"
+// ``subscribeTaskStream`` is dynamic-imported inside the running
+// view (and guru matrix) so /screener-v3 home + /screener-v3/history
+// don't ship the socket chunk in their entry bundle.
 import { cn } from "@/lib/utils"
 
 type Mode = "classic" | "agent" | "agent_rt"
@@ -24,18 +29,65 @@ const MARKETS: { value: Market; label: string }[] = [
   { value: "hk", label: "港股" },
 ]
 
-export function ScreenerV3Page() {
-  // Check URL for result view
-  const params = new URLSearchParams(window.location.search)
-  const resultId = params.get("result")
-
-  if (resultId) return <ResultsView resultId={resultId} />
-  return <ScreenerForm />
+const MODE_LABEL: Record<string, string> = {
+  classic: "经典",
+  agent: "Agent",
+  agent_rt: "Agent + RT",
+}
+const MARKET_LABEL: Record<string, string> = {
+  us: "美股", cn: "A 股", hk: "港股",
 }
 
-/* ── Screener Form (existing, unchanged) ───────────────────── */
+/* ── Top-level URL dispatcher ──────────────────────────────────
+ *
+ * Three entry surfaces all share the same Vite bundle:
+ *   • /screener-v3                  → home (recent 3 + form)
+ *   • /screener-v3/history          → full paginated list
+ *   • /screener-v3?task=<id>        → running view (PipelineDAG +
+ *                                      guru parallel matrix). Auto-
+ *                                      replaceState into ?result= on
+ *                                      task_completed.
+ *   • /screener-v3?result=<id>      → ResultsView (unchanged from v1.0)
+ *   • /screener-v3?prefill=<id>     → home + form pre-populated from
+ *                                      a past run (banner explains).
+ */
+export function ScreenerV3Page() {
+  const path = window.location.pathname
+  if (path.startsWith("/screener-v3/history")) {
+    return <ScreenerHistoryList />
+  }
+  const params = new URLSearchParams(window.location.search)
+  const taskId = params.get("task")
+  const resultId = params.get("result")
+  const prefillId = params.get("prefill")
 
-function ScreenerForm() {
+  if (taskId) return <ScreenerRunningView taskId={taskId} />
+  if (resultId) return <ResultsView resultId={resultId} />
+  return <ScreenerHomeView prefillId={prefillId} />
+}
+
+function ScreenerHomeView({ prefillId }: { prefillId: string | null }) {
+  return (
+    <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-6">
+      <RecentScreensCard />
+      <ScreenerForm prefillTaskId={prefillId} />
+    </div>
+  )
+}
+
+/* ── Screener Form ──────────────────────────────────────────────
+ *
+ * Existing fields + submit logic preserved verbatim. v1.24 only adds
+ * an optional ``prefillTaskId`` prop: when set, a one-shot useEffect
+ * fetches /api/screen/v3/history/<id> and seeds the controls. Banner
+ * above the form makes the prefill visible so the user knows their
+ * inputs aren't fresh.
+ */
+interface ScreenerFormProps {
+  prefillTaskId?: string | null
+}
+
+function ScreenerForm({ prefillTaskId = null }: ScreenerFormProps) {
   const [nl, setNl] = useState("")
   const [market, setMarket] = useState<Market>("us")
   const [candidateN, setCandidateN] = useState<number>(20)
@@ -46,6 +98,7 @@ function ScreenerForm() {
   const [gurus, setGurus] = useState<Guru[]>(STATIC_GURUS)
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
+  const [prefillBanner, setPrefillBanner] = useState<string | null>(null)
 
   useEffect(() => {
     fetch("/api/screen/v3/gurus", { credentials: "same-origin" })
@@ -68,6 +121,39 @@ function ScreenerForm() {
       })
       .catch(() => {})
   }, [])
+
+  /* Prefill from a past run. Effect waits for the live ``gurus`` list
+   * to load so we can intersect the historical guru ids against the
+   * currently-registered set — gurus that have been retired since the
+   * source run are silently dropped, otherwise the form would have a
+   * checkbox that points at nothing. */
+  useEffect(() => {
+    if (!prefillTaskId) return
+    if (!gurus.length) return
+    apiGet<HistoryRow>(`/api/screen/v3/history/${prefillTaskId}`)
+      .then(r => {
+        if (!r?.params) return
+        setNl(r.params.nl_query || "")
+        setMarket((r.params.market || "us") as Market)
+        setCandidateN(Number(r.params.candidate_n) || 20)
+        setMode(
+          r.params.with_roundtable ? "agent_rt"
+          : r.params.mode === "classic" ? "classic"
+          : "agent",
+        )
+        const valid = new Set(gurus.map(g => g.id))
+        const want = new Set((r.params.gurus || []).filter(g => valid.has(g)))
+        if (want.size > 0) setSelected(want)
+        setPrefillBanner(
+          `已从 ${fmtRelative(r.created_at)} 的运行复制配置，可修改后重跑`,
+        )
+      })
+      .catch(() => {
+        // Silently no-op on prefill miss — user can still fill fresh.
+      })
+  // gurus.length is the readiness signal; keep effect single-shot per id.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefillTaskId, gurus.length])
 
   const [estimate, setEstimate] = useState({ calls: 0, duration: 0, cost: 0 })
 
@@ -112,7 +198,14 @@ function ScreenerForm() {
   const selectRecommended = () => setSelected(new Set(["buffett", "graham", "munger", "lynch"]))
 
   return (
-    <Card className="max-w-4xl">
+    <div className="max-w-4xl space-y-3">
+      {prefillBanner && (
+        <Alert variant="default">
+          <AlertTitle>已复制配置</AlertTitle>
+          <AlertDescription>{prefillBanner}</AlertDescription>
+        </Alert>
+      )}
+    <Card>
       <CardHeader>
         <div className="flex items-start justify-between gap-4">
           <div>
@@ -238,7 +331,11 @@ function ScreenerForm() {
                   })
                   const data = await resp.json()
                   if (resp.ok && data.task_id) {
-                    window.location.href = `/tasks/${data.task_id}`
+                    // v1.24: bounce back into the screener so the user
+                    // sees pipeline + guru parallel progress in the same
+                    // surface, not /tasks/<id> (the original "为什么只能
+                    // 从任务中心查" complaint root cause).
+                    window.location.href = `/screener-v3?task=${data.task_id}`
                     return
                   }
                   setSubmitError(data.message || data.error || "提交失败")
@@ -254,6 +351,7 @@ function ScreenerForm() {
         </div>
       </CardContent>
     </Card>
+    </div>
   )
 }
 
@@ -893,4 +991,541 @@ function formatDuration(sec: number): string {
   const m = Math.floor(sec / 60)
   const s = sec % 60
   return s ? `${m}m ${s}s` : `${m} min`
+}
+
+/* ── Screening history (records + recent 3) ────────────────── */
+
+interface ScreenSummary {
+  candidates_count: number
+  avg_score?: number
+  votes?: { bullish: number; bearish: number; neutral: number }
+  consensus_rate_pct?: number
+  top3_tickers?: string[]
+  roundtable_enabled?: boolean
+  llm_calls?: number
+  cache_hit_pct?: number
+  duration_sec?: number
+}
+
+interface HistoryRow {
+  task_id: string
+  title: string
+  status: string
+  created_at: string
+  completed_at: string | null
+  duration_sec: number | null
+  params: {
+    nl_query: string
+    market: string
+    candidate_n: number
+    gurus: string[]
+    mode: string
+    with_roundtable: boolean
+  }
+  summary: ScreenSummary | null
+}
+
+function fmtRelative(iso: string | null | undefined): string {
+  if (!iso) return ""
+  const t = new Date(iso).getTime()
+  if (!Number.isFinite(t)) return ""
+  const dt = Date.now() - t
+  if (dt < 60_000) return "刚刚"
+  if (dt < 3_600_000) return `${Math.floor(dt / 60_000)} 分钟前`
+  if (dt < 86_400_000) return `${Math.floor(dt / 3_600_000)} 小时前`
+  return new Date(iso).toLocaleDateString("zh-CN")
+}
+
+/** Top-of-home 3 most recent successful runs. Hidden when empty so a
+ *  brand-new user lands on a clean form, not an empty header. */
+function RecentScreensCard() {
+  const [items, setItems] = useState<HistoryRow[]>([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    apiGet<{ items: HistoryRow[] }>("/api/screen/v3/history?limit=3")
+      .then(r => setItems(r.items || []))
+      .catch(() => {/* silent — not worth blocking the form */})
+      .finally(() => setLoading(false))
+  }, [])
+
+  if (!loading && items.length === 0) return null
+
+  return (
+    <Card>
+      <CardHeader className="pb-2 flex flex-row items-center justify-between">
+        <CardTitle className="text-sm">最近选股</CardTitle>
+        <a
+          href="/screener-v3/history"
+          className="text-xs text-[var(--color-accent-blue)] hover:underline"
+        >
+          查看全部 →
+        </a>
+      </CardHeader>
+      <CardContent>
+        {loading ? (
+          <div className="grid gap-3 md:grid-cols-3">
+            <Skeleton className="h-32" />
+            <Skeleton className="h-32" />
+            <Skeleton className="h-32" />
+          </div>
+        ) : (
+          <div className="grid gap-3 md:grid-cols-3">
+            {items.slice(0, 3).map(it => (
+              <RecentScreenCard key={it.task_id} row={it} />
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+function RecentScreenCard({ row }: { row: HistoryRow }) {
+  const s = row.summary
+  return (
+    <div
+      onClick={() => {
+        window.location.href = `/screener-v3?result=${row.task_id}`
+      }}
+      className="cursor-pointer rounded border bg-card/50 hover:border-primary/40 transition-colors p-3 space-y-1.5 text-xs"
+    >
+      <div className="flex items-center justify-between">
+        <span className="text-muted-foreground">{fmtRelative(row.created_at)}</span>
+        <Badge variant="muted" className="text-[9px]">
+          {MODE_LABEL[row.params.mode] ?? row.params.mode}
+        </Badge>
+      </div>
+      <div className="font-medium text-sm truncate" title={row.params.nl_query}>
+        {row.params.nl_query || `${MARKET_LABEL[row.params.market]} 默认`}
+      </div>
+      <div className="text-muted-foreground">
+        {MARKET_LABEL[row.params.market]} · 候选 {s?.candidates_count ?? "?"} ·{" "}
+        {row.params.gurus.length} 大师
+      </div>
+      <div className="flex items-center gap-2">
+        <span className="font-mono">
+          均分 {s?.avg_score != null ? s.avg_score.toFixed(1) : "—"}
+        </span>
+        {s?.votes && (
+          <span className="text-[10px]">
+            <span className="text-emerald-400">{s.votes.bullish}✓</span>{" "}
+            <span className="text-red-400">{s.votes.bearish}✗</span>
+          </span>
+        )}
+      </div>
+      <div className="font-mono text-[10px] text-muted-foreground truncate">
+        Top: {(s?.top3_tickers ?? []).filter(Boolean).join(" · ") || "—"}
+      </div>
+    </div>
+  )
+}
+
+/** Full paginated history page, mounted at /screener-v3/history. */
+function ScreenerHistoryList() {
+  const PAGE = 50
+  const [items, setItems] = useState<HistoryRow[]>([])
+  const [total, setTotal] = useState(0)
+  const [offset, setOffset] = useState(0)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [modes, setModes] = useState<Set<string>>(new Set())
+  const [markets, setMarkets] = useState<Set<string>>(new Set())
+  const [includeFailed, setIncludeFailed] = useState(false)
+  const [expanded, setExpanded] = useState<string | null>(null)
+
+  const fetchPage = (reset: boolean) => {
+    const off = reset ? 0 : offset
+    const q = new URLSearchParams({
+      limit: String(PAGE),
+      offset: String(off),
+      include_failed: includeFailed ? "true" : "false",
+    })
+    modes.forEach(m => q.append("mode", m))
+    markets.forEach(m => q.append("market", m))
+    setLoading(true)
+    setError(null)
+    apiGet<{ items: HistoryRow[]; total: number }>(`/api/screen/v3/history?${q}`)
+      .then(r => {
+        setTotal(r.total)
+        setItems(reset ? r.items : [...items, ...r.items])
+        setOffset(reset ? PAGE : offset + PAGE)
+      })
+      .catch(e => setError(e?.message ?? "加载失败"))
+      .finally(() => setLoading(false))
+  }
+
+  useEffect(() => {
+    fetchPage(true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    [...modes].sort().join(","),
+    [...markets].sort().join(","),
+    includeFailed,
+  ])
+
+  const toggleSet = (s: Set<string>, v: string,
+                      setter: (s: Set<string>) => void) => {
+    const next = new Set(s)
+    if (next.has(v)) next.delete(v)
+    else next.add(v)
+    setter(next)
+  }
+
+  return (
+    <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-4">
+      <div className="flex items-center gap-3">
+        <Button
+          variant="ghost" size="sm"
+          onClick={() => { window.location.href = "/screener-v3" }}
+        >
+          <ArrowLeft className="h-4 w-4" />
+        </Button>
+        <h1 className="text-xl font-bold">选股记录</h1>
+        <Badge variant="muted" className="ml-auto">{total} 条</Badge>
+      </div>
+
+      <Card>
+        <CardContent className="py-3 flex flex-wrap items-center gap-3 text-xs">
+          <span className="text-muted-foreground">模式:</span>
+          {(["classic", "agent", "agent_rt"] as const).map(m => (
+            <Chip
+              key={m}
+              active={modes.has(m)}
+              onClick={() => toggleSet(modes, m, setModes)}
+            >
+              {MODE_LABEL[m]}
+            </Chip>
+          ))}
+          <span className="text-muted-foreground ml-2">市场:</span>
+          {(["us", "cn", "hk"] as const).map(m => (
+            <Chip
+              key={m}
+              active={markets.has(m)}
+              onClick={() => toggleSet(markets, m, setMarkets)}
+            >
+              {MARKET_LABEL[m]}
+            </Chip>
+          ))}
+          <label className="flex items-center gap-1 ml-2 cursor-pointer">
+            <Checkbox
+              checked={includeFailed}
+              onCheckedChange={v => setIncludeFailed(Boolean(v))}
+            />
+            包含失败
+          </label>
+        </CardContent>
+      </Card>
+
+      {error && (
+        <Alert variant="destructive">
+          <AlertTitle>{error}</AlertTitle>
+        </Alert>
+      )}
+
+      <Card>
+        <CardContent className="pt-2">
+          {loading && items.length === 0 && (
+            <div className="space-y-2 py-2">
+              <Skeleton className="h-12" />
+              <Skeleton className="h-12" />
+              <Skeleton className="h-12" />
+            </div>
+          )}
+          {!loading && items.length === 0 && (
+            <p className="text-sm text-muted-foreground py-8 text-center">
+              暂无记录
+            </p>
+          )}
+          {items.map(row => (
+            <ScreenHistoryRow
+              key={row.task_id}
+              row={row}
+              expanded={expanded === row.task_id}
+              onToggle={() => setExpanded(
+                expanded === row.task_id ? null : row.task_id,
+              )}
+            />
+          ))}
+          {offset < total && (
+            <div className="text-center pt-3">
+              <Button
+                variant="ghost" size="sm"
+                onClick={() => fetchPage(false)}
+                disabled={loading}
+              >
+                加载更多 ({offset}/{total})
+              </Button>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
+function ScreenHistoryRow({
+  row, expanded, onToggle,
+}: {
+  row: HistoryRow
+  expanded: boolean
+  onToggle: () => void
+}) {
+  const s = row.summary
+  const isFailed = row.status === "failed" || row.status === "cancelled"
+  return (
+    <div className="border-b py-2.5">
+      <div className="flex items-center gap-3 flex-wrap">
+        <Button variant="ghost" size="sm" onClick={onToggle}>
+          {expanded
+            ? <ChevronDown className="h-4 w-4" />
+            : <ChevronRight className="h-4 w-4" />}
+        </Button>
+        <span className="text-xs text-muted-foreground">
+          {fmtRelative(row.created_at)}
+        </span>
+        <Badge variant="muted" className="text-[10px]">
+          {MARKET_LABEL[row.params.market]}
+        </Badge>
+        <Badge variant="muted" className="text-[10px]">
+          {MODE_LABEL[row.params.mode]}
+        </Badge>
+        {isFailed && (
+          <Badge variant="default" className="text-[10px] bg-red-500/20 text-red-300">
+            {row.status}
+          </Badge>
+        )}
+        <span className="text-xs">候选 <b>{s?.candidates_count ?? "?"}</b></span>
+        <span className="text-xs">
+          均分{" "}
+          <span className="font-mono">
+            {s?.avg_score != null ? s.avg_score.toFixed(1) : "—"}
+          </span>
+        </span>
+        {s?.votes && (
+          <span className="text-xs">
+            <span className="text-emerald-400">{s.votes.bullish}✓</span>{" "}
+            <span className="text-red-400">{s.votes.bearish}✗</span>
+          </span>
+        )}
+        <div className="ml-auto flex gap-1">
+          <Button
+            size="sm" variant="outline"
+            onClick={() => {
+              window.location.href = `/screener-v3?result=${row.task_id}`
+            }}
+          >
+            查看
+          </Button>
+          <Button
+            size="sm" variant="ghost"
+            onClick={() => {
+              window.location.href = `/screener-v3?prefill=${row.task_id}`
+            }}
+          >
+            复制配置重跑
+          </Button>
+        </div>
+      </div>
+      {expanded && (
+        <div className="pl-10 pr-2 mt-2 space-y-1.5 text-xs text-muted-foreground">
+          {row.params.nl_query && (
+            <div>
+              NL 查询: "<span className="text-foreground">{row.params.nl_query}</span>"
+            </div>
+          )}
+          <div>
+            Top: {(s?.top3_tickers ?? []).filter(Boolean).join(" · ") || "—"}
+          </div>
+          <div>
+            共识率 {s?.consensus_rate_pct ?? 0}% · 圆桌{" "}
+            {s?.roundtable_enabled ? "✓" : "✗"} · {s?.llm_calls ?? 0} LLM call ·
+            命中缓存 {s?.cache_hit_pct ?? 0}% · 耗时{" "}
+            {s?.duration_sec
+              ? `${Math.floor(s.duration_sec / 60)}m ${s.duration_sec % 60}s`
+              : "—"}
+          </div>
+          <div>大师: {row.params.gurus.join(", ") || "—"}</div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/* ── Running view (?task=<id>) ─────────────────────────────── */
+
+function ScreenerRunningView({ taskId }: { taskId: string }) {
+  const [meta, setMeta] = useState<{ title?: string; status?: string } | null>(null)
+  const [terminalState, setTerminalState] = useState<
+    "running" | "success" | "failed" | null
+  >(null)
+
+  useEffect(() => {
+    // Catch-up: if the task already finished while the user was away
+    // (e.g. they opened the URL in a new tab hours later) we redirect
+    // straight to the result page. The socket subscription below also
+    // handles the live "task_completed" case.
+    apiGet<{ status?: string; title?: string }>(`/api/tasks/${taskId}`)
+      .then(t => {
+        setMeta({ status: t?.status, title: t?.title })
+        if (t?.status === "success") {
+          window.location.replace(`/screener-v3?result=${taskId}`)
+        } else if (t?.status === "failed" || t?.status === "cancelled") {
+          setTerminalState("failed")
+        } else {
+          setTerminalState("running")
+        }
+      })
+      .catch(() => setTerminalState("running"))
+
+    let destroy: (() => void) | null = null
+    let cancelled = false
+    import("@/lib/socket").then(({ subscribeTaskStream }) => {
+      if (cancelled) return
+      const sub = subscribeTaskStream({
+        taskIds: [taskId],
+        onEvent: (env) => {
+          if (env.event === "task_completed") {
+            setTerminalState("success")
+            // Tiny delay so the user sees the green tick on the DAG.
+            setTimeout(
+              () => window.location.replace(`/screener-v3?result=${taskId}`),
+              600,
+            )
+          } else if (env.event === "task_failed") {
+            setTerminalState("failed")
+          }
+        },
+        onStatusChange: () => { /* noop */ },
+      })
+      destroy = () => sub.destroy()
+    }).catch(err => {
+      // Don't lose the running view because the socket chunk failed —
+      // log and let the catch-up GET above keep working.
+      // eslint-disable-next-line no-console
+      console.warn("subscribeTaskStream load failed:", err)
+    })
+    return () => {
+      cancelled = true
+      destroy?.()
+    }
+  }, [taskId])
+
+  return (
+    <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-4">
+      <div className="flex items-center gap-3">
+        <Button
+          variant="ghost" size="sm"
+          onClick={() => { window.location.href = "/screener-v3" }}
+        >
+          <ArrowLeft className="h-4 w-4" />
+        </Button>
+        <h1 className="text-xl font-bold">选股运行中</h1>
+        {meta?.title && <Badge variant="muted">{meta.title}</Badge>}
+      </div>
+      <PipelineDAG taskId={taskId} />
+      <GuruParallelProgress taskId={taskId} />
+      {terminalState === "failed" && (
+        <Alert variant="destructive">
+          <AlertTitle>运行失败</AlertTitle>
+          <AlertDescription>
+            <Button
+              variant="outline" size="sm"
+              onClick={() => {
+                window.location.href = `/screener-v3?prefill=${taskId}`
+              }}
+            >
+              复制配置重跑
+            </Button>
+          </AlertDescription>
+        </Alert>
+      )}
+      {terminalState === "running" && (
+        <p className="text-xs text-center text-muted-foreground">
+          完成后自动跳转 · 也可在{" "}
+          <a href="/tasks" className="underline">任务中心</a>{" "}
+          跨类型查看
+        </p>
+      )}
+    </div>
+  )
+}
+
+/** Per-(guru, ticker) live cell matrix. Subscribes to the same socket
+ *  channel ScreenerRunningView uses but listens for different events
+ *  emitted by the v3 worker. Hidden until the first event arrives so
+ *  classic-mode (no LLM) doesn't render an empty placeholder. */
+function GuruParallelProgress({ taskId }: { taskId: string }) {
+  const [units, setUnits] = useState<
+    Record<string, "running" | "done" | "failed">
+  >({})
+
+  useEffect(() => {
+    let destroy: (() => void) | null = null
+    let cancelled = false
+    import("@/lib/socket").then(({ subscribeTaskStream }) => {
+      if (cancelled) return
+      const sub = subscribeTaskStream({
+        taskIds: [taskId],
+        onEvent: (env) => {
+          if (env.event !== "guru_unit_done"
+              && env.event !== "guru_unit_start"
+              && env.event !== "guru_unit_failed") return
+          const p = (env.payload || {}) as {
+            guru?: string; ticker?: string
+          }
+          const key = `${p.guru || "?"}::${p.ticker || "?"}`
+          const status =
+            env.event === "guru_unit_done" ? "done"
+            : env.event === "guru_unit_failed" ? "failed"
+            : "running"
+          setUnits(prev => ({ ...prev, [key]: status }))
+        },
+        onStatusChange: () => { /* noop */ },
+      })
+      destroy = () => sub.destroy()
+    }).catch(err => {
+      // eslint-disable-next-line no-console
+      console.warn("guru parallel subscribe failed:", err)
+    })
+    return () => {
+      cancelled = true
+      destroy?.()
+    }
+  }, [taskId])
+
+  const entries = Object.entries(units)
+  if (entries.length === 0) return null
+  const done = entries.filter(([, s]) => s === "done").length
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm">
+          大师并发进度 ({done} / {entries.length})
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 font-mono text-[10px]">
+          {entries.map(([key, status]) => {
+            const [guru, ticker] = key.split("::")
+            return (
+              <div
+                key={key}
+                className={cn(
+                  "rounded border px-2 py-1 truncate",
+                  status === "done"
+                    ? "border-emerald-500/40 text-emerald-400"
+                    : status === "failed"
+                    ? "border-red-500/40 text-red-400"
+                    : "border-zinc-500/30 text-zinc-300",
+                )}
+              >
+                {guru} · {ticker}
+              </div>
+            )
+          })}
+        </div>
+      </CardContent>
+    </Card>
+  )
 }

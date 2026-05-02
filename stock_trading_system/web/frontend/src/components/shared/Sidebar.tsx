@@ -1,6 +1,6 @@
 import { useState } from "react"
 import {
-  LayoutDashboard, Brain, ClockArrowDown, Crosshair,
+  LayoutDashboard, Brain, Crosshair,
   Wallet, FlaskConical, TestTube, Bell,
   FileText, Settings, ListChecks, MoreHorizontal,
 } from "lucide-react"
@@ -32,8 +32,11 @@ const NAV_GROUPS: NavGroup[] = [
   {
     title: "分析",
     items: [
+      // v1.22: ``/analysis`` is the unified inbox — running tasks and
+      // completed analyses live in one list, so the standalone
+      // ``/history`` link was retired (route still 301-redirects to
+      // ``/analysis`` so old bookmarks keep resolving).
       { label: "AI 分析",  href: "/analysis", icon: <Brain className="w-4 h-4" /> },
-      { label: "分析记录", href: "/history",   icon: <ClockArrowDown className="w-4 h-4" /> },
       { label: "报告中心", href: "/reports",   icon: <FileText className="w-4 h-4" /> },
     ],
   },
@@ -137,7 +140,7 @@ const MOBILE_PRIMARY: NavItem[] = [
 ]
 
 const MOBILE_MORE: NavItem[] = [
-  { label: "分析记录", href: "/history",      icon: <ClockArrowDown className="w-5 h-5" /> },
+  // v1.22: 分析记录 merged into ``/analysis`` inbox. See note above.
   { label: "报告中心", href: "/reports",      icon: <FileText className="w-5 h-5" /> },
   { label: "策略回测", href: "/backtest",  icon: <FlaskConical className="w-5 h-5" /> },
   { label: "纸面交易", href: "/paper-trade",  icon: <TestTube className="w-5 h-5" /> },
