@@ -144,3 +144,159 @@ def test_modulepreload_helper_does_not_double_prefix():
         "``/static/dist//static/dist/assets/foo.js``. Offenders: "
         f"{leaked}"
     )
+
+
+# ── Performance regression guards (v1.6) ────────────────────────────────
+#
+# These assert the chunk graph stays code-split per the perf design:
+#   - socket-io client never lands in a page entry's static graph
+#   - ChartPanel never lands in a page entry's static graph
+#   - React DOM runtime is its own ``react-vendor-*.js`` chunk
+#     (not folded into the shared UI/card chunk)
+#
+# Each test reads the Vite manifest because that's the source of truth
+# Vite hands to Rollup. A static import in source code makes the chunk
+# show up under ``imports``; a ``import("…")`` lazy call makes it show
+# up under ``dynamicImports``. The lazy form keeps the page's first
+# paint cheap.
+
+import json
+
+
+def _load_manifest() -> dict:
+    p = DIST_DIR.parent / ".vite" / "manifest.json"
+    assert p.exists(), f"Missing manifest at {p}"
+    return json.loads(p.read_text(encoding="utf-8"))
+
+
+def _entry(manifest: dict, key: str) -> dict:
+    assert key in manifest, f"manifest missing entry {key}"
+    return manifest[key]
+
+
+# Page entries that own a real-time task progress stream — they MUST
+# load ``@/lib/socket`` lazily (``import("@/lib/socket")``) so the
+# initial paint doesn't pay for the socket.io client.
+SOCKET_LAZY_ENTRIES = (
+    "src/islands/dashboard/main.tsx",
+    "src/islands/tasks/main.tsx",
+    "src/islands/analysis/main.tsx",
+    "src/islands/screener-v3/main.tsx",
+)
+
+# Page entries that render a chart (ECharts via ChartPanel) — they
+# MUST lazy-load it. Backtest and paper-trade follow the same rule.
+CHART_LAZY_ENTRIES = (
+    "src/islands/dashboard/main.tsx",
+    "src/islands/backtest/main.tsx",
+    "src/islands/paper-trade/main.tsx",
+)
+
+
+def test_socket_chunk_never_in_static_imports():
+    """Real-time pages must defer the socket.io chunk. ``imports`` ==
+    static import graph that the entry pulls on first paint;
+    ``dynamicImports`` == lazy chunks. Socket-io client (~13kB gz) is
+    only needed once the user actually has a running task to watch."""
+    manifest = _load_manifest()
+    failures = []
+    for key in SOCKET_LAZY_ENTRIES:
+        e = _entry(manifest, key)
+        bad = [i for i in e.get("imports", []) if "socket" in i]
+        if bad:
+            failures.append(f"{key} static imports {bad}")
+    assert not failures, (
+        "socket.io must be lazy-loaded on every real-time page. "
+        "Static-imported on:\n  " + "\n  ".join(failures) +
+        "\nFix: replace ``import { subscribeTaskStream } from "
+        "\"@/lib/socket\"`` with ``import(\"@/lib/socket\").then(...)``."
+    )
+
+
+def test_chartpanel_chunk_never_in_static_imports():
+    """Pages that render charts must lazy-load ChartPanel so ECharts
+    isn't pulled until the chart actually mounts. ECharts vendor chunk
+    is ~235kB gz — by far the heaviest on /dashboard before this fix."""
+    manifest = _load_manifest()
+    failures = []
+    for key in CHART_LAZY_ENTRIES:
+        e = _entry(manifest, key)
+        bad = [i for i in e.get("imports", []) if "ChartPanel" in i]
+        if bad:
+            failures.append(f"{key} static imports {bad}")
+    assert not failures, (
+        "ChartPanel must be lazy on chart-bearing pages. "
+        "Static-imported on:\n  " + "\n  ".join(failures) +
+        "\nFix: ``const ChartPanel = lazy(() => "
+        "import(\"@/components/shared/ChartPanel\").then(m => "
+        "({ default: m.ChartPanel })))``."
+    )
+
+
+def test_react_vendor_chunk_is_separate_from_card_chunk():
+    """React DOM runtime (~58kB gz) must live in ``react-vendor-*.js``,
+    not be folded into the shared UI / ``card`` chunk. With the fix:
+
+      - react-vendor-*.js  ≈ 58kB gz   (shared, immutable-cached)
+      - card-*.js          ≈ 50kB gz   (shared UI helpers)
+
+    Before the fix all of React was inside ``card-*.js`` (~107kB gz)
+    so every page paid for the full DOM runtime even on cache hits
+    where react-vendor would have been re-served from disk.
+    """
+    manifest = _load_manifest()
+    # Find both chunks by ``name``. Internal chunks are keyed by
+    # ``"_<name>-hash.js"`` in the manifest.
+    react_vendor = None
+    card = None
+    for entry in manifest.values():
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("name") == "react-vendor":
+            react_vendor = entry
+        elif entry.get("name") == "card":
+            card = entry
+    assert react_vendor is not None, (
+        "react-vendor chunk missing — manualChunks split was reverted. "
+        "Restore the ``react-vendor`` entry in vite.config.ts that lists "
+        "react / react/jsx-runtime / react-dom / react-dom/client / scheduler."
+    )
+    assert card is not None, "card shared chunk missing"
+
+    # Card chunk size — the regression vector. Pre-split it was ~107kB
+    # gz; the split keeps it well under that. Use the file size on
+    # disk rather than parsing minified output (close enough proxy).
+    card_path = DIST_DIR.parent / card["file"]
+    assert card_path.exists(), f"card chunk file missing: {card_path}"
+    card_size = card_path.stat().st_size
+    # 250 kB raw is the regression threshold — well below the
+    # pre-split 340 kB and gives headroom for shadcn additions.
+    # Card is ~158kB after the split, so 250kB has comfortable margin.
+    assert card_size < 250 * 1024, (
+        f"card chunk grew to {card_size/1024:.0f}kB; the React runtime "
+        f"may have leaked back in. Verify ``react-vendor`` manualChunks "
+        f"in vite.config.ts still lists react-dom/client + scheduler."
+    )
+
+
+def test_react_vendor_chunk_actually_contains_react_dom():
+    """Defence in depth: react-vendor chunk must contain ReactDOM
+    code (look for an unminified marker that survives terser). If
+    the manualChunks names are typo'd, react-vendor would exist but
+    be empty / tiny, with React DOM still inside ``card-*.js``."""
+    manifest = _load_manifest()
+    rv = next(
+        (e for e in manifest.values()
+         if isinstance(e, dict) and e.get("name") == "react-vendor"),
+        None,
+    )
+    assert rv is not None
+    rv_path = DIST_DIR.parent / rv["file"]
+    rv_size = rv_path.stat().st_size
+    # 50 kB raw is the floor — react-dom alone is ~130 kB raw / 40 kB gz.
+    # If the chunk is much smaller, it didn't actually pull ReactDOM.
+    assert rv_size > 50 * 1024, (
+        f"react-vendor chunk is only {rv_size/1024:.0f}kB — too small "
+        f"to contain ReactDOM. manualChunks list may be wrong (e.g. "
+        f"missing ``react-dom`` or ``react-dom/client``)."
+    )
