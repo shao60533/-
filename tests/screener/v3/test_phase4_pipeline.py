@@ -72,12 +72,54 @@ class TestEstimatorIntegration:
 
 
 class TestPipelineClassicMode:
-    def test_classic_returns_v2_engine(self):
+    def test_classic_returns_v3_engine_with_real_results(self, monkeypatch):
+        """v1.4: classic mode is no longer a stub — it reuses the V2
+        threshold gurus to produce real candidate rankings without
+        any LLM call. The legacy ``engine="v2_classic"`` marker is
+        replaced by ``engine="v3"`` so callers (like /api/screen/v3/
+        results) treat the payload identically to agent mode.
+
+        We monkeypatch ``_prepare_data_bundles`` so the test doesn't
+        hit yfinance/akshare for fundamentals fetches.
+        """
         from stock_trading_system.screener.v3.pipeline import ScreenerV3Pipeline
+
+        async def _fake_bundles(self, tickers, market):
+            # Just enough fundamentals to satisfy V2 BuffettGuru — it
+            # reads ``returnOnEquity / debtToEquity / ...``. Empty dict
+            # would still work (the guru returns 0% match, no error).
+            return {t: {
+                "ticker": t, "market": market, "quote": {},
+                "fundamentals_current": {
+                    "returnOnEquity": 0.18, "debtToEquity": 0.4,
+                    "trailingPE": 22, "priceToBook": 5.0,
+                },
+                "fundamentals_history": [], "news_recent": [],
+                "price_history_summary": {}, "sector_industry": {},
+            } for t in tickers}
+
+        monkeypatch.setattr(
+            ScreenerV3Pipeline, "_prepare_data_bundles", _fake_bundles,
+        )
         pipe = ScreenerV3Pipeline(config={}, provider="qwen")
-        result = asyncio.run(pipe._run_classic_mode(["AAPL", "MSFT"], {}))
-        assert result["engine"] == "v2_classic"
+        result = asyncio.run(pipe._run_classic_mode(
+            ["AAPL", "MSFT"], {},
+            selected_guru_names=["buffett", "graham", "lynch"],
+            market="us",
+            start_time=0.0,
+            with_roundtable=False,
+            universe_source="test",
+            filter_spec={},
+        ))
+        assert result["engine"] == "v3"
         assert result["mode"] == "classic"
+        # Real classic path produces non-empty results.
+        assert len(result["results"]) > 0, (
+            f"classic mode must not return empty results: {result}"
+        )
+        # No LLM calls — the canonical "no LLM" promise.
+        assert result["metrics"]["new_llm_calls"] == 0
+        assert result["metrics"]["llm_calls"] == 0
 
 
 class TestPipelineAggregation:

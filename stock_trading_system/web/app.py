@@ -3688,16 +3688,12 @@ def create_app(config_path=None):
 
         # screener-v3 v1.4 — truthful counts. The pipeline now returns
         # ``new_llm_calls`` (real cache misses + ok) and ``cache_hits``
-        # (real cache reads) as separate counters. ``llm_calls`` is
-        # kept as a legacy alias = ``new_llm_calls`` so old callers
-        # keep working. ``cache_hit_pct`` denominator switches to
-        # ``total_units`` (cache hits + new calls + failed) so the
-        # rate stays correct even when half the run was retry-failures.
-        try:
-            new_llm_calls = int(metrics.get("new_llm_calls",
-                                             metrics.get("llm_calls", 0)) or 0)
-        except (TypeError, ValueError):
-            new_llm_calls = 0
+        # (real cache reads) as separate counters. Legacy payloads
+        # (v1.0–v1.3) only carried ``llm_calls`` and that field
+        # semantically meant ``total_units`` (it was set to ``len(units)``
+        # in the old pipeline). Preserve the legacy denominator when
+        # the v1.4 fields are absent so old result rows still report
+        # the cache_hit_pct they had at write time.
         try:
             cache_hits = int(metrics.get("cache_hits", 0) or 0)
         except (TypeError, ValueError):
@@ -3707,11 +3703,22 @@ def create_app(config_path=None):
         except (TypeError, ValueError):
             failed_units = 0
         try:
+            new_llm_calls = int(metrics.get("new_llm_calls", 0) or 0)
+        except (TypeError, ValueError):
+            new_llm_calls = 0
+        try:
             total_units = int(metrics.get("total_units", 0) or 0)
         except (TypeError, ValueError):
             total_units = 0
         if not total_units:
-            total_units = new_llm_calls + cache_hits + failed_units
+            # Legacy: ``llm_calls`` used to mean total_units.
+            try:
+                total_units = int(metrics.get("llm_calls", 0) or 0)
+            except (TypeError, ValueError):
+                total_units = 0
+        if not new_llm_calls:
+            # Derive from totals when v1.4 field is absent.
+            new_llm_calls = max(0, total_units - cache_hits - failed_units)
         cache_hit_pct = round(cache_hits / total_units * 100) if total_units else 0
         try:
             duration_sec = int(metrics.get("duration_sec", 0) or 0)
