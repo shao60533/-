@@ -3382,13 +3382,24 @@ def create_app(config_path=None):
     def api_screen_v3_trigger():
         """Trigger a V3 screening task.
 
-        Validates that at least one guru is selected — running the
-        agent pipeline with zero gurus is the worst kind of silent
-        failure (the result has no candidate scores and the UI shows
-        an empty list with no explanation). 400 the caller instead.
+        v1.4 contract additions (silent-failure preventers — every one
+        of these used to land in a "选股结果空白" support ticket):
+          * ``gurus`` must intersect the 14-name registry; unknown ids
+            return 400 ``invalid_guru`` with the offending list (we used
+            to silently drop them and produce an empty result).
+          * ``candidate_n`` must be in the UI-supported set ``{10,20,30,50}``;
+            arbitrary values would either explode universe filtering
+            quotas or silently get capped server-side.
+          * ``mode`` must be one of ``classic``/``agent``/``agent_rt``;
+            other strings used to fall through and run as ``agent``,
+            confusing the user about which mode actually executed.
+          * ``with_roundtable`` must agree with ``mode``; sending
+            ``mode=agent`` + ``with_roundtable=true`` produced a
+            roundtable that the UI banner then claimed was disabled.
         """
         from flask import g
         from stock_trading_system.llm.router import get_active_provider
+        from stock_trading_system.screener.v3.pipeline import _load_guru_registry
 
         body = request.get_json(silent=True) or {}
         cfg = get_config()
@@ -3406,6 +3417,19 @@ def create_app(config_path=None):
                 "message": "至少选择 1 位大师",
             }), 400
 
+        # Validate against the canonical registry — same source the
+        # /api/screen/v3/gurus endpoint surfaces, so a UI checkbox can
+        # never name a guru the backend won't accept.
+        registry = _load_guru_registry()
+        unknown = [gid for gid in gurus_clean if gid not in registry]
+        if unknown:
+            return jsonify({
+                "error": "invalid_guru",
+                "message": "包含未知大师 id",
+                "unknown": unknown,
+                "registered": sorted(registry.keys()),
+            }), 400
+
         market = (body.get("market") or "us").strip().lower()
         if market not in ("us", "cn", "hk"):
             return jsonify({
@@ -3413,13 +3437,58 @@ def create_app(config_path=None):
                 "message": "market must be one of us / cn / hk",
             }), 400
 
+        # candidate_n bounds — UI offers {10, 20, 30, 50}; we accept the
+        # exact set rather than a free range so an automation script
+        # can't trigger 500-ticker fanouts that tank LLM cost.
+        ALLOWED_N = (10, 20, 30, 50)
+        try:
+            candidate_n = int(body.get("candidate_n", 20))
+        except (TypeError, ValueError):
+            return jsonify({
+                "error": "invalid_candidate_n",
+                "message": "candidate_n must be int",
+                "allowed": list(ALLOWED_N),
+            }), 400
+        if candidate_n not in ALLOWED_N:
+            return jsonify({
+                "error": "invalid_candidate_n",
+                "message": "candidate_n must be one of 10 / 20 / 30 / 50",
+                "allowed": list(ALLOWED_N),
+                "received": candidate_n,
+            }), 400
+
+        mode = (body.get("mode") or "agent").strip()
+        ALLOWED_MODES = ("classic", "agent", "agent_rt")
+        if mode not in ALLOWED_MODES:
+            return jsonify({
+                "error": "invalid_mode",
+                "message": "mode must be classic / agent / agent_rt",
+                "allowed": list(ALLOWED_MODES),
+                "received": mode,
+            }), 400
+
+        with_roundtable = bool(body.get("with_roundtable", False))
+        # ``with_roundtable`` is a derived flag; the canonical signal is
+        # ``mode``. mode=agent_rt without the flag → benign auto-correct
+        # (mode wins). Conversely the flag set on a non-agent_rt mode is
+        # a request shape the caller must fix — we don't silently honor
+        # it, otherwise the UI banner would lie about which mode ran.
+        if mode == "agent_rt" and not with_roundtable:
+            with_roundtable = True
+        elif with_roundtable and mode != "agent_rt":
+            return jsonify({
+                "error": "invalid_roundtable",
+                "message": "with_roundtable=true 仅在 mode=agent_rt 时允许",
+                "mode": mode,
+            }), 400
+
         params = {
             "nl_query": body.get("nl_query", ""),
             "market": market,
-            "candidate_n": int(body.get("candidate_n", 20)),
+            "candidate_n": candidate_n,
             "gurus": gurus_clean,
-            "mode": body.get("mode", "agent"),
-            "with_roundtable": bool(body.get("with_roundtable", False)),
+            "mode": mode,
+            "with_roundtable": with_roundtable,
             "user_id": user_id,
             "provider": provider,
         }
@@ -3617,30 +3686,61 @@ def create_app(config_path=None):
         if not isinstance(gurus, list):
             gurus = []
 
+        # screener-v3 v1.4 — truthful counts. The pipeline now returns
+        # ``new_llm_calls`` (real cache misses + ok) and ``cache_hits``
+        # (real cache reads) as separate counters. ``llm_calls`` is
+        # kept as a legacy alias = ``new_llm_calls`` so old callers
+        # keep working. ``cache_hit_pct`` denominator switches to
+        # ``total_units`` (cache hits + new calls + failed) so the
+        # rate stays correct even when half the run was retry-failures.
         try:
-            llm_calls = int(metrics.get("llm_calls", 0) or 0)
+            new_llm_calls = int(metrics.get("new_llm_calls",
+                                             metrics.get("llm_calls", 0)) or 0)
         except (TypeError, ValueError):
-            llm_calls = 0
+            new_llm_calls = 0
         try:
             cache_hits = int(metrics.get("cache_hits", 0) or 0)
         except (TypeError, ValueError):
             cache_hits = 0
-        cache_hit_pct = round(cache_hits / llm_calls * 100) if llm_calls else 0
+        try:
+            failed_units = int(metrics.get("failed_units", 0) or 0)
+        except (TypeError, ValueError):
+            failed_units = 0
+        try:
+            total_units = int(metrics.get("total_units", 0) or 0)
+        except (TypeError, ValueError):
+            total_units = 0
+        if not total_units:
+            total_units = new_llm_calls + cache_hits + failed_units
+        cache_hit_pct = round(cache_hits / total_units * 100) if total_units else 0
         try:
             duration_sec = int(metrics.get("duration_sec", 0) or 0)
         except (TypeError, ValueError):
             duration_sec = 0
 
+        roundtable_status = payload.get("roundtable_status") or (
+            "success" if roundtable_enabled else "skipped"
+        )
+
         return {
             "mode":                mode,
-            "llm_calls":           llm_calls,
+            # ``llm_calls`` retained for backward-compat with existing
+            # ResultsView readers; ``new_llm_calls`` is the canonical
+            # name going forward.
+            "llm_calls":           new_llm_calls,
+            "new_llm_calls":       new_llm_calls,
             "cache_hits":          cache_hits,
             "cache_hit_pct":       cache_hit_pct,
+            "failed_units":        failed_units,
+            "total_units":         total_units,
             "duration_sec":        duration_sec,
             "gurus_used":          [str(g) for g in gurus],
             "candidates_count":    int(payload.get("candidates_count")
                                         or len(candidates or [])),
             "roundtable_enabled":  roundtable_enabled,
+            "roundtable_status":   roundtable_status,
+            "partial":             bool(payload.get("partial")),
+            "cancelled_at_phase":  payload.get("cancelled_at_phase"),
         }
 
     def _normalize_v3_candidates(payload: dict) -> list[dict]:

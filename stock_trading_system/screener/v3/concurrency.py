@@ -131,7 +131,14 @@ async def run_guru_units(
 
     @_llm_retry
     def _invoke(guru: BaseGuruAgent, ticker: str, bundle: dict) -> GuruSignal:
-        return guru.evaluate_deep(ticker, bundle, context)
+        # screener-v3 v1.4: thread the bundle into context under
+        # ``__bundle__`` so ``BaseGuruAgent._llm_reason`` can derive a
+        # "数据覆盖度" caveat without us having to touch every guru's
+        # evaluate_deep implementation. We deep-copy the context so a
+        # bundle from one ticker doesn't bleed into a concurrent call
+        # for a different ticker.
+        local_ctx = {**context, "__bundle__": bundle}
+        return guru.evaluate_deep(ticker, bundle, local_ctx)
 
     async def _one(guru: BaseGuruAgent, ticker: str, bundle: dict):
         nonlocal completed, cache_hits, new_calls, failed_units

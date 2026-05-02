@@ -20,6 +20,74 @@ from stock_trading_system.utils import get_logger
 
 logger = get_logger("screener.v3.pipeline")
 
+
+def _summarise_price_history(df) -> dict:
+    """Reduce a 6-month OHLCV frame to a small JSON-friendly summary.
+
+    The guru prompts inject this verbatim; the goal is enough numerical
+    context to back up a momentum / mean-reversion claim without
+    flooding the LLM with 130 daily rows. Returns ``{}`` on missing
+    data so the guru's data-coverage check can detect it.
+
+    Fields:
+        days:                number of bars seen
+        last_close:          most recent close
+        return_1m_pct:       21-bar return %
+        return_3m_pct:       63-bar return %
+        return_6m_pct:       126-bar return %
+        sma200_distance_pct: (last - sma200) / sma200 * 100; null if <200 bars
+        max_drawdown_pct:    peak-to-trough drawdown over the window
+    """
+    try:
+        if df is None or len(df) == 0:
+            return {}
+        # Tolerate either pandas DataFrame (yfinance/akshare) or list-of-dicts.
+        try:
+            close = df["Close"]
+        except Exception:
+            try:
+                close = df["close"]
+            except Exception:
+                return {}
+        n = len(close)
+        last = float(close.iloc[-1])
+        out: dict = {
+            "days":       n,
+            "last_close": round(last, 4),
+        }
+
+        def _pct(window: int):
+            if n <= window:
+                return None
+            prev = float(close.iloc[-window - 1])
+            if prev == 0:
+                return None
+            return round((last / prev - 1) * 100, 2)
+
+        out["return_1m_pct"] = _pct(21)
+        out["return_3m_pct"] = _pct(63)
+        out["return_6m_pct"] = _pct(125)
+
+        if n >= 200:
+            sma200 = float(close.tail(200).mean())
+            if sma200 > 0:
+                out["sma200_distance_pct"] = round(
+                    (last - sma200) / sma200 * 100, 2,
+                )
+        else:
+            out["sma200_distance_pct"] = None
+
+        try:
+            running_max = close.cummax()
+            drawdown = (close - running_max) / running_max
+            out["max_drawdown_pct"] = round(float(drawdown.min()) * 100, 2)
+        except Exception:
+            out["max_drawdown_pct"] = None
+        return out
+    except Exception:  # pragma: no cover — defensive
+        return {}
+
+
 # All 14 guru agent classes
 _GURU_REGISTRY: dict[str, type] = {}
 
@@ -461,8 +529,17 @@ class ScreenerV3Pipeline:
         done_count = 0
 
         def _fetch_one(t: str) -> dict:
+            """Pull quote + fundamentals + recent news + price-history
+            momentum + sector metadata for a ticker. Each sub-fetch is
+            individually fault-tolerant — if news fails we still return
+            what we got. Empty fields stay empty so the guru's prompt
+            knows to emit a "数据不足" caveat instead of pretending."""
             if router is None:
-                return {"quote": {}, "fundamentals": {}}
+                return {
+                    "quote": {}, "fundamentals": {},
+                    "news_recent": [], "price_history_summary": {},
+                    "sector_industry": {},
+                }
             try:
                 quote = router.get_price(t) or {}
             except Exception:
@@ -471,7 +548,28 @@ class ScreenerV3Pipeline:
                 fundamentals = router.get_fundamentals(t) or {}
             except Exception:
                 fundamentals = {}
-            return {"quote": quote, "fundamentals": fundamentals}
+            try:
+                # 5 fresh headlines is enough context for the news_check
+                # SubAnalysis without bloating the prompt.
+                news_recent = router.get_news(t, limit=5) or []
+            except Exception:
+                news_recent = []
+            try:
+                df = router.get_history_for_backtest(t, period="6mo", interval="1d")
+            except Exception:
+                df = None
+            price_history_summary = _summarise_price_history(df)
+            sector_industry = {
+                "sector":   fundamentals.get("sector") or "",
+                "industry": fundamentals.get("industry") or "",
+            }
+            return {
+                "quote":                 quote,
+                "fundamentals":          fundamentals,
+                "news_recent":           news_recent,
+                "price_history_summary": price_history_summary,
+                "sector_industry":       sector_industry,
+            }
 
         async def _one(t: str) -> tuple[str, dict] | None:
             nonlocal done_count
@@ -497,8 +595,13 @@ class ScreenerV3Pipeline:
                 "market": market,
                 "quote": data["quote"],
                 "fundamentals_current": data["fundamentals"],
+                # Historical fundamentals still empty — provider doesn't
+                # expose them on a per-ticker basis. Guru prompts treat
+                # an empty list as "no history snapshot available".
                 "fundamentals_history": [],
-                "news_recent": [],
+                "news_recent":            data.get("news_recent", []),
+                "price_history_summary":  data.get("price_history_summary", {}),
+                "sector_industry":        data.get("sector_industry", {}),
             }
 
         results = await asyncio.gather(*[_one(t) for t in tickers], return_exceptions=True)
@@ -774,75 +877,115 @@ class ScreenerV3Pipeline:
             total_score=round(pct, 1),
         )
 
-    async def _run_roundtable(self, signals, top_tickers, context) -> dict:
-        """Phase 5: simplified round-table (full implementation in roundtable.py).
+    async def _run_roundtable(
+        self, signals, top_tickers, context,
+    ) -> tuple[dict, str]:
+        """Phase 5: real roundtable using ``screener.v3.roundtable.run_roundtable``.
 
-        v1.23 minimal-fix: even without the LLM judge wired in, the
-        snippets surface the user's query + structured spec so the
-        front-end can show the user that the round table is anchored to
-        their actual subject — not a generic bull/bear screen.
+        v1.4 wiring: the inline stub (v1.0–v1.3) only emitted bull/bear
+        groupings and never produced real debate snippets or the LLM
+        judge verdict. This now delegates to the canonical roundtable
+        implementation in ``screener/v3/roundtable.py`` — same module
+        that ``test_phase5_roundtable.py`` already covers — passing a
+        thin LLM closure derived from the active provider config.
 
-        v1.1 (screener-history): emits ``roundtable_start`` once with the
-        ticker list + ``roundtable_done`` per ticker so the frontend
-        ``ScreenerV3Progress`` can show per-ticker debate progress.
+        Returns ``(results_dict, status)`` where ``status`` is one of:
+          * ``"success"`` — at least one ticker debate ran with the
+            LLM judge OR the bull/bear champions resolved without it.
+          * ``"fallback"`` — judge LLM construction failed entirely;
+            fell back to the inline summary so the run still completes.
+          * ``"skipped"`` — set by the caller when the user opted out.
+
+        ``RoundtableResult`` dataclass shape is preserved verbatim so
+        downstream ``_aggregate`` + ResultsView don't need changes.
         """
+        from stock_trading_system.screener.v3.roundtable import (
+            run_roundtable, RoundtableResult,
+        )
+
         query = (context or {}).get("nl_query") or ""
         spec = (context or {}).get("filter_spec") or {}
 
-        # Group signals by ticker
+        # Group signals by ticker — run_roundtable expects a dict.
         by_ticker: dict[str, list[GuruSignal]] = {}
         for s in signals:
             by_ticker.setdefault(s.ticker, []).append(s)
+        # Restrict to the requested top tickers, preserving order.
+        top_signals: dict[str, list[GuruSignal]] = {
+            t: by_ticker.get(t, []) for t in top_tickers
+        }
 
-        if self._on_progress:
+        # Build the judge LLM closure — same provider/config path the
+        # guru agents use (BaseGuruAgent._get_chat_model). On any
+        # construction failure, fall back to ``llm_call=None`` so the
+        # debate still runs without a judge verdict (run_roundtable
+        # tolerates that mode).
+        judge_status = "success"
+        llm_call = self._build_judge_llm_call(context)
+        if llm_call is None:
+            judge_status = "fallback"
+
+        # Async progress bridge — run_roundtable's on_progress is sync;
+        # we reuse the same emission shape pipeline already broadcasts.
+        def _rt_on_progress(evt: dict):
+            if not self._on_progress:
+                return
             try:
-                self._on_progress({
-                    "type": "roundtable_start",
-                    "tickers": list(top_tickers),
-                })
+                self._on_progress(evt)
             except Exception:
                 pass
 
-        results = {}
-        total = len(top_tickers)
-        for idx, ticker in enumerate(top_tickers, start=1):
-            sigs = by_ticker.get(ticker, [])
-            bullish = [s for s in sigs if s.signal == "bullish"]
-            bearish = [s for s in sigs if s.signal == "bearish"]
-            consensus_gurus = (
-                [s.guru for s in bullish] if len(bullish) >= len(bearish)
-                else [s.guru for s in bearish]
+        try:
+            raw_results = await run_roundtable(
+                top_signals,
+                llm_call=llm_call,
+                on_progress=_rt_on_progress,
+                query=query,
+                spec=spec if isinstance(spec, dict) else {},
             )
-            dissent_gurus = (
-                [s.guru for s in bearish] if len(bullish) >= len(bearish)
-                else [s.guru for s in bullish]
+        except Exception as e:  # noqa: BLE001 — defensive
+            logger.warning("roundtable.run_roundtable failed: %s", e)
+            return {}, "fallback"
+
+        # Normalise to plain dicts (RoundtableResult instances) so
+        # _aggregate's existing ``hasattr(rt_obj, "to_dict")`` path
+        # picks them up unchanged.
+        return raw_results, judge_status
+
+    def _build_judge_llm_call(self, context):
+        """Construct a thin ``llm_call(system, user) -> str`` closure
+        backed by the active LangChain chat model. Returns ``None`` if
+        the chat model can't be built (missing API key etc.) — the
+        roundtable still runs in fallback mode without a judge."""
+        try:
+            # Reuse BaseGuruAgent's chat model factory. Importing it
+            # via a stub instance avoids re-implementing the qwen /
+            # gemini provider switch. Any guru class works since the
+            # method is on the abstract base.
+            from stock_trading_system.screener.v3.guru_agents.buffett import (
+                BuffettAgent,
             )
-            entry: dict = {
-                "consensus": consensus_gurus,
-                "dissent": dissent_gurus,
-                "split": len(bullish) == len(bearish),
-            }
-            if query:
-                entry["query"] = query
-                entry["filter_spec"] = spec
-                entry["debate_snippets"] = [
-                    f"用户查询：{query}",
-                    "圆桌需优先判断该股票是否符合筛选主题，再看投资价值。",
-                ]
-            results[ticker] = entry
-            if self._on_progress:
-                try:
-                    self._on_progress({
-                        "type": "roundtable_done",
-                        "ticker": ticker,
-                        "consensus": consensus_gurus,
-                        "dissent": dissent_gurus,
-                        "progress": idx,
-                        "total": total,
-                    })
-                except Exception:
-                    pass
-        return results
+            agent = BuffettAgent()
+            chat = agent._get_chat_model(context or {})
+        except Exception as e:  # noqa: BLE001
+            logger.info("roundtable judge llm unavailable: %s", e)
+            return None
+
+        from langchain_core.messages import SystemMessage, HumanMessage
+
+        def _call(system: str, user: str) -> str:
+            try:
+                resp = chat.invoke([
+                    SystemMessage(content=system),
+                    HumanMessage(content=user),
+                ])
+                return getattr(resp, "content", "") or ""
+            except Exception as e:  # noqa: BLE001
+                # roundtable.run_roundtable already tolerates raises by
+                # appending "评判失败 (e)" — propagate so it surfaces.
+                raise
+
+        return _call
 
     def _estimate_cost(self, guru_calls: int, with_roundtable: bool) -> float:
         """Post-hoc cost estimate based on actual LLM call count.
