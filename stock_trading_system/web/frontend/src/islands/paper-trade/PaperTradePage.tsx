@@ -10,10 +10,13 @@ import { Chip, ChipRow } from "@/components/ui/chip"
 import { Stat } from "@/components/ui/stat"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Alert } from "@/components/ui/alert"
-import { ChartPanel } from "@/components/shared/ChartPanel"
 import type { EChartsOption } from "@/lib/echarts"
 import { apiGet } from "@/lib/api"
 import { cn } from "@/lib/utils"
+
+const ChartPanel = React.lazy(() =>
+  import("@/components/shared/ChartPanel").then(m => ({ default: m.ChartPanel })),
+)
 
 interface PaperPayload {
   session: { id: number; ticker: string; status: string; start_capital: number } | null
@@ -352,7 +355,9 @@ function DailyDataTab({ dailies }: { dailies: Daily[]; startCapital: number }) {
       <Card>
         <CardHeader><CardTitle className="text-sm">权益曲线</CardTitle></CardHeader>
         <CardContent>
-          <ChartPanel option={chartOption} height={360} loading={dailies.length === 0} />
+          <React.Suspense fallback={<Skeleton className="h-[360px] w-full" />}>
+            <ChartPanel option={chartOption} height={360} loading={dailies.length === 0} />
+          </React.Suspense>
         </CardContent>
       </Card>
 

@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from "react"
+import { Suspense, lazy, useEffect, useState, useMemo } from "react"
 import { FlaskConical, Play, Clock, ArrowLeft, RotateCw } from "lucide-react"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -7,13 +7,16 @@ import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Stat } from "@/components/ui/stat"
 import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert"
-import { ChartPanel } from "@/components/shared/ChartPanel"
 import type { EChartsOption } from "@/lib/echarts"
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select"
 import { apiGet, apiPost } from "@/lib/api"
 import { cn } from "@/lib/utils"
+
+const ChartPanel = lazy(() =>
+  import("@/components/shared/ChartPanel").then(m => ({ default: m.ChartPanel })),
+)
 
 interface Strategy { id: string; name: string; description?: string }
 interface TaskSubmitResult { task_id: string; status: string }
@@ -231,7 +234,9 @@ function BacktestDetail({ backtestId }: { backtestId: string }) {
       <Card>
         <CardHeader><CardTitle className="text-sm">净值曲线</CardTitle></CardHeader>
         <CardContent>
-          <ChartPanel option={equityOption} height={320} loading={equityCurve.length === 0} />
+          <Suspense fallback={<Skeleton className="h-[320px] w-full" />}>
+            <ChartPanel option={equityOption} height={320} loading={equityCurve.length === 0} />
+          </Suspense>
         </CardContent>
       </Card>
 

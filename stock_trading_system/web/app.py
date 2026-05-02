@@ -493,6 +493,18 @@ def create_app(config_path=None):
     load_config(config_path)
     socketio.init_app(app, cors_allowed_origins="*", async_mode="threading")
 
+    @app.after_request
+    def add_static_asset_cache_headers(response):
+        """Cache fingerprinted Vite chunks aggressively between page clicks."""
+        path = request.path or ""
+        if path.startswith("/static/dist/assets/"):
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        elif path.startswith("/static/dist/.vite/manifest.json"):
+            response.headers["Cache-Control"] = "no-store"
+        elif path.startswith("/static/dist/"):
+            response.headers.setdefault("Cache-Control", "public, max-age=3600")
+        return response
+
     # ── Auth setup ─────────────────────────────────────────────────────
 
     cfg = get_config()

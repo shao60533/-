@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from "react"
+import { Suspense, lazy, useEffect, useState, useMemo } from "react"
 import {
   TrendingUp, Wallet, Target, Bell,
   Sparkles, Activity, FileText, BarChart3, RefreshCw,
@@ -8,11 +8,17 @@ import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
 import { Stat } from "@/components/ui/stat"
 import { Chip, ChipRow } from "@/components/ui/chip"
-import { ChartPanel } from "@/components/shared/ChartPanel"
 import type { EChartsOption } from "@/lib/echarts"
 import { apiGet, apiPost } from "@/lib/api"
-import { subscribeTaskStream } from "@/lib/socket"
 import { cn } from "@/lib/utils"
+
+const ChartPanel = lazy(() =>
+  import("@/components/shared/ChartPanel").then(m => ({ default: m.ChartPanel })),
+)
+
+function ChartFallback({ height }: { height: number }) {
+  return <div className="w-full animate-pulse rounded-md bg-muted/40" style={{ height }} />
+}
 
 interface DashData {
   pnl: { total_value: number; total_pnl: number; total_pnl_pct: number }
@@ -131,6 +137,7 @@ export function DashboardPage() {
       )
       const taskId = res.task_id
       // Subscribe to the unified-progress channel; refresh on terminal events.
+      const { subscribeTaskStream } = await import("@/lib/socket")
       const sub = subscribeTaskStream({
         taskIds: [taskId],
         onEvent: async (env) => {
@@ -377,7 +384,9 @@ export function DashboardPage() {
                 生成多日净值曲线。
               </div>
             )}
-            <ChartPanel option={equityOption} height={280} loading={filteredHistory.length === 0} />
+            <Suspense fallback={<ChartFallback height={280} />}>
+              <ChartPanel option={equityOption} height={280} loading={filteredHistory.length === 0} />
+            </Suspense>
           </CardContent>
         </Card>
 
@@ -385,7 +394,9 @@ export function DashboardPage() {
         <Card>
           <CardHeader><CardTitle className="text-sm">仓位分布</CardTitle></CardHeader>
           <CardContent>
-            <ChartPanel option={allocOption} height={280} loading={alloc.length === 0} />
+            <Suspense fallback={<ChartFallback height={280} />}>
+              <ChartPanel option={allocOption} height={280} loading={alloc.length === 0} />
+            </Suspense>
           </CardContent>
         </Card>
       </div>
