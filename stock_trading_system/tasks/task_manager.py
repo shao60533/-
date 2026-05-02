@@ -199,6 +199,8 @@ class TaskManager:
 
         worker = self._workers.get(task_type)
         started = time.perf_counter()
+        self._fail_started_at = getattr(self, "_fail_started_at", {})
+        self._fail_started_at[task_id] = started
         self._store.update(task_id, status="running", started_at=now_iso(), progress=0)
         self._emit("task_started", {"id": task_id})
 
@@ -265,13 +267,23 @@ class TaskManager:
             self._fail(task_id, str(e), traceback.format_exc())
 
     def _fail(self, task_id: str, error_message: str, error_trace: str) -> None:
-        self._store.update(
-            task_id,
-            status="failed",
-            error_message=error_message,
-            error_trace=error_trace,
-            completed_at=now_iso(),
-        )
+        # Compute duration_ms from the in-process start clock when available
+        # so failed tasks expose the same timing surface as successful ones.
+        # Falls back silently when the start clock is missing (e.g. tasks
+        # failed before _run set it, or restarted process).
+        update_fields: dict[str, Any] = {
+            "status": "failed",
+            "error_message": error_message,
+            "error_trace": error_trace,
+            "completed_at": now_iso(),
+        }
+        started = getattr(self, "_fail_started_at", {}).pop(task_id, None)
+        if started is not None:
+            try:
+                update_fields["duration_ms"] = int((time.perf_counter() - started) * 1000)
+            except Exception:  # pragma: no cover — defensive only
+                pass
+        self._store.update(task_id, **update_fields)
         self._emit("task_failed", {
             "id": task_id, "error_message": error_message,
         })
@@ -279,6 +291,7 @@ class TaskManager:
     def _cleanup_running(self, task_id: str) -> None:
         with self._lock:
             self._running.pop(task_id, None)
+        getattr(self, "_fail_started_at", {}).pop(task_id, None)
 
     # ── Control ──────────────────────────────────────────────────────────
 

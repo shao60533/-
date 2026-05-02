@@ -20,13 +20,84 @@ logger = get_logger("tasks.workers")
 ProgressCb = Callable[..., None]
 
 
+def wrap_llm_error(exc: Exception, *, provider: str | None = None,
+                   model: str | None = None) -> str:
+    """Translate raw LLM/library exceptions into human-readable failure reasons.
+
+    The traceback (with full exception details) is preserved separately by
+    TaskManager._fail; this wrapper only rewrites the user-visible
+    ``error_message`` so the task center / inbox can show *why* a task failed
+    without forcing the operator to open DevTools.
+
+    Falls back to ``str(exc)`` (or the class name when empty) for unmapped
+    cases so we never lose information.
+    """
+    msg = (str(exc) or exc.__class__.__name__).strip()
+    lower = msg.lower()
+    label = (provider or "").strip().lower()
+    pretty_provider = label.title() if label else "LLM"
+
+    # Missing API key — KeyError("QWEN_API_KEY") / os.environ key lookup.
+    if isinstance(exc, KeyError):
+        key_name = ""
+        if exc.args:
+            try:
+                key_name = str(exc.args[0])
+            except Exception:  # pragma: no cover — defensive
+                key_name = ""
+        upper_key = key_name.upper()
+        if "QWEN" in upper_key or "DASHSCOPE" in upper_key:
+            return "Qwen API Key 未配置"
+        if "GEMINI" in upper_key or "GOOGLE" in upper_key:
+            return "Gemini API Key 未配置"
+        if upper_key:
+            return f"环境变量 {key_name} 未配置"
+        return msg
+
+    # Auth / forbidden — DashScope and Gemini both surface 401/403 with
+    # JSON bodies that mention "unauthorized" / "forbidden" / "invalid api key".
+    if (
+        " 401" in f" {msg}"
+        or " 403" in f" {msg}"
+        or "unauthorized" in lower
+        or "forbidden" in lower
+        or "invalid api key" in lower
+        or "invalid_api_key" in lower
+    ):
+        return f"{pretty_provider} 认证失败，请检查 API Key"
+
+    # Model not found / not available.
+    if (
+        "model_not_found" in lower
+        or "model not found" in lower
+        or " 404" in f" {msg}"
+        or "no such model" in lower
+    ):
+        return f"{pretty_provider} 模型不可用：{model or '未知'}"
+
+    # Timeout — covers asyncio.TimeoutError, requests.Timeout, urllib3 timeouts,
+    # and provider-side timeout messages.
+    if (
+        isinstance(exc, TimeoutError)
+        or "timeout" in lower
+        or "timed out" in lower
+    ):
+        return "LLM 请求超时，请稍后重试或切换 quick 深度"
+
+    # Rate limit (429) — show a distinct hint so users don't reach for the key.
+    if " 429" in f" {msg}" or "rate limit" in lower or "too many requests" in lower:
+        return f"{pretty_provider} 触发限流，请稍后重试"
+
+    return msg
+
+
 # ── Analysis worker ───────────────────────────────────────────────────────────
 
 
 def make_analysis_worker(get_analyzer, get_strategy_engine, get_portfolio, get_router):
     """Factory that builds an analysis worker bound to the given getters."""
 
-    def worker(params: dict, progress_cb: ProgressCb) -> dict:
+    def _impl(params: dict, progress_cb: ProgressCb) -> dict:
         import time as _time
         from stock_trading_system.config import get_config
         from stock_trading_system.portfolio.database import _normalize_depth
@@ -162,6 +233,29 @@ def make_analysis_worker(get_analyzer, get_strategy_engine, get_portfolio, get_r
                 "holdings_snapshot": holdings_snapshot,
             }
         return out
+
+    def worker(params: dict, progress_cb: ProgressCb) -> dict:
+        # Wrap _impl so raw provider exceptions (KeyError on missing API key,
+        # 401/403 from DashScope, timeout, …) surface as readable Chinese
+        # strings on the failed-task UI rather than blank panels. The original
+        # exception chains via __cause__ so ``traceback.format_exc()`` (and
+        # therefore tasks.error_trace) still captures the full developer trace.
+        try:
+            return _impl(params, progress_cb)
+        except ValueError:
+            raise  # user-input contract errors keep their own message
+        except Exception as exc:  # noqa: BLE001 — friendly-message rewrap
+            _provider = _model = None
+            try:
+                from stock_trading_system.config import get_config as _get_cfg
+                _cfg = _get_cfg()
+                _provider, _model = _resolve_active_provider_model(
+                    _cfg, params.get("__user_id__"),
+                )
+            except Exception:  # noqa: BLE001 — provider lookup is best-effort
+                pass
+            friendly = wrap_llm_error(exc, provider=_provider, model=_model)
+            raise RuntimeError(friendly) from exc
 
     return worker
 

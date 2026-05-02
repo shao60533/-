@@ -11,7 +11,7 @@ import { Avatar } from "@/components/ui/avatar"
 import { Stat } from "@/components/ui/stat"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert"
-import { PipelineDAG } from "@/components/shared/PipelineDAG"
+import { ScreenerV3Progress } from "@/components/shared/ScreenerV3Progress"
 import { GURUS as STATIC_GURUS, type Guru } from "@/data/gurus"
 import { apiGet } from "@/lib/api"
 // ``subscribeTaskStream`` is dynamic-imported inside the running
@@ -1356,6 +1356,11 @@ function ScreenHistoryRow({
 
 function ScreenerRunningView({ taskId }: { taskId: string }) {
   const [meta, setMeta] = useState<{ title?: string; status?: string } | null>(null)
+  // ``mode`` controls whether ScreenerV3Progress renders the round-table
+  // stage as a real node or a muted "未启用圆桌" placeholder. Read from
+  // the catch-up GET ``params_json`` so deep-linking into a running task
+  // (or refreshing) still shows the correct shape.
+  const [mode, setMode] = useState<"classic" | "agent" | "agent_rt" | undefined>(undefined)
   const [terminalState, setTerminalState] = useState<
     "running" | "success" | "failed" | null
   >(null)
@@ -1365,9 +1370,23 @@ function ScreenerRunningView({ taskId }: { taskId: string }) {
     // (e.g. they opened the URL in a new tab hours later) we redirect
     // straight to the result page. The socket subscription below also
     // handles the live "task_completed" case.
-    apiGet<{ status?: string; title?: string }>(`/api/tasks/${taskId}`)
+    apiGet<{ status?: string; title?: string; params_json?: string }>(`/api/tasks/${taskId}`)
       .then(t => {
         setMeta({ status: t?.status, title: t?.title })
+        if (t?.params_json) {
+          try {
+            const p = JSON.parse(t.params_json) as {
+              mode?: string; with_roundtable?: boolean
+            }
+            const m = (p.with_roundtable ? "agent_rt" : p.mode) as
+              "classic" | "agent" | "agent_rt" | undefined
+            if (m === "classic" || m === "agent" || m === "agent_rt") {
+              setMode(m)
+            } else {
+              setMode("agent")
+            }
+          } catch { setMode("agent") }
+        }
         if (t?.status === "success") {
           window.location.replace(`/screener-v3?result=${taskId}`)
         } else if (t?.status === "failed" || t?.status === "cancelled") {
@@ -1423,7 +1442,7 @@ function ScreenerRunningView({ taskId }: { taskId: string }) {
         <h1 className="text-xl font-bold">选股运行中</h1>
         {meta?.title && <Badge variant="muted">{meta.title}</Badge>}
       </div>
-      <PipelineDAG taskId={taskId} />
+      <ScreenerV3Progress taskId={taskId} mode={mode} />
       <GuruParallelProgress taskId={taskId} />
       {terminalState === "failed" && (
         <Alert variant="destructive">

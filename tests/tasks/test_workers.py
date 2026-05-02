@@ -15,7 +15,7 @@ from stock_trading_system.tasks.task_store import TaskStore
 from stock_trading_system.tasks.workers import (
     WorkerDeps, echo_worker, make_analysis_worker, make_backtest_worker,
     make_qwen_fundamentals_worker, make_qwen_news_worker, make_report_worker,
-    make_screen_worker, register_default_workers,
+    make_screen_v3_worker, make_screen_worker, register_default_workers,
 )
 
 
@@ -143,6 +143,121 @@ def test_screen_worker_success():
     assert result["count"] == 1
     assert result["results"][0]["ticker"] == "NVDA"
     assert result["market"] == "us"
+
+
+# ── screener-history v1.1 — V3 worker forwards new stage events ──────────────
+
+
+def test_screen_v3_worker_forwards_new_stage_events(monkeypatch):
+    """The V3 pipeline emits ``screen_v3_stage_start / screen_v3_stage_done
+    / aggregate_done`` (and the existing ``bundle_progress / guru_unit_done
+    / roundtable_*``). The worker MUST forward each event to ``emit_event``
+    so the front-end ``ScreenerV3Progress`` cell can advance the timeline.
+
+    Without forwarding, the pipeline events fire but never reach the
+    socket — the progress UI would stay frozen even though the backend
+    is making progress."""
+
+    captured = []
+
+    # Replace ``emit_event`` BEFORE building the worker — the worker's
+    # closure imports the symbol at call time via the module attribute,
+    # so monkeypatching the module path is what counts.
+    from stock_trading_system.tasks import event_emitter as ee
+
+    def fake_emit(task_id, event, payload, *, db_path=None,
+                  user_id=None, socketio=None):
+        captured.append({
+            "task_id": task_id, "event": event, "payload": payload,
+            "user_id": user_id,
+        })
+        return {"ok": True}
+
+    monkeypatch.setattr(ee, "emit_event", fake_emit)
+
+    # Stub ScreenerV3Pipeline so it fires every event variant the
+    # worker is responsible for forwarding. Order mirrors the real
+    # pipeline run so a future maintainer reading this test sees the
+    # canonical event stream at a glance.
+    class FakePipeline:
+        def __init__(self, *_, on_progress=None, **_kw):
+            self._on_progress = on_progress
+
+        async def run(self, **_kw):
+            cb = self._on_progress
+            cb({"type": "screen_v3_stage_start", "stage": "parse"})
+            cb({"type": "screen_v3_stage_done",  "stage": "parse", "count": 20})
+            cb({"type": "bundle_progress", "ticker": "AAPL",
+                 "done": 1, "total": 2})
+            cb({"type": "screen_v3_stage_start", "stage": "guru", "total": 8})
+            cb({"type": "guru_unit_done", "guru": "buffett",
+                 "guru_display": "Buffett", "ticker": "AAPL",
+                 "progress": 1, "total": 8})
+            cb({"type": "screen_v3_stage_done", "stage": "guru", "total": 8})
+            cb({"type": "roundtable_start", "tickers": ["AAPL"]})
+            cb({"type": "roundtable_done", "ticker": "AAPL",
+                 "consensus": ["buffett"], "dissent": [],
+                 "progress": 1, "total": 1})
+            cb({"type": "screen_v3_stage_done", "stage": "aggregate",
+                 "results": 1})
+            cb({"type": "aggregate_done", "results_count": 1})
+            return {
+                "engine": "v3", "mode": "agent_rt",
+                "candidates_count": 1, "results": [],
+                "metrics": {"duration_sec": 0, "llm_calls": 1},
+            }
+
+    monkeypatch.setattr(
+        "stock_trading_system.screener.v3.pipeline.ScreenerV3Pipeline",
+        FakePipeline,
+    )
+
+    worker = make_screen_v3_worker()
+    progress = []
+    result = worker(
+        {
+            "__task_id__": "test-task-uuid",
+            "user_id": 42,
+            "provider": "qwen",
+            "nl_query": "test", "market": "us",
+            "candidate_n": 5, "gurus": ["buffett"], "mode": "agent_rt",
+            "with_roundtable": True,
+        },
+        lambda p, s=None, partial=None: progress.append((p, s)),
+    )
+
+    # ``run()`` ran end-to-end.
+    assert result["engine"] == "v3"
+
+    # Every event the worker is responsible for must have been emitted.
+    forwarded_types = {c["event"] for c in captured}
+    required = {
+        "screen_v3_stage_start", "screen_v3_stage_done",
+        "bundle_progress", "guru_unit_done",
+        "roundtable_start", "roundtable_done",
+        "aggregate_done",
+    }
+    missing = required - forwarded_types
+    assert not missing, (
+        f"V3 worker dropped events: {missing}. "
+        f"got: {forwarded_types}"
+    )
+
+    # Field plumbing — task_id + user_id flow through every emit so the
+    # unified-progress per-user room delivers the event correctly.
+    for c in captured:
+        assert c["task_id"] == "test-task-uuid"
+        assert c["user_id"] == 42
+
+    # Stage start/done payloads carry the ``stage`` field — without it
+    # the front-end can't tell which timeline cell to advance.
+    stage_evts = [c for c in captured
+                  if c["event"] in ("screen_v3_stage_start",
+                                     "screen_v3_stage_done")]
+    for c in stage_evts:
+        assert "stage" in c["payload"], (
+            f"stage event missing payload.stage: {c}"
+        )
 
 
 # ── WK-1.4.6 backtest worker ────────────────────────────────────────────────

@@ -29,9 +29,33 @@ const TVChart = lazy(() =>
 // one chunk keeps the entry small while preserving render simplicity.
 const AnalysisCards = lazy(() => import("@/components/analysis/lazy-bundle"))
 import type { RenderingDict } from "@/components/analysis"
-import {
-  normalizeCardForClient, describeShape,
-} from "@/components/analysis/shared/defensive"
+
+/** Minimal shape descriptor — inlined here (not imported from
+ *  ``shared/defensive``) so this entry chunk does NOT pull
+ *  ``defensive.ts`` into itself. If it did, Rollup would put
+ *  ``defensive.ts`` in the analysis entry chunk and the lazy-bundle
+ *  chunk (which also needs ``defensive.ts``) would import back into
+ *  the entry — a chunk-level circular dependency that broke production
+ *  /analysis/17 (lazy-bundle's destructured imports resolved before
+ *  the entry's re-export was initialised, so the cards saw ``undefined``
+ *  helpers and threw).
+ *
+ *  This helper is for telemetry only — keys + types, never values, so
+ *  we don't leak report bodies into the browser console / Sentry. */
+function describeShapeForTelemetry(v: unknown): unknown {
+  if (v === null) return "null"
+  if (Array.isArray(v)) return `array(${v.length})`
+  if (typeof v === "object") {
+    const out: Record<string, string> = {}
+    for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+      out[k] = val === null
+        ? "null"
+        : Array.isArray(val) ? `array(${val.length})` : typeof val
+    }
+    return out
+  }
+  return typeof v
+}
 
 interface AnalysisDetail {
   id: string; ticker: string; signal: string; date: string
@@ -451,71 +475,14 @@ export function AnalysisPage() {
   if (detailId && detail) return <AnalysisDetailView detail={detail} />
 
   // ── Submit form ─────────────────────────────────────────────
+  // analysis-inbox v1.1: 发起分析卡在前，分析记录卡在后。提交后乐观插
+  // 入的运行中行立刻出现在下方记录区，符合"先输入再看历史"的产品意图。
   return (
     <div className="p-4 md:p-6 max-w-4xl mx-auto space-y-6">
       <div className="flex items-center gap-3">
         <Sparkles className="h-5 w-5 text-[var(--color-accent-blue)]" />
         <h1 className="text-xl font-bold">AI 分析</h1>
       </div>
-
-      {/* v1.22 unified inbox: running tasks + completed analyses in
-          one list. Replaces the standalone /history page; /history now
-          301-redirects here. Inline ``PipelineDAG`` for running rows
-          gives users live progress without leaving the page. */}
-      <Card>
-        <CardHeader className="pb-2 flex flex-row items-center justify-between">
-          <CardTitle className="text-sm">分析记录</CardTitle>
-          <div className="flex items-center gap-2">
-            {runningTotal > 0 && (
-              <Badge variant="default" className="text-[10px]">
-                <Clock className="h-3 w-3 mr-1 animate-spin" />
-                {runningTotal} 运行中
-              </Badge>
-            )}
-            <Button variant="ghost" size="sm" onClick={refreshInbox}>
-              刷新
-            </Button>
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-2">
-          <InboxToolbar
-            ticker={inboxTickerQ}
-            onTicker={setInboxTickerQ}
-            total={inbox.length}
-          />
-          {inbox.length === 0 ? (
-            <p className="text-sm text-muted-foreground py-6 text-center">
-              暂无分析记录，下方提交一个新分析开始
-            </p>
-          ) : (() => {
-              const filterUpper = inboxTickerQ.trim().toUpperCase()
-              const visible = filterUpper
-                ? inbox.filter(it => it.ticker.includes(filterUpper))
-                : inbox
-              if (visible.length === 0) {
-                return (
-                  <p className="text-sm text-muted-foreground py-6 text-center">
-                    无匹配记录
-                  </p>
-                )
-              }
-              return visible.map(it => it.kind === "task" ? (
-                <RunningRow
-                  key={it.task_id}
-                  row={it}
-                  highlight={taskAnchor === it.task_id}
-                  onSettled={refreshInbox}
-                />
-              ) : (
-                <CompletedRow
-                  key={it.id}
-                  row={it}
-                  onChanged={refreshInbox}
-                />
-              ))
-            })()}
-        </CardContent>
-      </Card>
 
       <Card>
         <CardHeader><CardTitle>发起分析</CardTitle></CardHeader>
@@ -565,6 +532,66 @@ export function AnalysisPage() {
           </div>
 
           {error && <Alert variant="destructive" className="mt-2"><AlertTitle>提交失败</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}
+        </CardContent>
+      </Card>
+
+      {/* v1.22 unified inbox (rendered below the form per analysis-inbox
+          v1.1): running tasks + completed analyses in one list. Replaces
+          the standalone /history page; /history now 301-redirects here.
+          Inline ``PipelineDAG`` for running rows gives users live
+          progress without leaving the page. */}
+      <Card>
+        <CardHeader className="pb-2 flex flex-row items-center justify-between">
+          <CardTitle className="text-sm">分析记录</CardTitle>
+          <div className="flex items-center gap-2">
+            {runningTotal > 0 && (
+              <Badge variant="default" className="text-[10px]">
+                <Clock className="h-3 w-3 mr-1 animate-spin" />
+                {runningTotal} 运行中
+              </Badge>
+            )}
+            <Button variant="ghost" size="sm" onClick={refreshInbox}>
+              刷新
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          <InboxToolbar
+            ticker={inboxTickerQ}
+            onTicker={setInboxTickerQ}
+            total={inbox.length}
+          />
+          {inbox.length === 0 ? (
+            <p className="text-sm text-muted-foreground py-6 text-center">
+              暂无分析记录，提交一个新分析后会在这里显示进度
+            </p>
+          ) : (() => {
+              const filterUpper = inboxTickerQ.trim().toUpperCase()
+              const visible = filterUpper
+                ? inbox.filter(it => it.ticker.includes(filterUpper))
+                : inbox
+              if (visible.length === 0) {
+                return (
+                  <p className="text-sm text-muted-foreground py-6 text-center">
+                    无匹配记录
+                  </p>
+                )
+              }
+              return visible.map(it => it.kind === "task" ? (
+                <RunningRow
+                  key={it.task_id}
+                  row={it}
+                  highlight={taskAnchor === it.task_id}
+                  onSettled={refreshInbox}
+                />
+              ) : (
+                <CompletedRow
+                  key={it.id}
+                  row={it}
+                  onChanged={refreshInbox}
+                />
+              ))
+            })()}
         </CardContent>
       </Card>
     </div>
@@ -1128,16 +1155,11 @@ function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
             </TabsList>
             {REPORT_TABS.map(tab => {
               const content = reportContent[tab.key] || ""
-              const rawStruct = detail.rendering?.[tab.key as keyof RenderingDict]
-              // Defense-in-depth: even if production DB still has a stale
-              // payload that the backend ``_normalize_card`` didn't
-              // sanitise (or a future regression bypasses it), we
-              // re-normalise client-side before the card sees it. The
-              // post-normalise structure is null when the input is
-              // unrecoverably malformed (e.g. ``Market: "string"``).
-              const struct = rawStruct
-                ? normalizeCardForClient(tab.key, rawStruct)
-                : null
+              // Pass raw struct straight through — the lazy-bundle
+              // dispatcher does its own client-side normalize. Doing
+              // it here would force ``defensive.ts`` into this entry
+              // chunk and re-create the lazy/entry import cycle.
+              const struct = detail.rendering?.[tab.key as keyof RenderingDict]
               const hasStruct = !!struct
               return (
                 <TabsContent key={tab.key} value={tab.key} className="mt-4 space-y-4">
@@ -1152,7 +1174,7 @@ function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
                       resetKey={`${detail.id}:${tab.key}`}
                       onError={(err) => {
                         // Telemetry only — never echo report bodies.
-                        // ``describeShape`` walks two levels deep and
+                        // The shape helper walks one level deep and
                         // emits field name + type so an operator can
                         // diagnose which key is malformed without us
                         // leaking PII or analyst conclusions to logs.
@@ -1162,7 +1184,7 @@ function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
                           tab_key: tab.key,
                           error_name: err.name,
                           error_message: err.message,
-                          struct_shape: describeShape(struct),
+                          struct_shape: describeShapeForTelemetry(struct),
                         })
                       }}
                       fallback={({ error }) => (

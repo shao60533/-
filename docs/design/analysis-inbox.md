@@ -3,7 +3,7 @@
 | 项 | 值 |
 |---|---|
 | Feature | `analysis-inbox` |
-| 版本 | v1.0 |
+| 版本 | v1.1 |
 | 日期 | 2026-05-02 |
 | 关联 | [ui-react-island-regression v1.18 R-fix-12](./ui-react-island-regression.md)（HistoryPage 分页 / 筛选 / 多选对比 / 删除）+ [v1.13 R-fix-7E](./ui-react-island-regression.md)（/analysis 5 卡 + 8 tab + depth）+ [unified-progress v1.0](./unified-progress.md)（per-user task_events 流） |
 | 关联测试 | `tests/web/test_history_inbox.py`、`tests/web/test_history_redirect.py`、`tests/frontend/AnalysisInbox.spec.tsx` |
@@ -431,4 +431,5 @@ useEffect 订阅该 task_id 的事件流 (subscribeTaskStream)
 
 | 版本 | 日期 | 变更 |
 |---|---|---|
+| v1.1 | 2026-05-02 | **顺序修正 + 空态文案 + `/api/tasks/submit` task_id 修复（用户反馈）**：v1.0 三处问题：(1) "分析记录"卡放在"发起分析"卡**上方**，与"先输入再看历史"产品意图相反；(2) 用户提交后"看不到反馈"——经 `git blame + grep` 排查根因不是前端逻辑缺失，而是 `/api/tasks/submit` 返回 `{id, type, title, ...}` 但前端 `AnalysisPage.tsx:320` 的 `if (res.task_id)` 读 `task_id` 字段，**字段名不匹配** → 乐观插入分支永远进不去 → 用户必须手动刷新才能看到 task；同样问题影响 `<ScreenerForm>` 提交跳转（行 333），但那段代码用 `data.task_id && window.location.href`，结果就是不跳；(3) 空态文案 "下方提交一个新分析开始" 与新顺序不再对应。修正：(A) `AnalysisPage` form 视图 children 顺序改为 [标题] → [发起分析] → [分析记录]（卡片 JSX 块直接换序）；(B) 空态文案统一为 "暂无分析记录，提交一个新分析后会在这里显示进度"；(C) **后端 `/api/tasks/submit` 响应体追加 `task_id` 字段**（值=`task["id"]`，原 `task` 全字段保留向后兼容）→ 前端 v1.0 乐观插入逻辑（`handleSubmit` setInbox prepend optimistic row → 订阅 task_events → settled 后 refreshInbox）**真正生效**——AnalysisPage.tsx:320-340 + 387-415 不变；`<ScreenerForm>` 提交跳转 `/screener-v3?task=<id>` 也跟着修。验收：(1) 页面顺序为 标题 → 发起分析 → 分析记录；(2) 提交"开始分析"后下方分析记录**立即**出现 ticker running row（之前要手刷）；(3) 进度条实时；(4) 完成后 row 替换为 completed analysis card；(5) `/history` 重定向不变；后端测试 `tests/web/test_history_inbox.py` 新增 `test_running_row_carries_all_required_fields`（锁字段契约）+ `test_submit_then_inbox_sees_running_row_immediately`（端到端 submit→inbox）。**不动** /api/history 契约、optimistic insert 逻辑、socket 订阅、`<RunningRow>/<CompletedRow>` 实现 |
 | v1.0 | 2026-05-02 | 初版：`/analysis` 主页改 Inbox 布局（顶部紧凑表单 + 时间线列表混合运行中 task + 已完成 analysis）；`/history` 路由 301 redirect 到 `/analysis` 保留 query string；Sidebar 去"分析记录"菜单项；`/api/history` 加 `include_running=true` 合并 tasks + analysis_history 按 created_at DESC 排序，`exclude_task_ids` 防 task_completed 与 DB 写入间的瞬时去重；新方法 `TaskStore.list_tasks_by_user_and_type`；前端新增 `<AnalysisHomeInbox> + <AnalysisFormHeader> + <AnalysisInboxList> + <RunningRow>`，行渲染 v1.18 HistoryPage 抽取为 `<CompletedRow>`；提交不跳页，列表顶部乐观插运行中卡，订阅 task_events 流，完成替换为 analysis 行，失败/取消行带重试；运行中行内嵌 PipelineDAG（桌面默认展开，移动默认折叠+进度条）；旧 `/analysis/<task_uuid>` URL `replaceState` 到 `/analysis?task=<uuid>` 滚动锚定；`<AnalysisDetailView>` 完整 8 tab 详情页保持不变（深链 / 分享 / SEO 友好）；任务中心 `/tasks` 不变（跨类型 task 总览，保留所有类型）|

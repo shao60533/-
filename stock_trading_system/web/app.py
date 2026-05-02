@@ -2966,7 +2966,15 @@ def create_app(config_path=None):
         except Exception as e:  # noqa: BLE001
             logger.exception("Failed to submit task")
             return jsonify({"error": str(e)}), 500
-        return jsonify(task)
+        # Front-end ``AnalysisPage`` / ``ScreenerForm`` reads ``res.task_id``
+        # for the optimistic-insert branch. The raw task row uses ``id``
+        # only — surface ``task_id`` alongside so the optimistic running
+        # row actually fires (analysis-inbox v1.1 root cause for "提交后
+        # 看不到反馈"). Spread the rest so existing callers that read the
+        # full row keep working.
+        body = dict(task)
+        body["task_id"] = task["id"]
+        return jsonify(body)
 
     VALID_TASK_SCOPES = {"mine", "shared_research", "all"}
 
@@ -3074,28 +3082,42 @@ def create_app(config_path=None):
     }
 
     def _sanitize_shared_task(task: dict) -> dict:
-        """Mask sensitive params on shared task detail when viewer is not the owner."""
+        """Mask sensitive params on shared task detail when viewer is not the owner.
+
+        Also strips ``error_trace`` for non-owner / non-admin viewers — the
+        traceback can include filesystem paths, env values, and (when an
+        exception leaked them) API key fragments. ``error_message`` is the
+        worker-wrapped human-readable reason and stays visible.
+        """
         from stock_trading_system.tasks.task_store import TaskStore
         ttype = task.get("type", "")
-        if not TaskStore.is_shared_type(ttype):
-            return task
         uid = str(g.user.id) if g.user else None
         owner = str(task.get("created_by", ""))
         is_admin = bool(g.user and g.user.role == "admin")
-        if owner == uid or is_admin:
+        is_owner_or_admin = (owner == uid) or is_admin
+
+        # Private-type rows never reach this function (the route's
+        # _check_task_ownership already 403s non-owners). Shared-type rows
+        # need both params_json filtering and error_trace stripping for
+        # non-owner viewers.
+        if not TaskStore.is_shared_type(ttype):
             return task
-        whitelist = _SHARED_PARAMS_WHITELIST.get(ttype)
-        if whitelist is None:
+        if is_owner_or_admin:
             return task
-        try:
-            raw = json.loads(task.get("params_json") or "{}")
-        except (TypeError, json.JSONDecodeError):
-            return task
-        if not isinstance(raw, dict):
-            return task
-        filtered = {k: v for k, v in raw.items() if k in whitelist}
+
         cleaned = dict(task)
-        cleaned["params_json"] = json.dumps(filtered, ensure_ascii=False)
+        # Strip developer trace for non-owner / non-admin viewers.
+        cleaned.pop("error_trace", None)
+
+        whitelist = _SHARED_PARAMS_WHITELIST.get(ttype)
+        if whitelist is not None:
+            try:
+                raw = json.loads(task.get("params_json") or "{}")
+            except (TypeError, json.JSONDecodeError):
+                raw = None
+            if isinstance(raw, dict):
+                filtered = {k: v for k, v in raw.items() if k in whitelist}
+                cleaned["params_json"] = json.dumps(filtered, ensure_ascii=False)
         return cleaned
 
     @app.route("/api/tasks/<task_id>/result", methods=["GET"])

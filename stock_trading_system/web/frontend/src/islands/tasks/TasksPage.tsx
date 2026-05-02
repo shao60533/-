@@ -18,6 +18,10 @@ interface Task {
   id: string; type: string; status: string; progress: number
   title: string; created_at: string; completed_at: string | null
   result_ref?: string; params_json?: string
+  error_message?: string | null
+  error_trace?: string | null
+  progress_step?: string | null
+  duration_ms?: number | null
 }
 
 type StatusFilter = "" | "running" | "pending" | "success" | "failed" | "cancelled"
@@ -247,6 +251,27 @@ function TaskDetail({ taskId }: { taskId: string }) {
   const pct = Math.min(100, Math.round(doneEvents.length / totalN * 100))
   const isTerminal = ["success", "failed", "cancelled"].includes(task.status)
 
+  // Failure progress: prefer the persisted task.progress; fall back to event-derived pct.
+  const taskProgress = typeof task.progress === "number"
+    ? Math.max(0, Math.min(100, task.progress)) : null
+  const pctEffective = task.status === "success"
+    ? 100
+    : task.status === "failed" || task.status === "cancelled"
+      ? (taskProgress ?? pct)
+      : pct
+
+  // Last pipeline step seen, for failure context fallback when task.progress_step is empty.
+  const lastPipelineStep = (() => {
+    for (let i = events.length - 1; i >= 0; i--) {
+      const e = events[i]
+      if (e.event !== "analysis_pipeline") continue
+      const p = (e.payload || {}) as any
+      if (p.type === "step_start" || p.type === "step_done") return p.label || p.step || null
+    }
+    return null
+  })()
+  const failedAtStep = task.progress_step || lastPipelineStep || "分析管线"
+
   return (
     <div className="p-4 md:p-6 max-w-4xl mx-auto space-y-4">
       <div className="flex items-center justify-between">
@@ -271,17 +296,43 @@ function TaskDetail({ taskId }: { taskId: string }) {
       <Card>
         <CardContent className="p-4 space-y-3">
           <div className="flex items-center justify-between text-sm">
-            <span>已完成 {doneEvents.length}/{totalN}</span>
-            <span className="font-mono text-xs">{isTerminal ? 100 : pct}%</span>
+            <span>
+              {task.status === "failed"
+                ? `失败于：${failedAtStep}`
+                : task.status === "cancelled"
+                  ? `已取消${task.progress_step ? `（${task.progress_step}）` : ""}`
+                  : `已完成 ${doneEvents.length}/${totalN}`}
+            </span>
+            <span className="font-mono text-xs">{pctEffective}%</span>
           </div>
           <div className="h-1.5 bg-muted rounded-full overflow-hidden">
             <div className={cn(
               "h-full rounded-full transition-all duration-500",
               task.status === "failed" ? "bg-[var(--color-accent-red)]" : task.status === "cancelled" ? "bg-[var(--color-accent-yellow)]" : "bg-primary",
-            )} style={{ width: `${isTerminal ? 100 : pct}%` }} />
+            )} style={{ width: `${pctEffective}%` }} />
           </div>
         </CardContent>
       </Card>
+
+      {task.status === "failed" && (
+        <Alert variant="destructive">
+          <AlertCircle className="w-4 h-4" />
+          <div className="font-semibold">分析失败</div>
+          <div className="text-sm mt-1 break-words">
+            {task.error_message || "任务失败，但后端未返回错误详情"}
+          </div>
+          {task.error_trace && (
+            <details className="mt-2">
+              <summary className="text-xs text-muted-foreground cursor-pointer select-none">
+                开发者详情
+              </summary>
+              <pre className="mt-1 max-h-60 overflow-auto text-[11px] leading-tight whitespace-pre-wrap break-all">
+                {task.error_trace}
+              </pre>
+            </details>
+          )}
+        </Alert>
+      )}
 
       {/* Events */}
       <Card>
@@ -302,10 +353,20 @@ function TaskDetail({ taskId }: { taskId: string }) {
               } else if (e.event === "batch_analysis_item") {
                 icon = p.status === "success" ? "✅" : "❌"; title = p.ticker; meta = p.signal || ""
               } else if (e.event === "task_completed") { icon = "✅"; title = "完成" }
-              else if (e.event === "task_failed") { icon = "❌"; title = "失败"; meta = p.error || "" }
+              else if (e.event === "task_failed") {
+                icon = "❌"; title = "失败"
+                meta = p.error_message || p.error || ""
+              }
               else if (e.event === "analysis_pipeline") {
-                icon = p.type === "step_done" ? "✅" : "🔄"
-                title = p.label || p.type; meta = p.duration_ms ? `${(p.duration_ms/1000).toFixed(1)}s` : ""
+                if (p.type === "pipeline_error") {
+                  icon = "❌"
+                  title = p.label || "管线错误"
+                  meta = p.error || p.message || ""
+                } else {
+                  icon = p.type === "step_done" ? "✅" : "🔄"
+                  title = p.label || p.type
+                  meta = p.duration_ms ? `${(p.duration_ms/1000).toFixed(1)}s` : ""
+                }
               }
               return (
                 <div key={i} className="flex items-center justify-between text-xs py-1 border-b border-border/30 last:border-0">

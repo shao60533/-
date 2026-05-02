@@ -76,6 +76,22 @@ class ScreenerV3Pipeline:
         self._on_progress = on_progress
         self._cancel_check = cancel_check or (lambda: False)
 
+    def _emit_stage(self, stage: str, phase: str, **extra: Any) -> None:
+        """Emit a ``screen_v3_stage_start`` / ``screen_v3_stage_done`` event.
+
+        Frontend ``ScreenerV3Progress`` consumes these to advance the V3
+        stage timeline. Phase ∈ {"start", "done"}; ``extra`` carries
+        per-stage metadata (count / total / source / tickers / signals).
+        Failures swallowed so a broken progress sink can't kill the run.
+        """
+        if not self._on_progress:
+            return
+        evt_type = "screen_v3_stage_start" if phase == "start" else "screen_v3_stage_done"
+        try:
+            self._on_progress({"type": evt_type, "stage": stage, **extra})
+        except Exception:
+            pass
+
     async def run(
         self,
         nl_query: str = "",
@@ -101,8 +117,15 @@ class ScreenerV3Pipeline:
         # source can be threaded into ``context`` for the guru agents
         # and roundtable. Without this, gurus would have to guess what
         # the user typed and the theme override clause never fires.
+        self._emit_stage("parse", "start")
+        self._emit_stage("universe", "start")
         candidates, filter_spec, universe_source = await self._get_candidates(
             nl_query, market, candidate_n,
+        )
+        self._emit_stage("parse", "done", count=len(candidates))
+        self._emit_stage(
+            "universe", "done",
+            count=len(candidates), source=universe_source,
         )
 
         context = {
@@ -128,13 +151,21 @@ class ScreenerV3Pipeline:
             return await self._run_classic_mode(candidates, context)
 
         # Build evaluation units: (guru, ticker, data_bundle)
+        self._emit_stage("bundle", "start", total=len(candidates))
         bundles = await self._prepare_data_bundles(candidates, market)
+        self._emit_stage("bundle", "done", total=len(bundles))
         units = [
             (guru, ticker, bundles[ticker])
             for ticker in candidates
             for guru in selected_agents
             if ticker in bundles
         ]
+        self._emit_stage(
+            "guru", "start",
+            total=len(units),
+            gurus=selected_guru_names,
+            tickers=len(bundles),
+        )
 
         async def _on_unit(guru, ticker, signal, cached, done, total):
             if self._on_progress:
@@ -159,14 +190,31 @@ class ScreenerV3Pipeline:
             on_unit_done=_on_unit,
             cancel_check=self._cancel_check,
         )
+        self._emit_stage("guru", "done", total=len(units), signals=len(signals))
 
         # ── Phase 5: Round-table (optional) ──
         roundtable_results = {}
         if with_roundtable and not self._cancel_check():
+            self._emit_stage(
+                "roundtable", "start", tickers=len(candidates[:5]),
+            )
             roundtable_results = await self._run_roundtable(signals, candidates[:5], context)
+            self._emit_stage(
+                "roundtable", "done", tickers=len(roundtable_results),
+            )
 
         # ── Phase 6: Aggregate + rank ──
+        self._emit_stage("aggregate", "start")
         results = self._aggregate(candidates, signals, roundtable_results)
+        self._emit_stage("aggregate", "done", results=len(results))
+        if self._on_progress:
+            try:
+                self._on_progress({
+                    "type": "aggregate_done",
+                    "results_count": len(results),
+                })
+            except Exception:
+                pass
 
         elapsed = time.monotonic() - start_time
         cache_hits = sum(1 for s in signals if s.confidence == 0 and "失败" in s.reasoning)
@@ -330,6 +378,10 @@ class ScreenerV3Pipeline:
         snippets surface the user's query + structured spec so the
         front-end can show the user that the round table is anchored to
         their actual subject — not a generic bull/bear screen.
+
+        v1.1 (screener-history): emits ``roundtable_start`` once with the
+        ticker list + ``roundtable_done`` per ticker so the frontend
+        ``ScreenerV3Progress`` can show per-ticker debate progress.
         """
         query = (context or {}).get("nl_query") or ""
         spec = (context or {}).get("filter_spec") or {}
@@ -339,14 +391,32 @@ class ScreenerV3Pipeline:
         for s in signals:
             by_ticker.setdefault(s.ticker, []).append(s)
 
+        if self._on_progress:
+            try:
+                self._on_progress({
+                    "type": "roundtable_start",
+                    "tickers": list(top_tickers),
+                })
+            except Exception:
+                pass
+
         results = {}
-        for ticker in top_tickers:
+        total = len(top_tickers)
+        for idx, ticker in enumerate(top_tickers, start=1):
             sigs = by_ticker.get(ticker, [])
             bullish = [s for s in sigs if s.signal == "bullish"]
             bearish = [s for s in sigs if s.signal == "bearish"]
+            consensus_gurus = (
+                [s.guru for s in bullish] if len(bullish) >= len(bearish)
+                else [s.guru for s in bearish]
+            )
+            dissent_gurus = (
+                [s.guru for s in bearish] if len(bullish) >= len(bearish)
+                else [s.guru for s in bullish]
+            )
             entry: dict = {
-                "consensus": [s.guru for s in bullish] if len(bullish) >= len(bearish) else [s.guru for s in bearish],
-                "dissent": [s.guru for s in bearish] if len(bullish) >= len(bearish) else [s.guru for s in bullish],
+                "consensus": consensus_gurus,
+                "dissent": dissent_gurus,
                 "split": len(bullish) == len(bearish),
             }
             if query:
@@ -357,6 +427,18 @@ class ScreenerV3Pipeline:
                     "圆桌需优先判断该股票是否符合筛选主题，再看投资价值。",
                 ]
             results[ticker] = entry
+            if self._on_progress:
+                try:
+                    self._on_progress({
+                        "type": "roundtable_done",
+                        "ticker": ticker,
+                        "consensus": consensus_gurus,
+                        "dissent": dissent_gurus,
+                        "progress": idx,
+                        "total": total,
+                    })
+                except Exception:
+                    pass
         return results
 
     def _estimate_cost(self, guru_calls: int, with_roundtable: bool) -> float:
