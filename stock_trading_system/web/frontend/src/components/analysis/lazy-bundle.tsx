@@ -32,9 +32,11 @@ import { RiskCard }         from "./RiskCard"
 import { DecisionCard }     from "./DecisionCard"
 import { normalizeCardForClient } from "./shared/defensive"
 
+// Lookup table for the 7 cards that take a single ``data`` prop. The
+// summary tab gets a dedicated branch below so it can also receive
+// ``executiveSummary`` without polluting the other six props contracts.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const TAB_CARD: Record<string, React.FC<{ data: any }>> = {
-  "summary":            OverviewCard,
   "Market":             MarketCard,
   "Sentiment":          SentimentCard,
   "News":               NewsCard,
@@ -50,6 +52,13 @@ interface AnalysisCardsProps {
   // client even though the backend already does, because production
   // rows that predate the backend normaliser still flow through here.
   data: unknown
+  /**
+   * v1.6 — Optional execution summary, only honoured for the
+   * ``summary`` tab where ``<OverviewCard>`` renders a "执行总结"
+   * sub-block. Other tabs ignore this prop entirely so their data
+   * contracts stay unchanged.
+   */
+  executiveSummary?: string | null
 }
 
 /**
@@ -61,7 +70,19 @@ interface AnalysisCardsProps {
  * internal exceptions, which the cards' own ``safeRecord`` /
  * ``safeText`` guards already rule out for known shapes.
  */
-export default function AnalysisCards({ tabKey, data }: AnalysisCardsProps) {
+export default function AnalysisCards(
+  { tabKey, data, executiveSummary }: AnalysisCardsProps,
+) {
+  if (tabKey === "summary") {
+    const normalised = normalizeCardForClient(tabKey, data)
+    if (!normalised) return null
+    return (
+      <OverviewCard
+        data={normalised as unknown as Parameters<typeof OverviewCard>[0]["data"]}
+        executiveSummary={executiveSummary}
+      />
+    )
+  }
   const Comp = TAB_CARD[tabKey]
   if (!Comp) return null
   const normalised = normalizeCardForClient(tabKey, data)

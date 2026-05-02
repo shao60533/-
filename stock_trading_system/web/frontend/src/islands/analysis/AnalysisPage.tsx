@@ -86,6 +86,13 @@ interface AnalysisDetail {
   // we surface a small "已校正" hint so the user knows we corrected it).
   decision_action?: "Buy" | "Sell" | "Hold" | null
   signal_mismatch?: boolean
+  // v1.6 — paper-trade v1.3 F3 LLM-extracted "execution summary" column
+  // on ``analysis_history``. Server already exposes this via the detail
+  // DTO (app.py:1564); we forward it into <OverviewCard> so the summary
+  // tab's Decision banner gets a structured "执行总结" block instead of
+  // surfacing the text only as a tab-level small footnote. Schema layer
+  // (rendering.summary Pydantic) is intentionally NOT touched.
+  executive_summary?: string | null
 }
 
 /** Resolve the canonical action to display. Prefers
@@ -1192,7 +1199,15 @@ function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
                       )}
                     >
                       <Suspense fallback={<Skeleton className="h-32 w-full" />}>
-                        <AnalysisCards tabKey={tab.key} data={struct} />
+                        <AnalysisCards
+                          tabKey={tab.key}
+                          data={struct}
+                          executiveSummary={
+                            tab.key === "summary"
+                              ? (detail.executive_summary ?? null)
+                              : undefined
+                          }
+                        />
                       </Suspense>
                     </ErrorBoundary>
                   ) : null}
