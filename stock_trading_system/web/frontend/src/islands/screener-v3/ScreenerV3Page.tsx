@@ -398,11 +398,24 @@ interface ScreenResult {
   run_metadata?: RunMetadata
 }
 
+interface GuruSubAnalysis {
+  name: string
+  // ``score`` may be number-encoded as string from older payloads. We
+  // narrow at usage time, not at the type boundary.
+  score: number | string
+  details?: string
+}
+
 interface GuruScore {
   signal: string
   confidence: number
   reasoning?: string
   key_metrics?: Record<string, unknown>
+  // v1.4 — sub_analyses now ships through ``guru_signals[].sub_analyses``
+  // so the expanded card can show ``theme_fit`` as a small badge and
+  // pull the lowest-scored dimension as the "risk" line.
+  sub_analyses?: GuruSubAnalysis[]
+  total_score?: number
   // v1.0 GuruSignal extras the expanded-row card surfaces.
   tier?: string
   philosophy?: string
@@ -853,9 +866,17 @@ function VotesBar({ votes }: { votes?: Votes }) {
   )
 }
 
-/** v1.2: in-row expansion. Replaces the flat one-line GuruDetails with
- *  a 4-card grid (signal Badge + confidence bar + reasoning + tier) +
- *  fundamentals KPI strip + action buttons. */
+/** v1.4: in-row expansion. Each guru card renders a structured summary
+ *  (conclusion / supports / risk + theme_fit chip) instead of a flat
+ *  240-char reasoning slice — that approach made every guru read the
+ *  same off-theme paragraph because the v1.3 system prompt forced the
+ *  theme statement into the reasoning lead. The full reasoning is
+ *  still available via "展开完整推理".
+ *
+ *  Tooltip is now ``title={s.reasoning}`` (the full body) — the prior
+ *  ``title={s.philosophy}`` was a copy/paste bug from the static
+ *  guru-meta strip; philosophy is one stable sentence per guru and
+ *  doesn't change per ticker, so it added no info on hover. */
 function CandidateExpanded({ c, f }: {
   c: Candidate; f: Record<string, unknown> | null | undefined
 }) {
@@ -865,36 +886,11 @@ function CandidateExpanded({ c, f }: {
       <div className="text-sm font-semibold">{c.ticker} — 大师评分详情</div>
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        {sigs.map((s, i) => (
-          <Card key={i} className="bg-card/50">
-            <CardContent className="pt-3 space-y-2">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <span className="font-semibold text-sm">{s.guru}</span>
-                  {s.tier && (
-                    <Badge variant="muted" className="text-[9px]">{tierLabel(s.tier)}</Badge>
-                  )}
-                </div>
-                <Badge variant={signalBadge(s.signal)} className="text-[10px]">
-                  {(s.signal ?? "—").toUpperCase()}
-                </Badge>
-              </div>
-              <div className="flex items-center gap-2 text-xs">
-                <div className="flex-1 h-1.5 bg-zinc-800 rounded overflow-hidden">
-                  <div className="h-full bg-primary"
-                       style={{ width: `${(s.confidence ?? 0) * 100}%` }} />
-                </div>
-                <span className="font-mono text-muted-foreground text-[10px]">
-                  {((s.confidence ?? 0) * 100).toFixed(0)}%
-                </span>
-              </div>
-              <div className="text-xs leading-relaxed text-muted-foreground line-clamp-6"
-                   title={s.philosophy}>
-                {(s.reasoning ?? "").slice(0, 240)}
-                {((s.reasoning ?? "").length > 240) && "…"}
-              </div>
-            </CardContent>
-          </Card>
+        {sigs.map(s => (
+          // key={s.guru} (not the array index) so React doesn't reuse
+          // the wrong card's <details> open state when the parent sort
+          // re-orders ``guru_signals`` (e.g. user toggles a sort header).
+          <GuruSummaryCard key={s.guru} s={s} />
         ))}
       </div>
 

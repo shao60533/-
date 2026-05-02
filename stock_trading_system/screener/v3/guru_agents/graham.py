@@ -12,6 +12,8 @@ class GrahamAgent(BaseGuruAgent):
     name = "graham"
     display_name = "Benjamin Graham"
     philosophy = "深度价值 · 净净股 · 安全边际之父"
+    # v1.4 reasoning lead — see BaseGuruAgent.framework_lead.
+    framework_lead = "估值（PE/PB/NCAV）/ 资产负债安全 / 安全边际"
     principles = ["以低于清算价值买入", "严格的财务安全标准", "分散化降低风险", "市场先生是仆人不是主人"]
     motto = "投资的秘诀在于安全边际"
     avatar_initials = "BG"

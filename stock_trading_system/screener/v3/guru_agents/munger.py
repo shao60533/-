@@ -16,6 +16,8 @@ class MungerAgent(BaseGuruAgent):
     name = "munger"
     display_name = "Charlie Munger"
     philosophy = "多元思维模型 · 质量优先 · 持久竞争优势"
+    # v1.4 reasoning lead — see BaseGuruAgent.framework_lead.
+    framework_lead = "商业质量 / 持久竞争优势 / 复杂度规避"
     principles = [
         "宁愿以合理价格买入优秀企业，也不以便宜价格买入平庸企业",
         "用跨学科思维模型避免认知偏差",
