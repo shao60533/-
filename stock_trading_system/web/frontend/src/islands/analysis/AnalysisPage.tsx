@@ -59,7 +59,18 @@ function describeShapeForTelemetry(v: unknown): unknown {
 
 interface AnalysisDetail {
   id: string; ticker: string; signal: string; date: string
-  summary?: string; confidence?: number; risk_level?: string; created_at?: string
+  summary?: string
+  // analysis-rendering v1.7+ — ``confidence`` is the LLM-derived
+  // ``rendering.summary.confidence`` mapped to 0.85/0.5/0.25; ``confidence_level``
+  // exposes the original "high"/"medium"/"low" so the UI can show a
+  // 中文 label, and ``confidence_source`` is "llm_structured_output"
+  // (or null for rows without rendering_json). The UI MUST NOT fall
+  // back to ``advice.confidence`` — that's the per-user execution
+  // confidence (StrategyEngine heuristic), not the analysis confidence.
+  confidence?: number | null
+  confidence_level?: "high" | "medium" | "low" | null
+  confidence_source?: string | null
+  risk_level?: string; created_at?: string
   market_report?: string; sentiment_report?: string; news_report?: string
   fundamentals_report?: string; investment_debate?: string
   risk_assessment?: string; trade_decision?: string
@@ -86,6 +97,13 @@ interface AnalysisDetail {
   // we surface a small "已校正" hint so the user knows we corrected it).
   decision_action?: "Buy" | "Sell" | "Hold" | null
   signal_mismatch?: boolean
+  // v1.6 — paper-trade v1.3 F3 LLM-extracted "execution summary" column
+  // on ``analysis_history``. Server already exposes this via the detail
+  // DTO (app.py:1564); we forward it into <OverviewCard> so the summary
+  // tab's Decision banner gets a structured "执行总结" block instead of
+  // surfacing the text only as a tab-level small footnote. Schema layer
+  // (rendering.summary Pydantic) is intentionally NOT touched.
+  executive_summary?: string | null
 }
 
 /** Resolve the canonical action to display. Prefers
@@ -130,6 +148,14 @@ type InboxRow =
       task_id: string | null
       depth: "quick" | "standard" | "deep" | null
       bookmarked: boolean
+      // analysis-rendering v1.7 — LLM-derived confidence on the inbox
+      // row. ``null`` for rows without rendering_json (legacy / extraction
+      // failed). The ``confidence`` numeric is unused on the row chip
+      // for now (the level chip is enough on a list); detail page uses
+      // it in the gauge. Keep the field so future tooltips can read it.
+      confidence?: number | null
+      confidence_level?: "high" | "medium" | "low" | null
+      confidence_source?: string | null
     }
 
 function inboxSortKey(row: InboxRow): string {
@@ -162,6 +188,20 @@ function depthLabel(d: AnalysisDepth | string | null | undefined): string {
     case "deep":     return "深度"
     case "standard": return "标准"
     default:         return "标准"
+  }
+}
+
+/** Translate the LLM-derived confidence level (rendering.summary.confidence
+ * or rendering.Decision.conviction) to a Chinese chip label. Used both
+ * on the detail header and on inbox rows so users see the same words. */
+function confidenceLevelLabel(
+  level: "high" | "medium" | "low" | string | null | undefined,
+): string {
+  switch ((level || "").toLowerCase()) {
+    case "high":   return "高置信"
+    case "medium": return "中置信"
+    case "low":    return "低置信"
+    default:       return ""
   }
 }
 
@@ -947,8 +987,37 @@ function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
               信号已按最终决策校正
             </span>
           )}
-          {detail.confidence != null && (
-            <span className="text-sm text-muted-foreground">置信度 {(detail.confidence * 100).toFixed(0)}%</span>
+          {detail.confidence != null ? (
+            <span
+              className="text-sm text-muted-foreground"
+              title={
+                detail.confidence_source === "llm_structured_output"
+                  ? "AI 分析置信度（LLM 结构化输出）"
+                  : "AI 分析置信度"
+              }
+            >
+              置信度 {(detail.confidence * 100).toFixed(0)}%
+              {detail.confidence_level && (
+                <>
+                  {" · "}
+                  <span
+                    className={
+                      detail.confidence_level === "high"
+                        ? "text-emerald-400"
+                        : detail.confidence_level === "low"
+                        ? "text-amber-400"
+                        : "text-zinc-300"
+                    }
+                  >
+                    {confidenceLevelLabel(detail.confidence_level)}
+                  </span>
+                </>
+              )}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground/70" title="LLM 结构化摘要缺失">
+              置信度暂无
+            </span>
           )}
         </div>
         {/* Action buttons (right-aligned on desktop, wraps below on mobile) */}
@@ -1001,30 +1070,134 @@ function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
         <PipelineDAG taskId={detail.task_id} onAllDone={() => window.location.reload()} />
       )}
 
-      {/* Stats row */}
-      <div className="grid gap-4 md:grid-cols-3 grid-collapse-mobile">
-        <Card>
-          <CardHeader className="pb-2"><CardTitle className="text-sm text-muted-foreground">分析日期</CardTitle></CardHeader>
-          <CardContent className="text-lg font-mono">{detail.date}</CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2"><CardTitle className="text-sm text-muted-foreground">信号</CardTitle></CardHeader>
-          <CardContent>
-            <Badge variant={signalVariant(canonicalSignal(detail))} className="text-sm">
-              {canonicalSignal(detail) || "N/A"}
-            </Badge>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2"><CardTitle className="text-sm text-muted-foreground">风险等级</CardTitle></CardHeader>
-          <CardContent className="text-lg">{detail.risk_level || "-"}</CardContent>
-        </Card>
-      </div>
+      {/* analysis-rendering v1.4: AI 分析内容上移到第一屏。
+          顺序: Header (untouched above) → PipelineDAG (running only,
+          untouched above) → ★ 8-tab report → K-line → Quick-info.
+          Stats 3-card row 删除（信息已通过 Header Badge / Provenance
+          「创建于」/ OverviewCard.RatingBadge + ConfidenceMeter 全部
+          表达，独立行只是冗余）。 */}
+
+      {/* 8-tab report — AI 分析核心，第一屏可见 */}
+      <Card ref={tabsRef} data-testid="analysis-tabs">
+        <CardContent className="pt-6">
+          <Tabs value={activeTab} onValueChange={setActiveTab}>
+            <TabsList className="tabs-scrollable w-full justify-start bg-transparent border-b rounded-none pb-0 gap-0">
+              {REPORT_TABS.map(tab => (
+                <TabsTrigger key={tab.key} value={tab.key}
+                  className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent px-3 pb-2">
+                  {tab.label}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+            {REPORT_TABS.map(tab => {
+              const content = reportContent[tab.key] || ""
+              // Pass raw struct straight through — the lazy-bundle
+              // dispatcher does its own client-side normalize. Doing
+              // it here would force ``defensive.ts`` into this entry
+              // chunk and re-create the lazy/entry import cycle.
+              const struct = detail.rendering?.[tab.key as keyof RenderingDict]
+              const hasStruct = !!struct
+              return (
+                <TabsContent key={tab.key} value={tab.key} className="mt-4 space-y-4">
+                  {/* Per-tab boundary: a single malformed structured card
+                      should NOT take down the whole detail page (the
+                      production /analysis/17 white-screen). On error we
+                      hide just this tab's structured card and let the
+                      Markdown ``<details>`` below render the same
+                      content from the analyst report text. */}
+                  {hasStruct ? (
+                    <ErrorBoundary
+                      resetKey={`${detail.id}:${tab.key}`}
+                      onError={(err) => {
+                        // Telemetry only — never echo report bodies.
+                        // The shape helper walks one level deep and
+                        // emits field name + type so an operator can
+                        // diagnose which key is malformed without us
+                        // leaking PII or analyst conclusions to logs.
+                        // eslint-disable-next-line no-console
+                        console.error("[analysis card] render failed", {
+                          analysis_id: detail.id,
+                          tab_key: tab.key,
+                          error_name: err.name,
+                          error_message: err.message,
+                          struct_shape: describeShapeForTelemetry(struct),
+                        })
+                      }}
+                      fallback={({ error }) => (
+                        <CardFallback error={error} />
+                      )}
+                    >
+                      <Suspense fallback={<Skeleton className="h-32 w-full" />}>
+                        <AnalysisCards
+                          tabKey={tab.key}
+                          data={struct}
+                          executiveSummary={
+                            tab.key === "summary"
+                              ? (detail.executive_summary ?? null)
+                              : undefined
+                          }
+                        />
+                      </Suspense>
+                    </ErrorBoundary>
+                  ) : null}
+                  {content ? (
+                    <details className="rounded border border-border/50">
+                      <summary className="cursor-pointer px-4 py-2 text-xs text-muted-foreground hover:bg-muted/30">
+                        {hasStruct
+                          ? "原始模型输出（点击展开 · 仅供调试参考）"
+                          : "原始模型输出"}
+                      </summary>
+                      <div className="prose prose-invert prose-sm max-w-none px-4 py-3 max-h-[600px] overflow-y-auto text-[var(--color-text-secondary)]">
+                        {looksLikeRawDict(content) && (
+                          <div className="mb-3 rounded border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs text-amber-300 not-prose">
+                            原始输出格式异常（疑似 Python dict / JSON），已优先展示结构化摘要。
+                          </div>
+                        )}
+                        <ErrorBoundary
+                          resetKey={`${detail.id}:${tab.key}:md`}
+                          fallback={
+                            <pre className="text-xs whitespace-pre-wrap">{content}</pre>
+                          }
+                        >
+                          <Suspense fallback={<Skeleton className="h-24 w-full" />}>
+                            <MarkdownBody>{content}</MarkdownBody>
+                          </Suspense>
+                        </ErrorBoundary>
+                      </div>
+                    </details>
+                  ) : (!hasStruct && (
+                    <p className="text-sm text-muted-foreground py-8 text-center">暂无数据</p>
+                  ))}
+                </TabsContent>
+              )
+            })}
+          </Tabs>
+        </CardContent>
+      </Card>
+
+      {/* K-line chart — viewport-gated. The container always mounts so
+          IntersectionObserver has something to watch; TVChart itself is
+          lazy-loaded only after the section scrolls into view, and the
+          /api/quote/history fetch fires from the same observer. */}
+      <Card ref={klineSectionRef} data-testid="kline-section">
+        <CardHeader><CardTitle className="text-sm">K 线走势（近 3 个月）</CardTitle></CardHeader>
+        <CardContent>
+          {klineVisible ? (
+            <Suspense fallback={<Skeleton className="w-full" style={{ height: 380 }} />}>
+              <TVChart data={klineData} state={klineState} onRetry={refetchKline} height={380} />
+            </Suspense>
+          ) : (
+            <Skeleton className="w-full" style={{ height: 380 }} />
+          )}
+        </CardContent>
+      </Card>
 
       {/* Quick-info cards (news / fundamentals / debate) — v1.19.1 hits
           the same data APIs the analyzer uses so users see real headlines
-          + real PE/ROE/D-E instead of regex extracts of LLM markdown. */}
-      <div className="grid gap-4 md:grid-cols-3 grid-collapse-mobile">
+          + real PE/ROE/D-E instead of regex extracts of LLM markdown.
+          v1.4: moved below K-line as 次要参考 — onClick → scrollToTab
+          仍向上滚动到 Tab 区域。 */}
+      <div className="grid gap-4 md:grid-cols-3 grid-collapse-mobile" data-testid="quickinfo-row">
         <QuickInfoCard
           icon={<Newspaper className="h-4 w-4" />}
           title="最近新闻"
@@ -1123,113 +1296,6 @@ function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
           })()}
         </QuickInfoCard>
       </div>
-
-      {/* K-line chart — viewport-gated. The container always mounts so
-          IntersectionObserver has something to watch; TVChart itself is
-          lazy-loaded only after the section scrolls into view, and the
-          /api/quote/history fetch fires from the same observer. */}
-      <Card ref={klineSectionRef}>
-        <CardHeader><CardTitle className="text-sm">K 线走势（近 3 个月）</CardTitle></CardHeader>
-        <CardContent>
-          {klineVisible ? (
-            <Suspense fallback={<Skeleton className="w-full" style={{ height: 380 }} />}>
-              <TVChart data={klineData} state={klineState} onRetry={refetchKline} height={380} />
-            </Suspense>
-          ) : (
-            <Skeleton className="w-full" style={{ height: 380 }} />
-          )}
-        </CardContent>
-      </Card>
-
-      {/* 7-tab report */}
-      <Card ref={tabsRef}>
-        <CardContent className="pt-6">
-          <Tabs value={activeTab} onValueChange={setActiveTab}>
-            <TabsList className="tabs-scrollable w-full justify-start bg-transparent border-b rounded-none pb-0 gap-0">
-              {REPORT_TABS.map(tab => (
-                <TabsTrigger key={tab.key} value={tab.key}
-                  className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent px-3 pb-2">
-                  {tab.label}
-                </TabsTrigger>
-              ))}
-            </TabsList>
-            {REPORT_TABS.map(tab => {
-              const content = reportContent[tab.key] || ""
-              // Pass raw struct straight through — the lazy-bundle
-              // dispatcher does its own client-side normalize. Doing
-              // it here would force ``defensive.ts`` into this entry
-              // chunk and re-create the lazy/entry import cycle.
-              const struct = detail.rendering?.[tab.key as keyof RenderingDict]
-              const hasStruct = !!struct
-              return (
-                <TabsContent key={tab.key} value={tab.key} className="mt-4 space-y-4">
-                  {/* Per-tab boundary: a single malformed structured card
-                      should NOT take down the whole detail page (the
-                      production /analysis/17 white-screen). On error we
-                      hide just this tab's structured card and let the
-                      Markdown ``<details>`` below render the same
-                      content from the analyst report text. */}
-                  {hasStruct ? (
-                    <ErrorBoundary
-                      resetKey={`${detail.id}:${tab.key}`}
-                      onError={(err) => {
-                        // Telemetry only — never echo report bodies.
-                        // The shape helper walks one level deep and
-                        // emits field name + type so an operator can
-                        // diagnose which key is malformed without us
-                        // leaking PII or analyst conclusions to logs.
-                        // eslint-disable-next-line no-console
-                        console.error("[analysis card] render failed", {
-                          analysis_id: detail.id,
-                          tab_key: tab.key,
-                          error_name: err.name,
-                          error_message: err.message,
-                          struct_shape: describeShapeForTelemetry(struct),
-                        })
-                      }}
-                      fallback={({ error }) => (
-                        <CardFallback error={error} />
-                      )}
-                    >
-                      <Suspense fallback={<Skeleton className="h-32 w-full" />}>
-                        <AnalysisCards tabKey={tab.key} data={struct} />
-                      </Suspense>
-                    </ErrorBoundary>
-                  ) : null}
-                  {content ? (
-                    <details className="rounded border border-border/50">
-                      <summary className="cursor-pointer px-4 py-2 text-xs text-muted-foreground hover:bg-muted/30">
-                        {hasStruct
-                          ? "原始模型输出（点击展开 · 仅供调试参考）"
-                          : "原始模型输出"}
-                      </summary>
-                      <div className="prose prose-invert prose-sm max-w-none px-4 py-3 max-h-[600px] overflow-y-auto text-[var(--color-text-secondary)]">
-                        {looksLikeRawDict(content) && (
-                          <div className="mb-3 rounded border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs text-amber-300 not-prose">
-                            原始输出格式异常（疑似 Python dict / JSON），已优先展示结构化摘要。
-                          </div>
-                        )}
-                        <ErrorBoundary
-                          resetKey={`${detail.id}:${tab.key}:md`}
-                          fallback={
-                            <pre className="text-xs whitespace-pre-wrap">{content}</pre>
-                          }
-                        >
-                          <Suspense fallback={<Skeleton className="h-24 w-full" />}>
-                            <MarkdownBody>{content}</MarkdownBody>
-                          </Suspense>
-                        </ErrorBoundary>
-                      </div>
-                    </details>
-                  ) : (!hasStruct && (
-                    <p className="text-sm text-muted-foreground py-8 text-center">暂无数据</p>
-                  ))}
-                </TabsContent>
-              )
-            })}
-          </Tabs>
-        </CardContent>
-      </Card>
     </div>
   )
 }
@@ -1526,6 +1592,24 @@ function CompletedRow({ row, onChanged }: {
           {row.signal || "—"}
         </Badge>
         <Badge variant="muted" className="text-[10px]">{depthLabel(row.depth)}</Badge>
+        {/* analysis-rendering v1.7 — show LLM confidence chip when
+            available; absent for legacy rows without rendering_json. */}
+        {row.confidence_level && (
+          <Badge
+            variant="muted"
+            className={
+              "text-[10px] " +
+              (row.confidence_level === "high"
+                ? "text-emerald-400"
+                : row.confidence_level === "low"
+                ? "text-amber-400"
+                : "text-zinc-300")
+            }
+            title="AI 分析置信度（LLM 结构化输出）"
+          >
+            {confidenceLevelLabel(row.confidence_level)}
+          </Badge>
+        )}
         <span className="text-xs text-muted-foreground">{row.date}</span>
         {row.created_by_name && (
           <span className="text-xs text-muted-foreground hidden sm:inline">
