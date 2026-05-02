@@ -207,16 +207,68 @@ def test_save_and_load_backtest_result(store):
     t = _mk_task(task_type="backtest")
     store.insert(t)
     result = {
-        "ticker": "AAPL", "strategy_id": "sma", "period": "1y",
+        "ticker": "AAPL", "strategy_id": "sma_crossover", "period": "1y",
         "initial_capital": 100000,
-        "metrics": {"total_return": 0.23, "max_drawdown": -0.12},
-        "equity_curve": [{"date": "2026-01-01", "value": 100000}],
-        "trades": [{"date": "2026-01-05", "action": "BUY"}],
+        "metrics": {
+            "total_return": 0.23, "max_drawdown": -0.12,
+            "final_value": 123000, "win_rate": 0.55,
+            "num_trades": 6, "sharpe_ratio": 1.45,
+        },
+        "equity_curve": [
+            {"date": "2026-01-01", "value": 100000},
+            {"date": "2026-01-02", "value": 101000},
+        ],
+        "trades": [{"date": "2026-01-05", "action": "BUY", "price": 150.0,
+                     "shares": 10, "pnl": 0}],
     }
     ref = store.save_result("backtest", t["id"], result)
     assert ref.startswith("backtest_results:")
     loaded = store.load_result(ref)
+    # Top-level columns persist (DB row → dict).
     assert loaded["ticker"] == "AAPL"
+    assert loaded["strategy_id"] == "sma_crossover"
+    # v1.7 — JSON columns are unpacked back to structured form so the
+    # API/frontend doesn't have to JSON.parse a second time. Earlier
+    # versions returned ``metrics_json`` as a string and the React
+    # detail page rendered a blank stat row.
+    assert loaded["metrics"]["total_return"] == 0.23
+    assert loaded["metrics"]["sharpe_ratio"] == 1.45
+    assert loaded["equity_curve"][0]["date"] == "2026-01-01"
+    assert loaded["trades"][0]["action"] == "BUY"
+    # Top-level metric lift (worker memory shape parity) — frontend
+    # reads ``result.total_return`` and ``result.metrics.total_return``
+    # interchangeably.
+    assert loaded["total_return"] == 0.23
+    assert loaded["num_trades"] == 6
+
+
+def test_load_backtest_result_tolerates_legacy_string_metrics(store):
+    """A row written by an earlier release (or by direct SQL) may have
+    invalid JSON in one of the *_json columns. ``load_result`` must
+    fall back to defaults rather than raising — the task detail view
+    needs to surface SOMETHING even on a partially-corrupt row."""
+    import sqlite3
+    t = _mk_task(task_type="backtest")
+    store.insert(t)
+    # Table is lazy-created in _save_backtest_result — touch it once
+    # so the direct INSERT below has somewhere to land.
+    store._ensure_backtest_table()
+    with sqlite3.connect(store._db_path) as conn:
+        cur = conn.execute(
+            """INSERT INTO backtest_results
+               (task_id, ticker, strategy_id, period, initial_capital,
+                metrics_json, equity_curve_json, trades_json, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (t["id"], "TSLA", "buy_and_hold", "1y", 50000,
+             "not-valid-json", "[]", None, now_iso()),
+        )
+        rid = cur.lastrowid
+    loaded = store.load_result(f"backtest_results:{rid}")
+    assert loaded is not None
+    assert loaded["ticker"] == "TSLA"
+    assert loaded["metrics"] == {}
+    assert loaded["equity_curve"] == []
+    assert loaded["trades"] == []
 
 
 def test_load_bad_ref_returns_none(store):

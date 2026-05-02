@@ -272,7 +272,7 @@ function BacktestDetail({ backtestId }: { backtestId: string }) {
   // because TaskStore.load_result lifts the keys to top level too.
   const m = result.metrics ?? {}
   const metric = (k: string, fallback: number = 0): number => {
-    const v = (result as Record<string, unknown>)[k]
+    const v = (result as unknown as Record<string, unknown>)[k]
     if (typeof v === "number" && Number.isFinite(v)) return v
     const v2 = (m as Record<string, unknown>)[k]
     if (typeof v2 === "number" && Number.isFinite(v2)) return v2

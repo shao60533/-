@@ -87,7 +87,10 @@ class FakeReportGen:
 
 def test_analysis_worker_success():
     progress = []
-    cb = lambda p, s=None, partial=None: progress.append((p, s))
+    # analysis-progress-truth-source v1.0: progress_cb signature now
+    # accepts a ``stage`` kwarg (structural step id). ``**_`` makes the
+    # lambda forward-compatible without changing the assertion shape.
+    cb = lambda p, s=None, partial=None, **_: progress.append((p, s))
     worker = make_analysis_worker(
         get_analyzer=lambda: FakeAnalyzer(signal="BUY"),
         get_strategy_engine=lambda: FakeStrategyEngine(),
@@ -106,7 +109,7 @@ def test_analysis_worker_success():
 
 def test_analysis_worker_progress_milestones():
     steps = []
-    cb = lambda p, s=None, partial=None: steps.append((p, s))
+    cb = lambda p, s=None, partial=None, **_: steps.append((p, s))
     worker = make_analysis_worker(
         get_analyzer=lambda: FakeAnalyzer(),
         get_strategy_engine=lambda: FakeStrategyEngine(),
@@ -302,6 +305,86 @@ def test_backtest_worker_rejects_empty_ticker():
         worker({"ticker": ""}, lambda *a, **k: None)
 
 
+def _fake_router_with_uptrend(days: int = 220):
+    """Synthetic routine for backtest workers — produces a steady
+    uptrend long enough to give SMA / RSI strategies room to fire."""
+    import numpy as np
+    import pandas as pd
+    rng = np.random.default_rng(7)
+    closes = 100 * np.cumprod(1 + rng.normal(0.0015, 0.012, days))
+    idx = pd.date_range("2024-01-01", periods=days, freq="B")
+    df = pd.DataFrame({
+        "open": closes, "high": closes * 1.01, "low": closes * 0.99,
+        "close": closes, "volume": 1_000_000,
+    }, index=idx)
+    router = MagicMock()
+    router.get_history_for_backtest = MagicMock(return_value=df)
+    return router
+
+
+def test_backtest_worker_strategy_id_routes_to_sma_crossover():
+    """Regression for the v1.6 frontend↔worker drift: frontend sent
+    ``params.strategy`` while the worker read ``params.strategy_id``,
+    silently falling back to ``buy_and_hold``. Ensure the canonical
+    field actually reaches the engine and the result keeps the id."""
+    worker = make_backtest_worker(get_router=lambda: _fake_router_with_uptrend())
+    result = worker(
+        {"ticker": "MSFT", "strategy_id": "sma_crossover",
+         "start_date": "2024-01-01", "end_date": "2024-09-01",
+         "params": {"short_period": 10, "long_period": 30}},
+        lambda *a, **k: None,
+    )
+    assert result["strategy_id"] == "sma_crossover", \
+        "worker dropped strategy_id and fell back to buy_and_hold"
+
+
+def test_backtest_worker_legacy_strategy_field_still_works():
+    """Old frontend that still sends ``params.strategy`` (not
+    ``strategy_id``) must continue to dispatch correctly during the
+    one-release migration window. Without this fallback the worker
+    would silently route every run to ``buy_and_hold``."""
+    worker = make_backtest_worker(get_router=lambda: _fake_router_with_uptrend())
+    result = worker(
+        {"ticker": "MSFT", "strategy": "sma_crossover",
+         "start_date": "2024-01-01", "end_date": "2024-09-01"},
+        lambda *a, **k: None,
+    )
+    assert result["strategy_id"] == "sma_crossover"
+
+
+def test_backtest_worker_rsi_legacy_id_resolves_to_canonical():
+    """Old ``rsi_reversal`` id (used by the previous worker engine)
+    must resolve to the canonical ``rsi_mean_reversion`` so a stored
+    ``backtest_results`` row with the legacy id still re-runs."""
+    worker = make_backtest_worker(get_router=lambda: _fake_router_with_uptrend())
+    result = worker(
+        {"ticker": "MSFT", "strategy_id": "rsi_reversal",
+         "start_date": "2024-01-01", "end_date": "2024-09-01"},
+        lambda *a, **k: None,
+    )
+    assert result["strategy_id"] == "rsi_mean_reversion"
+
+
+def test_backtest_worker_emits_full_result_shape_for_taskstore():
+    """The worker output must contain the keys ``TaskStore._save_backtest_result``
+    reads — otherwise the row is saved with empty JSON columns and the
+    detail page renders blank. Lock the contract here."""
+    worker = make_backtest_worker(get_router=lambda: _fake_router_with_uptrend())
+    result = worker(
+        {"ticker": "MSFT", "strategy_id": "sma_crossover",
+         "start_date": "2024-01-01", "end_date": "2024-09-01"},
+        lambda *a, **k: None,
+    )
+    for key in ("ticker", "strategy_id", "period", "initial_capital",
+                "metrics", "equity_curve", "trades"):
+        assert key in result, f"missing {key} in worker result"
+    metrics = result["metrics"]
+    assert isinstance(metrics, dict)
+    for k in ("final_value", "total_return", "max_drawdown",
+              "win_rate", "num_trades", "sharpe_ratio"):
+        assert k in metrics, f"metrics missing {k}"
+
+
 # ── WK-1.4.8 report worker success ───────────────────────────────────────────
 
 
@@ -312,22 +395,43 @@ def test_report_worker_daily():
     assert r["content"].startswith("# Daily")
 
 
-def test_report_worker_stock():
+def test_report_worker_stock_redirects_to_analysis():
+    """v1.7 — stock-level deep dives no longer live in the report
+    worker; they route through the dedicated analysis task pipeline so
+    they reuse history / structured cards / export. The report worker
+    must refuse this type with a clear message pointing at /analysis."""
     worker = make_report_worker(get_report_gen=lambda: FakeReportGen())
-    r = worker({"type": "stock", "ticker": "AAPL"}, lambda *a, **k: None)
-    assert "AAPL" in r["content"]
-
-
-def test_report_worker_stock_missing_ticker():
-    worker = make_report_worker(get_report_gen=lambda: FakeReportGen())
-    with pytest.raises(ValueError, match="ticker"):
-        worker({"type": "stock"}, lambda *a, **k: None)
+    with pytest.raises(ValueError, match="analysis"):
+        worker({"type": "stock", "ticker": "AAPL"}, lambda *a, **k: None)
 
 
 def test_report_worker_unknown_type():
     worker = make_report_worker(get_report_gen=lambda: FakeReportGen())
     with pytest.raises(ValueError, match="Unknown report type"):
         worker({"type": "yearly"}, lambda *a, **k: None)
+
+
+def test_report_worker_weekly_does_not_default_to_daily():
+    """Regression for the v1.6 frontend↔worker drift: frontend sent
+    ``params.report_type`` while the worker read ``params.type``,
+    so every weekly/monthly run silently became daily. Lock the
+    canonical key in this test plus the legacy fallback in the next."""
+    gen = FakeReportGen()
+    worker = make_report_worker(get_report_gen=lambda: gen)
+    r = worker({"type": "weekly"}, lambda *a, **k: None)
+    assert r["type"] == "weekly"
+    assert r["content"].startswith("# Weekly"), \
+        f"weekly worker rendered {r['content'][:40]!r} — likely defaulted to daily"
+
+
+def test_report_worker_legacy_report_type_field_still_works():
+    """Tolerate the old ``report_type`` key for one release so a
+    half-rolled deploy (new worker / old frontend) doesn't regress."""
+    gen = FakeReportGen()
+    worker = make_report_worker(get_report_gen=lambda: gen)
+    r = worker({"report_type": "monthly"}, lambda *a, **k: None)
+    assert r["type"] == "monthly"
+    assert r["content"].startswith("# Monthly")
 
 
 # ── WK-1.4.9 qwen fundamentals worker ───────────────────────────────────────

@@ -120,7 +120,7 @@ def make_analysis_worker(get_analyzer, get_strategy_engine, get_portfolio, get_r
         # Unknown values fall back to ``standard``.
         depth = _normalize_depth(params.get("depth"))
 
-        progress_cb(5, "初始化分析管线")
+        progress_cb(5, "初始化分析管线", stage="init")
         analyzer = get_analyzer()
         task_id = params.get("__task_id__", "")
         # The web layer injects __user_id__ at submit time so the per-user
@@ -128,13 +128,48 @@ def make_analysis_worker(get_analyzer, get_strategy_engine, get_portfolio, get_r
         user_id = params.get("__user_id__")
 
         # Pipeline progress callback — emit events for real-time frontend updates
+        # AND map analyzer step events to TaskManager.progress_cb so the inbox
+        # row percent / status badge / DAG share a single truth source.
+        # Mapping (analysis-progress-truth-source v1.0):
+        #   pipeline_start        →  5%   "启动 7 Agent 分析"      stage="init"
+        #   step_done idx N (0-6) →  5 + (N+1)/7 * 80 = 16/27/38/50/61/73/85
+        #   pipeline_done         → 85%   stage="pipeline_done"
+        # Subsequent advice (90%) / finalize (98%) / success (100%) are
+        # emitted by the worker / TaskManager outside this callback.
         from stock_trading_system.tasks.event_emitter import emit_event as _emit_ev
+
+        _PIPELINE_TOTAL = 7  # mirrors agents.analyzer.PIPELINE_STEPS
 
         def _analysis_progress(event: dict):
             if task_id:
                 _emit_ev(task_id, "analysis_pipeline", {"ticker": ticker, **event})
+            # Mirror lifecycle into the unified task_progress stream so the
+            # inbox row percent always tracks the analyzer pipeline.
+            evt_type = event.get("type")
+            if evt_type == "step_done":
+                try:
+                    idx = int(event.get("index", 0))
+                    total = int(event.get("total", _PIPELINE_TOTAL)) or _PIPELINE_TOTAL
+                except (TypeError, ValueError):
+                    idx, total = 0, _PIPELINE_TOTAL
+                pct = 5 + int(round((idx + 1) / total * 80))
+                pct = max(5, min(85, pct))
+                progress_cb(
+                    pct,
+                    event.get("label") or event.get("step") or "分析阶段完成",
+                    stage=str(event.get("step") or ""),
+                )
+            elif evt_type == "pipeline_done":
+                progress_cb(85, "管线完成，整理输出中", stage="pipeline_done")
+            # pipeline_error: don't bump the percent — the worker's except
+            # handler routes through TaskManager._fail which flips the row
+            # to "failed". analysis_pipeline event above already carries
+            # the failing step + reason so the UI can show "失败于：<step>".
 
-        progress_cb(15, "启动 7 Agent 分析")
+        # Step events drive the 5%→85% range below; here we only nudge the
+        # step label so the row text reflects "starting" before the first
+        # step_done arrives. Don't overwrite the percent (kept at 5%).
+        progress_cb(5, "启动 7 Agent 分析", stage="pipeline_start")
         # Adapter compatibility: older / fake analyzers don't accept the
         # ``progress_cb`` / ``depth`` kwargs. Try the richest call first
         # and degrade signature-by-signature so legacy fakes still work.
@@ -167,12 +202,12 @@ def make_analysis_worker(get_analyzer, get_strategy_engine, get_portfolio, get_r
         else:
             result = raw
 
-        progress_cb(85, "生成策略建议")
+        progress_cb(90, "生成策略建议", stage="advice")
         advice, holdings_snapshot = _build_advice_with_snapshot(
             result, ticker, get_strategy_engine, get_portfolio, get_router,
         )
 
-        progress_cb(98, "整理结果")
+        progress_cb(98, "整理结果", stage="finalize")
         cfg = get_config()
         provider, model = _resolve_active_provider_model(cfg, user_id)
 
@@ -802,8 +837,15 @@ def make_backtest_worker(get_router):
 
         progress_cb(10, "拉取历史数据")
         from stock_trading_system.strategy.backtester import (
-            BacktestEngine, make_router_history_fn,
+            BacktestEngine, make_router_history_fn, canonical_strategy_id,
         )
+        # Resolve legacy aliases (``rsi_reversal`` → ``rsi_mean_reversion``)
+        # at the worker boundary so the value we round-trip back into
+        # the result + into ``backtest_results.strategy_id`` is the
+        # canonical id. Without this, a stored row could end up with
+        # the legacy id again and the next page-load would mismatch
+        # ``/api/backtest/strategies``.
+        strategy_id = canonical_strategy_id(strategy_id)
         history_fn = make_router_history_fn(get_router())
         engine = BacktestEngine(config={}, history_fn=history_fn)
 

@@ -74,17 +74,34 @@ def test_sma_crossover_runs_to_completion():
 # ── BT-6.1.2 RSI mean reversion ──────────────────────────────────────────────
 
 
-def test_rsi_reversal_runs_to_completion():
+def test_rsi_mean_reversion_runs_to_completion():
+    """v1.7 — canonical id is ``rsi_mean_reversion``. Strategy result
+    surfaces the canonical id even when callers pass it directly."""
     df = _trending_up(days=200)
     engine = _engine_with_data(df)
     result = engine.run(
-        ticker="MSFT", strategy_id="rsi_reversal",
+        ticker="MSFT", strategy_id="rsi_mean_reversion",
         start_date="2025-01-01", end_date="2025-10-01",
         initial_capital=50_000,
         params={"period": 14, "oversold": 30, "overbought": 70},
     )
-    assert result.strategy_id == "rsi_reversal"
+    assert result.strategy_id == "rsi_mean_reversion"
     assert result.equity_curve  # at least non-empty
+
+
+def test_rsi_reversal_legacy_id_resolves_to_canonical():
+    """A stale frontend or a stored ``backtest_results`` row that uses
+    the legacy ``rsi_reversal`` id must still execute and surface the
+    canonical id on the result."""
+    df = _trending_up(days=200)
+    engine = _engine_with_data(df)
+    result = engine.run(
+        ticker="MSFT", strategy_id="rsi_reversal",       # legacy alias
+        start_date="2025-01-01", end_date="2025-10-01",
+        initial_capital=50_000,
+    )
+    assert result.strategy_id == "rsi_mean_reversion"  # canonical id
+    assert result.equity_curve
 
 
 # ── BT-6.1.3 buy-and-hold has exactly 1 entry ────────────────────────────────
@@ -110,13 +127,23 @@ def test_buy_and_hold_one_entry_no_exit():
 
 
 def test_list_strategies_returns_three_with_required_fields():
+    """v1.7 — canonical RSI id is ``rsi_mean_reversion``. Each entry
+    must expose ``id`` / ``name`` / ``description`` / ``params``; the
+    ``label`` alias is also required for one-release migration so the
+    React frontend can read ``s.name ?? s.label ?? s.id`` without
+    blowing up against either shape."""
     engine = BacktestEngine(config={})
     strategies = engine.list_strategies()
     assert len(strategies) == 3
     ids = {s["id"] for s in strategies}
-    assert ids == {"sma_crossover", "rsi_reversal", "buy_and_hold"}
+    assert ids == {"sma_crossover", "rsi_mean_reversion", "buy_and_hold"}, (
+        f"strategy ids must be canonical (got {ids}). The old "
+        f"``rsi_reversal`` is the worker-engine legacy alias and must "
+        f"NOT appear in the registry — only resolved via canonical_strategy_id."
+    )
     for s in strategies:
         assert "name" in s
+        assert "label" in s, f"strategy {s['id']} missing ``label`` alias"
         assert "description" in s
         assert "params" in s
 
