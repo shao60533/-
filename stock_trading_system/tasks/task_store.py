@@ -223,10 +223,15 @@ class TaskStore:
     # Allow-list of task types whose results are shared research artefacts.
     # Any logged-in user may *read* a task of one of these types created by
     # another user. Mutations (cancel/delete/retry) still require owner/admin.
-    # Covers: AI analysis, all screener variants, backtests, public reports.
+    # Covers: AI analysis, all screener variants, backtests.
+    # ``report`` is intentionally NOT here — daily/weekly/monthly reports
+    # render the user's holdings, transactions, and PnL inline (see
+    # ``ReportGenerator``), which makes them strictly per-user. The
+    # right place is ``PRIVATE_TYPES`` so non-owners get 403 on detail
+    # / result endpoints.
     SHARED_TYPES = frozenset([
         "analysis", "screen", "screen_v2", "screen_v3",
-        "backtest", "report",
+        "backtest",
     ])
     # Documented private types — kept for the ``shared_research`` listing
     # filter and as a reminder of which categories are user-specific. NOTE
@@ -237,6 +242,7 @@ class TaskStore:
         "portfolio_batch", "batch_analysis", "personal_advice",
         "alerts", "paper_trade", "paper_backfill",
         "backfill_snapshots",
+        "report",  # daily/weekly/monthly carry per-user holdings + PnL
     ])
 
     VALID_SCOPES = frozenset({"mine", "shared_research", "all"})
@@ -384,7 +390,16 @@ class TaskStore:
         return self._save_generic_result(task_id, result)
 
     def load_result(self, result_ref: str) -> dict | None:
-        """Load a result by its reference string."""
+        """Load a result by its reference string.
+
+        v1.7 — for the ``backtest_results`` table the three JSON-encoded
+        columns (``metrics_json`` / ``equity_curve_json`` / ``trades_json``)
+        are parsed back into structured fields so the API/UI reads the
+        same shape the worker emitted. Earlier callers got the row with
+        the JSON still as text — the React detail page then ignored
+        ``metrics_json`` and surfaced the raw ``initial_capital`` /
+        ``ticker`` columns only.
+        """
         if not result_ref or ":" not in result_ref:
             return None
         table, rid = result_ref.split(":", 1)
@@ -406,7 +421,44 @@ class TaskStore:
                 ).fetchone()
             except sqlite3.OperationalError:
                 return None
-            return dict(row) if row else None
+            if not row:
+                return None
+            data = dict(row)
+            if table == "backtest_results":
+                data = self._unpack_backtest_result(data)
+            return data
+
+    @staticmethod
+    def _unpack_backtest_result(row: dict) -> dict:
+        """Parse the three JSON columns and surface them under their
+        canonical names (``metrics`` / ``equity_curve`` / ``trades``)
+        so the frontend can render directly. Legacy ``*_json`` keys
+        stay in the dict for backward compat with anything that
+        already inspects them — drop only when there's a stable
+        consumer migration."""
+        def _parse(field: str, default):
+            raw = row.get(field)
+            if not raw:
+                return default
+            try:
+                return json.loads(raw) if isinstance(raw, str) else raw
+            except (json.JSONDecodeError, TypeError):
+                return default
+        out = dict(row)
+        out["metrics"] = _parse("metrics_json", {})
+        out["equity_curve"] = _parse("equity_curve_json", [])
+        out["trades"] = _parse("trades_json", [])
+        # Lift the most-used metrics to the top level so the React
+        # detail view can render without descending into ``metrics`` —
+        # matches the shape the worker emits in-memory before save.
+        m = out.get("metrics") or {}
+        if isinstance(m, dict):
+            for k in ("final_value", "total_return", "annualized_return",
+                      "max_drawdown", "win_rate", "num_trades",
+                      "sharpe_ratio"):
+                if k not in out and k in m:
+                    out[k] = m[k]
+        return out
 
     def _save_analysis_result(self, task_id: str, result: dict) -> str:
         """Persist a worker's analysis result as a *shared research* row.

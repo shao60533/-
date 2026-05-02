@@ -677,26 +677,45 @@ def make_screen_worker(get_screener):
 
 
 def make_report_worker(get_report_gen):
+    """Worker for daily / weekly / monthly portfolio reports.
+
+    v1.7 contract: ``params["type"]`` is the canonical field. We tolerate
+    ``params["report_type"]`` for one release as a graceful-migration
+    fallback because earlier frontends emitted that name (which silently
+    defaulted every weekly/monthly to daily).
+
+    Stock-level deep dives are NOT a report type. They route through the
+    dedicated ``analysis`` task pipeline instead — the report worker
+    refuses ``type == "stock"`` and points the caller at /analysis. This
+    avoids two parallel storage layouts (analysis_history vs generic
+    task_results) for the same kind of artefact.
+    """
+    KNOWN = {"daily", "weekly", "monthly"}
     def worker(params: dict, progress_cb: ProgressCb) -> dict:
-        rtype = params.get("type", "daily")
-        ticker = params.get("ticker")
+        rtype = (
+            params.get("type")
+            or params.get("report_type")
+            or "daily"
+        )
+        if rtype == "stock":
+            raise ValueError(
+                "stock report has been moved to /analysis (analysis task). "
+                "Submit a task of type 'analysis' with params={ticker, date}."
+            )
+        if rtype not in KNOWN:
+            raise ValueError(
+                f"Unknown report type: {rtype!r}. Expected one of {sorted(KNOWN)}."
+            )
         progress_cb(20, f"生成 {rtype} 报告")
         gen = get_report_gen()
         if rtype == "daily":
             content = gen.daily_report()
         elif rtype == "weekly":
             content = gen.weekly_report()
-        elif rtype == "monthly":
+        else:  # monthly
             content = gen.monthly_report()
-        elif rtype == "stock":
-            if not ticker:
-                raise ValueError("stock report requires a ticker")
-            content = gen.stock_report(ticker.upper())
-        else:
-            raise ValueError(f"Unknown report type: {rtype}")
         progress_cb(95, "完成")
-        return {"type": rtype, "ticker": (ticker or "").upper(),
-                "content": content}
+        return {"type": rtype, "content": content}
     return worker
 
 
@@ -755,12 +774,27 @@ def make_screen_v2_worker():
 
 
 def make_backtest_worker(get_router):
-    """Strategy backtest. History pulled through router (cached)."""
+    """Strategy backtest. History pulled through router (cached).
+
+    v1.7 contract: ``params["strategy_id"]`` is the canonical field. We
+    tolerate ``params["strategy"]`` as a graceful-migration fallback
+    because the earlier frontend sent that name and silently fell back
+    to ``buy_and_hold`` in the worker. Strategy IDs are validated
+    against ``BacktestEngine.list_strategies()`` so an unknown id is
+    surfaced as a clear error rather than crashing inside the engine.
+    """
     def worker(params: dict, progress_cb: ProgressCb) -> dict:
         ticker = (params.get("ticker") or "").upper().strip()
         if not ticker:
             raise ValueError("Missing 'ticker'")
-        strategy_id = params.get("strategy_id", "buy_and_hold")
+        # Accept both ``strategy_id`` (canonical) and ``strategy``
+        # (legacy / sync-API alias) — the inner engine only knows
+        # ``strategy_id``.
+        strategy_id = (
+            params.get("strategy_id")
+            or params.get("strategy")
+            or "buy_and_hold"
+        )
         start_date = params.get("start_date", "2025-01-01")
         end_date = params.get("end_date") or _today_str()
         initial_capital = float(params.get("initial_capital", 100_000))

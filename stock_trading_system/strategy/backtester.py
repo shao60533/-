@@ -114,20 +114,38 @@ class BacktestResult:
     benchmark_curve: list = field(default_factory=list)
 
 
+# v1.7 — single source of truth for strategy registry. The previous
+# split (this list + a separate dict in ``strategy/backtest.py`` with
+# different ids — ``rsi_reversal`` vs ``rsi_mean_reversion`` — and a
+# different label key — ``label`` vs ``name``) led to UI rows that
+# silently fell back to ``buy_and_hold`` when the user picked an
+# RSI strategy. ``Backtester`` (the sync-API class) and the worker
+# both read from this registry now via ``BacktestEngine.list_strategies()``.
+#
+# Each entry exposes BOTH ``name`` (the canonical label going forward)
+# and ``label`` (alias for the older sync-API consumers). The frontend
+# reads ``name ?? label ?? id`` so either side works during migration.
 STRATEGIES = [
     {
         "id": "sma_crossover",
-        "name": "均线交叉策略",
-        "description": "当短期均线上穿长期均线时买入，下穿时卖出",
+        "name": "双均线交叉",
+        "label": "双均线交叉",
+        "description": "短期 SMA 上穿长期 SMA 时买入（金叉），下穿时卖出（死叉）。",
         "params": [
             {"name": "short_period", "label": "短期均线", "default": 10, "type": "int"},
             {"name": "long_period", "label": "长期均线", "default": 30, "type": "int"},
         ],
     },
     {
-        "id": "rsi_reversal",
-        "name": "RSI 均值回归策略",
-        "description": "RSI 低于超卖线买入，高于超买线卖出",
+        # v1.7 — id is ``rsi_mean_reversion`` (was ``rsi_reversal``).
+        # Drift between the two engines silently routed the worker
+        # to ``buy_and_hold`` when the user picked RSI. Old rows
+        # in ``backtest_results`` keep their stored id; the engine
+        # accepts the legacy alias below for one-release migration.
+        "id": "rsi_mean_reversion",
+        "name": "RSI 均值回归",
+        "label": "RSI 均值回归",
+        "description": "RSI 低于超卖线时买入，高于超买线时卖出。",
         "params": [
             {"name": "period", "label": "RSI 周期", "default": 14, "type": "int"},
             {"name": "oversold", "label": "超卖线", "default": 30, "type": "int"},
@@ -136,11 +154,25 @@ STRATEGIES = [
     },
     {
         "id": "buy_and_hold",
-        "name": "买入持有（基线）",
-        "description": "第一天全仓买入并持有到最后一天，作为基线对比",
+        "name": "买入并持有（基线）",
+        "label": "买入并持有（基线）",
+        "description": "起始日买入，结束日卖出。作为其它策略的基准线。",
         "params": [],
     },
 ]
+
+# Legacy ID aliases — accept old form, redirect to canonical id. Kept
+# so a stale frontend or a ``backtest_results`` row with the old id
+# still resolves to a known strategy.
+STRATEGY_ID_ALIASES: dict[str, str] = {
+    "rsi_reversal": "rsi_mean_reversion",
+}
+
+
+def canonical_strategy_id(strategy_id: str) -> str:
+    """Resolve any caller-supplied id to the canonical registry id.
+    Returns the input unchanged when no alias matches."""
+    return STRATEGY_ID_ALIASES.get(strategy_id, strategy_id)
 
 
 class BacktestEngine:
@@ -183,6 +215,10 @@ class BacktestEngine:
             BacktestResult with metrics, equity curve, and trade log
         """
         params = params or {}
+        # Resolve legacy ids (``rsi_reversal`` → ``rsi_mean_reversion``)
+        # so callers / stored rows that predate the canonical-id rename
+        # still dispatch correctly.
+        strategy_id = canonical_strategy_id(strategy_id)
         logger.info("Backtest %s on %s: %s → %s ($%s)", strategy_id, ticker, start_date, end_date, initial_capital)
 
         # Fetch historical data
@@ -193,7 +229,7 @@ class BacktestEngine:
         # Generate signals
         if strategy_id == "sma_crossover":
             signals = self._sma_crossover(df, **params)
-        elif strategy_id == "rsi_reversal":
+        elif strategy_id == "rsi_mean_reversion":
             signals = self._rsi_reversal(df, **params)
         elif strategy_id == "buy_and_hold":
             signals = self._buy_and_hold(df)

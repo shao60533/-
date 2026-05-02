@@ -2389,10 +2389,19 @@ def create_app(config_path=None):
 
     @app.route("/api/backtest/strategies")
     def api_backtest_strategies():
-        """List available backtest strategies with their parameter schemas."""
-        from stock_trading_system.strategy.backtest import Backtester
-        bt = Backtester(get_config())
-        return jsonify({"strategies": bt.list_strategies()})
+        """List available backtest strategies with their parameter schemas.
+
+        v1.7 — single registry: ``BacktestEngine`` (the worker engine).
+        Returns ``[{id, name, label, description, params}]`` so the
+        frontend reads ``s.name ?? s.label ?? s.id`` and the dropdown
+        always renders a label even if a downstream consumer hasn't
+        migrated yet. ``rsi_mean_reversion`` is the canonical id;
+        legacy ``rsi_reversal`` is resolved by ``canonical_strategy_id``
+        on the engine side.
+        """
+        from stock_trading_system.strategy.backtester import BacktestEngine
+        engine = BacktestEngine(config=get_config())
+        return jsonify({"strategies": engine.list_strategies()})
 
     @app.route("/api/backtest/run", methods=["POST"])
     def api_backtest_run():
@@ -3199,7 +3208,9 @@ def create_app(config_path=None):
                       "with_roundtable", "nl_query", "_provider", "_model"},
         "backtest":  {"ticker", "strategy_id", "period",
                       "initial_capital", "params", "_provider", "_model"},
-        "report":    {"type", "_provider", "_model"},
+        # ``report`` is private (carries holdings/PnL) — never reaches
+        # _sanitize_shared_task because _check_task_ownership 403s
+        # non-owners first. No whitelist entry needed.
     }
 
     def _sanitize_shared_task(task: dict) -> dict:

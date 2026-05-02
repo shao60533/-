@@ -1018,6 +1018,510 @@ KPI: 现价 $145 · 200-SMA $138 (+5.0%) · PE 28 · ROE 21% · D/E 65
 - 不许吞异常；fundamentals 加载失败该格显示 "—" 不影响其它列
 - 现价/PE 懒加载必须用现有 `/api/fundamentals/<ticker>` 30s LocalCache（v1.6 R-perf），不发明新端点
 
+## 15. v1.5 增量：14 大师 prompt 个性化 + 圆桌 cross-examination
+
+### 15.1 现状诊断
+
+`/screener-v3?result=<id>` 候选展开"大师评分详情"四张大师卡虽 v1.4 加了 `framework_lead` 把首屏文字差异化，但深层问题仍在：
+
+| 问题 | 现状 |
+|---|---|
+| 14 SYSTEM_PROMPT 同质化模板 | 全部"身份 + 哲学 + N 条原则 + 维度打分"——缺反例（什么我会拒绝）、缺决策对白（我自问什么）、缺数字引用要求 |
+| SYSTEM_PROMPT 末尾的主题段 | 与 v1.3 `_build_theme_instruction` Rule 1-9 重复 — 同样话说 2 遍稀释注意力 |
+| reasoning 三段缺"反转条件" | 段一/段二/段三 已有，但缺"何种新事实会改变结论"（可证伪条件）|
+| 圆桌 1 轮单方主张 | bull → bear → judge，没有 bull 反驳 bear 的轮次，**没有真实辩证** |
+| judge prompt 4 题 | 只问主题/龙头/胜方/否定，**不要求 quote 双方最强证据** + 不要求"何种新事实改变结论" |
+
+参考 [analysis-rendering v1.6 OverviewCard](./analysis-rendering.md) 的执行总结结构化思路 + tradingagents 上游 `bull_researcher`/`bear_researcher`/`research_manager` 三 agent 分工的"具体证据 + 可证伪"原则。
+
+### 15.2 设计目标（用户确认）
+
+- 路径 B：结构化重构（不改 schema / pipeline / data，仅 prompt + 拼装）
+- 圆桌加 Round 3 bull rebuttal（每 contested ticker 多 1 次 LLM call ~$0.02）
+- anti_patterns / decision_style 直接合成符合大师风格的中文版（不引用真实 letter）
+- 14 大师全做（一步到位）
+
+### 15.3 BaseGuruAgent 字段升级
+
+`stock_trading_system/screener/v3/guru_agents/base.py`：
+
+```python
+class BaseGuruAgent:
+    # 已有
+    name: str
+    display_name: str
+    philosophy: str
+    principles: list[str] = []
+    motto: str = ""
+    avatar_initials: str = ""
+    avatar_color: str = "#888"
+    framework_lead: str = ""    # v1.4
+
+    # v1.5 新增 ────────────────────────────────────────
+    anti_patterns: list[str] = []   # 立刻拒绝信号 (3 条)，命中任一应返 bearish/neutral
+    decision_style: list[str] = []  # 招牌自问 (2-3 条)，reasoning 段一须融入至少 1 条
+    evidence_demands: str = ""      # 强制 quote 哪些 sub_analysis 数字
+```
+
+### 15.4 SystemMessage 拼装顺序（追加新块）
+
+`_llm_reason` SystemMessage 组合：
+```
+1. SYSTEM_PROMPT          # per-guru 身份 + 哲学（删除末尾主题段）
+2. anti_pattern_block     # v1.5 新增
+3. decision_style_block   # v1.5 新增
+4. evidence_demand_block  # v1.5 新增
+5. theme_instruction      # v1.3
+6. coverage_caveat        # v1.4
+7. reasoning_format       # v1.4 升级到 4 段（v1.5）
+8. schema_instruction     # v1.0
+```
+
+新增 helper：
+```python
+def _build_anti_pattern_block(anti_patterns: list[str]) -> str:
+    if not anti_patterns:
+        return ""
+    items = "\n".join(f"- {p}" for p in anti_patterns)
+    return f"""
+
+你的反例守则（满足任一立刻给 bearish 或 neutral，无论财务多漂亮）：
+{items}
+若命中任一反例，必须在 reasoning 段三或段四明确指出，并在 sub_analyses
+新增一项 {{"name": "anti_pattern_hit", "score": 0-3, "details": "..."}}。
+"""
+
+
+def _build_decision_style_block(decision_style: list[str]) -> str:
+    if not decision_style:
+        return ""
+    items = "\n".join(f"- {s}" for s in decision_style)
+    return f"""
+
+你的决策对白（在 reasoning 段一中至少融入一条，用引号包起来如 "我会问自己：…"）：
+{items}
+"""
+
+
+def _build_evidence_demand_block(evidence_demands: str) -> str:
+    if not (evidence_demands or "").strip():
+        return ""
+    return f"""
+
+证据要求：{evidence_demands.strip()}
+若关键数字缺失，请在 sub_analyses 中新增 {{"name": "evidence_gap", "score": 0-3, "details": "缺什么"}}，
+不要凭空编造数字；reasoning 段二明确指出"基于现有数据 X，但缺乏 Y"。
+"""
+```
+
+### 15.5 reasoning 三段升级到四段
+
+`_build_reasoning_format_instruction` 改为：
+```
+段一(必须): 框架结论（基于 {framework_lead}）+ 至少融入 1 条招牌自问。
+段二(必须): 引用 sub_analyses 中的具体数字（按 evidence_demands）。
+段三(必须): 主要风险 / 反方观点（含 anti_pattern 命中提示，若有）。
+段四(必须): "何种新事实会改变我的结论" —— 1 句话明确说出 1-2 个可观察的反转条件
+            （如 "若下季度 ROE 跌破 15%，我会转 neutral"；"若行业新进入者拿走 5% 份额，护城河结论作废"）。
+```
+全文 280-540 字（4 段比 3 段允许略长）。
+
+### 15.6 14 大师内容（v1.5 合成版）
+
+每位大师追加 `anti_patterns` (3 条) / `decision_style` (2-3 条) / `evidence_demands` (1 段)。完整内容见 §15.10 附录。摘要：
+
+| Guru | framework_lead (v1.4 已有) | anti_patterns 摘要 | decision_style 摘要 |
+|---|---|---|---|
+| Buffett | 护城河 / 自由现金流 / 安全边际 | 看不懂的科技 / PE>25 / 管理层吹回购但 ROIC 5 年没改善 | 持有 10 年 / 纽交所关 10 年 / 5 年后护城河更宽窄 |
+| Graham | 估值 (PE/PB/NCAV) / 资产负债安全 / 安全边际 | PE>15 / PB>1.5 / 当前流动比<1.5 / 长期债>NCAV | 安全边际≥33% / 防御型还是进取型 / 价格 vs 清算价值 |
+| Lynch | 成长阶段分类 / PEG / 散户可理解性 | 看不懂的赛道 / 故事股缺 EPS / 多元恶化 | 10 岁孩子能懂吗 / 哪个成长阶段 / PEG<1 |
+| Munger | 商业质量 / 持久竞争优势 / 复杂度规避 | 多 segment 各自需 PhD / 激励错配 / 行业内长期低 ROIC | invert always invert / lollapalooza 叠加 / 复利+长跑 |
+| Fisher | 15 questions / scuttlebutt / 长期持有 | scuttlebutt 客户负面 / 短期主义管理层 / 产品周期已过顶 | 15 questions 大半 yes / R&D 出新品 / 信任并放权 |
+| Burry | 深度价值 / 数据驱动 / 隐藏资产 | 估值溢价 / 一致看多 / 无 hidden asset 或催化剂 | 自己读 10-K / 远低于隐藏价值 / 寻找市场误解 |
+| Ackman | 集中持仓 / 优质企业 / 激进改善 | 资本结构无杠杆 / ROIC 已极高 / 结构性衰退 | 5%+ 集中下注吗 / 我能影响管理层做什么 / 风险报酬 3:1 |
+| Wood | 颠覆性创新 / 5 平台 / 长曲线 | 成熟行业优胜者 / EV/EBITDA 高+收入<25% / 无 S 曲线迹象 | 5 平台之一 / 5 年 30%+ CAGR 路径 / 定义新市场 |
+| Druckenmiller | 宏观 / 趋势 / 仓位管理 | 宏观逆风 / 主回撤期反向 / 缺催化剂 | 宏观对齐 / 加仓 catalyst 是 / 错了何时止损 |
+| Damodaran | DCF / 故事 vs 数字 / 透明假设 | 故事数字不一致 / 隐藏 leverage / WACC 假设过松 | 故事数字一致 / DCF 压力测试 / 估值过程可重现 |
+| Pabrai | Dhandho / 低风险高回报 / clone | 估值偏离 / 难理解 / 大量明星投资者退出 | heads i win tails i don't lose / spawn 项目 / clone 成功模式 |
+| Taleb | 反脆弱 / 黑天鹅 / 期权性 | 短期低波动+隐藏尾部 / 收入单一来源 / 杠杆放大左尾 | 反脆弱（波动后变强）/ 凸性（损失有限收益无限）/ 避免 fragile |
+| Marks | 周期 / 第二层思考 / 风险定价 | 一致看好 / 情绪极度乐观 / 风险溢价偏低 | 周期位置 / 第二层思考市场已知什么 / 风险定价是否充分 |
+| Dalio | 原则 / 经济机器 / 全天候 | 与大周期逆向 / 缺多元化对冲 / 高度依赖单一环境 | 哪种宏观会赢/输 / 每种 outcome 压力测试 / 全天候多元化 |
+
+完整文案附录见 §15.10。
+
+### 15.7 删除 SYSTEM_PROMPT 末尾的主题段
+
+每位大师 SYSTEM_PROMPT 末尾的形如以下三句删除（与 `_build_theme_instruction` Rule 1-9 重复）：
+```
+在本系统中，你的任务不是单独判断一家公司是否优秀，而是判断它是否符合用户指定主题下的投资机会。
+如果公司不符合用户主题，应先指出主题不匹配，再按你的投资哲学给出保守结论。
+即使公司护城河强，如果它不属于用户指定行业/主题，也不能因为"优秀企业"而给出 bullish。
+```
+
+### 15.8 圆桌 cross-examination 三轮 + LLM 裁判强化
+
+`stock_trading_system/screener/v3/roundtable.py`：
+
+```python
+def _build_debate_prompt(
+    guru_name: str, ticker: str, signal: GuruSignal, role: str,
+    query: str = "", spec: dict | None = None,
+    opponent_signal: GuruSignal | None = None,
+) -> str:
+    """v1.5: cross-examination 模式。
+
+    Round 1 (bull, opponent_signal=bear_champion 已知):
+        必须 quote 自己 sub_analyses 中至少 1 个具体数字
+        + 必须指认对方 reasoning 中**最弱**的一条论据并预留反驳空间
+        + 不能跑题到泛公司讨论
+
+    Round 2 (bear, opponent_signal=bull_champion):
+        必须 quote 自己 sub_analyses 中至少 1 个具体数字
+        + 必须 cross-examine Bull Round 1 引用的具体数字（"你引用的 ROE 22% 我有不同看法因为..."）
+
+    Round 3 (bull rebuttal, role="bull_rebuttal"):
+        限 200 字
+        必须正面回应 Round 2 的 cross-examination —— 不能跑题到新论点
+        必须最后一句明确表态："我维持 bullish"或"我承认 bear 的某点正确，下调到 neutral"
+    """
+    ...
+```
+
+```python
+def _build_judge_prompts(
+    bull_champion: GuruSignal, bear_champion: GuruSignal,
+    bull_rebuttal: str | None,  # v1.5 新增
+    query: str = "", spec: dict | None = None,
+) -> tuple[str, str]:
+    """v1.5: 5 项验收 + 反转条件，禁止"双方都有道理"模糊裁决。
+
+    judge_system 强制输出 5 项:
+      1. 主题契合度 (0-10) —— 必须 quote sub_analyses[theme_fit].score
+      2. 龙头属性 (是 / 否 / 部分) —— 必须给理由 1 句
+      3. 多空胜方 + 胜方最强 1 条数字证据 (verbatim quote 双方 reasoning)
+      4. 何种新事实会改变结论 (1-2 个可观察反转条件)
+      5. 1 句话最终裁决 (禁止"双方都有道理"模糊措辞)
+      限 350 字。
+    """
+```
+
+`run_roundtable` 在 Round 2 之后、judge 之前，新增 Round 3：
+```python
+# Round 3 — Bull rebuttal: 强制回应 bear cross-examination
+bull_rebuttal_prompt = _build_debate_prompt(
+    bull_champion.guru, ticker, bull_champion, "bull_rebuttal",
+    query=query, spec=spec, opponent_signal=bear_champion,
+)
+bull_rebuttal_text: str = ""
+if llm_call:
+    try:
+        bull_rebuttal_text = llm_call(
+            f"你是 {bull_champion.guru}，正在反驳对方质疑。",
+            bull_rebuttal_prompt,
+        )
+        snippets.append(f"🟢 {bull_champion.guru} (反驳): {bull_rebuttal_text[:250]}")
+    except Exception as e:
+        snippets.append(f"🟢 {bull_champion.guru} (反驳): 反驳失败 ({e})")
+```
+
+成本：每 contested ticker（v1.4 之后只有 split 才走辩论）多 1 次 quick_think_llm call ≈ $0.01-0.02。Top 5 全 contested 时 +$0.05-0.10。
+
+### 15.9 不动（强约束）
+
+- `GuruSignal` Pydantic schema（含 `signal/confidence/reasoning/sub_analyses/key_metrics/total_score`）
+- `RoundtableResult` dataclass（含 `consensus/dissent/split/debate_snippets`）
+- `_enforce_theme_fit` / `_aggregate` / `concurrency.run_guru_units` / data bundles
+- `pipeline.py` / `cache.py` / `estimator.py`
+- 前端任何文件（ResultsView / GuruParallelProgress / ScreenerV3Progress）
+- DB schema / API 端点 / TaskStore
+- v1.3 主题污染防御（theme_instruction Rule 1-9 / theme_universe / cloud carve-out）
+- v1.4 8 处契约缺口修复（classic 模式 / cancel / trigger 校验 / cache stats / real roundtable / unit lifecycle / consensus / data bundle）
+
+### 15.10 14 大师完整 anti_patterns / decision_style / evidence_demands 附录
+
+#### Buffett
+```python
+anti_patterns = [
+    "10 岁孩子无法用一句话解释这家公司在做什么 —— 我会跳过。",
+    "估值溢价超过 5 年盈利平均的 25 倍，即使公司是好生意。",
+    "管理层在年报中频繁吹嘘资本动作（回购/收购）但 5 年期 ROIC 没改善。",
+]
+decision_style = [
+    "我会问：'我愿意以这个价格买下整家公司并持有 10 年吗？'犹豫则跳过。",
+    "我会问：'若纽交所明天关闭 10 年，我还安心持有吗？'",
+    "我会问：'5 年后这家公司的护城河会比现在更宽还是更窄？'",
+]
+evidence_demands = (
+    "reasoning 第二段必须引用以下具体数字: ROE 5 年中位数 / "
+    "FCF margin / 净负债率（debt_to_equity）/ 收益的稳定性（vs 行业波动）。"
+)
+```
+
+#### Graham
+```python
+anti_patterns = [
+    "PE 超过 15 或 PB 超过 1.5 —— 即便是稳健成长股，也已超出我的纪律线。",
+    "当前流动比率低于 1.5 或长期债务超过净流动资产 —— 财务安全不足。",
+    "5 年中有任意 1 年的盈利亏损 —— 一致性失败，不进入选股池。",
+]
+decision_style = [
+    "我会问：'当前价格相对清算价值还有多少安全边际？至少 33% 才下手。'",
+    "我会问：'这只股票适合防御型还是进取型投资者？我心中的客户是哪类？'",
+    "我会问：'如果市场明天闭市 10 年，靠资产负债表能不能扛过去？'",
+]
+evidence_demands = (
+    "reasoning 第二段必须引用以下数字: PE / PB / 当前流动比率 / "
+    "长期债务 vs 净流动资产 / NCAV (流动资产 - 全部负债)。"
+)
+```
+
+#### Lynch
+```python
+anti_patterns = [
+    "我无法用 2 分钟（two-minute drill）向妻子或邻居解释清楚的赛道或商业模式 —— 不进入名单。",
+    "故事很热闹但 5 年 EPS 增长低于 15% —— 故事股不属于我的能力圈。",
+    "公司开始'多元恶化'(diworsification) —— 进入与核心业务无关的高风险并购。",
+)
+decision_style = [
+    "我会问：'10 岁孩子能听懂这家公司在做什么吗？听不懂我跳过。'",
+    "我会问：'这家公司处在哪个成长阶段——slow grower / stalwart / fast grower / cyclical / asset play / turnaround？'",
+    "我会问：'PEG 是否小于 1？高 PE 配高增长才是合理的，否则就是高估。'",
+]
+evidence_demands = (
+    "reasoning 第二段必须引用以下数字: PEG / EPS 5 年增长率 / "
+    "营收增长（同店或客户增长）/ 业务一句话描述（必须出现在 reasoning 中）。"
+)
+```
+
+#### Munger
+```python
+anti_patterns = [
+    "商业模式有多个 segment 各自需要 PhD 才能理解 —— 复杂度过载，跳过。",
+    "管理层激励错配信号（如管理层股权占比极低同时频繁套现）—— 利益不对齐。",
+    "行业内长期低 ROIC（< 8% 持续 5 年以上）—— 结构性差生意，不值得花脑力。",
+]
+decision_style = [
+    "我会反向思考：'怎样让这笔投资亏钱？把所有失败路径列出来，再看哪条概率最高。'(Invert, always invert)",
+    "我会找 lollapalooza effect：'是否有多个独立的力量同时叠加把这家公司推向胜利？'",
+    "我会问：'我能不能耐心持有 20 年看复利发酵？短期价格我从不操心。'",
+]
+evidence_demands = (
+    "reasoning 第二段必须引用: ROIC 5 年趋势 / 行业内 ROIC 排名 / "
+    "收入集中度（前 3 客户占比）/ 商业模式复杂度评估。"
+)
+```
+
+#### Fisher
+```python
+anti_patterns = [
+    "scuttlebutt（侧面尽调）显示客户对产品/服务持续负面 —— 一线信号比报表更可靠。",
+    "管理层只关注下季度业绩，没有长期 R&D 投入或新产品迭代计划。",
+    "公司核心产品已过生命周期顶峰且无新品矩阵接续 —— 增长动力枯竭。",
+]
+decision_style = [
+    "我会问：'对我的 15 questions 至少有 12 个是 yes 吗？少于 12 我跳过。'",
+    "我会问：'公司 R&D / 营收占比 vs 行业是否领先？是否在出新产品？'",
+    "我会问：'高层是否信任并放权给一线管理者？官僚化的公司无法持续创新。'",
+]
+evidence_demands = (
+    "reasoning 第二段必须引用: R&D / 营收占比 / 营收增长 5 年 / "
+    "毛利率 vs 行业中位数 / 行业地位（前 3 / 前 10）。"
+)
+```
+
+#### Burry
+```python
+anti_patterns = [
+    "估值溢价（PE 高于行业中位数 30%+）—— 我从不付溢价。",
+    "卖方一致看多 + 媒体一致追捧 —— 共识太强意味着错误定价的反方。",
+    "找不到隐藏价值或反向催化剂（hidden asset, spinoff, distressed debt 等）—— 没有 edge 不下手。",
+]
+decision_style = [
+    "我会自己读 10-K 至少 2 遍，不信卖方报告 —— 数字不会骗人。",
+    "我会问：'当前价格远低于我看到的隐藏价值多少倍？至少 2x 才下手。'",
+    "我会问：'市场对这家公司的误解在哪？我看到了别人看不到什么？'",
+]
+evidence_demands = (
+    "reasoning 第二段必须引用: book_value / EV/EBITDA / "
+    "hidden asset 描述（spinoff / 不动产 / 子公司隐藏估值）/ 卖空利率。"
+)
+```
+
+#### Ackman
+```python
+anti_patterns = [
+    "资本结构不允许激进改善（如已有强势创始人股权不释放，小股东无杠杆）—— 我无法行动。",
+    "ROIC 已经极高（> 25%）且无明显改善空间 —— 我没有 alpha 来源。",
+    "商业模式有结构性衰退（如线下零售被电商持续蚕食）—— 我不做衰退行业。",
+]
+decision_style = [
+    "我会问：'这是不是一个值得集中下注 5%+ 仓位的优质标的？'",
+    "我会问：'如果我能进入董事会影响管理层，我会做什么改变？这些改变能创造多少价值？'",
+    "我会问：'风险报酬比是否至少 3:1？下行明确受限，上行 50%+。'",
+]
+evidence_demands = (
+    "reasoning 第二段必须引用: ROIC / 改善空间（vs 行业最佳）/ "
+    "资本结构灵活性（杠杆余地、股权可激活度）/ 5 年 IRR 测算。"
+)
+```
+
+#### Wood
+```python
+anti_patterns = [
+    "业务模式属于成熟行业的优胜者（如银行、传统制造）—— 没有颠覆潜力，不进入 ARK 名单。",
+    "EV/EBITDA 高但收入增长低于 25% —— 高估值无法被高增长支撑。",
+    "看不到 S 曲线的迹象（创新指标 / 用户增长 / 渗透率提升曲线）—— 不是颠覆者。",
+]
+decision_style = [
+    "我会问：'这家公司是否落在 5 大颠覆平台之一（基因 / AI / 能源储存 / 区块链 / 机器人）？'",
+    "我会问：'未来 5 年 30%+ CAGR 的路径是否清晰？TAM 是否足够大？'",
+    "我会问：'这家公司是否在定义一个全新市场，而不只是抢现有蛋糕？'",
+]
+evidence_demands = (
+    "reasoning 第二段必须引用: 收入 CAGR (3-5 年) / TAM 估算 / "
+    "R&D / 营收 / 创新指标（专利、用户增长、渗透率）。"
+)
+```
+
+#### Druckenmiller
+```python
+anti_patterns = [
+    "宏观环境逆风（利率上行、流动性收紧、政策风险）—— 即便公司基本面好我也不下手。",
+    "股票处于主要回撤期（>20%）且无明显催化剂转向 —— 不接飞刀。",
+    "缺乏明确的 catalyst 触发我的仓位 —— 我从不'希望式持有'。",
+]
+decision_style = [
+    "我会问：'当前宏观环境支持这个仓位吗？利率 / 流动性 / 政策三条线一致吗？'",
+    "我会问：'什么 catalyst 会让我加仓 50%？没有清晰答案我不进场。'",
+    "我会问：'如果我错了，何时止损？大胆下注但永远准备改变主意。'",
+]
+evidence_demands = (
+    "reasoning 第二段必须引用: 宏观对齐度（利率/流动性/政策）/ "
+    "相对强弱（vs SPX 或行业 ETF）/ 期权 IV / 流动性指标。"
+)
+```
+
+#### Damodaran
+```python
+anti_patterns = [
+    "公司故事和财务数字明显不一致（如 dreaming narrative 但增长不到 5%）—— 估值假设站不住。",
+    "隐藏杠杆（off-balance-sheet debt / lease commitments）未被市场充分定价。",
+    "DCF 关键假设（WACC / terminal growth）过于乐观，压力测试下立刻崩。",
+]
+decision_style = [
+    "我会问：'故事和数字一致吗？dreaming narrative 必须有相应增长支撑，否则只是想象。'",
+    "我会问：'我的 DCF 假设是否经得起压力测试？terminal growth 高于 GDP 增速我会警惕。'",
+    "我会问：'我的估值过程是否透明且可重现？任何人按我的假设算都得相同答案？'",
+]
+evidence_demands = (
+    "reasoning 第二段必须引用: WACC / terminal growth / "
+    "FCF yield / DCF base/bull/bear 三档估值结果。"
+)
+```
+
+#### Pabrai
+```python
+anti_patterns = [
+    "估值偏离 P/FCF 合理范围（> 15x）—— Dhandho 框架要求低估值入场。",
+    "业务难以理解（多 segment 或新兴技术）—— 我只 clone 我能完全理解的生意。",
+    "已有大量明星投资者退出（13F 显示 5+ tier-1 投资者减仓）—— 警示信号。",
+]
+decision_style = [
+    "我会问：'是不是 heads I win, tails I don't lose much？下行 < 30%，上行 > 100%。'",
+    "我会问：'这是不是 spawn 项目（小钱大潜力）？早期 sizing 小但允许加仓。'",
+    "我会问：'有没有成功的商业模式可以 clone？模仿胜过创新。'",
+]
+evidence_demands = (
+    "reasoning 第二段必须引用: P/FCF / 下行测算（多少损失上限）/ "
+    "上行测算（5 年 IRR）/ 业务可重复性（是否有同类成功案例）。"
+)
+```
+
+#### Taleb
+```python
+anti_patterns = [
+    "短期波动率低但隐藏尾部风险（如某地缘 / 监管事件能击穿 50%）—— fragile 类。",
+    "收入依赖单一来源（前 1 客户 > 30% 或单一国家 > 70%）—— 抗冲击能力不足。",
+    "高杠杆放大左尾（debt/equity > 1 且现金流不稳）—— 一次黑天鹅就清零。",
+]
+decision_style = [
+    "我会问：'这投资是否反脆弱？短期波动后它是变弱还是变强？'",
+    "我会问：'是否提供凸性（convexity）？损失有限，但收益无上限或非常大？'",
+    "我会问：'我是否避免了 fragile 类（隐藏负面 skew、leverage 放大）？'",
+]
+evidence_demands = (
+    "reasoning 第二段必须引用: max drawdown 5 年 / 收入集中度（前 3 客户/区域）/ "
+    "leverage 倍数 / 期权类 upside 是否存在。"
+)
+```
+
+#### Marks
+```python
+anti_patterns = [
+    "市场一致看好（卖方 buy 评级 > 80% + 媒体追捧）—— 第二层思考说我应该警觉。",
+    "投资者情绪极度乐观（VIX 低位 + IPO 火爆 + 散户活跃）—— 周期顶部信号。",
+    "风险溢价偏低（高收益债 spread vs 国债 < 历史 25 分位）—— 风险定价不充分。",
+]
+decision_style = [
+    "我会问：'当前周期处于哪个位置？bottom 我激进，top 我退场。'",
+    "我会问：'第二层思考——市场已经知道什么？我看到的是新信息还是共识？'",
+    "我会问：'风险定价是否充分？补偿是否匹配我承担的风险？'",
+]
+evidence_demands = (
+    "reasoning 第二段必须引用: PE 相对历史百分位 / 风险溢价（vs 国债）/ "
+    "投资者情绪指标（VIX、AAII bull/bear）/ 当前周期位置评估。"
+)
+```
+
+#### Dalio
+```python
+anti_patterns = [
+    "与大债务周期逆向（如长债务周期顶部加杠杆 / 通缩期持有名义资产）。",
+    "组合缺乏多元化对冲（all-in 单一资产类别 / 单一宏观环境）。",
+    "高度依赖某种环境（如低利率 / 高增长）才能成立 —— 环境转换就崩盘。",
+]
+decision_style = [
+    "我会问：'这投资在哪种宏观环境会赢（增长高 vs 低、通胀高 vs 低 4 象限）？哪种环境会输？'",
+    "我会问：'我对每种 outcome 都做了 stress test 吗？没有备份计划不下手。'",
+    "我会问：'在全天候组合中这个标的扮演什么角色？分散还是放大现有暴露？'",
+]
+evidence_demands = (
+    "reasoning 第二段必须引用: 宏观环境契合度（增长 + 通胀 4 象限定位）/ "
+    "利率敏感性 / 通胀敏感性 / 与组合现有持仓的相关性。"
+)
+```
+
+### 15.11 实施清单
+
+| 步 | 范围 | 工时 |
+|---|---|---|
+| 1 | `base.py` 加 3 字段 + 3 helper + `_llm_reason` 拼装 + reasoning 三段→四段 | ~45min |
+| 2 | 14 大师文件追加 3 字段 + 删除 SYSTEM_PROMPT 末尾主题段 | ~2h |
+| 3 | `roundtable._build_debate_prompt` 升级（加 opponent_signal 参数 + cross-examination 模式） | ~30min |
+| 4 | `roundtable._build_judge_prompts` 升级（5 项验收 + 反转条件） | ~20min |
+| 5 | `roundtable.run_roundtable` 加 Round 3 bull rebuttal | ~30min |
+| 6 | 测试：`test_v15_prompt_blocks.py` 12 case + `test_roundtable_cross_examination.py` 6 case + `test_guru_signal_uniqueness.py` 更新（验首屏 reasoning 含招牌自问） | ~1h |
+| **合计** | | **~5h** |
+
+### 15.12 验收
+
+```bash
+pytest tests/screener/v3/ -q  # 含 v1.4 165 case + v1.5 新增 18 case 全绿
+npm run build  # 前端无变化但应仍通
+```
+
+实测：
+1. 跑一次 V3 选股（agent_rt 模式 + Top 5 全 contested），观察任一展开行 4 张大师卡：
+   - reasoning 段一含招牌自问（带引号）
+   - reasoning 段二引用具体数字（PE / ROE / PEG 等按大师不同）
+   - reasoning 段四明确 1-2 个反转条件
+   - sub_analyses 含 `theme_fit` + 可能 `anti_pattern_hit` / `evidence_gap`
+2. 圆桌 grid 中任一 contested 卡的 debate_snippets 有 3 条 + 裁判：
+   - 🟢 bull 主张
+   - 🔴 bear cross-examine（quote 数字）
+   - 🟢 bull rebuttal（明确表态维持/下调）
+   - ⚖️ 裁判 5 项裁决（含反转条件）
+
 ## 13. 版本历史
 
 | 版本 | 日期 | 变更 |
@@ -1027,3 +1531,4 @@ KPI: 现价 $145 · 200-SMA $138 (+5.0%) · PE 28 · ROE 21% · D/E 65
 | v1.2 | 2026-05-01 | 选股结果决策透明化（用户 2026-05-01 提，~5h）：现状信号列 `-` / 看多看空 KPI 全 0 / 大师数都是 4 / 圆桌辩论看不到。后端 `_aggregate` 加 verdict 计算（bullish/bearish/neutral/split）+ votes 计数 + consensus chip + confidence_range + top_bull/bear_argument；payload 加 `run_metadata` (mode/llm_calls/cache_hit_pct/duration/gurus_used)。前端 4 块视觉：(1) KPI 扩 6 列（候选/均分/看多/看空/中性/共识率）；(2) 运行模式 banner（mode chip + LLM call + cache 命中 + 耗时 + 大师 Avatar）；(3) Top 5 圆桌独立 grid 按 ticker 卡片化（debate_snippets 按 🟢🔴⚖️ 分色边框）；(4) 候选表扩列（投票分布条 + 共识 Badge + 现价/PE 懒加载）+ 展开行 4 大师卡（完整 reasoning + tier + philosophy）+ KPI 底栏 + 跳 AI 分析 / 观察列表按钮。复用 `/api/fundamentals/<ticker>` 30s LocalCache（v1.6 R-perf）；不动 `RoundtableResult` dataclass / `_aggregate` 已有字段。|
 | v1.3 | 2026-05-02 | 选股主题污染修复（联动 [screener-v2.md](./screener-v2.md) v1.2，~3h）：`存储龙头股` 等主题查询在 v3 链路漏掉主题约束 → BRK-B/JPM/V/MA/UNH/WMT/PG broad-market 蓝筹混入。三层防御：(A) `BaseGuruAgent._build_theme_instruction(query, spec)` 渲染 query + filter_spec 进 SystemMessage + theme_fit SubAnalysis 强制 + broad-market 黑名单 + required pure-play (MU/WDC/STX/SNDK) + cloud carve-out；4 个具体 guru 调用签名加 `nl_query`/`filter_spec` 透传；(B) `_enforce_theme_fit(signal, context)` 后处理：theme_fit<4 score≤60 + bullish→neutral；theme_fit<2 score≤45 + bullish→bearish；(C) `roundtable._build_debate_prompt` 加 query/spec + 3 个 theme-fit 强制问题；(D) `ScreenerV3Pipeline._get_candidates` 异常路径走 v2 `theme_fallback_universe`。**不动** 14 大师 prompt、aggregator 字段、RoundtableResult dataclass。|
 | v1.4 | 2026-05-03 | **8 处契约缺口修复（用户 2026-05-03 提，~6h）**：v1.0–v1.3 之后审计仍剩 8 个 P1/P2 缺口。线性根因：(1) `_run_classic_mode` 只 `return {results: []}` —— **classic 模式选股永远空结果**；(2) `cancel_check` 只在 phase 边界检查，已派单的 unit 无视取消、用户点停止后任务最终 status=success（payload 里 status=cancelled 但 TaskManager 不识别）；(3) `/api/screen/v3/trigger` 只查 `gurus_required`，**接受任意未知 guru id**（提交 `["xxx"]` 静默丢弃后空结果，与 1 互相加重）+ candidate_n/mode 也无校验；(4) `metrics.cache_hits` 用 `confidence==0 and "失败" in reasoning` **错把 LLM 失败当 cache hit**——真实 cache hit 与失败 fallback 算不开；(5) `_run_roundtable` 是 inline 模板（共识/异议靠 bullish/bearish 数量比，不调 `roundtable.run_roundtable` 模块函数），**14 大师圆桌辩论 + LLM 裁判从未真正运行**；(6) `concurrency.run_guru_units` 只在结尾 `on_unit_done`，没有 unit_start —— 前端矩阵看不到"运行中"，且 LLM 失败被 `_error_signal` 伪装成 `signal=neutral, confidence=0` 的 done 事件，**failed 状态被吞**；(7) `_aggregate` 把 `n_bull > n_bear + n_neu` 当 unanimous，**neutral 被当成 bullish 反方**——5 中性 + 1 看多变成"unanimous bullish"；(8) `_prepare_data_bundles` 只填 `quote/fundamentals_current`，`fundamentals_history/news_recent` 永远空 → 大师没历史 / 没新闻照样给出"基本面强劲"高分。修复（**复用优先**）：(A) **classic 模式真实复用 V2 阈值链路**——`_run_classic_mode` 直接 `import build_gurus from screener.v2.gurus`，对 candidates 调 V2 `BuffettGuru/GrahamGuru/LynchGuru` 的 `evaluate(ticker, fundamentals, context)` → `GuruMatch.match_pct` 映射成 `GuruSignal(signal/total_score/confidence)` 进入既有 `_aggregate`；不开新 LLM call（V2 评估本就是 threshold-based）。(B) **cancel 真实生效**——pipeline 在每 unit / 每 ticker / 每 phase 边界 `_check_cancelled() raise CancelledError`，concurrency `run_guru_units` 内部循环也加 `cancel_check()`；worker 捕获自定义 `ScreenerCancelled` → 持久化部分结果（已完成 unit）→ raise `_CancelledError` 让 TaskManager 标 `cancelled`；UI `<ScreenerRunningView>` 顶部加 `[停止]` 按钮 → POST `/api/tasks/<task_id>/cancel`；剩余未派单 unit 不再消耗 token，已完成结果在 `?result=<task_id>` 仍可看（partial=true banner）。(C) **trigger 校验**——14 guru 注册表交集 + 未知返 400 `invalid_guru` 列出错误项 + `candidate_n ∈ {10,20,30,50}` + `mode ∈ {classic, agent, agent_rt}` + `with_roundtable ↔ mode==agent_rt` 一致性。(D) **真实 cache 统计**——`run_guru_units` 返 `(signals, RunStats)`：`RunStats(cache_hits, new_calls, failed_units, total_units)`；pipeline.metrics 加 `total_units / new_llm_calls / cache_hits / failed_units`；`/api/screen/v3/results _v3_run_metadata` 用 `new_llm_calls` 替代 legacy `llm_calls`，cache_hit_pct = cache_hits/total_units。(E) **真实 roundtable**——`pipeline._run_roundtable` 改为 `await roundtable.run_roundtable(top_signals, llm_call=judge_llm, on_progress=..., query=..., spec=...)`；LLM 失败时 result 加 `roundtable_status: "fallback"` 字段（前端 banner 提示）；不动 `RoundtableResult` dataclass。(F) **unit 生命周期事件**——`run_guru_units` 在每 unit 进入 `_one` 协程时 emit `guru_unit_start({guru, ticker})`；`_invoke` 三次重试全失败 → emit `guru_unit_failed({guru, ticker, error})` 并把 fallback 标 `cached=False, failed=True`；worker 转发；`<GuruParallelProgress>` 状态机加 `running / done / cached / failed` 4 态颜色。(G) **正确 consensus**——`unanimous` 仅当 `top_count == total`（含 all-neutral）；`majority` = top 票最多但 < total；`split` = 最高票并列（尤其 bullish==bearish）；新增 `tests/screener/v3/test_consensus_edges.py`。(H) **数据包补深度**——`_prepare_data_bundles` 加 `news_recent`（DataRouter `get_news` 5 条头条）+ `price_history_summary`（30/90/180-day return + sma200_distance）+ `sector_industry`（fundamentals.sector / industry）；如 provider 返空，bundle 字段保 `[] / null`，`BaseGuruAgent._llm_reason` 检测空字段 → SystemMessage 追加 "**历史/新闻数据不足，不得仅凭快照下高分**"。**所有改动追加式**——不动 `GuruSignal` dataclass、`/api/screen/v3/results` DTO 已有字段、ResultsView 前端契约。复用：V2 gurus（B/G/L）+ existing `roundtable.run_roundtable` + DataRouter.get_news + TaskManager `_CancelledError`；自写 ~450 LOC（含测试）|
+| v1.5 | 2026-05-03 | 14 大师 prompt 个性化 + 圆桌 cross-examination（用户 2026-05-03 提，~5h；仅改 prompt + 拼装，不动 schema/pipeline/data）：v1.4 之后每位大师 SYSTEM_PROMPT 仍是"身份+哲学+N 维度"同质化模板，缺反例 / 决策对白 / 数字引用要求；末尾"在本系统中..."三句与 v1.3 `_build_theme_instruction` Rule 1-9 重复稀释注意力；reasoning 三段缺"反转条件"；圆桌只 1 轮 bull→bear→judge 没有真实 cross-examination。方案路径 B：(A) `BaseGuruAgent` 加 3 字段 `anti_patterns: list[str]` (3 条立刻拒绝信号) / `decision_style: list[str]` (2-3 条招牌自问) / `evidence_demands: str` (强制 quote 哪些 sub_analysis 数字)；新增 3 个 helper `_build_anti_pattern_block / _build_decision_style_block / _build_evidence_demand_block`；`_llm_reason` SystemMessage 拼装顺序 = SYSTEM_PROMPT + anti_pattern + decision_style + evidence_demand + theme_instruction (v1.3) + coverage_caveat (v1.4) + reasoning_format (v1.4 升级为 4 段) + schema_instruction；(B) `_build_reasoning_format_instruction` 三段→四段，加段四"何种新事实会改变我的结论 — 1-2 个可观察的反转条件"，全文 280-540 字；(C) 14 大师全做（一步到位，文案直接合成符合大师风格的中文版避免引用真实 letter 版权）：Buffett/Graham/Lynch/Munger 4 位主纲（含 "持有 10 年/纽交所关 10 年" "PE>15 PB>1.5 安全边际 33%" "10 岁孩子能听懂吗 PEG<1" "invert always invert lollapalooza 复利+长跑"）+ 其余 10 位（Fisher 15 questions + scuttlebutt / Burry 自己读 10-K + 隐藏价值 / Ackman 5%+ 集中下注 + 风险报酬 3:1 / Wood 5 平台 + 30% CAGR 路径 / Druckenmiller 宏观对齐 + catalyst + 止损 / Damodaran 故事 vs 数字一致 + DCF 压力测试 / Pabrai heads I win tails I don't lose + clone / Taleb 反脆弱 + 凸性 + 避免 fragile / Marks 周期位置 + 第二层思考 + 风险定价 / Dalio 4 象限 + 全天候多元化）；删除每位大师 SYSTEM_PROMPT 末尾 3 句主题段（与 theme_instruction 重复）；(D) `roundtable._build_debate_prompt` 升级 cross-examination：Round 1 bull 必须 quote 自己 sub_analyses 至少 1 个数字 + 指认对方最弱论据；Round 2 bear 必须 quote 自己数字 + cross-examine bull Round 1 引用的数字；Round 3 (新增) bull rebuttal 限 200 字必须正面回应 bear cross-examination 末句明确"维持 bullish"或"下调到 neutral"；(E) `_build_judge_prompts` 升级为 5 项验收：主题契合度 quote theme_fit.score + 龙头属性 + 多空胜方 + 胜方最强 1 条数字证据 (verbatim quote) + "何种新事实会改变结论" 反转条件，限 350 字禁止"双方都有道理"模糊措辞；(F) `run_roundtable` 在 Round 2 之后 judge 之前调 Round 3 bull rebuttal LLM call —— 每 contested ticker 多 1 次 quick_think_llm call ≈ $0.01-0.02，Top 5 全 contested 时 +$0.05-0.10。**严格不动**：`GuruSignal` Pydantic schema / `RoundtableResult` dataclass / `_enforce_theme_fit` / `_aggregate` / `concurrency.run_guru_units` / data bundles / `pipeline.py / cache.py / estimator.py` / 前端任何文件 / DB schema / API 端点 / TaskStore / v1.3 主题污染防御 / v1.4 8 处契约修复。新增测试 `tests/screener/v3/test_v15_prompt_blocks.py` 12 case + `test_roundtable_cross_examination.py` 6 case；既有 `test_guru_signal_uniqueness.py` 更新验首屏 reasoning 含招牌自问。验收: 跑一次 V3 选股观察 4 张大师卡 reasoning 段一含招牌自问（带引号）/ 段二引用具体数字 / 段四含反转条件；圆桌 contested 卡 4 条 snippets (🟢 bull / 🔴 bear cross-examine / 🟢 bull rebuttal / ⚖️ judge 5 项)；自写 ~600 LOC（含 14 大师文案 + 测试）|

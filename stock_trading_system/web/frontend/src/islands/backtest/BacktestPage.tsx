@@ -18,15 +18,39 @@ const ChartPanel = lazy(() =>
   import("@/components/shared/ChartPanel").then(m => ({ default: m.ChartPanel })),
 )
 
-interface Strategy { id: string; name: string; description?: string }
+// v1.7 — strategy contract: ``id`` + ``name`` are canonical. ``label``
+// is an alias kept on the wire for one-release migration; the renderer
+// reads ``s.name ?? s.label ?? s.id``.
+interface Strategy { id: string; name?: string; label?: string; description?: string }
 interface TaskSubmitResult { task_id: string; status: string }
 
+/** Wire shape returned by ``/api/tasks/<task_id>/result`` after the
+ *  worker writes a backtest_results row. ``TaskStore.load_result`` now
+ *  unpacks ``metrics_json`` / ``equity_curve_json`` / ``trades_json``
+ *  so the React side reads them directly without a second JSON parse. */
 interface BacktestResult {
-  ticker: string; strategy: string; initial_capital: number
-  final_value: number; total_return: number; sharpe_ratio: number
-  max_drawdown: number; win_rate: number; total_trades: number
+  ticker: string
+  // ``strategy_id`` is canonical. ``strategy`` (legacy) tolerated.
+  strategy_id?: string
+  strategy?: string
+  initial_capital: number
+  // Metrics may sit at top-level (worker memory shape) or under
+  // ``metrics`` (DB unpack shape). Both are read in displayMetric().
+  metrics?: Record<string, number>
+  final_value?: number
+  total_return?: number
+  sharpe_ratio?: number
+  max_drawdown?: number
+  win_rate?: number
+  num_trades?: number
+  total_trades?: number  // legacy alias — frontend used this once
   equity_curve: { date: string; value: number }[]
   trades: { date: string; action: string; price: number; shares: number; pnl: number; reason?: string }[]
+}
+
+interface TaskResultEnvelope {
+  task: { id: string; type: string; status: string; error_message?: string | null }
+  result: BacktestResult
 }
 
 function fmt(n: number) { return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }
@@ -61,6 +85,7 @@ function BacktestForm() {
   useEffect(() => {
     apiGet<Strategy[] | { strategies: Strategy[] }>("/api/backtest/strategies")
       .then(res => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const list = Array.isArray(res) ? res : (res as any).strategies ?? []
         setStrategies(list)
         if (list.length > 0) setStrategy(list[0].id)
@@ -73,16 +98,33 @@ function BacktestForm() {
     if (!ticker.trim() || !strategy) return
     setSubmitting(true); setError(null); setSubmitResult(null)
     try {
+      // v1.7 — canonical param is ``strategy_id``. The earlier frontend
+      // sent ``strategy:`` while the worker read ``strategy_id``,
+      // silently routing every run to ``buy_and_hold``. Backend
+      // tolerates both keys for one release.
       const res = await apiPost<TaskSubmitResult>("/api/tasks/submit", {
         type: "backtest",
-        params: { ticker: ticker.toUpperCase(), strategy, start_date: startDate, end_date: endDate, initial_capital: parseFloat(capital) },
+        params: {
+          ticker: ticker.toUpperCase(),
+          strategy_id: strategy,
+          start_date: startDate,
+          end_date: endDate,
+          initial_capital: parseFloat(capital),
+        },
       })
       setSubmitResult(res)
-      if (res.task_id) setTimeout(() => { window.location.href = `/tasks/${res.task_id}` }, 800)
+      // v1.7 — land on the dedicated detail page (which polls
+      // /api/tasks/<id>/result) instead of the task-center page that
+      // can't render equity curves.
+      if (res.task_id) {
+        setTimeout(() => { window.location.href = `/backtest/${res.task_id}` }, 600)
+      }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "提交失败")
     } finally { setSubmitting(false) }
   }
+
+  const strategyLabel = (s: Strategy): string => s.name ?? s.label ?? s.id
 
   if (loading) return <div className="p-4 md:p-6 max-w-4xl mx-auto space-y-4"><Skeleton className="h-8 w-48" /><Skeleton className="h-64" /></div>
 
@@ -106,7 +148,11 @@ function BacktestForm() {
               {strategies.length > 0 ? (
                 <Select value={strategy} onValueChange={setStrategy}>
                   <SelectTrigger><SelectValue placeholder="选择策略" /></SelectTrigger>
-                  <SelectContent>{strategies.map(s => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}</SelectContent>
+                  <SelectContent>
+                    {strategies.map(s => (
+                      <SelectItem key={s.id} value={s.id}>{strategyLabel(s)}</SelectItem>
+                    ))}
+                  </SelectContent>
                 </Select>
               ) : <Input disabled placeholder="无可用策略" />}
             </div>
@@ -150,24 +196,65 @@ function BacktestDetail({ backtestId }: { backtestId: string }) {
   const [result, setResult] = useState<BacktestResult | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")
+  const [pollStatus, setPollStatus] = useState<string>("loading")
 
   useEffect(() => {
-    // Try loading from task result first
-    apiGet<Record<string, unknown>>(`/api/tasks/${backtestId}`)
-      .then(task => {
-        const r = (task as any).result || task
-        if (r.equity_curve || r.trades) {
-          setResult(r as BacktestResult)
+    let cancelled = false
+    let timer: number | null = null
+
+    async function tick() {
+      try {
+        // v1.7 — single source of truth. ``/api/tasks/<id>/result``
+        // returns ``{task, result}`` only after the worker finishes;
+        // ``TaskStore.load_result`` unpacks the JSON columns from
+        // ``backtest_results`` so ``result.equity_curve`` is already
+        // structured. Earlier code hit ``/api/tasks/<id>`` which only
+        // returns the envelope (no result field) and silently
+        // rendered a blank screen.
+        const env = await apiGet<TaskResultEnvelope>(`/api/tasks/${backtestId}/result`)
+        if (cancelled) return
+        setResult(env.result)
+        setLoading(false)
+        return  // terminal
+      } catch {
+        // Result not ready — peek at /api/tasks/<id> for the status.
+      }
+      try {
+        const t = await apiGet<{ status: string; error_message?: string }>(`/api/tasks/${backtestId}`)
+        if (cancelled) return
+        setPollStatus(t.status)
+        if (t.status === "failed" || t.status === "cancelled") {
+          setError(t.error_message || `任务${t.status === "failed" ? "失败" : "已取消"}`)
+          setLoading(false)
+          return
         }
+        // Still pending/running — poll. 2s feels right for a backtest
+        // that typically takes 5-30s.
+        timer = window.setTimeout(tick, 2000)
+      } catch (err) {
+        if (cancelled) return
+        setError(err instanceof Error ? err.message : "回测结果未找到")
         setLoading(false)
-      })
-      .catch(() => {
-        setError("回测结果未找到")
-        setLoading(false)
-      })
+      }
+    }
+    tick()
+    return () => {
+      cancelled = true
+      if (timer != null) window.clearTimeout(timer)
+    }
   }, [backtestId])
 
-  if (loading) return <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-4"><Skeleton className="h-8 w-48" /><Skeleton className="h-20" /><Skeleton className="h-64" /></div>
+  if (loading) return (
+    <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-4">
+      <Skeleton className="h-8 w-48" />
+      <p className="text-xs text-muted-foreground">
+        {pollStatus === "running" ? "回测运行中…" :
+         pollStatus === "pending" ? "排队中…" : "加载中…"}
+      </p>
+      <Skeleton className="h-20" />
+      <Skeleton className="h-64" />
+    </div>
+  )
 
   if (error || !result) return (
     <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-4">
@@ -180,6 +267,19 @@ function BacktestDetail({ backtestId }: { backtestId: string }) {
 
   const equityCurve = result.equity_curve || []
   const trades = result.trades || []
+  // v1.7 — pull metrics from either the worker's in-memory shape (top
+  // level) or the unpacked DB row (under ``metrics``). Both are valid
+  // because TaskStore.load_result lifts the keys to top level too.
+  const m = result.metrics ?? {}
+  const metric = (k: string, fallback: number = 0): number => {
+    const v = (result as Record<string, unknown>)[k]
+    if (typeof v === "number" && Number.isFinite(v)) return v
+    const v2 = (m as Record<string, unknown>)[k]
+    if (typeof v2 === "number" && Number.isFinite(v2)) return v2
+    return fallback
+  }
+  const numTrades = metric("num_trades", 0) || metric("total_trades", trades.length)
+  const strategyId = result.strategy_id ?? result.strategy ?? "—"
 
   const equityOption = useMemo((): EChartsOption | null => {
     if (equityCurve.length === 0) return null
@@ -218,16 +318,16 @@ function BacktestDetail({ backtestId }: { backtestId: string }) {
         </Button>
         <h1 className="text-xl font-bold">回测结果</h1>
         {result.ticker && <Badge variant="outline" className="font-mono">{result.ticker}</Badge>}
-        {result.strategy && <Badge variant="muted">{result.strategy}</Badge>}
+        {strategyId !== "—" && <Badge variant="muted">{strategyId}</Badge>}
       </div>
 
       {/* Stat cards */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3 grid-collapse-mobile">
-        <Stat label="Sharpe" value={(result.sharpe_ratio || 0).toFixed(2)} />
-        <Stat label="胜率" value={`${((result.win_rate || 0) * 100).toFixed(1)}%`} />
-        <Stat label="总收益" value={fmtPct((result.total_return || 0) * 100)} delta={(result.total_return || 0) * 100} />
-        <Stat label="最大回撤" value={fmtPct(-(result.max_drawdown || 0) * 100)} />
-        <Stat label="交易次数" value={String(result.total_trades || trades.length)} />
+        <Stat label="Sharpe" value={metric("sharpe_ratio").toFixed(2)} />
+        <Stat label="胜率" value={`${(metric("win_rate") * 100).toFixed(1)}%`} />
+        <Stat label="总收益" value={fmtPct(metric("total_return") * 100)} delta={metric("total_return") * 100} />
+        <Stat label="最大回撤" value={fmtPct(-metric("max_drawdown") * 100)} />
+        <Stat label="交易次数" value={String(numTrades)} />
       </div>
 
       {/* Equity curve */}
