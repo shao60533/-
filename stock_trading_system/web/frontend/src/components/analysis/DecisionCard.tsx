@@ -6,7 +6,8 @@ import type {
   TakeProfitLevel, AlternativeScenario,
 } from "./types"
 import {
-  safeArray, fmtNumber, toFiniteNumber, nonEmptyStr,
+  safeArray, fmtNumber, toFiniteNumber, nonEmptyStr, safeText,
+  isRecord, safeRecord,
 } from "./shared/defensive"
 
 const ACTION_TONE: Record<string, string> = {
@@ -39,28 +40,37 @@ function safeConfidence(c: unknown): Confidence {
 }
 
 export function DecisionCard({ data }: { data: DecisionCardData | null | undefined }) {
-  if (!data || typeof data !== "object") return null
+  const rec = safeRecord(data)
+  if (!rec) return null
 
-  const action = safeAction(data.final_action)
-  const conv = safeConfidence(data.conviction)
-  const horizon = typeof data.time_horizon === "string" ? data.time_horizon : ""
+  const action = safeAction(rec.final_action)
+  const conv = safeConfidence(rec.conviction)
+  const horizon = typeof rec.time_horizon === "string" ? rec.time_horizon : ""
 
   // entry_zone may be missing fields, scalars instead of objects, or
   // strings ("$150"). Validate both ends as finite numbers.
-  const ezLow = toFiniteNumber(data.entry_zone?.low)
-  const ezHigh = toFiniteNumber(data.entry_zone?.high)
+  const entryZone = safeRecord(rec.entry_zone)
+  const ezLow = entryZone ? toFiniteNumber(entryZone.low) : null
+  const ezHigh = entryZone ? toFiniteNumber(entryZone.high) : null
   const hasEntryZone = ezLow !== null && ezHigh !== null
-  const stop = toFiniteNumber(data.structural_stop)
-  const tp = safeArray<TakeProfitLevel>(data.take_profit_levels)
-    .map(t => ({
-      ...t,
-      _price: toFiniteNumber(t?.price),
-      _weight: toFiniteNumber(t?.weight_pct),
-    }))
+  const stop = toFiniteNumber(rec.structural_stop)
+  const tp = safeArray<unknown>(rec.take_profit_levels)
+    .filter(isRecord)
+    .map(t => {
+      const r = t as Record<string, unknown>
+      return {
+        ...(t as unknown as TakeProfitLevel),
+        _price: toFiniteNumber(r.price),
+        _weight: toFiniteNumber(r.weight_pct),
+      }
+    })
     .filter(t => t._price !== null) as Array<TakeProfitLevel & { _price: number; _weight: number | null }>
-  const preconditions = safeArray<string>(data.preconditions).filter(nonEmptyStr)
-  const exitConditions = safeArray<string>(data.exit_conditions).filter(nonEmptyStr)
-  const alts = safeArray<AlternativeScenario>(data.alternative_scenarios)
+  const preconditions = safeArray<unknown>(rec.preconditions)
+    .filter((p): p is string => nonEmptyStr(p))
+  const exitConditions = safeArray<unknown>(rec.exit_conditions)
+    .filter((e): e is string => nonEmptyStr(e))
+  const alts = safeArray<unknown>(rec.alternative_scenarios)
+    .filter(isRecord) as unknown as AlternativeScenario[]
 
   return (
     <div className="space-y-4">
@@ -77,8 +87,8 @@ export function DecisionCard({ data }: { data: DecisionCardData | null | undefin
               {HORIZON_LABEL[horizon] ?? (horizon || "—")}
             </Badge>
           </div>
-          {nonEmptyStr(data.one_line_summary) && (
-            <p className="text-sm">{data.one_line_summary}</p>
+          {nonEmptyStr(rec.one_line_summary) && (
+            <p className="text-sm">{safeText(rec.one_line_summary)}</p>
           )}
         </CardContent>
       </Card>
@@ -110,7 +120,7 @@ export function DecisionCard({ data }: { data: DecisionCardData | null | undefin
                         {t._weight !== null ? `${t._weight}%` : "—"}
                       </span>
                       {nonEmptyStr(t.rationale) && (
-                        <span className="text-muted-foreground">{t.rationale}</span>
+                        <span className="text-muted-foreground">{safeText(t.rationale)}</span>
                       )}
                     </div>
                   ))}
@@ -131,7 +141,7 @@ export function DecisionCard({ data }: { data: DecisionCardData | null | undefin
                   {preconditions.map((p, i) => (
                     <li key={i} className="flex items-start gap-2">
                       <Check className="h-3.5 w-3.5 text-muted-foreground mt-0.5 shrink-0" />
-                      <span>{p}</span>
+                      <span>{safeText(p)}</span>
                     </li>
                   ))}
                 </ul>
@@ -146,7 +156,7 @@ export function DecisionCard({ data }: { data: DecisionCardData | null | undefin
                   {exitConditions.map((e, i) => (
                     <li key={i} className="flex items-start gap-2">
                       <Check className="h-3.5 w-3.5 text-muted-foreground mt-0.5 shrink-0" />
-                      <span>{e}</span>
+                      <span>{safeText(e)}</span>
                     </li>
                   ))}
                 </ul>
@@ -167,8 +177,8 @@ export function DecisionCard({ data }: { data: DecisionCardData | null | undefin
               <tbody>
                 {alts.map((s, i) => (
                   <tr key={i} className="border-t border-border/30">
-                    <td className="py-1.5 pr-3">{s?.condition ?? ""}</td>
-                    <td className="py-1.5 font-semibold">{s?.action ?? ""}</td>
+                    <td className="py-1.5 pr-3">{safeText(s.condition)}</td>
+                    <td className="py-1.5 font-semibold">{safeText(s.action)}</td>
                   </tr>
                 ))}
               </tbody>

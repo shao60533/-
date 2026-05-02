@@ -4,7 +4,8 @@ import type {
   MarketCardData, Trend, TechnicalIndicator, PriceLevel,
 } from "./types"
 import {
-  safeArray, fmtNumber, nonEmptyStr, toFiniteNumber,
+  safeArray, fmtNumber, nonEmptyStr, toFiniteNumber, safeText,
+  safeRecord, isRecord,
 } from "./shared/defensive"
 
 const TREND_TONE: Record<string, string> = {
@@ -37,17 +38,24 @@ const STRENGTH_TONE: Record<string, string> = {
 }
 
 export function MarketCard({ data }: { data: MarketCardData | null | undefined }) {
-  if (!data || typeof data !== "object") return null
-  const trend = safeTrend(data.trend)
-  const indicators = safeArray<TechnicalIndicator>(data.indicators)
+  const rec = safeRecord(data)
+  if (!rec) return null
+  const trend = safeTrend(rec.trend)
+  // Items must be records before we read ``it.signal`` / ``it.value`` —
+  // a string/null item slipping through would still not throw thanks
+  // to ``safeText``, but ``signal`` lookup would silently misclassify.
+  const indicators = safeArray<unknown>(rec.indicators)
+    .filter(isRecord) as unknown as TechnicalIndicator[]
   // ``support_resistance``: drop entries whose price isn't a real number
   // before sorting — the production payload had ``price: "—"`` for two
   // levels, which crashed the descending sort with NaN comparisons.
-  const levels = safeArray<PriceLevel>(data.support_resistance)
-    .map(p => ({ ...p, _num: toFiniteNumber((p as PriceLevel)?.price) }))
+  const levels = safeArray<unknown>(rec.support_resistance)
+    .filter(isRecord)
+    .map(p => ({ ...(p as unknown as PriceLevel), _num: toFiniteNumber((p as Record<string, unknown>).price) }))
     .filter(p => p._num !== null) as Array<PriceLevel & { _num: number }>
   levels.sort((a, b) => b._num - a._num)
-  const patterns = safeArray<string>(data.patterns).filter(nonEmptyStr)
+  const patterns = safeArray<unknown>(rec.patterns)
+    .filter((p): p is string => nonEmptyStr(p))
   return (
     <div className="space-y-4">
       <Card>
@@ -58,8 +66,8 @@ export function MarketCard({ data }: { data: MarketCardData | null | undefined }
               {TREND_LABEL[trend]}
             </span>
           </div>
-          {nonEmptyStr(data.summary) && (
-            <p className="text-sm leading-relaxed">{data.summary}</p>
+          {nonEmptyStr(rec.summary) && (
+            <p className="text-sm leading-relaxed">{safeText(rec.summary)}</p>
           )}
         </CardContent>
       </Card>
@@ -72,11 +80,11 @@ export function MarketCard({ data }: { data: MarketCardData | null | undefined }
               {indicators.map((it, i) => (
                 <div key={i} className="rounded border border-border/40 bg-card/40 p-2">
                   <div className="flex items-center gap-1.5">
-                    <span className={`inline-block w-2 h-2 rounded-full ${SIGNAL_DOT[it?.signal as string] ?? "bg-zinc-500"}`} />
-                    <span className="text-xs text-muted-foreground">{it?.name ?? ""}</span>
+                    <span className={`inline-block w-2 h-2 rounded-full ${SIGNAL_DOT[it.signal as string] ?? "bg-zinc-500"}`} />
+                    <span className="text-xs text-muted-foreground">{safeText(it.name)}</span>
                   </div>
                   <div className="font-mono text-sm mt-0.5">
-                    {it?.value !== undefined && it?.value !== null ? String(it.value) : "—"}
+                    {safeText(it.value, "—")}
                   </div>
                 </div>
               ))}
@@ -97,10 +105,10 @@ export function MarketCard({ data }: { data: MarketCardData | null | undefined }
                 >
                   <span className="font-mono text-sm">${fmtNumber(p._num, 2)}</span>
                   <Badge variant="muted" className="text-[10px]">
-                    {KIND_LABEL[p.kind ?? ""] ?? (p.kind ?? "—")}
+                    {KIND_LABEL[p.kind ?? ""] ?? safeText(p.kind, "—")}
                   </Badge>
                   {nonEmptyStr(p.note) && (
-                    <span className="text-xs text-muted-foreground">{p.note}</span>
+                    <span className="text-xs text-muted-foreground">{safeText(p.note)}</span>
                   )}
                 </div>
               ))}
@@ -115,7 +123,7 @@ export function MarketCard({ data }: { data: MarketCardData | null | undefined }
           <CardContent>
             <div className="flex flex-wrap gap-2">
               {patterns.map((p, i) => (
-                <Badge key={i} variant="outline">{p}</Badge>
+                <Badge key={i} variant="outline">{safeText(p)}</Badge>
               ))}
             </div>
           </CardContent>

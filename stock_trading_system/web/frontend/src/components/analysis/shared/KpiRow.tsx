@@ -1,5 +1,5 @@
 import type { KeyMetric } from "../types"
-import { safeArray } from "./defensive"
+import { safeArray, safeText } from "./defensive"
 
 const TONE: Record<string, string> = {
   positive: "border-emerald-500/40 text-emerald-400",
@@ -13,9 +13,12 @@ export function KpiRow({ items }: { items?: KeyMetric[] | null }) {
   return (
     <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
       {list.map((m, i) => {
-        const label = typeof m?.label === "string" ? m.label : ""
-        const value = m?.value !== undefined && m?.value !== null
-          ? String(m.value) : "—"
+        // ``safeText`` collapses anything non-scalar (objects / arrays
+        // from a malformed LLM payload) to the fallback so React never
+        // sees an object as a child. Was previously ``String(m.value)``
+        // which produced the cosmetic but ugly ``"[object Object]"``.
+        const label = safeText(m?.label)
+        const value = safeText(m?.value, "—")
         const tone = TONE[m?.tone ?? "neutral"] ?? TONE.neutral
         return (
           <div

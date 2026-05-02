@@ -15,6 +15,136 @@ from stock_trading_system.utils import get_logger
 logger = get_logger("screener.v3.guru_agents")
 
 
+# ── Theme instruction injected into every guru's system prompt ───────────
+#
+# Every guru's `_llm_reason` call prepends this block to its philosophical
+# system prompt. The block is anchored to the user's verbatim query and
+# the parsed FilterSpec so the LLM cannot silently drift to "AAPL is a
+# wonderful business" when the user asked for storage names.
+#
+# A `theme_fit` SubAnalysis (0-10) becomes a hard requirement — the
+# post-processor `_enforce_theme_fit` reads it back and caps total_score
+# / signal when the LLM tries to give a high score to an off-theme pick.
+# Off-theme queries (intent_summary / themes / sectors / natural_fallback
+# all empty) still get the instruction so the LLM at least includes a
+# theme_fit slot, but the cap is permissive (any score passes).
+
+def _build_roundtable_theme_clause(nl_query: str | None) -> str:
+    """Tiny helper used by ``roundtable._build_debate_prompt``.
+
+    When the user's original NL query carries a strong theme keyword
+    (storage / memory / cloud-storage), the debate prompt forces each
+    speaker to explicitly answer "is this ticker even on-theme?" before
+    arguing the financial bull/bear thesis. Off-theme queries (empty or
+    no theme keyword) get an empty string so the speaker prompt stays
+    short.
+
+    Match logic mirrors the lightweight detection used by
+    ``screener.v2.universe`` so debate gating and universe gating stay
+    in lock-step. Cloud-storage check runs before bare-storage check
+    because "云存储" is also a substring of "存储".
+    """
+    if not nl_query:
+        return ""
+    q = nl_query.lower()
+    cloud_kw = ("云存储", "云计算", "对象存储", "云服务",
+                "cloud storage", "object storage", "cloud computing")
+    storage_kw = ("存储", "内存", "闪存", "nand", "dram",
+                  "ssd", "硬盘", "hdd", "数据存储", "memory",
+                  "flash storage", "data storage hardware")
+    if any(k in q for k in cloud_kw):
+        return (
+            "用户主题：云存储 / 对象存储。请先回答："
+            "该 ticker 是否对云存储 / S3 / Azure Storage / Google Cloud "
+            "Storage 等云存储业务有直接收入暴露？无则视为不符合主题。\n"
+        )
+    if any(k in q for k in storage_kw):
+        return (
+            "用户主题：半导体存储 / 内存 / SSD / HDD 产业链。请先回答："
+            "该 ticker 是否在 DRAM / NAND / 存储芯片 / 存储硬件 业务上有"
+            "直接收入暴露？无则视为不符合主题，应给出 neutral/bearish。\n"
+        )
+    return ""
+
+
+def _build_theme_instruction(query: str | None, spec: dict | None) -> str:
+    """Return the universal theme/spec-aware preamble.
+
+    Always non-empty so every guru evaluation produces a `theme_fit`
+    slot — that gives `_enforce_theme_fit` something to read regardless
+    of whether we detected a theme. Empty inputs degrade gracefully:
+    the LLM sees ``"用户原始筛选意图: "`` and ``"结构化筛选条件: {}"``
+    and the cap-rules become no-ops because theme_fit defaults to 5.
+    """
+    q = query or ""
+    s = spec if isinstance(spec, dict) else {}
+    return f"""
+
+用户原始筛选意图: {q}
+结构化筛选条件: {s}
+
+重要约束：
+1. 你不是在做泛股票分析，而是在判断该股票是否满足用户的筛选意图。
+2. 如果用户查询包含行业/主题词，必须先评估 ticker 与该主题的直接业务相关性。
+3. "龙头股"表示用户指定主题/行业内的龙头，不是全市场市值龙头。
+4. 如果 ticker 与用户主题明显无关，即使财务指标优秀，也应降低 total_score，
+   并将 signal 设为 neutral 或 bearish。
+5. reasoning 必须明确说明：
+   - 该公司与用户主题是否直接相关
+   - 主题相关性的证据
+   - 若不相关，为什么不能作为该主题候选
+6. 必须在 sub_analyses 中包含一项:
+   {{"name": "theme_fit", "score": 0-10, "details": "该公司与用户主题的直接相关性说明"}}
+7. 如果 theme_fit < 4，total_score 不应超过 60。
+8. 如果 theme_fit < 2，signal 必须是 neutral 或 bearish。
+9. 不能因为公司财务稳健，就在主题明显不匹配时给 bullish。
+10. 如果用户查询包含"存储/内存/DRAM/NAND/SSD/HDD/闪存/数据存储硬件"，
+    默认指半导体存储或存储硬件产业链。
+    直接相关公司示例：MU, WDC, STX, SNDK。
+    可作为产业链相关但需说明理由的公司：MRVL, INTC, AMD, NVDA, AVGO。
+    无直接相关性的公司示例：BRK-B, JPM, V, MA, PG, WMT, UNH。
+    除非用户明确写"云存储/云计算/对象存储"，否则 AMZN/MSFT/GOOGL 不应被默认视为存储龙头。
+"""
+
+
+def _enforce_theme_fit(signal: "GuruSignal", context: dict | None) -> "GuruSignal":
+    """Post-process a GuruSignal so a low ``theme_fit`` sub-analysis caps
+    total_score and forces signal to neutral/bearish.
+
+    Pydantic v2 `BaseModel` is mutable by default — we still use
+    ``model_copy(update=...)`` to make the contract explicit and
+    re-validate. Off-theme queries (empty nl_query) get a no-op since
+    `theme_fit` will default to 5 and the rules are permissive there.
+    """
+    fit_score: float | None = None
+    for sa in signal.sub_analyses or []:
+        if (sa.name or "").strip().lower() == "theme_fit":
+            fit_score = float(sa.score)
+            break
+    if fit_score is None:
+        return signal
+
+    new_total = signal.total_score
+    new_signal = signal.signal
+
+    # < 2: hard block on bullish AND drop the score floor more aggressively.
+    if fit_score < 2:
+        new_total = min(new_total, 45.0)
+        if new_signal == "bullish":
+            new_signal = "bearish"
+    elif fit_score < 4:
+        new_total = min(new_total, 60.0)
+        if new_signal == "bullish":
+            new_signal = "neutral"
+
+    if new_total == signal.total_score and new_signal == signal.signal:
+        return signal
+    return signal.model_copy(update={
+        "total_score": new_total,
+        "signal": new_signal,
+    })
+
+
 class SubAnalysis(BaseModel):
     """One dimension of a guru's evaluation (e.g. moat, valuation)."""
     name: str
@@ -193,6 +323,16 @@ class BaseGuruAgent:
 
         chat = self._get_chat_model(context)
 
+        # Theme instruction: rendered with the user's verbatim query and
+        # the parsed FilterSpec dict so the LLM sees the user's actual
+        # subject (not a paraphrase) plus the structured fields. Always
+        # non-empty — off-theme runs simply get default-permissive caps
+        # via `_enforce_theme_fit` because theme_fit defaults to 5.
+        theme_instruction = _build_theme_instruction(
+            query=(context or {}).get("nl_query"),
+            spec=(context or {}).get("filter_spec"),
+        )
+
         # Build messages with explicit schema example
         schema_instruction = (
             f"\n\nYou MUST respond with a valid JSON object matching this exact schema. "
@@ -204,14 +344,15 @@ class BaseGuruAgent:
         )
 
         messages = [
-            SystemMessage(content=system_prompt + schema_instruction),
+            SystemMessage(content=system_prompt + theme_instruction + schema_instruction),
             HumanMessage(content=user_prompt),
         ]
 
         # Attempt 1: LangChain structured output
         try:
             structured = chat.with_structured_output(GuruSignal)
-            return structured.invoke(messages)
+            signal = structured.invoke(messages)
+            return _enforce_theme_fit(signal, context)
         except Exception as e:
             logger.debug("structured_output failed for %s/%s: %s", self.name, ticker, e)
 
@@ -231,7 +372,7 @@ class BaseGuruAgent:
             signal = _coerce_to_guru_signal(raw_dict, self.name, ticker)
             logger.info("Tolerant parse succeeded for %s/%s: %s %.0f%%",
                         self.name, ticker, signal.signal, signal.confidence * 100)
-            return signal
+            return _enforce_theme_fit(signal, context)
         except Exception as e2:
             logger.warning("Both structured and tolerant parse failed for %s/%s: %s",
                            self.name, ticker, e2)

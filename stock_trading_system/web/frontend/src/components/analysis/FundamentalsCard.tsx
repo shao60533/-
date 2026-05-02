@@ -1,7 +1,7 @@
 import { Star } from "lucide-react"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import type { FundamentalsCardData } from "./types"
-import { toFiniteNumber, nonEmptyStr } from "./shared/defensive"
+import { toFiniteNumber, nonEmptyStr, safeText, safeRecord } from "./shared/defensive"
 
 interface CellSpec { label: string; value: unknown; unit?: string }
 
@@ -29,12 +29,13 @@ function MetricBlock({ title, items }: { title: string; items: CellSpec[] }) {
 }
 
 export function FundamentalsCard({ data }: { data: FundamentalsCardData | null | undefined }) {
-  if (!data || typeof data !== "object") return null
-  const v = (data.valuation && typeof data.valuation === "object") ? data.valuation : {}
-  const g = (data.growth && typeof data.growth === "object") ? data.growth : {}
-  const p = (data.profitability && typeof data.profitability === "object") ? data.profitability : {}
-  const b = (data.balance_sheet && typeof data.balance_sheet === "object") ? data.balance_sheet : {}
-  const qsRaw = toFiniteNumber(data.quality_score)
+  const rec = safeRecord(data)
+  if (!rec) return null
+  const v = (safeRecord(rec.valuation) ?? {}) as Record<string, unknown>
+  const g = (safeRecord(rec.growth) ?? {}) as Record<string, unknown>
+  const p = (safeRecord(rec.profitability) ?? {}) as Record<string, unknown>
+  const b = (safeRecord(rec.balance_sheet) ?? {}) as Record<string, unknown>
+  const qsRaw = toFiniteNumber(rec.quality_score)
   const score = qsRaw === null ? 3 : Math.max(1, Math.min(5, Math.round(qsRaw)))
   return (
     <div className="space-y-4">
@@ -47,7 +48,7 @@ export function FundamentalsCard({ data }: { data: FundamentalsCardData | null |
                     className={`h-4 w-4 ${i <= score ? "fill-amber-400 text-amber-400" : "text-zinc-600"}`} />
             ))}
           </div>
-          {nonEmptyStr(data.summary) && <p className="text-sm flex-1 min-w-[200px]">{data.summary}</p>}
+          {nonEmptyStr(rec.summary) && <p className="text-sm flex-1 min-w-[200px]">{safeText(rec.summary)}</p>}
         </CardContent>
       </Card>
 
@@ -79,7 +80,7 @@ export function FundamentalsCard({ data }: { data: FundamentalsCardData | null |
 
       {nonEmptyStr(v.vs_industry) && (
         <div className="text-xs text-muted-foreground">
-          <span className="font-semibold mr-1">行业对比:</span>{v.vs_industry}
+          <span className="font-semibold mr-1">行业对比:</span>{safeText(v.vs_industry)}
         </div>
       )}
     </div>

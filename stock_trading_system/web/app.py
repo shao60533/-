@@ -729,6 +729,14 @@ def create_app(config_path=None):
     def screener_v3_page():
         return render_template("islands/screener_v3.html", vite_assets=vite_assets)
 
+    @app.route("/screener-v3/history")
+    def screener_v3_history_page():
+        # Reuse the same island bundle — the React entry inspects
+        # ``window.location.pathname`` and dispatches to
+        # ``<ScreenerHistoryList>``. This avoids a second Vite entry
+        # for what is effectively a sibling view of the same app.
+        return render_template("islands/screener_v3.html", vite_assets=vite_assets)
+
     @app.route("/paper-trade")
     def paper_trade_list_page():
         return render_template("islands/paper_trade_list.html", vite_assets=vite_assets)
@@ -758,7 +766,13 @@ def create_app(config_path=None):
 
     @app.route("/history")
     def history_page():
-        return render_template("islands/history.html", vite_assets=vite_assets)
+        """v1.22: ``/analysis`` is now the unified inbox (running tasks +
+        completed analyses + form). Bookmarked /history URLs keep working
+        via 301 — preserving the query string so ``/history?ticker=AAPL``
+        round-trips into ``/analysis?ticker=AAPL``."""
+        qs = request.query_string.decode() if request.query_string else ""
+        target = "/analysis" + (f"?{qs}" if qs else "")
+        return redirect(target, code=301)
 
     @app.route("/alerts")
     def alerts_page():
@@ -1281,18 +1295,45 @@ def create_app(config_path=None):
 
     @app.route("/api/history")
     def api_analysis_history():
-        """List recent analyses. Frontend `/analysis` shows the top 5 as cards.
+        """List recent analyses for the unified /analysis inbox.
 
-        Whitelisted DTO — the raw row contains per-user advice columns
-        (``advice_json`` / ``action`` / ``position_pct`` / ``entry_*`` /
-        ``stop_loss`` / ``take_profit``) that must not leak across users.
+        v1.22: when ``include_running=true`` the response also carries
+        the requesting user's in-flight ``analysis`` tasks merged into
+        the same list under ``kind: "task"`` rows; completed
+        ``analysis_history`` rows under ``kind: "analysis"``. Dedupes
+        by ``task_id`` so a row that landed in ``analysis_history`` but
+        whose source task is still in ``pending``/``running``/``failed``
+        doesn't appear twice.
+
+        Without ``include_running`` the legacy v1.18 contract holds —
+        ``{items, records, count}`` of completed analyses only — so any
+        unauthenticated dashboard / legacy caller keeps working.
+
+        SECURITY: running tasks are user-scoped via TaskStore so a
+        tenant never sees another tenant's in-flight submission.
         """
-        from stock_trading_system.portfolio.database import PortfolioDatabase
-        db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
-        db = PortfolioDatabase(db_path)
+        from stock_trading_system.portfolio.database import (
+            PortfolioDatabase, _normalize_depth,
+        )
+
         ticker = request.args.get("ticker")
-        limit = int(request.args.get("limit", 50))
-        records = db.get_analysis_history(ticker=ticker, limit=limit)
+        try:
+            limit = max(1, min(int(request.args.get("limit", 50)), 200))
+        except ValueError:
+            return jsonify({"error": "limit must be int"}), 400
+        include_running = (
+            (request.args.get("include_running") or "").lower() == "true"
+        )
+
+        # Login required ONLY when the inbox shape is requested. Preserves
+        # the legacy unauthenticated callers of the simple list contract.
+        if include_running and g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
+
+        db_path = get_config().get("portfolio", {}).get(
+            "db_path", "data/portfolio.db",
+        )
+        db = PortfolioDatabase(db_path)
 
         # Resolve display_name via the user repo (cache per request).
         cache: dict[int, str] = {}
@@ -1308,8 +1349,68 @@ def create_app(config_path=None):
                     cache[uid] = ""
             return cache[uid] or None
 
-        from stock_trading_system.portfolio.database import _normalize_depth
-        items = [{
+        # ── 1. Active tasks (when requested) ─────────────────────────
+        running_items: list[dict] = []
+        running_task_ids: set[str] = set()
+        if include_running:
+            try:
+                store = _get_task_store()
+                active = store.list_tasks_by_user_and_type(
+                    user_id=g.user.id, task_type="analysis",
+                    statuses=("pending", "running", "failed", "cancelled"),
+                    limit=20,
+                )
+                for t in active:
+                    raw_params = t.get("params_json") or "{}"
+                    try:
+                        p = json.loads(raw_params)
+                    except (json.JSONDecodeError, TypeError) as e:
+                        logger.warning(
+                            "inbox: task %s params_json parse failed: %s",
+                            t.get("id"), e,
+                        )
+                        p = {}
+                    cb_raw = t.get("created_by")
+                    cb_int: int | None
+                    try:
+                        cb_int = int(cb_raw) if cb_raw and str(cb_raw).isdigit() else None
+                    except (TypeError, ValueError):
+                        cb_int = None
+                    running_items.append({
+                        "kind":              "task",
+                        "task_id":           t["id"],
+                        "ticker":            (p.get("ticker") or "").upper(),
+                        "depth":             _normalize_depth(p.get("depth")),
+                        "status":            t.get("status", "pending"),
+                        "submitted_at":      t.get("created_at"),
+                        "task_started_at":   t.get("started_at"),
+                        "progress_pct":      int(t.get("progress") or 0),
+                        "progress_step":     t.get("progress_step"),
+                        "error":             t.get("error_message"),
+                        "created_by":        cb_int,
+                        "created_by_name":   _name(cb_int),
+                    })
+                    running_task_ids.add(str(t["id"]))
+            except Exception as e:  # noqa: BLE001
+                logger.warning("inbox running fetch failed: %s", e)
+
+        # ── 2. Completed analysis_history rows ───────────────────────
+        # ``get_analysis_history`` doesn't filter by user — we keep the
+        # shared-research model (everyone sees the corpus). Per-user
+        # bookmark / private advice still resolved per requester.
+        records = db.get_analysis_history(ticker=ticker, limit=limit)
+        # Drop any completed row whose ``task_id`` is currently active —
+        # the running row carries the live state and is the source of
+        # truth until the task settles.
+        if running_task_ids:
+            records = [
+                r for r in records
+                if not (r.get("task_id")
+                         and str(r["task_id"]) in running_task_ids)
+            ]
+
+        completed_items = [{
+            "kind":             "analysis",
             "id":               rec.get("id"),
             "ticker":           rec.get("ticker"),
             "date":             rec.get("date"),
@@ -1324,9 +1425,35 @@ def create_app(config_path=None):
             "bookmarked":       bool(rec.get("bookmarked")),
             "depth":            _normalize_depth(rec.get("depth")),
         } for rec in records]
-        # Both `items` (v1.14 contract) and `records` (legacy HistoryPage)
-        # are surfaced so we don't have to refactor every caller in this PR.
-        return jsonify({"items": items, "records": items, "count": len(items)})
+
+        if include_running:
+            # ``submitted_at`` for tasks, ``created_at`` for analyses —
+            # both are wall-clock strings comparable lexicographically
+            # since they're stored as ``YYYY-MM-DD HH:MM:SS``.
+            merged = sorted(
+                running_items + completed_items,
+                key=lambda x: (
+                    x.get("submitted_at") or x.get("created_at") or ""
+                ),
+                reverse=True,
+            )
+            return jsonify({
+                "items":            merged,
+                "running_total":    len(running_items),
+                "completed_total":  len(completed_items),
+                "limit":            limit,
+            })
+
+        # Legacy v1.18 contract: completed only, no ``kind`` discriminator.
+        legacy_items = [
+            {k: v for k, v in it.items() if k != "kind"}
+            for it in completed_items
+        ]
+        return jsonify({
+            "items":   legacy_items,
+            "records": legacy_items,
+            "count":   len(legacy_items),
+        })
 
     @app.route("/api/history/<int:analysis_id>")
     def api_analysis_detail(analysis_id):
@@ -3138,6 +3265,58 @@ def create_app(config_path=None):
             return jsonify({"error": str(e)}), 500
 
     # ── Screener V3 API ──────────────────────────────────────────────
+
+    @app.route("/api/screen/v3/history")
+    def api_screen_v3_history():
+        """Paginated list of the requesting user's past v3 runs.
+
+        Query params:
+            ``mode``  — repeatable; one of classic/agent/agent_rt
+            ``market`` — repeatable; one of us/cn/hk
+            ``limit`` / ``offset`` — pagination, capped at 200/0
+            ``include_failed=true`` — also surface failed/cancelled runs
+
+        Multi-tenant invariant: the SQL ``WHERE created_by = ?`` clause
+        is non-optional. There is no admin-bypass — even an admin only
+        sees their own screening history through this endpoint.
+        """
+        if g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
+        modes = request.args.getlist("mode") or None
+        markets = request.args.getlist("market") or None
+        include_failed = (
+            (request.args.get("include_failed") or "").lower() == "true"
+        )
+        try:
+            limit = max(1, min(int(request.args.get("limit", 50)), 200))
+            offset = max(0, int(request.args.get("offset", 0)))
+        except ValueError:
+            return jsonify({"error": "limit/offset must be int"}), 400
+        items, total = _get_task_store().list_screen_v3_history(
+            user_id=g.user.id,
+            modes=tuple(modes) if modes else None,
+            markets=tuple(markets) if markets else None,
+            limit=limit, offset=offset, include_failed=include_failed,
+        )
+        return jsonify({
+            "items": items, "total": total,
+            "limit": limit, "offset": offset,
+        })
+
+    @app.route("/api/screen/v3/history/<task_id>")
+    def api_screen_v3_history_one(task_id: str):
+        """Single-row variant. Used by the form's prefill flow.
+
+        Cross-user reads return 404 — we don't leak the existence of
+        another user's task id (constant-time-ish, the DB lookup runs
+        either way).
+        """
+        if g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
+        row = _get_task_store().get_screen_v3_history_one(task_id, g.user.id)
+        if not row:
+            return jsonify({"error": "not_found"}), 404
+        return jsonify(row)
 
     @app.route("/api/screen/v3/gurus")
     def api_screen_v3_gurus():

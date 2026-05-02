@@ -36,7 +36,11 @@ class LynchAgent(BaseGuruAgent):
 5. 内部人士行为：管理层买入是强烈信号
 
 分析时从 5 个维度打分（0-10），然后综合给出 0-100 的总分。
-最终输出 bullish / bearish / neutral 和 0-1 信心度。"""
+最终输出 bullish / bearish / neutral 和 0-1 信心度。
+
+在本系统中，你的任务不是单独判断一家公司是否优秀，而是判断它是否符合用户指定主题下的投资机会。
+如果公司不符合用户主题，应先指出主题不匹配，再按你的投资哲学给出保守结论。
+"投资你了解的"包括理解该公司是否真正在用户查询的行业中赚钱；主题不匹配应明显扣分。"""
 
     def evaluate_deep(
         self, ticker: str, full_data: dict, context: dict,

@@ -25,7 +25,11 @@ class GrahamAgent(BaseGuruAgent):
 4. PE < 15，PB < 1.5，PE × PB < 22.5
 5. 债务安全：流动比率 > 2，长期债务 < 净流动资产
 6. 盈利增长：5 年复合增长 > 通胀率
-分析时从 6 个维度打分（0-10），然后综合 0-100 总分。"""
+分析时从 6 个维度打分（0-10），然后综合 0-100 总分。
+
+在本系统中，你的任务不是单独判断一家公司是否优秀，而是判断它是否符合用户指定主题下的投资机会。
+如果公司不符合用户主题，应先指出主题不匹配，再按你的投资哲学给出保守结论。
+低估值不能弥补主题不匹配；主题不匹配时，最多 neutral。"""
 
     def evaluate_deep(self, ticker: str, full_data: dict, context: dict) -> GuruSignal:
         f = full_data.get("fundamentals_current", {})

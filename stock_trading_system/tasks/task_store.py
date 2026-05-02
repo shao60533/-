@@ -191,6 +191,35 @@ class TaskStore:
             cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
             return cur.rowcount > 0
 
+    def list_tasks_by_user_and_type(
+        self, *, user_id: int, task_type: str,
+        statuses: tuple[str, ...] = ("pending", "running"),
+        limit: int = 20,
+    ) -> list[dict]:
+        """Active tasks for one user filtered by type/status.
+
+        Powers the v1.22 unified analysis inbox — the /analysis page
+        merges in-flight tasks with completed analysis_history rows so
+        users no longer have to cross-reference the task center to find
+        a submission they just kicked off. ``user_id`` is REQUIRED so a
+        running task never leaks across tenants.
+        """
+        if not statuses:
+            return []
+        placeholders = ",".join("?" * len(statuses))
+        sql = (
+            f"SELECT id, type, status, progress, progress_step, error_message, "
+            f"created_at, started_at, completed_at, params_json, created_by "
+            f"FROM tasks "
+            f"WHERE created_by = ? AND type = ? AND status IN ({placeholders}) "
+            f"ORDER BY created_at DESC LIMIT ?"
+        )
+        with self._conn() as conn:
+            rows = conn.execute(
+                sql, [str(user_id), task_type, *statuses, int(limit)],
+            ).fetchall()
+            return [dict(r) for r in rows]
+
     # Allow-list of task types whose results are shared research artefacts.
     # Any logged-in user may *read* a task of one of these types created by
     # another user. Mutations (cancel/delete/retry) still require owner/admin.
@@ -665,6 +694,211 @@ class TaskStore:
             except Exception:
                 d["enabled_gurus"] = []
             return d
+
+    # ── Screener v3 history (paginated, multi-tenant) ─────────────────────────
+    #
+    # NB: piggybacks the existing ``tasks`` + ``task_results_generic`` /
+    # ``screen_results_v2`` tables — no schema migration. The summary
+    # field on each row is computed lazily from whatever payload the
+    # worker stored, so old runs and new runs read the same shape.
+
+    def list_screen_v3_history(
+        self, *, user_id: int,
+        modes: tuple[str, ...] | None = None,
+        markets: tuple[str, ...] | None = None,
+        limit: int = 50, offset: int = 0,
+        include_failed: bool = False,
+    ) -> tuple[list[dict], int]:
+        """Return paginated v3 screening history for a single user.
+
+        ``modes`` / ``markets`` filter on the parsed ``params_json`` —
+        applied in Python because params is opaque JSON. The status
+        filter (success-only by default) IS applied in SQL so we don't
+        ship pending/running tasks the user never saw finish.
+
+        Returns ``(items, total_matching)``. ``total`` counts all rows
+        passing the SQL filter (the in-memory mode/market filter is
+        narrowed afterward but that is rare and not worth a second
+        round-trip).
+        """
+        where = ["t.type = 'screen_v3'", "t.created_by = ?"]
+        params: list = [str(user_id)]
+        if include_failed:
+            where.append("t.status IN ('success','failed','cancelled')")
+        else:
+            where.append("t.status = 'success'")
+        sql_count = f"SELECT COUNT(*) FROM tasks t WHERE {' AND '.join(where)}"
+        sql_list = (
+            f"SELECT t.id, t.title, t.status, t.created_at, t.completed_at,"
+            f" t.params_json, t.result_ref"
+            f" FROM tasks t WHERE {' AND '.join(where)}"
+            f" ORDER BY t.created_at DESC LIMIT ? OFFSET ?"
+        )
+        with self._conn() as conn:
+            total = conn.execute(sql_count, params).fetchone()[0]
+            rows = conn.execute(
+                sql_list, [*params, int(limit), int(offset)],
+            ).fetchall()
+
+        items: list[dict] = []
+        for r in rows:
+            try:
+                p = json.loads(r["params_json"] or "{}")
+            except (json.JSONDecodeError, TypeError):
+                p = {}
+            if modes and p.get("mode") not in modes:
+                continue
+            if markets and p.get("market") not in markets:
+                continue
+            duration = None
+            if r["completed_at"] and r["created_at"]:
+                t0 = _parse_iso(r["created_at"])
+                t1 = _parse_iso(r["completed_at"])
+                if t0 and t1:
+                    duration = int((t1 - t0).total_seconds())
+            items.append({
+                "task_id": r["id"],
+                "title": r["title"],
+                "status": r["status"],
+                "created_at": r["created_at"],
+                "completed_at": r["completed_at"],
+                "duration_sec": duration,
+                "params": {
+                    "nl_query": p.get("nl_query", "") or "",
+                    "market": p.get("market", "us") or "us",
+                    "candidate_n": int(p.get("candidate_n", 20) or 20),
+                    "gurus": list(p.get("gurus") or []),
+                    "mode": p.get("mode", "agent") or "agent",
+                    "with_roundtable": bool(p.get("with_roundtable")),
+                },
+                "summary": self._summarize_screen_v3_payload(r["result_ref"]),
+            })
+        return items, int(total)
+
+    def get_screen_v3_history_one(
+        self, task_id: str, user_id: int,
+    ) -> dict | None:
+        """Single-row variant used by the prefill flow.
+
+        Returns ``None`` for cross-user reads or non-screen_v3 tasks —
+        the route translates that to 404 so we don't leak existence of
+        another user's task.
+        """
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT t.id, t.title, t.status, t.created_at, t.completed_at, "
+                "t.params_json, t.result_ref FROM tasks t "
+                "WHERE t.id = ? AND t.created_by = ? AND t.type = 'screen_v3'",
+                (task_id, str(user_id)),
+            ).fetchone()
+        if not row:
+            return None
+        try:
+            p = json.loads(row["params_json"] or "{}")
+        except (json.JSONDecodeError, TypeError):
+            p = {}
+        return {
+            "task_id": row["id"],
+            "title": row["title"],
+            "status": row["status"],
+            "created_at": row["created_at"],
+            "completed_at": row["completed_at"],
+            "params": {
+                "nl_query": p.get("nl_query", "") or "",
+                "market": p.get("market", "us") or "us",
+                "candidate_n": int(p.get("candidate_n", 20) or 20),
+                "gurus": list(p.get("gurus") or []),
+                "mode": p.get("mode", "agent") or "agent",
+                "with_roundtable": bool(p.get("with_roundtable")),
+            },
+            "summary": self._summarize_screen_v3_payload(row["result_ref"]),
+        }
+
+    def _summarize_screen_v3_payload(
+        self, result_ref: str | None,
+    ) -> dict | None:
+        """Lightweight aggregation from stored payload. ``None`` on
+        miss / decode error so the UI can show "—" instead of a
+        broken card.
+        """
+        if not result_ref:
+            return None
+        try:
+            if result_ref.startswith("screen_results_v2:"):
+                sid = int(result_ref.split(":", 1)[1])
+                v2 = self.get_screen_v2_result(sid)
+                payload = (v2 or {}).get("results") or {}
+            else:
+                payload = self.load_result(result_ref)
+                if not isinstance(payload, dict):
+                    return None
+        except Exception as e:  # noqa: BLE001
+            logger.warning("v3 summary decode failed for %s: %s",
+                            result_ref, e)
+            return None
+
+        candidates = payload.get("candidates") or payload.get("results") or []
+        if not isinstance(candidates, list):
+            return None
+        n = len(candidates)
+        if n == 0:
+            return {"candidates_count": 0}
+
+        scores: list[float] = []
+        bullish = bearish = consensus_count = 0
+        top3: list[str] = []
+        for i, c in enumerate(candidates):
+            if not isinstance(c, dict):
+                continue
+            try:
+                scores.append(float(
+                    c.get("final_score") or c.get("composite_score") or 0,
+                ))
+            except (TypeError, ValueError):
+                pass
+            sig = (c.get("signal") or "").lower()
+            if sig == "bullish":
+                bullish += 1
+            elif sig == "bearish":
+                bearish += 1
+            cons = (c.get("consensus") or "")
+            if cons in ("unanimous", "majority"):
+                consensus_count += 1
+            if i < 3:
+                top3.append(str(c.get("ticker") or ""))
+
+        avg_score = round(sum(scores) / len(scores), 1) if scores else 0.0
+        consensus_rate = round(consensus_count / n * 100) if n else 0
+        metrics = payload.get("metrics") or {}
+        try:
+            llm_calls = int(metrics.get("llm_calls") or 0)
+        except (TypeError, ValueError):
+            llm_calls = 0
+        try:
+            cache_hits = int(metrics.get("cache_hits") or 0)
+        except (TypeError, ValueError):
+            cache_hits = 0
+        try:
+            duration = int(metrics.get("duration_sec") or 0)
+        except (TypeError, ValueError):
+            duration = 0
+        return {
+            "candidates_count": n,
+            "avg_score": avg_score,
+            "votes": {
+                "bullish": bullish,
+                "bearish": bearish,
+                "neutral": n - bullish - bearish,
+            },
+            "consensus_rate_pct": consensus_rate,
+            "top3_tickers": top3,
+            "roundtable_enabled": bool(payload.get("roundtable")),
+            "llm_calls": llm_calls,
+            "cache_hit_pct": (
+                round(cache_hits / llm_calls * 100) if llm_calls else 0
+            ),
+            "duration_sec": duration,
+        }
 
     def list_screen_v2_history(self, limit: int = 50) -> list[dict]:
         """Lightweight list of past V2 runs (no full results_json)."""

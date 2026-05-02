@@ -85,7 +85,7 @@ stock_trading_system/agents/iterative/
 3. `agents/iterative/__init__.py` + `config.py` + `signal_extractor.py`
 4. `portfolio/database.py` → 建表
 5. `agents/iterative/agent_scorer.py` → 核心实现
-6. `agents/iterative/darwinian.py` → 权重管理
+6. `agents/iterative/darwinian.py` → 权重管理··
 7. `agents/analyzer.py` → 改造 analyze() 方法（**最关键改动，仔细对照方案第五节第三小节**）
 8. `tasks/workers.py` → 集成 scorer + 注册 worker
 9. `web/app.py` → 新增 API
@@ -110,4 +110,4 @@ stock_trading_system/agents/iterative/
 
 - `analyzer.py` 改动最大：从调 `self._graph.propagate()` 改为直接调 `self._graph.graph.invoke()`。必须保留 debug stream 模式的行为。仔细对照方案中的代码。
 - `analyze()` 返回二元组 `(AnalysisResult, final_state)` 会影响所有调用方（workers.py 的 analysis_worker）。确保所有调用点都更新。
-- `agent_scorer.record_analysis` 中的 LLM 调用（提取 4 个 analyst 的信号）是额外的 API 调用。如果分析本身失败了（signal=ERROR），不要调 scorer。
+- `agent_scorer.record_analysis` 中的 LLM 调用（提取 4 个 analyst 的信号）是额外的 API 调用。如果分析本身失败了·（signal=ERROR），不要调 scorer。
