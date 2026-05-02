@@ -572,6 +572,13 @@ def make_screen_v3_worker():
                 pct = 25 + int(done / max(total, 1) * 70)
                 progress_cb(pct, f"{event.get('guru_display','')}: {event.get('ticker','')}")
                 emit_event(task_id, "guru_unit_done", event, user_id=user_id)
+            elif evt_type in ("guru_unit_start", "guru_unit_failed"):
+                # screener-v3 v1.4: per-unit lifecycle events let the
+                # frontend matrix render running / failed cells without
+                # reverse-engineering state from confidence/reasoning.
+                # Fan-out only (no progress_cb update) — guru_unit_done
+                # already advances the linear percent counter.
+                emit_event(task_id, evt_type, event, user_id=user_id)
             elif evt_type in ("roundtable_start", "roundtable_done"):
                 emit_event(task_id, evt_type, event, user_id=user_id)
             elif evt_type in (
@@ -609,6 +616,33 @@ def make_screen_v3_worker():
             k: v for k, v in params.items()
             if k not in ("user_id", "provider", "__task_id__", "__cancel_event__")
         }))
+
+        # screener-v3 v1.4: pipeline returns ``status: "cancelled"`` on
+        # user-stop. Persist whatever partial results we got, then raise
+        # the TaskManager-internal ``_CancelledError`` so the task row
+        # ends up as ``cancelled`` instead of ``success``. Without this
+        # branch the partial payload would be saved + task=success even
+        # though the user clicked stop.
+        if isinstance(result, dict) and result.get("status") == "cancelled":
+            from stock_trading_system.tasks.task_manager import _CancelledError
+            from stock_trading_system.tasks.task_store import TaskStore
+            try:
+                store = TaskStore(
+                    cfg.get("portfolio", {}).get("db_path", "data/portfolio.db"),
+                )
+                # Persist via the same generic-result path that the
+                # success branch uses so /api/screen/v3/results/<task_id>
+                # can resolve the partial payload via result_ref.
+                ref = store.save_result("screen_v3", task_id, result)
+                store.update(task_id, result_ref=ref)
+            except Exception:  # pragma: no cover — defensive
+                logger.warning(
+                    "screen_v3 cancel: partial result persistence failed",
+                    exc_info=True,
+                )
+            phase = result.get("cancelled_at_phase") or "unknown"
+            raise _CancelledError(f"用户取消（阶段 {phase}）")
+
         progress_cb(98, "整理结果")
         return result
 

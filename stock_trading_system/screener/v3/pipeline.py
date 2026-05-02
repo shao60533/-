@@ -139,7 +139,22 @@ class ScreenerV3Pipeline:
         }
 
         if self._cancel_check():
-            return {"status": "cancelled", "phase": "candidates"}
+            # Pre-guru cancel — no signals yet, RunStats fields all zero
+            # but the payload contract is the same so the worker doesn't
+            # need a special-case branch.
+            from stock_trading_system.screener.v3.concurrency import RunStats as _RS
+            return self._cancelled_payload(
+                candidates=candidates,
+                selected_guru_names=selected_guru_names,
+                signals=[],
+                universe_source=universe_source,
+                filter_spec=filter_spec,
+                run_stats=_RS(total_units=0, cache_hits=0, new_calls=0,
+                              failed_units=0),
+                with_roundtable=with_roundtable,
+                start_time=start_time,
+                phase="candidates",
+            )
 
         # ── Phase 3: Threshold prefilter (optional) ──
         # V3 currently passes all candidates to guru agents
@@ -147,8 +162,18 @@ class ScreenerV3Pipeline:
 
         # ── Phase 4: Guru Agents Pool ──
         if mode == "classic":
-            # Classic threshold mode — delegate to v2 gurus (zero change)
-            return await self._run_classic_mode(candidates, context)
+            # Classic threshold mode — delegate to v2 gurus (zero change).
+            # v1.4: classic now returns a real result dict via reuse of
+            # the v2 threshold gurus, not an empty list.
+            return await self._run_classic_mode(
+                candidates, context,
+                selected_guru_names=selected_guru_names,
+                market=market,
+                start_time=start_time,
+                with_roundtable=with_roundtable,
+                universe_source=universe_source,
+                filter_spec=filter_spec,
+            )
 
         # Build evaluation units: (guru, ticker, data_bundle)
         self._emit_stage("bundle", "start", total=len(candidates))
@@ -166,6 +191,18 @@ class ScreenerV3Pipeline:
             gurus=selected_guru_names,
             tickers=len(bundles),
         )
+
+        async def _on_unit_start(guru, ticker):
+            if self._on_progress:
+                try:
+                    self._on_progress({
+                        "type": "guru_unit_start",
+                        "guru": guru.name,
+                        "guru_display": guru.display_name,
+                        "ticker": ticker,
+                    })
+                except Exception:
+                    pass
 
         async def _on_unit(guru, ticker, signal, cached, done, total):
             if self._on_progress:
@@ -185,22 +222,68 @@ class ScreenerV3Pipeline:
                 except Exception:
                     pass
 
-        signals = await run_guru_units(
+        async def _on_unit_failed(guru, ticker, error):
+            if self._on_progress:
+                try:
+                    self._on_progress({
+                        "type": "guru_unit_failed",
+                        "guru": guru.name,
+                        "guru_display": guru.display_name,
+                        "ticker": ticker,
+                        "error": str(error)[:200],
+                    })
+                except Exception:
+                    pass
+
+        signals, run_stats = await run_guru_units(
             units, context, self._cache,
+            on_unit_start=_on_unit_start,
             on_unit_done=_on_unit,
+            on_unit_failed=_on_unit_failed,
             cancel_check=self._cancel_check,
         )
-        self._emit_stage("guru", "done", total=len(units), signals=len(signals))
+        self._emit_stage(
+            "guru", "done",
+            total=run_stats.total_units,
+            signals=len(signals),
+            cache_hits=run_stats.cache_hits,
+            new_calls=run_stats.new_calls,
+            failed_units=run_stats.failed_units,
+        )
+
+        # Mid-pipeline cancel exit: skip roundtable + aggregate, return
+        # the partial signals so the worker can persist them as a
+        # cancelled-payload result_ref. We deliberately keep the
+        # ``status`` field at the TOP-LEVEL key so existing callers (web
+        # /api/screen/v3/results _v3_run_metadata) can detect the
+        # partial state without inspecting every list element.
+        if self._cancel_check():
+            return self._cancelled_payload(
+                candidates=candidates,
+                selected_guru_names=selected_guru_names,
+                signals=signals,
+                universe_source=universe_source,
+                filter_spec=filter_spec,
+                run_stats=run_stats,
+                with_roundtable=with_roundtable,
+                start_time=start_time,
+                phase="guru",
+            )
 
         # ── Phase 5: Round-table (optional) ──
-        roundtable_results = {}
+        roundtable_results: dict = {}
+        roundtable_status = "skipped"
         if with_roundtable and not self._cancel_check():
             self._emit_stage(
                 "roundtable", "start", tickers=len(candidates[:5]),
             )
-            roundtable_results = await self._run_roundtable(signals, candidates[:5], context)
+            roundtable_results, roundtable_status = await self._run_roundtable(
+                signals, candidates[:5], context,
+            )
             self._emit_stage(
-                "roundtable", "done", tickers=len(roundtable_results),
+                "roundtable", "done",
+                tickers=len(roundtable_results),
+                status=roundtable_status,
             )
 
         # ── Phase 6: Aggregate + rank ──
@@ -217,8 +300,13 @@ class ScreenerV3Pipeline:
                 pass
 
         elapsed = time.monotonic() - start_time
-        cache_hits = sum(1 for s in signals if s.confidence == 0 and "失败" in s.reasoning)
 
+        # Truthful metrics from RunStats — no more inferring cache hits
+        # from a heuristic on fallback signal text. ``llm_calls`` kept
+        # for backward compatibility with v1.2 ``run_metadata`` readers
+        # but it now equals ``new_calls`` (real new LLM dispatches);
+        # ``cache_hits`` and ``new_calls`` plus ``failed_units`` are the
+        # canonical counters going forward.
         return {
             "engine": "v3",
             "mode": mode,
@@ -227,11 +315,69 @@ class ScreenerV3Pipeline:
             "results": results,
             "universe_source": universe_source,
             "filter_spec": filter_spec,
+            "roundtable_status": roundtable_status,
             "metrics": {
                 "duration_sec": round(elapsed, 1),
-                "llm_calls": len(units),
-                "cache_hits": len(signals) - len(units) + cache_hits,
-                "cost_cny": self._estimate_cost(len(units), with_roundtable),
+                "total_units": run_stats.total_units,
+                "new_llm_calls": run_stats.new_calls,
+                "llm_calls": run_stats.new_calls,  # legacy alias
+                "cache_hits": run_stats.cache_hits,
+                "failed_units": run_stats.failed_units,
+                "cost_cny": self._estimate_cost(run_stats.new_calls, with_roundtable),
+            },
+        }
+
+    def _cancelled_payload(
+        self,
+        *,
+        candidates: list[str],
+        selected_guru_names: list[str],
+        signals: list,
+        universe_source: str,
+        filter_spec: dict,
+        run_stats,
+        with_roundtable: bool,
+        start_time: float,
+        phase: str,
+    ) -> dict:
+        """Build a partial-result payload for a cancelled run.
+
+        The worker will persist this via ``TaskStore.save_result`` and
+        then raise CancelledError so TaskManager marks the task as
+        ``cancelled`` (not ``success``). Keeping the same shape as the
+        success payload — minus a few late-stage fields — means the
+        existing ResultsView can render the partial as a banner-tagged
+        snapshot of "what we got before stop was pressed".
+        """
+        import time as _time
+        elapsed = _time.monotonic() - start_time
+
+        # Aggregate whatever signals we have so the partial UI still
+        # shows ranked candidates (even if only a subset of guru/ticker
+        # cells fired). _aggregate handles missing tickers gracefully.
+        partial_results = self._aggregate(candidates, signals, {})
+
+        return {
+            "engine": "v3",
+            "status": "cancelled",
+            "partial": True,
+            "cancelled_at_phase": phase,
+            "candidates_count": len(candidates),
+            "selected_gurus": selected_guru_names,
+            "results": partial_results,
+            "universe_source": universe_source,
+            "filter_spec": filter_spec,
+            "roundtable_status": "skipped",
+            "metrics": {
+                "duration_sec": round(elapsed, 1),
+                "total_units": run_stats.total_units,
+                "new_llm_calls": run_stats.new_calls,
+                "llm_calls": run_stats.new_calls,
+                "cache_hits": run_stats.cache_hits,
+                "failed_units": run_stats.failed_units,
+                "cost_cny": self._estimate_cost(
+                    run_stats.new_calls, with_roundtable,
+                ),
             },
         }
 
@@ -361,15 +507,272 @@ class ScreenerV3Pipeline:
                 bundles[r[0]] = r[1]
         return bundles
 
-    async def _run_classic_mode(self, candidates, context) -> dict:
-        """Delegate to v2 classic threshold gurus (zero change to v2 code)."""
+    # ── Classic mode mapping ───────────────────────────────────────────
+    #
+    # V2 implements 4 threshold gurus (buffett/graham/lynch/oneil) as
+    # heuristic scorers — no LLM. We reuse those agents for the V3
+    # ``classic`` mode so users who pick "经典阈值" get real candidate
+    # rankings, not an empty list.
+    #
+    # Mapping V3 selection (14 names) → V2 implementations (4 names):
+    # only the intersection produces real scores. Names not in V2 are
+    # silently dropped from classic mode (they're LLM-only by design).
+    # The pipeline returns the V3 ``GuruSignal`` shape so the existing
+    # ``_aggregate`` produces the canonical ``votes/consensus/...``
+    # payload that ResultsView already renders.
+    _V2_CLASSIC_MAP = {
+        # V3 name : V2 build_gurus key
+        "buffett": "buffett",
+        "graham":  "graham",
+        "lynch":   "lynch",
+    }
+
+    async def _run_classic_mode(
+        self,
+        candidates: list[str],
+        context: dict,
+        *,
+        selected_guru_names: list[str],
+        market: str,
+        start_time: float,
+        with_roundtable: bool,
+        universe_source: str,
+        filter_spec: dict,
+    ) -> dict:
+        """Real V2 threshold path — produces ranked candidates without LLM.
+
+        Cancel-aware at every ticker boundary so a stop request during
+        classic scoring (rare — it's fast) still honors the
+        ``cancelled`` contract end-to-end.
+        """
+        import time
+        from stock_trading_system.screener.v2.gurus import build_gurus
+        from stock_trading_system.screener.v3.guru_agents.base import (
+            GuruSignal, SubAnalysis,
+        )
+
+        self._emit_stage(
+            "guru", "start",
+            mode="classic",
+            tickers=len(candidates),
+            gurus=selected_guru_names,
+        )
+
+        v2_gurus = build_gurus(
+            self._config,
+            enabled=[
+                self._V2_CLASSIC_MAP[g]
+                for g in selected_guru_names
+                if g in self._V2_CLASSIC_MAP
+            ],
+        )
+
+        if not v2_gurus:
+            # User picked only LLM-only gurus (e.g. fisher / burry) for
+            # classic mode. Fail loudly rather than returning empty.
+            self._emit_stage("guru", "done", total=0, signals=0)
+            self._emit_stage("aggregate", "done", results=0)
+            return {
+                "engine": "v3",
+                "mode": "classic",
+                "candidates_count": len(candidates),
+                "selected_gurus": selected_guru_names,
+                "results": [],
+                "universe_source": universe_source,
+                "filter_spec": filter_spec,
+                "roundtable_status": "skipped",
+                "metrics": {
+                    "duration_sec": round(time.monotonic() - start_time, 1),
+                    "total_units": 0,
+                    "new_llm_calls": 0,
+                    "llm_calls": 0,
+                    "cache_hits": 0,
+                    "failed_units": 0,
+                    "cost_cny": 0.0,
+                    "classic_unsupported_gurus": [
+                        g for g in selected_guru_names
+                        if g not in self._V2_CLASSIC_MAP
+                    ],
+                },
+            }
+
+        # V2 gurus need fundamentals only (no quote/history/news).
+        # Reuse our existing data bundle helper so we get the same
+        # fundamentals snapshot the agent path uses.
+        self._emit_stage("bundle", "start", total=len(candidates))
+        bundles = await self._prepare_data_bundles(candidates, market)
+        self._emit_stage("bundle", "done", total=len(bundles))
+
+        signals: list[GuruSignal] = []
+        v2_context = {"regime_label": "neutral"}
+        total_units = 0
+        completed = 0
+        failed_units = 0
+        for ticker in candidates:
+            if self._cancel_check():
+                break
+            bundle = bundles.get(ticker, {})
+            fundamentals = bundle.get("fundamentals_current", {}) or {}
+            for v3_name, v2_name in self._V2_CLASSIC_MAP.items():
+                if v3_name not in selected_guru_names:
+                    continue
+                if v2_name not in v2_gurus:
+                    continue
+                guru = v2_gurus[v2_name]
+                total_units += 1
+                if self._on_progress:
+                    try:
+                        self._on_progress({
+                            "type": "guru_unit_start",
+                            "guru": v3_name,
+                            "guru_display": getattr(guru, "display_name", v3_name),
+                            "ticker": ticker,
+                        })
+                    except Exception:
+                        pass
+                try:
+                    match = guru.evaluate(ticker, fundamentals, v2_context)
+                except Exception as e:  # noqa: BLE001
+                    failed_units += 1
+                    logger.warning("V2 classic %s failed for %s: %s",
+                                   v2_name, ticker, e)
+                    if self._on_progress:
+                        try:
+                            self._on_progress({
+                                "type": "guru_unit_failed",
+                                "guru": v3_name, "ticker": ticker,
+                                "error": str(e)[:200],
+                            })
+                        except Exception:
+                            pass
+                    continue
+                signal = self._v2_match_to_v3_signal(
+                    v3_name, ticker, match,
+                )
+                signals.append(signal)
+                completed += 1
+                if self._on_progress:
+                    try:
+                        self._on_progress({
+                            "type": "guru_unit_done",
+                            "guru": v3_name,
+                            "guru_display": getattr(guru, "display_name", v3_name),
+                            "ticker": ticker,
+                            "signal": signal.signal,
+                            "confidence": signal.confidence,
+                            "reasoning_preview": signal.reasoning[:200],
+                            "cached": False,
+                            "progress": completed,
+                            "total": total_units,
+                        })
+                    except Exception:
+                        pass
+
+        self._emit_stage(
+            "guru", "done", total=total_units, signals=len(signals),
+            cache_hits=0, new_calls=0, failed_units=failed_units,
+        )
+
+        # Cancel may have stopped us mid-loop — return partial dict via
+        # the same helper so worker treats it identically to agent-mode
+        # cancel. RunStats with no LLM activity but the unit count we
+        # actually got through.
+        from stock_trading_system.screener.v3.concurrency import RunStats as _RS
+        run_stats = _RS(
+            total_units=total_units, cache_hits=0,
+            new_calls=0, failed_units=failed_units,
+        )
+        if self._cancel_check():
+            return self._cancelled_payload(
+                candidates=candidates,
+                selected_guru_names=selected_guru_names,
+                signals=signals,
+                universe_source=universe_source,
+                filter_spec=filter_spec,
+                run_stats=run_stats,
+                with_roundtable=with_roundtable,
+                start_time=start_time,
+                phase="classic",
+            )
+
+        self._emit_stage("aggregate", "start")
+        results = self._aggregate(candidates, signals, {})
+        self._emit_stage("aggregate", "done", results=len(results))
+        if self._on_progress:
+            try:
+                self._on_progress({
+                    "type": "aggregate_done",
+                    "results_count": len(results),
+                })
+            except Exception:
+                pass
+
+        elapsed = time.monotonic() - start_time
         return {
-            "engine": "v2_classic",
+            "engine": "v3",
             "mode": "classic",
             "candidates_count": len(candidates),
-            "results": [],
-            "metrics": {"duration_sec": 0, "llm_calls": 0},
+            "selected_gurus": selected_guru_names,
+            "results": results,
+            "universe_source": universe_source,
+            "filter_spec": filter_spec,
+            "roundtable_status": "skipped",
+            "metrics": {
+                "duration_sec": round(elapsed, 1),
+                "total_units": total_units,
+                "new_llm_calls": 0,
+                "llm_calls": 0,
+                "cache_hits": 0,
+                "failed_units": failed_units,
+                "cost_cny": 0.0,
+            },
         }
+
+    @staticmethod
+    def _v2_match_to_v3_signal(v3_name, ticker, match):
+        """Convert V2 ``GuruMatch`` (match_pct 0–100 + fit + reason)
+        to the V3 ``GuruSignal`` shape ``_aggregate`` consumes.
+
+        Score band → V3 signal:
+            >=70  ⇒ bullish (V2's own ``fit`` threshold)
+            >=40  ⇒ neutral
+            <40   ⇒ bearish
+
+        ``confidence`` = match_pct / 100 (V2 already produces 0–100).
+        """
+        from stock_trading_system.screener.v3.guru_agents.base import (
+            GuruSignal, SubAnalysis,
+        )
+        pct = float(getattr(match, "match_pct", 0))
+        if pct >= 70:
+            sig = "bullish"
+        elif pct >= 40:
+            sig = "neutral"
+        else:
+            sig = "bearish"
+        met = list(getattr(match, "principles_met", []) or [])
+        unmet = list(getattr(match, "principles_unmet", []) or [])
+        sub_analyses = []
+        if met:
+            sub_analyses.append(SubAnalysis(
+                name="原则匹配", score=int(round(pct)),
+                details="；".join(met[:5]),
+            ))
+        if unmet:
+            sub_analyses.append(SubAnalysis(
+                name="原则不符", score=0,
+                details="；".join(unmet[:5]),
+            ))
+        return GuruSignal(
+            guru=v3_name,
+            ticker=ticker,
+            signal=sig,
+            confidence=round(pct / 100, 2),
+            reasoning=getattr(match, "reason", "") or "",
+            sub_analyses=sub_analyses,
+            key_metrics={},
+            total_score=round(pct, 1),
+        )
 
     async def _run_roundtable(self, signals, top_tickers, context) -> dict:
         """Phase 5: simplified round-table (full implementation in roundtable.py).
@@ -489,31 +892,63 @@ class ScreenerV3Pipeline:
             avg_score = sum(s.total_score for s in sigs) / len(sigs)
             avg_confidence = sum(s.confidence for s in sigs) / len(sigs)
 
-            # ── v1.2 verdict aggregation ──────────────────────────────
+            # ── v1.4 verdict aggregation (corrected) ──────────────────
+            #
+            # Pre-v1.4: ``unanimous`` fired whenever a single signal
+            # exceeded the sum of the other two — so 5 neutral + 1
+            # bullish surfaced as "majority bullish" and 4 bullish + 4
+            # bearish + 4 neutral surfaced as "majority bullish" via
+            # the trailing ``elif n_bull > n_bear`` fallback. Neutral
+            # was being treated as a vote against bullish/bearish.
+            #
+            # New rules (per design v1.4):
+            #   * unanimous: top-vote count == total (single signal).
+            #     Includes all-neutral.
+            #   * split: max-vote count tied between two signals.
+            #     Verdict reports the tied stance pair as "split"
+            #     when bullish/bearish tie; ties involving neutral
+            #     resolve to "neutral" + split for transparency.
+            #   * majority: top vote strictly leads but isn't unanimous.
+            #     Verdict carries the actually-leading signal — neutral
+            #     may legitimately be the verdict.
             bullish = [s for s in sigs if s.signal == "bullish"]
             bearish = [s for s in sigs if s.signal == "bearish"]
             neutral = [s for s in sigs if s.signal == "neutral"]
             total = len(sigs)
             n_bull, n_bear, n_neu = len(bullish), len(bearish), len(neutral)
 
-            if n_bull > n_bear + n_neu:
-                verdict, consensus = "bullish", "unanimous"
-            elif n_bear > n_bull + n_neu:
-                verdict, consensus = "bearish", "unanimous"
-            elif n_bull == 0 and n_bear == 0:
+            tally = [
+                ("bullish", n_bull),
+                ("bearish", n_bear),
+                ("neutral", n_neu),
+            ]
+            top_count = max(c for _, c in tally)
+            leaders = [name for name, c in tally if c == top_count and c > 0]
+
+            if top_count == total and len(leaders) == 1:
+                verdict, consensus = leaders[0], "unanimous"
+            elif top_count == 0:
+                # No signals at all — defensive; aggregate's caller
+                # already filters empty ticker rows out.
                 verdict, consensus = "neutral", "unanimous"
-            elif n_bull > n_bear and n_bull >= total * 0.6:
-                verdict, consensus = "bullish", "majority"
-            elif n_bear > n_bull and n_bear >= total * 0.6:
-                verdict, consensus = "bearish", "majority"
-            elif n_bull == n_bear and n_bull > 0:
-                verdict, consensus = "split", "split"
-            elif n_bull > n_bear:
-                verdict, consensus = "bullish", "majority"
-            elif n_bear > n_bull:
-                verdict, consensus = "bearish", "majority"
+            elif len(leaders) >= 2:
+                # Tie between top two (or all three). Bullish/bearish
+                # tie is the canonical "split" the UI highlights in
+                # orange; bullish/bearish == 0 with neutral tied to
+                # one side resolves to neutral + split so users see
+                # both the verdict and the contention.
+                if "bullish" in leaders and "bearish" in leaders:
+                    verdict, consensus = "split", "split"
+                else:
+                    # Neutral tied with one of bullish/bearish — show
+                    # the directional stance as verdict but flag split.
+                    directional = next(
+                        (l for l in leaders if l != "neutral"), "neutral",
+                    )
+                    verdict, consensus = directional, "split"
             else:
-                verdict, consensus = "neutral", "majority"
+                # Strict majority — top stance leads but isn't unanimous.
+                verdict, consensus = leaders[0], "majority"
 
             confs = [s.confidence for s in sigs]
             conf_min, conf_max = min(confs), max(confs)

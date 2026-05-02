@@ -1534,8 +1534,10 @@ function ScreenerRunningView({ taskId }: { taskId: string }) {
   // (or refreshing) still shows the correct shape.
   const [mode, setMode] = useState<"classic" | "agent" | "agent_rt" | undefined>(undefined)
   const [terminalState, setTerminalState] = useState<
-    "running" | "success" | "failed" | null
+    "running" | "success" | "failed" | "cancelled" | null
   >(null)
+  const [cancelling, setCancelling] = useState(false)
+  const [cancelError, setCancelError] = useState<string | null>(null)
 
   useEffect(() => {
     // Catch-up: if the task already finished while the user was away
@@ -1561,7 +1563,11 @@ function ScreenerRunningView({ taskId }: { taskId: string }) {
         }
         if (t?.status === "success") {
           window.location.replace(`/screener-v3?result=${taskId}`)
-        } else if (t?.status === "failed" || t?.status === "cancelled") {
+        } else if (t?.status === "cancelled") {
+          // Surface the cancelled state distinctly — user gets to see
+          // partial results banner instead of a generic "失败".
+          setTerminalState("cancelled")
+        } else if (t?.status === "failed") {
           setTerminalState("failed")
         } else {
           setTerminalState("running")
@@ -1585,6 +1591,12 @@ function ScreenerRunningView({ taskId }: { taskId: string }) {
             )
           } else if (env.event === "task_failed") {
             setTerminalState("failed")
+          } else if (env.event === "task_cancelled") {
+            // Worker raised _CancelledError after persisting partial
+            // results. Switch to the cancelled banner so the user can
+            // jump to the partial result page instead of being stuck
+            // on the running view forever.
+            setTerminalState("cancelled")
           }
         },
         onStatusChange: () => { /* noop */ },
@@ -1602,6 +1614,32 @@ function ScreenerRunningView({ taskId }: { taskId: string }) {
     }
   }, [taskId])
 
+  const stopRun = async () => {
+    if (cancelling || terminalState !== "running") return
+    if (!confirm("确认停止当前选股？已完成的大师评分仍可查看，未开始的部分将不再消耗 token。")) {
+      return
+    }
+    setCancelling(true)
+    setCancelError(null)
+    try {
+      const r = await fetch(`/api/tasks/${taskId}/cancel`, {
+        method: "POST", credentials: "same-origin",
+      })
+      if (!r.ok) {
+        const body = await r.json().catch(() => ({}))
+        setCancelError(body.error || `取消失败 (${r.status})`)
+      }
+      // Status flip to "cancelled" arrives via the task_cancelled
+      // socket event; the polling fallback in ScreenerV3Progress also
+      // covers it. We don't optimistically setTerminalState here so a
+      // 409 from a race (already finished) doesn't strand the UI.
+    } catch (e) {
+      setCancelError(e instanceof Error ? e.message : "取消失败")
+    } finally {
+      setCancelling(false)
+    }
+  }
+
   return (
     <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-4">
       <div className="flex items-center gap-3">
@@ -1613,7 +1651,22 @@ function ScreenerRunningView({ taskId }: { taskId: string }) {
         </Button>
         <h1 className="text-xl font-bold">选股运行中</h1>
         {meta?.title && <Badge variant="muted">{meta.title}</Badge>}
+        {terminalState === "running" && (
+          <Button
+            variant="outline" size="sm"
+            onClick={stopRun}
+            disabled={cancelling}
+            className="ml-auto"
+          >
+            {cancelling ? "停止中…" : "停止"}
+          </Button>
+        )}
       </div>
+      {cancelError && (
+        <Alert variant="destructive">
+          <AlertTitle>{cancelError}</AlertTitle>
+        </Alert>
+      )}
       <ScreenerV3Progress taskId={taskId} mode={mode} />
       <GuruParallelProgress taskId={taskId} />
       {terminalState === "failed" && (
@@ -1628,6 +1681,32 @@ function ScreenerRunningView({ taskId }: { taskId: string }) {
             >
               复制配置重跑
             </Button>
+          </AlertDescription>
+        </Alert>
+      )}
+      {terminalState === "cancelled" && (
+        <Alert variant="default">
+          <AlertTitle>已停止</AlertTitle>
+          <AlertDescription>
+            已完成的大师评分已保存为部分结果。
+            <div className="mt-2 flex gap-2">
+              <Button
+                variant="outline" size="sm"
+                onClick={() => {
+                  window.location.href = `/screener-v3?result=${taskId}`
+                }}
+              >
+                查看部分结果
+              </Button>
+              <Button
+                variant="ghost" size="sm"
+                onClick={() => {
+                  window.location.href = `/screener-v3?prefill=${taskId}`
+                }}
+              >
+                复制配置重跑
+              </Button>
+            </div>
           </AlertDescription>
         </Alert>
       )}
@@ -1646,10 +1725,10 @@ function ScreenerRunningView({ taskId }: { taskId: string }) {
  *  channel ScreenerRunningView uses but listens for different events
  *  emitted by the v3 worker. Hidden until the first event arrives so
  *  classic-mode (no LLM) doesn't render an empty placeholder. */
+type UnitStatus = "running" | "done" | "cached" | "failed"
+
 function GuruParallelProgress({ taskId }: { taskId: string }) {
-  const [units, setUnits] = useState<
-    Record<string, "running" | "done" | "failed">
-  >({})
+  const [units, setUnits] = useState<Record<string, UnitStatus>>({})
 
   useEffect(() => {
     let destroy: (() => void) | null = null
@@ -1663,14 +1742,23 @@ function GuruParallelProgress({ taskId }: { taskId: string }) {
               && env.event !== "guru_unit_start"
               && env.event !== "guru_unit_failed") return
           const p = (env.payload || {}) as {
-            guru?: string; ticker?: string
+            guru?: string; ticker?: string; cached?: boolean
           }
           const key = `${p.guru || "?"}::${p.ticker || "?"}`
-          const status =
-            env.event === "guru_unit_done" ? "done"
-            : env.event === "guru_unit_failed" ? "failed"
-            : "running"
-          setUnits(prev => ({ ...prev, [key]: status }))
+          let status: UnitStatus
+          if (env.event === "guru_unit_failed") status = "failed"
+          else if (env.event === "guru_unit_start") status = "running"
+          else status = p.cached ? "cached" : "done"
+          // Once a unit has flipped to a terminal state (done/cached/failed)
+          // a stale guru_unit_start arriving late MUST NOT down-grade it
+          // back to "running" — guard against the race.
+          setUnits(prev => {
+            const existing = prev[key]
+            if (existing && existing !== "running" && status === "running") {
+              return prev
+            }
+            return { ...prev, [key]: status }
+          })
         },
         onStatusChange: () => { /* noop */ },
       })
@@ -1687,12 +1775,14 @@ function GuruParallelProgress({ taskId }: { taskId: string }) {
 
   const entries = Object.entries(units)
   if (entries.length === 0) return null
-  const done = entries.filter(([, s]) => s === "done").length
+  const settled = entries.filter(
+    ([, s]) => s === "done" || s === "cached" || s === "failed",
+  ).length
   return (
     <Card>
       <CardHeader className="pb-2">
         <CardTitle className="text-sm">
-          大师并发进度 ({done} / {entries.length})
+          大师并发进度 ({settled} / {entries.length})
         </CardTitle>
       </CardHeader>
       <CardContent>
@@ -1705,13 +1795,17 @@ function GuruParallelProgress({ taskId }: { taskId: string }) {
                 className={cn(
                   "rounded border px-2 py-1 truncate",
                   status === "done"
-                    ? "border-emerald-500/40 text-emerald-400"
-                    : status === "failed"
-                    ? "border-red-500/40 text-red-400"
-                    : "border-zinc-500/30 text-zinc-300",
+                    && "border-emerald-500/40 text-emerald-400",
+                  status === "cached"
+                    && "border-sky-500/40 text-sky-400",
+                  status === "failed"
+                    && "border-red-500/40 text-red-400",
+                  status === "running"
+                    && "border-zinc-500/30 text-zinc-300 animate-pulse",
                 )}
+                title={status}
               >
-                {guru} · {ticker}
+                {guru} · {ticker}{status === "cached" ? " ⚡" : ""}
               </div>
             )
           })}
