@@ -937,6 +937,180 @@ function KV({ k, v }: { k: string; v: string }) {
   )
 }
 
+/* ── v1.4 guru summary card ──────────────────────────────────── */
+
+/** Split ``reasoning`` on Chinese full-stop / period / newline. Empty
+ *  segments dropped; we trim whitespace on each. Conservative — the
+ *  backend ``_build_reasoning_format_instruction`` asks the LLM to use
+ *  these as separators, but we tolerate paragraphs without them. */
+function reasoningSentences(reasoning: string | null | undefined): string[] {
+  if (!reasoning) return []
+  return reasoning
+    .split(/(?<=[。！？!?])\s*|\n+/)
+    .map(s => s.trim())
+    .filter(Boolean)
+}
+
+const RISK_KEYWORDS = [
+  "风险", "担忧", "警惕", "需注意", "下行", "缺乏", "不足",
+  "弱点", "局限", "limitation", "risk", "concern", "weak",
+] as const
+
+const SUPPORT_KEYWORDS = [
+  "依据", "护城河", "PEG", "估值", "增长", "现金流", "护盘",
+  "moat", "growth", "cash flow", "valuation",
+] as const
+
+/** Pick the sentence in ``sentences`` most likely to describe a risk.
+ *  Falls back to the last sentence (which the v1.4 prompt asks the LLM
+ *  to put the risk paragraph at), then to ``null`` so the card hides
+ *  the risk line gracefully on legacy payloads. */
+function pickRiskSentence(sentences: string[]): string | null {
+  if (sentences.length === 0) return null
+  for (const s of sentences) {
+    if (RISK_KEYWORDS.some(k => s.toLowerCase().includes(k.toLowerCase()))) {
+      return s
+    }
+  }
+  // v1.4 prompt structure: third paragraph is the risk one. Fall back
+  // to the trailing sentence(s) when no keyword match.
+  return sentences.length >= 3 ? sentences[sentences.length - 1] : null
+}
+
+/** Pick 1-2 supporting sentences (the "core evidence" middle
+ *  paragraph). Excludes whatever was picked as the risk sentence so
+ *  the card doesn't repeat itself. */
+function pickSupportSentences(sentences: string[], risk: string | null): string[] {
+  if (sentences.length === 0) return []
+  const conclusion = sentences[0]
+  const supports = sentences
+    .slice(1)
+    .filter(s => s !== risk && s !== conclusion)
+  // Prefer sentences that mention support keywords; fall back to
+  // first-2 if no keyword hit.
+  const ranked = supports.filter(s =>
+    SUPPORT_KEYWORDS.some(k => s.toLowerCase().includes(k.toLowerCase())),
+  )
+  const pick = (ranked.length > 0 ? ranked : supports).slice(0, 2)
+  return pick
+}
+
+/** Coerce a ``GuruSubAnalysis.score`` (sometimes string-encoded) to a
+ *  finite number, or ``null`` if it can't. */
+function subScore(v: unknown): number | null {
+  if (typeof v === "number" && Number.isFinite(v)) return v
+  if (typeof v === "string") {
+    const n = Number(v.trim())
+    if (Number.isFinite(n)) return n
+  }
+  return null
+}
+
+/** Render one guru's summary as a structured 3-line card. */
+function GuruSummaryCard({ s }: { s: { guru: string } & GuruScore }) {
+  const sentences = reasoningSentences(s.reasoning)
+  const conclusion = sentences[0] ?? "—"
+  const risk = pickRiskSentence(sentences)
+  const supports = pickSupportSentences(sentences, risk)
+
+  // Pull theme_fit out of sub_analyses for the chip; falls back to
+  // null when the worker hasn't sent sub_analyses yet (legacy run).
+  const themeFit = (s.sub_analyses ?? []).find(
+    sa => (sa?.name ?? "").toLowerCase() === "theme_fit",
+  )
+  const themeFitScore = themeFit ? subScore(themeFit.score) : null
+
+  return (
+    <Card className="bg-card/50">
+      <CardContent className="pt-3 space-y-2">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="font-semibold text-sm">{s.guru}</span>
+            {s.tier && (
+              <Badge variant="muted" className="text-[9px]">{tierLabel(s.tier)}</Badge>
+            )}
+          </div>
+          <Badge variant={signalBadge(s.signal)} className="text-[10px]">
+            {(s.signal ?? "—").toUpperCase()}
+          </Badge>
+        </div>
+
+        <div className="flex items-center gap-2 text-xs">
+          <div className="flex-1 h-1.5 bg-zinc-800 rounded overflow-hidden">
+            <div className="h-full bg-primary"
+                 style={{ width: `${(s.confidence ?? 0) * 100}%` }} />
+          </div>
+          <span className="font-mono text-muted-foreground text-[10px]">
+            {((s.confidence ?? 0) * 100).toFixed(0)}%
+          </span>
+        </div>
+
+        {/* theme_fit chip — small, informational. ``null`` score
+            means the worker didn't ship sub_analyses (legacy row);
+            we hide the chip rather than showing a fake "—". */}
+        {themeFitScore !== null && (
+          <div>
+            <Badge
+              variant={themeFitScore >= 6 ? "buy" : themeFitScore >= 3 ? "hold" : "sell"}
+              className="text-[9px]"
+              title={themeFit?.details ?? ""}
+            >
+              主题匹配 {themeFitScore.toFixed(1)}/10
+            </Badge>
+          </div>
+        )}
+
+        {/* 3-line structured summary. ``title`` is the full reasoning
+            so an operator can hover for context without expanding —
+            replaces the previous (broken) ``title={s.philosophy}``. */}
+        <div className="space-y-1.5 text-xs leading-relaxed"
+             title={s.reasoning ?? ""}>
+          <div>
+            <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+              结论
+            </div>
+            <div className="line-clamp-2">{conclusion}</div>
+          </div>
+          {supports.length > 0 && (
+            <div>
+              <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                核心依据
+              </div>
+              <ul className="list-disc pl-4 space-y-0.5">
+                {supports.map((sup, i) => (
+                  <li key={i} className="line-clamp-2">{sup}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {risk && (
+            <div>
+              <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                风险 / 反方
+              </div>
+              <div className="line-clamp-2 text-amber-300/80">{risk}</div>
+            </div>
+          )}
+        </div>
+
+        {/* Full reasoning expandable. ``<details>`` ships zero JS and
+            the browser already remembers per-card open-state because
+            the parent uses key={s.guru} (not the array index). */}
+        {s.reasoning && s.reasoning.length > 0 && (
+          <details className="text-xs">
+            <summary className="cursor-pointer text-[10px] text-muted-foreground hover:text-foreground">
+              展开完整推理
+            </summary>
+            <div className="mt-1 max-h-60 overflow-y-auto whitespace-pre-line text-muted-foreground">
+              {s.reasoning}
+            </div>
+          </details>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
 /** Flatten guru scores into an array preserving the per-guru fields the
  *  expanded card needs (signal/confidence/reasoning/tier/philosophy). */
 function candidateGuruScoresList(c: Candidate): Array<{ guru: string } & GuruScore> {
