@@ -1237,18 +1237,34 @@ function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
 /* ── Fallback used when a structured card render throws ───── */
 
 /** Per-tab fallback shown when ``AnalysisCards`` throws inside the
- *  ErrorBoundary. The user-facing copy is intentionally generic — a
- *  structured-card failure is not actionable for end users; the
- *  Markdown ``<details>`` below this fallback always renders the full
- *  analyst body so users still see the conclusion. The expandable
- *  ``<details>`` underneath reveals the error name+message so an
- *  operator (or developer hitting F12) can diagnose without leaving
- *  the page; we do NOT print the error stack or struct payload — that
- *  goes to ``console.error`` where it's filterable. */
+ *  ErrorBoundary. Distinguish failure modes so operators can act on
+ *  them differently:
+ *
+ *    * Asset/preload failures (``Unable to preload`` / chunk-load
+ *      errors) — static-resource bug, NOT a data issue. v1.5 was a
+ *      Vite ``base`` mis-config that produced ``/assets/card-*.css``
+ *      404s; the user-facing copy now names "组件加载失败" so a
+ *      future asset-path regression is identified at a glance.
+ *    * Render-time failures (TypeError on a malformed payload) —
+ *      data-shape issue. Copy stays "结构化摘要暂不可用" because
+ *      the markdown body below contains the same content.
+ *
+ *  We do NOT print the error stack or struct payload here — that
+ *  goes to ``console.error`` where it's filterable.
+ */
 function CardFallback({ error }: { error: Error }) {
+  const msg = error.message || ""
+  const isAssetLoad =
+    msg.includes("Unable to preload") ||
+    msg.includes("Failed to fetch dynamically imported module") ||
+    msg.includes("Loading chunk") ||
+    msg.includes("Importing a module script failed")
+  const headline = isAssetLoad
+    ? "结构化摘要组件加载失败，已显示完整论述。"
+    : "结构化摘要暂不可用，已显示完整论述。"
   return (
     <div className="rounded border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs text-amber-300">
-      <div>结构化摘要暂不可用，已显示完整论述。</div>
+      <div>{headline}</div>
       <details className="mt-1">
         <summary className="cursor-pointer text-[10px] opacity-70">
           错误详情（开发者）
