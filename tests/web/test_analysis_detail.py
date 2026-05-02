@@ -145,3 +145,156 @@ def test_legacy_advice_json_falls_back_when_no_per_user_row(app_client):
     body = alice.get(f"/api/history/{aid}").get_json()
     assert body["advice"]["action"] == "SELL"
     assert body["advice"]["reasoning"] == "legacy"
+
+
+# ── analysis-rendering v1.7 — confidence-source semantics ─────────────
+
+
+def _set_rendering(app_client, aid: int, rendering: dict) -> None:
+    """Backfill ``analysis_history.rendering_json`` for one row."""
+    import json as _json
+    with sqlite3.connect(app_client["db_path"]) as conn:
+        conn.execute(
+            "UPDATE analysis_history SET rendering_json = ? WHERE id = ?",
+            (_json.dumps(rendering, ensure_ascii=False), aid),
+        )
+
+
+def _set_advice_confidence(app_client, *, user_id: int, aid: int,
+                            level: str) -> None:
+    """Plant a per-user advice row with the legacy heuristic confidence
+    so we can prove the detail endpoint ignores it post-v1.7."""
+    from stock_trading_system.portfolio.database import PortfolioDatabase
+    db = PortfolioDatabase(app_client["db_path"])
+    db.save_user_advice(
+        user_id=user_id, analysis_id=aid,
+        advice={
+            "action": "BUY", "confidence": level,
+            "suggested_position_pct": 25.0,
+            "reasoning": "from strategy engine heuristic",
+        },
+        holdings_snapshot="[]",
+    )
+
+
+def test_detail_confidence_uses_overview_summary_high(app_client):
+    """rendering.summary.confidence=high → confidence=0.85 + level=high
+    + source=llm_structured_output. This is the canonical v1.7 path."""
+    users = app_client["users"]
+    alice = app_client["make_client"](users.alice_email, users.alice_password)
+
+    aid = _seed_shared_analysis(app_client, owner_id=users.alice.id)
+    # Provide a minimal but well-formed OverviewCard so the v1.21
+    # client-side normalizer accepts it (rating + action_direction +
+    # confidence + one_line_takeaway are required).
+    _set_rendering(app_client, aid, {
+        "summary": {
+            "rating": "Buy",
+            "action_direction": "分批建仓",
+            "confidence": "high",
+            "key_metrics": [],
+            "decision_drivers": [],
+            "one_line_takeaway": "AI 高置信看多",
+        },
+    })
+
+    body = alice.get(f"/api/history/{aid}").get_json()
+    assert body["confidence"] == 0.85
+    assert body["confidence_level"] == "high"
+    assert body["confidence_source"] == "llm_structured_output"
+
+
+def test_detail_confidence_falls_back_to_decision_conviction(app_client):
+    """Overview missing → fall back to Decision.conviction. Used by
+    rows whose Overview extraction failed but Decision succeeded."""
+    users = app_client["users"]
+    alice = app_client["make_client"](users.alice_email, users.alice_password)
+
+    aid = _seed_shared_analysis(app_client, owner_id=users.alice.id)
+    _set_rendering(app_client, aid, {
+        # No "summary" key at all — only DecisionCard fields.
+        "Decision": {
+            "final_action": "Hold",
+            "conviction": "low",
+            "time_horizon": "1-3 months",
+        },
+    })
+
+    body = alice.get(f"/api/history/{aid}").get_json()
+    assert body["confidence"] == 0.25
+    assert body["confidence_level"] == "low"
+    assert body["confidence_source"] == "llm_structured_output"
+
+
+def test_detail_confidence_is_null_without_rendering_and_ignores_advice(
+    app_client,
+):
+    """No rendering_json + an advice.confidence=high planted in
+    user_analysis_advice — detail.confidence MUST stay ``null`` so the
+    AI analysis confidence never inherits the StrategyEngine heuristic.
+    This is the load-bearing v1.7 contract: advice → execution
+    confidence (paper-trade only); rendering → analysis confidence."""
+    users = app_client["users"]
+    alice = app_client["make_client"](users.alice_email, users.alice_password)
+
+    aid = _seed_shared_analysis(app_client, owner_id=users.alice.id)
+    # No _set_rendering call — rendering_json stays empty.
+    _set_advice_confidence(
+        app_client, user_id=users.alice.id, aid=aid, level="high",
+    )
+
+    body = alice.get(f"/api/history/{aid}").get_json()
+    assert body["confidence"] is None
+    assert body["confidence_level"] is None
+    assert body["confidence_source"] is None
+    # advice.confidence is still surfaced under ``advice`` (it's the
+    # per-user execution confidence) — but it must NOT bleed into the
+    # top-level confidence fields.
+    assert body["advice"]["confidence"] == "high"
+
+
+def test_inbox_completed_row_carries_llm_confidence(app_client):
+    """``/api/history?include_running=true`` projects the LLM
+    confidence onto each completed row so the inbox chip can render
+    without N+1 detail fetches."""
+    users = app_client["users"]
+    alice = app_client["make_client"](users.alice_email, users.alice_password)
+
+    aid = _seed_shared_analysis(app_client, owner_id=users.alice.id)
+    _set_rendering(app_client, aid, {
+        "summary": {
+            "rating": "Buy",
+            "action_direction": "建仓",
+            "confidence": "medium",
+            "key_metrics": [],
+            "decision_drivers": [],
+            "one_line_takeaway": "中等置信看多",
+        },
+    })
+
+    body = alice.get("/api/history?include_running=true").get_json()
+    row = next(it for it in body["items"]
+               if it["kind"] == "analysis" and it["id"] == aid)
+    assert row["confidence"] == 0.5
+    assert row["confidence_level"] == "medium"
+    assert row["confidence_source"] == "llm_structured_output"
+
+
+def test_inbox_row_confidence_null_when_rendering_missing(app_client):
+    """Rows without rendering_json expose ``confidence: null`` rather
+    than fabricating one from advice — same contract as the detail
+    endpoint, applied to the list shape."""
+    users = app_client["users"]
+    alice = app_client["make_client"](users.alice_email, users.alice_password)
+
+    aid = _seed_shared_analysis(app_client, owner_id=users.alice.id)
+    _set_advice_confidence(
+        app_client, user_id=users.alice.id, aid=aid, level="high",
+    )
+
+    body = alice.get("/api/history?include_running=true").get_json()
+    row = next(it for it in body["items"]
+               if it["kind"] == "analysis" and it["id"] == aid)
+    assert row["confidence"] is None
+    assert row["confidence_level"] is None
+    assert row["confidence_source"] is None

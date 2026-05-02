@@ -1,4 +1,4 @@
-import { Flame, Shield, Scale, MapPin } from "lucide-react"
+import { Flame, Shield, Scale, MapPin, ScrollText } from "lucide-react"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import type { OverviewCardData, DecisionDriver, KeyMetric, Stance } from "./types"
 import { RatingBadge } from "./shared/RatingBadge"
@@ -6,6 +6,17 @@ import { ConfidenceMeter } from "./shared/ConfidenceMeter"
 import { KpiRow } from "./shared/KpiRow"
 import { StanceCard } from "./shared/StanceCard"
 import { isRecord, safeRecord, nonEmptyStr, safeText } from "./shared/defensive"
+
+interface OverviewCardProps {
+  data: OverviewCardData | null | undefined
+  /**
+   * Optional execution summary surfaced from ``detail.executive_summary``
+   * (paper-trade v1.3 F3 LLM-extracted column on ``analysis_history``).
+   * Lives on the detail object, NOT inside ``rendering.summary`` Pydantic
+   * schema — passed via prop to keep the schema layer untouched.
+   */
+  executiveSummary?: string | null
+}
 
 /**
  * Overview tab — the most-broken card on production /analysis/17.
@@ -18,7 +29,7 @@ import { isRecord, safeRecord, nonEmptyStr, safeText } from "./shared/defensive"
  *   * ``decision_drivers`` / ``key_metrics`` may contain string/null
  *     items — keep only records so children never see a non-object.
  */
-export function OverviewCard({ data }: { data: OverviewCardData | null | undefined }) {
+export function OverviewCard({ data, executiveSummary }: OverviewCardProps) {
   // ``typeof === "object"`` was the bug: arrays + null both pass it,
   // and the rest of this function then read ``.rating`` / ``.confidence``
   // off an array, producing undefined, which the badges tolerated —
@@ -58,6 +69,26 @@ export function OverviewCard({ data }: { data: OverviewCardData | null | undefin
             <div className="flex items-start gap-2 text-sm">
               <MapPin className="h-4 w-4 text-[var(--color-accent-blue)] mt-0.5 shrink-0" />
               <span>{safeText(rec.action_direction)}</span>
+            </div>
+          )}
+          {/* v1.6: Executive Summary block — surfaces detail.executive_summary
+              (paper-trade v1.3 F3 column) as the structured "操作建议".
+              Sits between action_direction and KpiRow per design §14.2.
+              Hidden when prop missing / empty / whitespace-only via
+              ``nonEmptyStr`` (which trims) so legacy rows without the
+              column collapse the banner cleanly. */}
+          {nonEmptyStr(executiveSummary) && (
+            <div
+              data-testid="executive-summary"
+              className="rounded border-l-4 border-primary/60 bg-primary/5 px-3 py-2"
+            >
+              <div className="flex items-center gap-1.5 mb-1 text-xs font-semibold text-[var(--color-accent-blue)]">
+                <ScrollText className="h-3.5 w-3.5" />
+                执行总结
+              </div>
+              <div className="text-sm leading-relaxed line-clamp-4">
+                {safeText(executiveSummary)}
+              </div>
             </div>
           )}
           <KpiRow items={keyMetrics} />

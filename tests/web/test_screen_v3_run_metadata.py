@@ -55,6 +55,19 @@ def _seed_screen_v3_task(app_client, *, owner_id: int, payload: dict,
 
 
 def test_results_returns_run_metadata(alice_client, app_client):
+    """v1.4 contract: legacy payloads written by v1.0–v1.3 only carried
+    ``{llm_calls, cache_hits}`` where ``llm_calls`` semantically meant
+    ``total_units`` (it was set to ``len(units)``). The DTO must now
+    backfill the new fields (``total_units``, ``new_llm_calls``,
+    ``failed_units``) so the React banner can render truthful counts;
+    ``cache_hit_pct`` denominator switches to ``total_units`` so the
+    rate stays correct even when half the run was retry-failures.
+
+    For this legacy fixture (80 total, 24 cached, 0 failed):
+        new_llm_calls = 80 - 24 - 0 = 56
+        total_units   = 80 (fallback from legacy llm_calls)
+        cache_hit_pct = 24 / 80 * 100 = 30
+    """
     tid = _seed_screen_v3_task(
         app_client, owner_id=app_client["users"].alice.id,
         payload={
@@ -70,9 +83,14 @@ def test_results_returns_run_metadata(alice_client, app_client):
     body = alice_client.get(f"/api/screen/v3/results/{tid}").get_json()
     md = body["run_metadata"]
     assert md["mode"] == "agent_rt"
-    assert md["llm_calls"] == 80
+    # Legacy llm_calls=80 → reinterpreted as total_units. The exposed
+    # ``llm_calls`` is now an alias for ``new_llm_calls`` (56).
+    assert md["total_units"] == 80
+    assert md["new_llm_calls"] == 56
+    assert md["llm_calls"] == 56  # alias matches new_llm_calls
     assert md["cache_hits"] == 24
-    assert md["cache_hit_pct"] == 30   # 24 / 80 * 100, rounded
+    assert md["cache_hit_pct"] == 30  # 24 / 80 * 100
+    assert md["failed_units"] == 0
     assert md["duration_sec"] == 138
     assert md["gurus_used"] == ["buffett", "lynch", "munger", "graham"]
     assert md["candidates_count"] == 1

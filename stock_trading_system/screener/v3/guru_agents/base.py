@@ -112,6 +112,64 @@ def _build_theme_instruction(query: str | None, spec: dict | None) -> str:
 """
 
 
+def _build_data_coverage_caveat(bundle: dict | None) -> str:
+    """Inspect the GuruDataBundle and emit a SystemMessage caveat
+    listing missing data buckets, so the LLM can't pretend it has
+    enough context when news / history / price-history are empty.
+
+    Triggered when:
+        * ``news_recent`` is missing or empty
+        * ``fundamentals_history`` is empty AND there's no
+          ``price_history_summary`` (or the summary has no return %)
+        * ``sector_industry`` lacks both sector and industry
+
+    Returns ``""`` when coverage is healthy so we don't pad the prompt
+    needlessly. Returns a short Chinese block when one or more buckets
+    are missing — the rule is "数据不足时不得仅凭快照下高分", which we
+    pin verbatim so reviewers can grep for it.
+    """
+    if not isinstance(bundle, dict):
+        return ""
+
+    missing: list[str] = []
+    news = bundle.get("news_recent")
+    if not (isinstance(news, list) and len(news) > 0):
+        missing.append("最近新闻")
+
+    fund_hist = bundle.get("fundamentals_history") or []
+    price_hist = bundle.get("price_history_summary") or {}
+    has_price_summary = bool(
+        isinstance(price_hist, dict)
+        and any(price_hist.get(k) is not None for k in (
+            "return_1m_pct", "return_3m_pct", "return_6m_pct",
+            "sma200_distance_pct",
+        ))
+    )
+    if not fund_hist and not has_price_summary:
+        missing.append("历史基本面 + 价格走势")
+    elif not fund_hist:
+        missing.append("历史基本面")
+    elif not has_price_summary:
+        missing.append("价格走势")
+
+    sector_industry = bundle.get("sector_industry") or {}
+    if not (sector_industry.get("sector") or sector_industry.get("industry")):
+        missing.append("行业分类")
+
+    if not missing:
+        return ""
+
+    return (
+        "\n\n数据覆盖度提醒：当前数据包缺少 ["
+        + " / ".join(missing)
+        + "]。**历史/新闻数据不足，不得仅凭快照下高分** — "
+        + "请将这一限制写入 sub_analyses 中名为 data_coverage 的条目，"
+        + "并在 reasoning 第三段（风险）显式提及该限制。"
+        + "若依据明显不足以支撑 bullish/bearish 结论，"
+        + "请把 signal 设为 neutral 并下调 confidence。"
+    )
+
+
 def _build_reasoning_format_instruction(framework_lead: str) -> str:
     """Force the LLM to structure ``reasoning`` so each guru sounds like
     themselves and not a templated theme-fit statement.
@@ -381,6 +439,15 @@ class BaseGuruAgent:
             spec=(context or {}).get("filter_spec"),
         )
 
+        # screener-v3 v1.4: data-coverage caveat. When the bundle is
+        # missing recent news, fundamentals history, or price history,
+        # tell the model up-front so it can't conclude "基本面强劲"
+        # purely from a single quote snapshot. Bundle is threaded into
+        # context by concurrency._invoke; absent for legacy callers.
+        coverage_caveat = _build_data_coverage_caveat(
+            (context or {}).get("__bundle__"),
+        )
+
         # v1.4 — per-guru reasoning-format instruction. Forces the
         # leading sentence of ``reasoning`` to be the framework
         # conclusion (e.g. Buffett's moat/cash-flow/margin-of-safety)
@@ -404,7 +471,11 @@ class BaseGuruAgent:
 
         messages = [
             SystemMessage(content=(
-                system_prompt + theme_instruction + reasoning_format + schema_instruction
+                system_prompt
+                + theme_instruction
+                + coverage_caveat
+                + reasoning_format
+                + schema_instruction
             )),
             HumanMessage(content=user_prompt),
         ]

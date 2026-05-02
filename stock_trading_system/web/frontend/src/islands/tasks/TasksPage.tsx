@@ -10,7 +10,6 @@ import { Chip, ChipRow } from "@/components/ui/chip"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Alert } from "@/components/ui/alert"
 import { apiGet, apiPost, apiDel } from "@/lib/api"
-import { subscribeTaskStream, type TaskEventEnvelope } from "@/lib/socket"
 import { getTaskResultUrl } from "@/lib/tasks"
 import { cn } from "@/lib/utils"
 
@@ -22,6 +21,11 @@ interface Task {
   error_trace?: string | null
   progress_step?: string | null
   duration_ms?: number | null
+}
+
+interface TaskEventEnvelope {
+  event: string
+  payload?: unknown
 }
 
 type StatusFilter = "" | "running" | "pending" | "success" | "failed" | "cancelled"
@@ -207,12 +211,23 @@ function TaskDetail({ taskId }: { taskId: string }) {
       .then(t => { setTask(t); setLoading(false) })
       .catch(() => setLoading(false))
 
-    const sub = subscribeTaskStream({
-      taskIds: [taskId],
-      onEvent: (env) => setEvents(prev => [...prev, env]),
-      onStatusChange: setWsStatus,
-    })
-    return () => sub.destroy()
+    let disposed = false
+    let destroyStream: (() => void) | null = null
+    import("@/lib/socket")
+      .then(({ subscribeTaskStream }) => {
+        if (disposed) return
+        const sub = subscribeTaskStream({
+          taskIds: [taskId],
+          onEvent: (env: TaskEventEnvelope) => setEvents(prev => [...prev, env]),
+          onStatusChange: setWsStatus,
+        })
+        destroyStream = () => sub.destroy()
+      })
+      .catch(() => setWsStatus("disconnected"))
+    return () => {
+      disposed = true
+      destroyStream?.()
+    }
   }, [taskId])
 
   const handleCancel = async () => {

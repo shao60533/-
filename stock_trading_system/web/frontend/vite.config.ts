@@ -54,7 +54,13 @@ export default defineConfig({
       },
       output: {
         manualChunks: {
-          "react-vendor": ["react", "react-dom"],
+          "react-vendor": [
+            "react",
+            "react/jsx-runtime",
+            "react-dom",
+            "react-dom/client",
+            "scheduler",
+          ],
           "icons-vendor": ["lucide-react"],
           "echarts-vendor": ["echarts/core", "echarts/charts", "echarts/components", "echarts/renderers"],
         },

@@ -1,6 +1,5 @@
 import { useEffect, useState, useRef } from "react"
 import { CheckCircle2, XCircle, Loader2, Circle } from "lucide-react"
-import { subscribeTaskStream, type TaskEventEnvelope } from "@/lib/socket"
 import { apiGet } from "@/lib/api"
 import { cn } from "@/lib/utils"
 
@@ -33,6 +32,11 @@ interface AnalysisPipelinePayload {
   summary?: string
 }
 
+interface TaskEventEnvelope {
+  event: string
+  payload?: unknown
+}
+
 interface PipelineDAGProps {
   taskId: string
   onAllDone?: () => void
@@ -63,9 +67,7 @@ export function PipelineDAG({ taskId, onAllDone }: PipelineDAGProps) {
       }
     }
 
-    const sub = subscribeTaskStream({
-      taskIds: [taskId],
-      onEvent: (env: TaskEventEnvelope) => {
+    const handleEvent = (env: TaskEventEnvelope) => {
         if (env.event === "analysis_pipeline") {
           const p = (env.payload || {}) as AnalysisPipelinePayload
           const evtType = p.type || ""
@@ -142,9 +144,23 @@ export function PipelineDAG({ taskId, onAllDone }: PipelineDAGProps) {
             return updated
           })
         }
-      },
-      onStatusChange: () => {},
-    })
+    }
+
+    let disposed = false
+    let destroyStream: (() => void) | null = null
+    import("@/lib/socket")
+      .then(({ subscribeTaskStream }) => {
+        if (disposed) return
+        const sub = subscribeTaskStream({
+          taskIds: [taskId],
+          onEvent: handleEvent,
+          onStatusChange: () => {},
+        })
+        destroyStream = () => sub.destroy()
+      })
+      .catch(() => {
+        // Polling fallback below still marks stale/terminal tasks.
+      })
 
     // Polling fallback — covers stale page loads + socket drops where no
     // events arrive. When task is already terminal, mark all stages done.
@@ -172,7 +188,11 @@ export function PipelineDAG({ taskId, onAllDone }: PipelineDAGProps) {
     checkStatus()                              // immediate (covers stale page)
     const poll = setInterval(checkStatus, 5000) // every 5s
 
-    return () => { sub.destroy(); clearInterval(poll) }
+    return () => {
+      disposed = true
+      destroyStream?.()
+      clearInterval(poll)
+    }
   }, [taskId, onAllDone])
 
   return (
