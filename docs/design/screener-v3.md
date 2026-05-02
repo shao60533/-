@@ -3,8 +3,8 @@
 | 项 | 值 |
 |---|---|
 | Feature | `screener-v3` |
-| 版本 | v1.0 |
-| 日期 | 2026-04-19 |
+| 版本 | v1.4 |
+| 日期 | 2026-05-03 |
 | 关联 PRD | [../prd/screener-v3.md](../prd/screener-v3.md) |
 | 关联测试用例 | [../test-cases/screener-v3.md](../test-cases/screener-v3.md) |
 | 替代 | [screener-v2.md](./screener-v2.md) v1.1 的 guru 层 |

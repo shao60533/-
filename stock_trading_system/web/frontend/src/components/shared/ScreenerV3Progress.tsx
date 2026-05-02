@@ -1,6 +1,5 @@
 import { useEffect, useState, useRef } from "react"
 import { CheckCircle2, XCircle, Loader2, Circle, MinusCircle } from "lucide-react"
-import { subscribeTaskStream, type TaskEventEnvelope } from "@/lib/socket"
 import { apiGet } from "@/lib/api"
 import { cn } from "@/lib/utils"
 
@@ -77,6 +76,11 @@ interface RoundtablePayload {
   total?: number
 }
 
+interface TaskEventEnvelope {
+  event: string
+  payload?: unknown
+}
+
 export interface ScreenerV3ProgressProps {
   taskId: string
   /**
@@ -143,9 +147,7 @@ export function ScreenerV3Progress({ taskId, mode, onAllDone }: ScreenerV3Progre
       }
     }
 
-    const sub = subscribeTaskStream({
-      taskIds: [taskId],
-      onEvent: (env: TaskEventEnvelope) => {
+    const handleEvent = (env: TaskEventEnvelope) => {
         if (env.event === "screen_v3_stage_start") {
           const p = (env.payload || {}) as StagePayload
           const id = p.stage || ""
@@ -237,9 +239,23 @@ export function ScreenerV3Progress({ taskId, mode, onAllDone }: ScreenerV3Progre
             return updated
           })
         }
-      },
-      onStatusChange: () => {},
-    })
+    }
+
+    let disposed = false
+    let destroyStream: (() => void) | null = null
+    import("@/lib/socket")
+      .then(({ subscribeTaskStream }) => {
+        if (disposed) return
+        const sub = subscribeTaskStream({
+          taskIds: [taskId],
+          onEvent: handleEvent,
+          onStatusChange: () => {},
+        })
+        destroyStream = () => sub.destroy()
+      })
+      .catch(() => {
+        // Polling fallback below still keeps the timeline terminal state correct.
+      })
 
     // Polling fallback — covers stale page loads + socket drops.
     const checkStatus = () => {
@@ -266,7 +282,11 @@ export function ScreenerV3Progress({ taskId, mode, onAllDone }: ScreenerV3Progre
     checkStatus()
     const poll = setInterval(checkStatus, 5000)
 
-    return () => { sub.destroy(); clearInterval(poll) }
+    return () => {
+      disposed = true
+      destroyStream?.()
+      clearInterval(poll)
+    }
   }, [taskId, onAllDone])
 
   const hintFor = (id: StageId): string => {
