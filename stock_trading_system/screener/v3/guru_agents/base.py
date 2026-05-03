@@ -439,6 +439,11 @@ class BaseGuruAgent:
         Safely degrades to a bare primary chat when the secondary
         provider has no api_key or fallback is explicitly disabled
         (``config.llm.fallback_enabled = False``).
+
+        ``context["provider"]`` (set by :class:`ScreenerV3Pipeline`) is
+        honored verbatim via ``provider_override`` — preserves the
+        legacy contract where pipeline params pin the primary provider
+        independent of the global router default.
         """
         from stock_trading_system.llm.resilient_chat import build_resilient_chat
         return build_resilient_chat(
@@ -446,6 +451,7 @@ class BaseGuruAgent:
             kind="quick",
             user_id=context.get("user_id"),
             timeout=120,
+            provider_override=context.get("provider"),
         )
 
     def _llm_reason(

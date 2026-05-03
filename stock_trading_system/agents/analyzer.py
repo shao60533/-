@@ -183,19 +183,36 @@ class StockAnalyzer:
     def _iteration_enabled(self) -> bool:
         """Whether to run the iterative / Darwinian-weighted pipeline.
 
-        ``analyze(depth=...)`` sets ``self._depth_override`` for the
-        duration of one call:
-            quick    → force off (single-pass)
-            deep     → force on (when iteration code is available)
-            standard → fall back to the config flag
+        analysis-depth-mode v1.0：从 quick/standard/deep 三档收敛到二档。
+
+        - ``standard`` → 永远 False，**不读** ``config.iteration.enabled``。
+          产品语义就是「7 Agent 单次分析」，不允许系统侧 ops 静默改写。
+        - ``deep`` → 默认 True；当 ``config.iteration.enabled = false`` 时
+          **明确降级**为 standard 行为（False），并在
+          ``self._iteration_downgrade_reason`` 上记录原因
+          ``"system_iteration_disabled"`` 供 worker 持久化到结果。
+          不允许静默装作 deep。
+        - 兼容：旧 ``_depth_override = "quick"`` 视为 ``standard``。
         """
-        cfg_enabled = bool(self._config.get("iteration", {}).get("enabled", False))
-        depth = getattr(self, "_depth_override", None) or "standard"
+        depth = (getattr(self, "_depth_override", None) or "standard")
         if depth == "quick":
-            return False
+            depth = "standard"
         if depth == "deep":
+            cfg_enabled = bool(
+                self._config.get("iteration", {}).get("enabled", False)
+            )
+            if not cfg_enabled:
+                self._iteration_downgrade_reason = "system_iteration_disabled"
+                logger.warning(
+                    "analysis depth=deep downgraded to standard: "
+                    "iteration disabled by system config",
+                )
+                return False
+            self._iteration_downgrade_reason = None
             return True
-        return cfg_enabled
+        # standard（含旧 quick 归一）
+        self._iteration_downgrade_reason = None
+        return False
 
     def _configure_qwen(self, ta_config: dict) -> None:
         qwen_config = self._config.get("qwen", {})
@@ -302,17 +319,24 @@ class StockAnalyzer:
                 "label": "技术面分析", "duration_ms": 12345, "index": 0,
                 "total": 7}``. Event types: ``pipeline_start``, ``step_start``,
                 ``step_done``, ``pipeline_done``, ``pipeline_error``.
-            depth: ``quick`` / ``standard`` / ``deep``. Drives the iteration
-                toggle: ``quick`` forces single-pass (no reflection), ``deep``
-                forces iteration on (where available), ``standard`` defers to
-                the config flag. Unknown values fall back to ``standard``.
+            depth: ``standard`` 或 ``deep``。驱动 iteration 开关：
+                ``standard`` 永远走 7 Agent 单次（不读 config）；
+                ``deep`` 启用 iteration / Darwinian 权重，但当
+                ``config.iteration.enabled = false`` 时**明确降级**为
+                standard 并把原因写到 ``self._iteration_downgrade_reason``。
+                兼容：旧值 ``quick`` 自动映射为 ``standard``。
 
         Returns:
             AnalysisResult with signal, reports, decision details and per-step
             timings.
         """
-        depth = depth if depth in ("quick", "standard", "deep") else "standard"
+        if depth == "quick":  # 旧值兼容
+            depth = "standard"
+        depth = depth if depth in ("standard", "deep") else "standard"
         self._depth_override: str | None = depth
+        # 由 _iteration_enabled property 在每次读取时刷新。预置 None
+        # 让 worker 在 analyze 之后即可安全读取。
+        self._iteration_downgrade_reason: str | None = None
         self._init_graph()
 
         logger.info("Starting analysis for %s on %s", ticker, date)

@@ -26,21 +26,64 @@ def _coerce_float(v):
     return None
 
 
-VALID_DEPTHS = ("quick", "standard", "deep")
+VALID_DEPTHS = ("standard", "deep")
 
 
 def _normalize_depth(v) -> str:
-    """Coerce ``depth`` to one of {quick, standard, deep}; default standard.
+    """Coerce ``depth`` to one of {standard, deep}; default standard.
 
-    Centralised so workers, save_analysis, and the API DTO all agree on
-    the canonical set. Anything we don't recognise falls back to
-    ``standard`` rather than failing loudly — depth is a UX hint, not a
-    safety-critical invariant.
+    analysis-depth-mode v1.0 收敛：内部仅保留 ``standard`` / ``deep`` 两档。
+    旧值 ``quick`` 仅作为兼容输入被映射为 ``standard``（产品上和标准
+    分析不可区分，不再作为独立内部状态），任何无法识别的值同样回落
+    ``standard`` —— depth 是产品 UX 决策，不是 safety-critical 不变量。
     """
     if v is None:
         return "standard"
     s = str(v).strip().lower()
+    if s == "quick":  # 兼容 v1.16 旧值
+        return "standard"
     return s if s in VALID_DEPTHS else "standard"
+
+
+def normalize_analysis_depth(params: dict) -> dict:
+    """Read both new + legacy fields, return canonical depth form.
+
+    Used by ``/api/tasks/submit`` (analysis), ``/api/analyze`` and the
+    analysis worker so all entry points agree. ``deep_analysis`` (bool)
+    is the new product-level flag; ``depth`` (str) is the legacy field
+    kept for backward compat with old clients / DB rows.
+
+    Returns:
+        ``{"depth": "standard" | "deep", "deep_analysis": bool}``
+
+    Priority:
+        1. ``params["deep_analysis"]`` — new field, wins if present and
+           is a real bool / truthy-int (not ``None``).
+        2. ``params["depth"]`` — legacy field, mapped through
+           ``_normalize_depth`` (incl. ``quick`` → ``standard``).
+        3. Default ``("standard", False)``.
+    """
+    if not isinstance(params, dict):
+        return {"depth": "standard", "deep_analysis": False}
+    raw_flag = params.get("deep_analysis")
+    if isinstance(raw_flag, bool):
+        return {"depth": "deep" if raw_flag else "standard",
+                "deep_analysis": raw_flag}
+    # Tolerate truthy/falsy string forms ("true"/"false"/"1"/"0") that may
+    # appear when params travel through query-string / JSON-stringified
+    # legacy clients. Anything we can't pin down falls through to the
+    # legacy ``depth`` path.
+    if isinstance(raw_flag, str):
+        s = raw_flag.strip().lower()
+        if s in ("true", "1", "yes"):
+            return {"depth": "deep", "deep_analysis": True}
+        if s in ("false", "0", "no"):
+            return {"depth": "standard", "deep_analysis": False}
+    if isinstance(raw_flag, (int, float)) and not isinstance(raw_flag, bool):
+        return {"depth": "deep" if raw_flag else "standard",
+                "deep_analysis": bool(raw_flag)}
+    depth = _normalize_depth(params.get("depth"))
+    return {"depth": depth, "deep_analysis": depth == "deep"}
 
 
 class PortfolioDatabase:
@@ -358,6 +401,16 @@ class PortfolioDatabase:
                     conn.execute(f"ALTER TABLE analysis_history ADD COLUMN {name} {typ}")
                 except sqlite3.OperationalError as e:
                     logger.warning("Migration for column %s failed: %s", name, e)
+
+        # analysis-depth-mode v1.0: 旧 quick / NULL / '' 一次性归一为 standard。
+        # 幂等 —— 已经是 standard / deep 的行不动；行数 0 时是 no-op。
+        try:
+            conn.execute(
+                "UPDATE analysis_history SET depth = 'standard' "
+                "WHERE depth IS NULL OR depth = '' OR depth = 'quick'"
+            )
+        except sqlite3.OperationalError as e:
+            logger.warning("Backfill legacy depth values failed: %s", e)
 
         # v1.16 SECURITY MIGRATION: pre-v1.14 rows had per-user advice
         # baked into the shared row's advice_json + structured columns.

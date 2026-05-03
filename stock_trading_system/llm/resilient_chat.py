@@ -219,6 +219,7 @@ def build_resilient_chat(
     kind: ChatKind = "quick",
     user_id: int | None = None,
     timeout: int = 120,
+    provider_override: str | None = None,
 ) -> Any:
     """Build a chat client that falls back to the other provider on
     rate-limit errors.
@@ -232,11 +233,16 @@ def build_resilient_chat(
     ``RunnableWithFallbacks``.
 
     The primary is selected by :func:`get_active_provider` so env /
-    user-settings / config priority is preserved unchanged. We add no
-    state and never persist a provider switch — every call to this
-    factory rebuilds the wrapper.
+    user-settings / config priority is preserved unchanged.
+    ``provider_override`` lets a caller pin the primary explicitly
+    without polluting the router (e.g. legacy guru-agent contexts that
+    pass ``context["provider"]="qwen"`` even when global routing
+    defaults to gemini). We add no state and never persist a provider
+    switch — every call to this factory rebuilds the wrapper.
     """
-    primary = get_active_provider(config, user_id=user_id)
+    primary = (provider_override or "").strip().lower() or None
+    if primary not in ("qwen", "gemini"):
+        primary = get_active_provider(config, user_id=user_id)
     primary_chat = _build_chat(primary, kind, config, timeout=timeout)
 
     secondary = _other_provider(primary)

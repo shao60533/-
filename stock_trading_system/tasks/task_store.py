@@ -648,6 +648,18 @@ class TaskStore:
                         f"ALTER TABLE analysis_history ADD COLUMN {name} {typ}"
                     )
 
+            # analysis-depth-mode v1.0: 旧 quick / NULL / '' 归一为 standard。
+            # 幂等 —— 已经是 standard / deep 的行不动。
+            try:
+                conn.execute(
+                    "UPDATE analysis_history SET depth = 'standard' "
+                    "WHERE depth IS NULL OR depth = '' OR depth = 'quick'"
+                )
+            except sqlite3.OperationalError as e:
+                logger.warning(
+                    "TaskStore backfill legacy depth values failed: %s", e,
+                )
+
     def _ensure_screen_table(self):
         with self._conn() as conn:
             conn.execute("""

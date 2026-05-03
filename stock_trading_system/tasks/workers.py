@@ -100,7 +100,9 @@ def make_analysis_worker(get_analyzer, get_strategy_engine, get_portfolio, get_r
     def _impl(params: dict, progress_cb: ProgressCb) -> dict:
         import time as _time
         from stock_trading_system.config import get_config
-        from stock_trading_system.portfolio.database import _normalize_depth
+        from stock_trading_system.portfolio.database import (
+            normalize_analysis_depth,
+        )
         from stock_trading_system.agents.rendering.state_normalizer import (
             normalize_state_to_text,
         )
@@ -122,11 +124,13 @@ def make_analysis_worker(get_analyzer, get_strategy_engine, get_portfolio, get_r
             from stock_trading_system.utils.helpers import today_str
             date = today_str()
 
-        # Depth (quick/standard/deep) drives the analyzer's iteration
-        # toggle and is persisted onto the shared analysis_history row
-        # so the detail page can show what depth the user paid for.
-        # Unknown values fall back to ``standard``.
-        depth = _normalize_depth(params.get("depth"))
+        # analysis-depth-mode v1.0: 收敛 quick/standard/deep 为 standard/deep
+        # 二档，并把新字段 ``deep_analysis: bool`` 与旧字段 ``depth: str``
+        # 统一归一化。Worker 从 normalize_analysis_depth 拿 canonical 形态
+        # 后透传给 analyzer + 持久化到 analysis_history.depth。
+        _depth_form = normalize_analysis_depth(params)
+        depth = _depth_form["depth"]               # "standard" | "deep"
+        deep_analysis = _depth_form["deep_analysis"]  # bool
 
         progress_cb(5, "初始化分析管线", stage="init")
         analyzer = get_analyzer()
@@ -248,6 +252,13 @@ def make_analysis_worker(get_analyzer, get_strategy_engine, get_portfolio, get_r
             "task_id": task_id or None,
             "created_by": user_id,
             "depth": depth,
+            "deep_analysis": deep_analysis,
+            # analysis-depth-mode v1.0: 当用户选 deep 但系统层 iteration
+            # 被禁用时，analyzer 把降级原因挂在自身上。worker 把它写到
+            # 结果 dict（持久化到 task result），后续 UX 可读用于 banner。
+            "iteration_downgrade_reason": getattr(
+                analyzer, "_iteration_downgrade_reason", None,
+            ),
             # v1.19: best-effort structured-rendering blob serialized for
             # storage. Empty string when the analyzer skipped extraction
             # (extractor unavailable, error, or per-tab failures already

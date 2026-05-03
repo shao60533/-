@@ -26,20 +26,49 @@ import pytest
 
 
 def _reset_app_singletons() -> None:
-    """Wipe lazy module-level singletons in stock_trading_system.web.app."""
+    """Wipe lazy module-level singletons in stock_trading_system.web.app
+    AND the cached config singleton.
+
+    Without resetting ``settings._config``, a tests/tasks/* run that
+    happens to call ``get_config()`` (e.g. via TaskManager._emit →
+    event_emitter.persist_event → _resolve_db_path → get_config) caches
+    the developer's real ``~/.stock_trading`` config. Subsequent web
+    tests then build their app against THAT cached config, missing the
+    bootstrapped tmp_path users table → ``no such table: users`` on
+    login. This is the documented isolation bug from the ECC v1.x test
+    suite. Resetting both the web singletons AND the config singleton
+    forces every fixture to re-resolve from scratch.
+    """
     try:
         from stock_trading_system.web import app as app_module
     except Exception:
-        return
-    for attr in (
-        "_task_manager", "_task_store", "_local_cache",
-        "_portfolio_mgr", "_alert_monitor", "_data_manager",
-        "_analyzer", "_screener", "_report_gen", "_strategy_engine",
-        "_scheduler", "_scheduler_thread", "_paper_store",
-        "_data_router", "_cleanup_scheduler",
-    ):
-        if hasattr(app_module, attr):
-            setattr(app_module, attr, None)
+        app_module = None
+    if app_module is not None:
+        for attr in (
+            "_task_manager", "_task_store", "_local_cache",
+            "_portfolio_mgr", "_alert_monitor", "_data_manager",
+            "_analyzer", "_screener", "_report_gen", "_strategy_engine",
+            "_scheduler", "_scheduler_thread", "_paper_store",
+            "_data_router", "_cleanup_scheduler",
+        ):
+            if hasattr(app_module, attr):
+                setattr(app_module, attr, None)
+    # Drop the cached config so the next get_config() rebuilds from the
+    # current STOCK_CONFIG_DIR / STOCK_DB_PATH env (which the
+    # isolated_config_dir + app_client fixtures pin per-test).
+    try:
+        from stock_trading_system.config import settings as _settings_mod
+        _settings_mod._config = None
+    except Exception:
+        pass
+    # event_emitter caches per-task seq numbers — drop them so the
+    # next test starts envelope numbering from 1.
+    try:
+        from stock_trading_system.tasks import event_emitter as _ee
+        with _ee._seq_lock:
+            _ee._seq_cache.clear()
+    except Exception:
+        pass
 
 
 def _bootstrap_users_db(db_path: str) -> None:
