@@ -204,6 +204,92 @@ def _parse_rendering(raw) -> dict:
     return out
 
 
+# ── paper-trade v1.4 ── ticker-detail rendering bridge ─────────────────
+#
+# The /paper-trade/<ticker> page used to display the analyzer's raw
+# trade_decision markdown alongside a regex-parsed thesis snippet. With
+# analysis-rendering v1.0+ the same row already carries a structured
+# OverviewCard summary plus an executive_summary column — we just bridge
+# those into a small DTO so the React strategy card + per-plan history
+# row can render the same banner shape /analysis/<id> uses, without the
+# raw markdown wall that bypassed the privacy whitelist.
+
+
+def _signal_to_tri_state(raw: str | None) -> str:
+    """Mirror frontend ``signalLabel()``: 7-tier rating → Buy/Sell/Hold.
+
+    Sell-side tokens are checked first so ``Underweight`` (which contains
+    the substring ``weight`` and once leaked through a naive ``"buy" in
+    s`` check) routes correctly. Empty / unknown defaults to Hold so the
+    UI badge always has something to render.
+    """
+    if not raw or not str(raw).strip():
+        return "Hold"
+    s = str(raw).strip().lower()
+    if any(tok in s for tok in (
+        "sell", "underweight", "reduce", "减仓", "bearish",
+    )):
+        return "Sell"
+    if any(tok in s for tok in (
+        "buy", "overweight", "add", "加仓", "bullish",
+    )):
+        return "Buy"
+    if any(tok in s for tok in ("hold", "neutral", "wait", "中性")):
+        return "Hold"
+    return "Hold"
+
+
+def _rendering_summary_for_analysis(analysis_id, db) -> dict | None:
+    """Return the OverviewCard-style banner struct used by
+    ``/api/paper/tickers/<ticker>``.
+
+    Missing / broken ``rendering_json`` silently degrades to ``None``;
+    we never echo raw markdown body or legacy ``advice_json`` (privacy
+    boundary v1.18 R-fix-12). ``confidence_pct`` accepts both 0..1
+    (LLM-native) and 0..100 (pre-normalised) so the front-end always
+    receives an integer percent.
+    """
+    if not analysis_id:
+        return None
+    try:
+        ana = db.get_analysis_by_id(int(analysis_id))
+    except Exception:
+        return None
+    if not ana:
+        return None
+
+    rendering = _parse_rendering(ana.get("rendering_json"))
+    summary = (rendering or {}).get("summary") or {}
+
+    confidence_pct = None
+    raw_conf = summary.get("confidence")
+    if isinstance(raw_conf, (int, float)):
+        c = float(raw_conf)
+        confidence_pct = int(round(c * 100)) if 0 <= c <= 1 else int(round(c))
+    elif isinstance(raw_conf, str):
+        # OverviewCard.confidence is a literal "high"|"medium"|"low";
+        # mirror the analysis-rendering v1.7 mapping so the paper-trade
+        # banner shows the same percent the /analysis/<id> page shows.
+        level_to_pct = {"high": 85, "medium": 50, "low": 25}
+        candidate = raw_conf.strip().lower()
+        if candidate in level_to_pct:
+            confidence_pct = level_to_pct[candidate]
+
+    return {
+        "analysis_id":       int(analysis_id),
+        "ticker":            ana.get("ticker"),
+        "date":              ana.get("date"),
+        "created_at":        ana.get("created_at"),
+        "signal_raw":        ana.get("signal"),
+        "signal_tri":        _signal_to_tri_state(ana.get("signal")),
+        "rating":            summary.get("rating"),
+        "action_direction":  summary.get("action_direction"),
+        "executive_summary": ana.get("executive_summary"),
+        "one_line_takeaway": summary.get("one_line_takeaway"),
+        "confidence_pct":    confidence_pct,
+    }
+
+
 # Per-card normalisers. Each returns either a sanitised dict or None
 # (drop the card entirely so the frontend ErrorBoundary fallback kicks in
 # AND the markdown body still renders the same content as plain text).
