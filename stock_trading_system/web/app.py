@@ -1514,6 +1514,7 @@ def create_app(config_path=None):
             # chip without each row hitting /api/history/<id> again. The
             # helper handles missing rendering_json silently → null.
             llm_level, llm_num = _llm_confidence_from_record(rec)
+            _depth_norm = _normalize_depth(rec.get("depth"))
             completed_items.append({
                 "kind":             "analysis",
                 "id":               rec.get("id"),
@@ -1528,7 +1529,11 @@ def create_app(config_path=None):
                 "duration_sec":     rec.get("duration_sec"),
                 "task_id":          rec.get("task_id"),
                 "bookmarked":       bool(rec.get("bookmarked")),
-                "depth":            _normalize_depth(rec.get("depth")),
+                "depth":            _depth_norm,
+                # analysis-depth-mode v1.0: 同时返回 deep_analysis 让前端
+                # 不必反推。旧行 depth=NULL 经 _normalize_depth 已 fallback
+                # 到 standard，所以 deep_analysis 永远 False，符合预期。
+                "deep_analysis":    _depth_norm == "deep",
                 "confidence":       llm_num,
                 "confidence_level": llm_level,
                 "confidence_source": (
@@ -1654,6 +1659,7 @@ def create_app(config_path=None):
         # advice columns whose values would have leaked across users on
         # pre-v1.14 records.
         from stock_trading_system.portfolio.database import _normalize_depth
+        _depth_norm = _normalize_depth(record.get("depth"))
         return jsonify({
             "id":                 record.get("id"),
             "ticker":             record.get("ticker"),
@@ -1669,7 +1675,11 @@ def create_app(config_path=None):
             "duration_sec":       record.get("duration_sec"),
             "task_id":            record.get("task_id"),
             "config_hash":        record.get("config_hash"),
-            "depth":              _normalize_depth(record.get("depth")),
+            "depth":              _depth_norm,
+            # analysis-depth-mode v1.0: 同时返回 deep_analysis 供前端
+            # 直接消费；旧 NULL/quick 行经 _normalize_depth 归一为
+            # standard，所以 deep_analysis 永远 False。
+            "deep_analysis":      _depth_norm == "deep",
             "executive_summary":  record.get("executive_summary"),
             "summary":            record.get("executive_summary") or record.get("trade_decision") or "",
             "recommendation":     record.get("trade_decision") or "",

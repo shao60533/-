@@ -179,6 +179,13 @@ def app_client(tmp_path, isolated_config_dir, monkeypatch):
     _reset_app_singletons()
 
     from stock_trading_system.web import app as app_module
+    # Print debug to find isolation polluter
+    import os as _os
+    print(f"\n[conftest debug] STOCK_DB_PATH env = {_os.environ.get('STOCK_DB_PATH')!r}")
+    print(f"[conftest debug] expected db_path = {db_path!r}")
+    from stock_trading_system.config import get_config as _gc
+    _cfg_test = _gc()
+    print(f"[conftest debug] cfg portfolio.db_path = {_cfg_test.get('portfolio',{}).get('db_path')!r}")
     flask_app = app_module.create_app()
     flask_app.config["TESTING"] = True
     flask_app.config["WTF_CSRF_ENABLED"] = False
