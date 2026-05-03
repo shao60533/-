@@ -344,9 +344,9 @@ export function DashboardPage() {
         {/* Equity chart */}
         <Card className="lg:col-span-2">
           <CardHeader>
-            <div className="flex items-center justify-between gap-2">
-              <CardTitle className="text-sm">净值曲线</CardTitle>
-              <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <CardTitle className="text-sm shrink-0">净值曲线</CardTitle>
+              <div className="flex flex-wrap items-center justify-end gap-2 ml-auto">
                 <ChipRow>
                   {(["ALL", "1Y", "6M", "3M", "1M", "7D"] as Range[]).map(r => (
                     <Chip key={r} active={range === r} onClick={() => setRange(r)}>{r}</Chip>
@@ -421,13 +421,13 @@ export function DashboardPage() {
                       ? "text-[var(--color-accent-red)]"
                       : "text-muted-foreground"
                   return (
-                    <div key={h.ticker} className="flex items-center justify-between text-sm border border-border rounded-lg px-4 py-2.5">
-                      <div className="flex items-center gap-3">
-                        <span className="font-mono font-semibold">{h.ticker}</span>
+                    <div key={h.ticker} className="flex flex-wrap items-center justify-between gap-y-1 text-sm border border-border rounded-lg px-4 py-2.5">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <span className="font-mono font-semibold truncate">{h.ticker}</span>
                         <span className="text-xs text-muted-foreground">{h.market?.toUpperCase()}</span>
                         <span className="text-xs text-muted-foreground">{h.shares} 股</span>
                       </div>
-                      <div className="flex items-center gap-4 text-xs">
+                      <div className="flex items-center gap-4 text-xs ml-auto">
                         <span className="text-muted-foreground font-mono hidden md:inline">成本 ${fmt(h.avg_cost || 0)}</span>
                         <span className="text-muted-foreground font-mono hidden md:inline">现价 ${fmt(h.current_price || 0)}</span>
                         <span className={cn("font-mono tabular-nums", pnlClass)}>

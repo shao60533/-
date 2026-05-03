@@ -207,8 +207,76 @@ DevTools 模拟 + 真机抽测：
 | MarkdownBody 改 `components` 后，桌面端 `prose` 表格视觉差异 | 低 | 横向滚动容器只在内容溢出时显示 scrollbar，正常宽表无视觉变化 |
 | 字号去 vw 化后桌面端字号略小 | 低 | 桌面端原本就是 `clamp()` 上限值（11/13/14/16/18/22）；新值（12/13/14/15/17/20/24）相近，差距 ≤2px，不构成回归 |
 
-## 7. 版本历史
+## 8. v1.1 验收残留补丁
+
+v1.0 上线后的人工验收发现 3 个残留风险，本节定义补丁。
+
+### 8.1 P-1 持仓页移动卡片金额行（[PortfolioPage.tsx:214](../../stock_trading_system/web/frontend/src/islands/portfolio/PortfolioPage.tsx)）
+
+**现状**：
+
+```tsx
+<div className="flex justify-between text-xs text-muted-foreground mt-1">
+  <span>成本 ${fmt(h.avg_cost)}</span>
+  <span ...>盈亏 {...}${fmt(h.pnl || 0)}</span>
+  <span>现价 ${fmt(h.current_price || 0)}</span>
+</div>
+```
+
+3 个 span + `justify-between`。在 320px 视口配大金额（6 位以上美元值）会重叠或被裁切。
+
+**改法**：在外层加 `flex-wrap gap-x-3 gap-y-1`。三个值都能放下时仍是 `justify-between` 的桌面排布；放不下自动换行，不溢出。`min-w-0` 帮助每个 span 在压缩时保留可读宽度。
+
+```tsx
+<div className="flex flex-wrap justify-between gap-x-3 gap-y-1 text-xs text-muted-foreground mt-1">
+```
+
+不再做 `truncate` —— 截断金额数字比换行更危险（用户读不到完整值）。
+
+### 8.2 P-2 选股记录行右侧按钮组（[ScreenerV3Page.tsx:1483](../../stock_trading_system/web/frontend/src/islands/screener-v3/ScreenerV3Page.tsx)）
+
+**现状**：父级 `flex items-center gap-3 flex-wrap`（已经 wrap），按钮组 `ml-auto flex gap-1`。窄屏时按钮 div 会换行，但 `ml-auto` 在新行上没意义，按钮仍是紧凑宽度，点击区偏小。
+
+**改法**：
+
+```tsx
+<div className="flex gap-1 w-full sm:w-auto sm:ml-auto">
+  <Button ... className="flex-1 sm:flex-initial">查看</Button>
+  <Button ... className="flex-1 sm:flex-initial">复制配置重跑</Button>
+</div>
+```
+
+- 移动端：按钮组占满整行，两个按钮 `flex-1` 平分宽度，触摸目标自动达标
+- 桌面端 (`sm:` ≥640px)：恢复 `ml-auto` 紧凑布局，按钮按内容宽度
+
+### 8.3 P-3 `--fs-stat` / `--fs-hero` 去 vw（[index.css:125-126](../../stock_trading_system/web/frontend/src/styles/index.css)）
+
+**现状**：
+
+```css
+--fs-stat: clamp(16px, 4.6vw, 22px);
+--fs-hero: clamp(22px, 7vw, 40px);
+```
+
+v1.0 已把主文本 token 去 vw 化，但这两个大字号 token 保留了 clamp。React 侧 grep 发现：
+- `--fs-stat`：`Stat` 组件值文字（[stat.tsx:27](../../stock_trading_system/web/frontend/src/components/ui/stat.tsx)），用于 Dashboard 4 张统计卡
+- `--fs-hero`：React 无消费方（保留为 legacy 字号变量）
+
+为保持移动字号稳定，全部固定：
+
+```css
+--fs-stat: 20px;
+--fs-hero: 28px;
+```
+
+**取舍**：
+- `--fs-stat`：原 320px 渲染 16px、桌面 22px。固定 20px 在小屏稍大但不撑破（统计卡有 grid 单列兜底），桌面比原值小 2px，可接受
+- `--fs-hero`：React 无引用，给静态值兜底未来可能消费方
+- `style.css`（Bootstrap 模板遗留）的同名定义不动 —— 模板与 React 是两条独立栈
+
+## 9. 版本历史
 
 | 版本 | 日期 | 变更 |
 |---|---|---|
 | v1.0 | 2026-05-03 | 初版：6 个 React Island 时代漏点（底部安全区 / Dialog 滚动 / MarkdownBody 唯一入口 / TabsList 默认横滑 / Dashboard 密集行 wrap / 字号 token 去 vw） |
+| v1.1 | 2026-05-03 | 验收残留补丁（3 项）：持仓页移动卡片金额行 flex-wrap、选股记录行按钮组移动端全宽、`--fs-stat`/`--fs-hero` 去 vw |

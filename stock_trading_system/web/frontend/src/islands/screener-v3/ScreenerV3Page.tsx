@@ -1480,9 +1480,10 @@ function ScreenHistoryRow({
             <span className="text-red-400">{s.votes.bearish}✗</span>
           </span>
         )}
-        <div className="ml-auto flex gap-1">
+        <div className="flex gap-1 w-full sm:w-auto sm:ml-auto">
           <Button
             size="sm" variant="outline"
+            className="flex-1 sm:flex-initial"
             onClick={() => {
               window.location.href = `/screener-v3?result=${row.task_id}`
             }}
@@ -1491,6 +1492,7 @@ function ScreenHistoryRow({
           </Button>
           <Button
             size="sm" variant="ghost"
+            className="flex-1 sm:flex-initial"
             onClick={() => {
               window.location.href = `/screener-v3?prefill=${row.task_id}`
             }}

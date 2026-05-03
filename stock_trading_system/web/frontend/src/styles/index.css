@@ -14,13 +14,13 @@
   --font-mono: "JetBrains Mono", "SF Mono", "Menlo", monospace;
 
   /* Responsive type scale via clamp() (from mobile-optimization.md) */
-  --text-xs:   clamp(10px, 2.4vw, 11px);
-  --text-sm:   clamp(12px, 3.2vw, 13px);
-  --text-base: clamp(13px, 3.6vw, 14px);
-  --text-md:   clamp(14px, 4vw, 16px);
-  --text-lg:   clamp(16px, 4.8vw, 18px);
-  --text-xl:   clamp(18px, 5.6vw, 22px);
-  --text-2xl:  clamp(22px, 7vw, 40px);
+  --text-xs:   12px;
+  --text-sm:   13px;
+  --text-base: 14px;
+  --text-md:   15px;
+  --text-lg:   17px;
+  --text-xl:   20px;
+  --text-2xl:  24px;
 
   /* Core palette (dark-first) */
   --color-bg-primary:      oklch(10% 0.015 260);
@@ -122,10 +122,11 @@ body { margin: 0; font-size: var(--text-base); }
 
 /* ═══ Mobile Tokens (from mobile-optimization.md) ═══ */
 :root {
-  --fs-stat: clamp(16px, 4.6vw, 22px);
-  --fs-hero: clamp(22px, 7vw, 40px);
+  --fs-stat: 20px;
+  --fs-hero: 28px;
   --touch-min: 44px;
   --page-pad-mobile: 12px;
+  --mobile-tabbar-height: calc(64px + env(safe-area-inset-bottom, 0px));
 }
 
 /* ═══ Form row mobile: single-column at ≤575.98px ═══ */
@@ -164,3 +165,17 @@ body { margin: 0; font-size: var(--text-base); }
   -webkit-overflow-scrolling: touch;
 }
 .tabs-scrollable::-webkit-scrollbar { display: none; }
+
+/* ═══ React Island 移动端二轮修复（mobile-react-island-fixes.md v1.0） ═══ */
+@media (min-width: 768px) {
+  :root { --mobile-tabbar-height: 0px; }
+}
+
+/* TabsList 默认横滑所需的 scrollbar 隐藏 utility */
+.scrollbar-none { scrollbar-width: none; }
+.scrollbar-none::-webkit-scrollbar { display: none; }
+
+/* MarkdownBody 局部 scope：长内容在移动端不撑破容器 */
+.mdx-body :where(p, li) { overflow-wrap: anywhere; }
+.mdx-body :where(code):not(pre code) { word-break: break-word; }
+.mdx-body :where(img) { max-width: 100%; height: auto; }

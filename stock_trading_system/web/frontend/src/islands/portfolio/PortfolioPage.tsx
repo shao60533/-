@@ -211,7 +211,7 @@ export function PortfolioPage() {
                         {fmtPct(h.pnl_pct)}
                       </span>
                     </div>
-                    <div className="flex justify-between text-xs text-muted-foreground mt-1">
+                    <div className="flex flex-wrap justify-between gap-x-3 gap-y-1 text-xs text-muted-foreground mt-1">
                       <span>成本 ${fmt(h.avg_cost)}</span>
                       <span className={cn("font-mono", (h.pnl || 0) >= 0 ? "text-[var(--color-accent-green)]" : "text-[var(--color-accent-red)]")}>
                         盈亏 {(h.pnl || 0) >= 0 ? "+" : ""}${fmt(h.pnl || 0)}

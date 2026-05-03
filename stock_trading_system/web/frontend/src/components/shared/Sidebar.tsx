@@ -156,7 +156,10 @@ export function MobileTabbar() {
     <>
       <nav
         className="md:hidden fixed bottom-0 left-0 right-0 bg-card border-t border-border flex z-50"
-        style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}
+        style={{
+          height: "var(--mobile-tabbar-height)",
+          paddingBottom: "env(safe-area-inset-bottom, 0px)",
+        }}
       >
         {MOBILE_PRIMARY.map((tab) => (
           <TabItem key={tab.href} item={tab} />

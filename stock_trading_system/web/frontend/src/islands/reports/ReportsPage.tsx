@@ -1,7 +1,5 @@
-import { useEffect, useRef, useState } from "react"
+import { Suspense, lazy, useEffect, useRef, useState } from "react"
 import { FileText, Send, Clock, ArrowLeft, Sparkles } from "lucide-react"
-import Markdown from "react-markdown"
-import remarkGfm from "remark-gfm"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -11,6 +9,8 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select"
 import { apiGet, apiPost } from "@/lib/api"
+
+const MarkdownBody = lazy(() => import("@/components/shared/MarkdownBody"))
 
 interface TaskSubmitResult {
   task_id: string
@@ -273,9 +273,11 @@ function ReportDetail({ reportId, onBack }: { reportId: string; onBack: () => vo
           </CardHeader>
           <CardContent>
             {result.content && (
-              <div className="prose prose-sm prose-invert max-w-none text-[var(--color-text-secondary)]">
-                <Markdown remarkPlugins={[remarkGfm]}>{result.content}</Markdown>
-              </div>
+              <Suspense fallback={<Skeleton className="h-24 w-full" />}>
+                <MarkdownBody className="prose prose-sm prose-invert max-w-none text-[var(--color-text-secondary)]">
+                  {result.content}
+                </MarkdownBody>
+              </Suspense>
             )}
           </CardContent>
         </Card>
