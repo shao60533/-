@@ -247,6 +247,33 @@ function signalVariant(signal: string): "buy" | "sell" | "hold" | "default" {
   return "default"
 }
 
+/** v1.3: Unify the long tail of LLM signal strings ("Overweight" /
+ *  "Strong Sell" / "BUY" / "bullish" / "Hold" / "Neutral" / 中文 / ...)
+ *  into the 3-state user-facing label. ``RatingBadge`` inside
+ *  ``OverviewCard`` preserves the 7-state rating ladder — that's a
+ *  separate dimension and stays untouched.
+ *
+ *  Sell detection runs first so "underweight" doesn't accidentally
+ *  hit the buy branch via some future "weight"+"buy" tokenization.
+ *  ``signalVariant`` keeps owning the badge color (it tolerates any
+ *  raw enum); this helper only owns the displayed text.
+ */
+export function signalLabel(signal: string | null | undefined): "Buy" | "Sell" | "Hold" {
+  const s = (signal ?? "").toLowerCase().trim()
+  if (!s) return "Hold"
+  if (
+    s.includes("sell") || s.includes("bearish")
+    || s.includes("underweight") || s.includes("减仓")
+    || s === "reduce"
+  ) return "Sell"
+  if (
+    s.includes("buy") || s.includes("bullish")
+    || s.includes("overweight") || s.includes("加仓")
+    || s === "add"
+  ) return "Buy"
+  return "Hold"
+}
+
 function getIdFromUrl(): string | null {
   const match = window.location.pathname.match(/\/analysis\/([^/]+)/)
   return match?.[1] ?? null
@@ -1080,7 +1107,7 @@ function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
           </Button>
           <h1 className="text-xl font-bold font-mono">{detail.ticker}</h1>
           <Badge variant={signalVariant(canonicalSignal(detail))}>
-            {canonicalSignal(detail) || "N/A"}
+            {signalLabel(canonicalSignal(detail))}
           </Badge>
           {detail.signal_mismatch && (
             <span
@@ -1708,7 +1735,7 @@ function CompletedRow({ row, onChanged }: {
           : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />}
         <span className="font-mono font-semibold">{row.ticker}</span>
         <Badge variant={signalVariant(row.signal || "")} className="text-[10px]">
-          {row.signal || "—"}
+          {signalLabel(row.signal)}
         </Badge>
         <Badge variant="muted" className="text-[10px]">{depthLabel(row.depth)}</Badge>
         {/* analysis-rendering v1.7 — show LLM confidence chip when
