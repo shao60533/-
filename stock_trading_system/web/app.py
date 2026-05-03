@@ -1289,15 +1289,21 @@ def create_app(config_path=None):
         if not ticker:
             return jsonify({"error": "ticker required"}), 400
         from stock_trading_system.utils.helpers import today_str
-        from stock_trading_system.portfolio.database import _normalize_depth
+        from stock_trading_system.portfolio.database import (
+            normalize_analysis_depth,
+        )
         date = data.get("date") or today_str()
-        depth = _normalize_depth(data.get("depth"))
+        # analysis-depth-mode v1.0: 同时支持新字段 deep_analysis (bool)
+        # 和旧字段 depth (str, 含 quick 兼容)，统一归一化为 canonical
+        # {"depth": "standard"|"deep", "deep_analysis": bool}。
+        _depth_form = normalize_analysis_depth(data)
 
         tm = _get_task_manager()
         params = {
             "ticker": ticker,
             "date": date,
-            "depth": depth,
+            "depth": _depth_form["depth"],
+            "deep_analysis": _depth_form["deep_analysis"],
             "__user_id__": g.user.id,
         }
         task = tm.submit(
@@ -1461,11 +1467,18 @@ def create_app(config_path=None):
                         cb_int = int(cb_raw) if cb_raw and str(cb_raw).isdigit() else None
                     except (TypeError, ValueError):
                         cb_int = None
+                    _depth_norm = _normalize_depth(p.get("depth"))
                     running_items.append({
                         "kind":              "task",
                         "task_id":           t["id"],
                         "ticker":            (p.get("ticker") or "").upper(),
-                        "depth":             _normalize_depth(p.get("depth")),
+                        "depth":             _depth_norm,
+                        # analysis-depth-mode v1.0: 同时返回新字段供前端
+                        # 直接消费；旧 row params_json 里若已有 deep_analysis
+                        # 优先取它，否则从 depth 推。
+                        "deep_analysis":     bool(p.get("deep_analysis"))
+                                             if isinstance(p.get("deep_analysis"), bool)
+                                             else (_depth_norm == "deep"),
                         "status":            t.get("status", "pending"),
                         "submitted_at":      t.get("created_at"),
                         "task_started_at":   t.get("started_at"),
@@ -3084,6 +3097,17 @@ def create_app(config_path=None):
             prov, mdl = resolve_active_model(cfg, user_id=uid_for_resolve)
             params.setdefault("_provider", prov)
             params.setdefault("_model", mdl or "")
+        # analysis-depth-mode v1.0: 在路由侧把 analysis 的 depth/deep_analysis
+        # 归一化一次写回 params，让 TaskStore.params_json 始终是清洁的
+        # canonical 形态 ({depth, deep_analysis})，下游 worker 再读一遍
+        # 也是同一结果（幂等）。
+        if task_type == "analysis":
+            from stock_trading_system.portfolio.database import (
+                normalize_analysis_depth,
+            )
+            _df = normalize_analysis_depth(params)
+            params["depth"] = _df["depth"]
+            params["deep_analysis"] = _df["deep_analysis"]
 
         uid = g.user.id if g.user else None
         # Inject the requester id into params so workers (e.g. analysis) can
