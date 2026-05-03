@@ -37,6 +37,8 @@ def ensure_multi_tenant_ready(db_path: str) -> bool:
     the admin runs the migration script.
     """
     if not _has_users_table(db_path):
+        import os
+        print(f"\n[bootstrap debug] _has_users_table FALSE for {db_path!r}, exists={os.path.exists(db_path)}")
         logger.warning(
             "Multi-tenant tables not found. Run: "
             "python -m stock_trading_system.migrations.to_multi_tenant"

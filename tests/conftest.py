@@ -69,6 +69,28 @@ def _reset_app_singletons() -> None:
             _ee._seq_cache.clear()
     except Exception:
         pass
+    # CRITICAL: refresh ``stock_trading_system.web.app``'s already-bound
+    # ``get_config`` / ``load_config`` references. ``from
+    # stock_trading_system.config import get_config`` at web/app.py:11
+    # captures whatever the package attribute resolved to at first
+    # import. If that import happened DURING a
+    # ``monkeypatch.setattr("stock_trading_system.config.get_config",
+    # lambda)`` window inside e.g.
+    # tests/tasks/test_task_manager.py::test_post_analysis_save_drives*,
+    # web.app's binding stays pointed at the throwaway lambda forever
+    # because monkeypatch only restores the package attribute — not
+    # references already copied into other modules. The next web test
+    # then reads its db_path through the stale lambda → wrong tmp_path
+    # → ensure_multi_tenant_ready warns "Multi-tenant tables not
+    # found" → login 500.
+    try:
+        from stock_trading_system import config as _config_pkg2
+        if app_module is not None:
+            for name in ("get_config", "load_config", "save_config"):
+                if hasattr(_config_pkg2, name):
+                    setattr(app_module, name, getattr(_config_pkg2, name))
+    except Exception:
+        pass
 
 
 def _bootstrap_users_db(db_path: str) -> None:
@@ -186,7 +208,17 @@ def app_client(tmp_path, isolated_config_dir, monkeypatch):
     from stock_trading_system.config import get_config as _gc
     _cfg_test = _gc()
     print(f"[conftest debug] cfg portfolio.db_path = {_cfg_test.get('portfolio',{}).get('db_path')!r}")
+    # Verify users table NOW
+    _conn_dbg2 = _sq3.connect(str(db_path))
+    _u2 = _conn_dbg2.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='users'").fetchone()
+    print(f"[conftest debug] users table immediately before create_app: {_u2 is not None}")
+    _conn_dbg2.close()
     flask_app = app_module.create_app()
+    # And after create_app
+    _conn_dbg3 = _sq3.connect(str(db_path))
+    _u3 = _conn_dbg3.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='users'").fetchone()
+    print(f"[conftest debug] users table immediately after create_app: {_u3 is not None}")
+    _conn_dbg3.close()
     flask_app.config["TESTING"] = True
     flask_app.config["WTF_CSRF_ENABLED"] = False
 

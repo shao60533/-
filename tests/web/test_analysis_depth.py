@@ -1,10 +1,14 @@
-"""depth (quick / standard / deep) end-to-end persistence + DTO contract.
+"""depth (standard / deep) end-to-end persistence + DTO contract.
 
-The shared analysis_history row carries a ``depth`` column persisted by
-both ``PortfolioDatabase.save_analysis`` and
-``TaskStore._save_analysis_result``. Unknown / missing values fall back
-to ``standard``. The /api/history list and /api/history/<id> detail
-DTOs both surface ``depth`` so the React detail page can show it.
+analysis-depth-mode v1.0 把 quick/standard/deep 三档收敛为 standard/deep
+二档。本测试模块覆盖 ``_normalize_depth`` 的旧 API 收敛行为：
+
+- 内部 canonical 集合仅 ``{"standard", "deep"}``
+- 旧值 ``quick`` / ``NULL`` / ``""`` / 任何无法识别的值 → ``standard``
+- ``deep`` 显式输入 → ``deep``
+
+新字段 ``deep_analysis`` (bool) 与 ``normalize_analysis_depth`` 入口契约
+在 ``test_analysis_depth_mode.py`` 单独覆盖。
 """
 
 from __future__ import annotations
@@ -22,7 +26,7 @@ from stock_trading_system.portfolio.database import (
 @pytest.mark.parametrize("incoming,expected", [
     (None,         "standard"),
     ("",           "standard"),
-    ("Quick",      "quick"),
+    ("Quick",      "standard"),  # v1.0: 旧 quick 兼容映射为 standard
     ("standard",   "standard"),
     ("DEEP",       "deep"),
     ("invalid",    "standard"),
@@ -63,13 +67,15 @@ def test_save_analysis_invalid_depth_falls_back_to_standard(tmp_path):
 
 def test_history_list_dto_returns_depth(alice_client, app_client):
     db = PortfolioDatabase(app_client["db_path"])
+    # v1.0: 即使外部传入 quick，DTO 也归一化为 standard 返回 — quick 不再
+    # 作为产品状态（用 deep 写入更直观，DTO 应原样返）。
     db.save_analysis({
         "ticker": "AAPL", "date": "2026-04-15", "signal": "BUY",
-        "created_by": app_client["users"].alice.id, "depth": "quick",
+        "created_by": app_client["users"].alice.id, "depth": "deep",
     })
     body = alice_client.get("/api/history?limit=5").get_json()
     assert body["items"], "list must return at least one item"
-    assert body["items"][0]["depth"] == "quick"
+    assert body["items"][0]["depth"] == "deep"
 
 
 def test_history_detail_dto_returns_depth(alice_client, app_client):
@@ -118,22 +124,29 @@ def test_task_store_persists_depth(tmp_path):
     assert row["depth"] == "deep"
 
 
-def test_analyzer_iteration_toggle_quick_vs_deep(tmp_path):
-    """``analyze(depth='quick')`` must force iteration off even when
-    config.iteration.enabled=True; ``depth='deep'`` must force on even
-    when config disables it."""
+def test_analyzer_iteration_toggle_standard_vs_deep(tmp_path):
+    """v1.0: standard 永远关 iteration（不读 config）；deep 强制开
+    iteration，仅当 ``config.iteration.enabled=false`` 时降级为 standard。"""
     from stock_trading_system.agents.analyzer import StockAnalyzer
-    analyzer = StockAnalyzer({"iteration": {"enabled": True}})
 
-    # Standard defers to config.
-    analyzer._depth_override = "standard"
-    assert analyzer._iteration_enabled is True
+    # 1) standard + config.iteration.enabled=True → 仍然 False
+    #    （v1.0 关键变化：standard 不再跟随 config）
+    a1 = StockAnalyzer({"iteration": {"enabled": True}})
+    a1._depth_override = "standard"
+    assert a1._iteration_enabled is False
 
-    # Quick overrides config-on.
-    analyzer._depth_override = "quick"
-    assert analyzer._iteration_enabled is False
+    # 2) deep + config.iteration.enabled=True → True
+    a2 = StockAnalyzer({"iteration": {"enabled": True}})
+    a2._depth_override = "deep"
+    assert a2._iteration_enabled is True
 
-    # Deep overrides config-off.
-    analyzer2 = StockAnalyzer({"iteration": {"enabled": False}})
-    analyzer2._depth_override = "deep"
-    assert analyzer2._iteration_enabled is True
+    # 3) deep + config.iteration.enabled=False → 降级为 False，且原因被记录
+    a3 = StockAnalyzer({"iteration": {"enabled": False}})
+    a3._depth_override = "deep"
+    assert a3._iteration_enabled is False
+    assert a3._iteration_downgrade_reason == "system_iteration_disabled"
+
+    # 4) 旧 quick 兼容：等价于 standard，永远 False
+    a4 = StockAnalyzer({"iteration": {"enabled": True}})
+    a4._depth_override = "quick"
+    assert a4._iteration_enabled is False

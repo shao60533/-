@@ -85,7 +85,12 @@ interface AnalysisDetail {
   bookmarked?: boolean
   advice?: Record<string, unknown> | null
   // v1.16: depth UX hint persisted on the shared row
-  depth?: "quick" | "standard" | "deep" | null
+  // analysis-depth-mode v1.0: 内部仅 standard/deep 两档。``deep_analysis``
+  // 是新的产品级 bool flag；``depth`` 字段仍保留供旧记录 / 任务回放使用，
+  // 旧值 ``quick`` 由后端 DTO 一致归一为 ``standard``。``depthLabel`` 在
+  // 渲染时优先读 ``deep_analysis``，缺失则 fallback ``depth``。
+  depth?: "standard" | "deep" | string | null
+  deep_analysis?: boolean | null
   // v1.19: per-tab structured cards. The DTO emits a parsed dict — clients
   // never see ``rendering_json`` raw. Missing or null values fall back to
   // the markdown body (kept inside a ``<details>`` collapsible).
@@ -126,7 +131,10 @@ type InboxRow =
       kind: "task"
       task_id: string
       ticker: string
-      depth: "quick" | "standard" | "deep" | null
+      // analysis-depth-mode v1.0: 后端归一后只会是 standard/deep；旧
+      // 任务回放可能仍带 quick，``depthLabel`` 兼容显示为「标准」。
+      depth: "standard" | "deep" | string | null
+      deep_analysis?: boolean | null
       status: "pending" | "running" | "failed" | "cancelled" | string
       submitted_at: string | null
       progress_pct: number
@@ -146,7 +154,8 @@ type InboxRow =
       model: string | null
       duration_sec: number | null
       task_id: string | null
-      depth: "quick" | "standard" | "deep" | null
+      depth: "standard" | "deep" | string | null
+      deep_analysis?: boolean | null
       bookmarked: boolean
       // analysis-rendering v1.7 — LLM-derived confidence on the inbox
       // row. ``null`` for rows without rendering_json (legacy / extraction
@@ -180,13 +189,23 @@ const TASK_STATUS_LABEL: Record<string, string> = {
   failed: "失败",   cancelled: "已取消",
 }
 
-type AnalysisDepth = "quick" | "standard" | "deep"
+// analysis-depth-mode v1.0: 内部仅 standard/deep 两档。前端唯一 UI 入口
+// 是 ``开启深度分析`` 开关（bool）；旧 row.depth 仅供 fallback 显示。
+// ``AnalysisDepth`` 类型曾用于三段 RadioGroup state，现已被 bool 替代。
 
-function depthLabel(d: AnalysisDepth | string | null | undefined): string {
+/** 渲染分析模式的中文 badge 文案。优先读 ``deepAnalysis`` (新 bool 字段)，
+ *  缺失时 fallback 旧 ``depth`` 字符串；旧值 ``quick`` 与 NULL 都显示为
+ *  「标准」。**任意输入都不返回「快速」**——quick 不再作为产品入口。 */
+export function depthLabel(
+  d?: string | null,
+  deepAnalysis?: boolean | null,
+): string {
+  if (deepAnalysis === true)  return "深度"
+  if (deepAnalysis === false) return "标准"
   switch ((d || "").toLowerCase()) {
-    case "quick":    return "快速"
     case "deep":     return "深度"
     case "standard": return "标准"
+    case "quick":    return "标准"  // 旧值兼容
     default:         return "标准"
   }
 }
@@ -312,11 +331,8 @@ const REPORT_TABS = [
   { key: "Decision", label: "决策" },
 ] as const
 
-const DEPTH_OPTIONS: { value: AnalysisDepth; label: string; hint: string }[] = [
-  { value: "quick",    label: "快速", hint: "~30s · ~$0.05 · 跳过辩论/反思" },
-  { value: "standard", label: "标准", hint: "~2min · ~$0.20 · 7 Agent 默认" },
-  { value: "deep",     label: "深度", hint: "~5min · ~$0.80 · 启用迭代" },
-]
+// analysis-depth-mode v1.0: 三段选择改为单一 ``开启深度分析`` 开关 —— 见
+// AnalysisPage 表单 JSX 内的 <Switch>。``DEPTH_OPTIONS`` 移除。
 
 /** v1.22: legacy ``/analysis/<task_uuid>`` URLs are folded into the
  *  unified inbox. We replaceState to ``/analysis?task=<uuid>`` so the
@@ -357,7 +373,9 @@ export function AnalysisPage() {
   // Form state
   const [ticker, setTicker] = useState("")
   const [date, setDate] = useState(new Date().toISOString().slice(0, 10))
-  const [depth, setDepth] = useState<AnalysisDepth>("standard")
+  // analysis-depth-mode v1.0: 单一 bool 开关代替三段选择。off=标准分析，
+  // on=深度分析（启用 iteration / Darwinian 权重）。默认 false。
+  const [deepAnalysis, setDeepAnalysis] = useState<boolean>(false)
   const [submitting, setSubmitting] = useState(false)
   // v1.22 unified inbox: in-flight tasks + completed analyses in one
   // list. Replaces the old "最近分析" 5-card strip + the standalone
@@ -415,7 +433,10 @@ export function AnalysisPage() {
     try {
       const res = await apiPost<TaskSubmitResult>("/api/tasks/submit", {
         type: "analysis",
-        params: { ticker: submittedTicker, date, depth },
+        // analysis-depth-mode v1.0: 提交体改为 ``deep_analysis: bool``，
+        // 不再传 ``depth`` 字符串（后端 normalize_analysis_depth 仍兼容
+        // 旧字段，但前端只发新字段）。
+        params: { ticker: submittedTicker, date, deep_analysis: deepAnalysis },
       })
       if (res.task_id) {
         // v1.22: stay on the inbox; prepend an optimistic running row
@@ -426,7 +447,8 @@ export function AnalysisPage() {
           kind: "task",
           task_id: res.task_id,
           ticker: submittedTicker,
-          depth,
+          depth: deepAnalysis ? "deep" : "standard",
+          deep_analysis: deepAnalysis,
           status: "pending",
           submitted_at: new Date().toISOString().slice(0, 19).replace("T", " "),
           progress_pct: 0,
@@ -639,35 +661,37 @@ export function AnalysisPage() {
             </Button>
           </div>
 
-          <div className="space-y-2">
-            <div className="text-sm text-muted-foreground">分析深度</div>
-            <div className="grid gap-2 sm:grid-cols-3">
-              {DEPTH_OPTIONS.map(opt => (
-                <label
-                  key={opt.value}
-                  className={
-                    "flex items-start gap-2 rounded-lg border p-3 cursor-pointer text-sm " +
-                    (depth === opt.value
-                      ? "border-primary/60 bg-primary/5"
-                      : "border-border")
-                  }
-                >
-                  <input
-                    type="radio"
-                    name="analysis-depth"
-                    value={opt.value}
-                    checked={depth === opt.value}
-                    onChange={() => setDepth(opt.value)}
-                    className="mt-0.5"
-                  />
-                  <div>
-                    <div className="font-semibold">{opt.label}</div>
-                    <div className="text-xs text-muted-foreground">{opt.hint}</div>
-                  </div>
-                </label>
-              ))}
+          {/* analysis-depth-mode v1.0: 三段选择改为单一开关。off=标准
+              分析（7 Agent 单次），on=深度分析（启用迭代/Darwinian 权重）。
+              用纯 HTML <input type="checkbox"> 实现 toggle 视觉以避免引入
+              新组件依赖；视觉仍是产品级的两态卡片。 */}
+          <label
+            htmlFor="analysis-deep-toggle"
+            className={
+              "flex items-start gap-3 rounded-lg border p-3 cursor-pointer " +
+              (deepAnalysis
+                ? "border-primary/60 bg-primary/5"
+                : "border-border")
+            }
+          >
+            <input
+              id="analysis-deep-toggle"
+              type="checkbox"
+              role="switch"
+              aria-label="开启深度分析"
+              checked={deepAnalysis}
+              onChange={e => setDeepAnalysis(e.target.checked)}
+              className="mt-1 h-4 w-4 accent-primary"
+            />
+            <div className="flex-1 text-sm">
+              <div className="font-semibold">开启深度分析</div>
+              <div className="text-xs text-muted-foreground mt-0.5">
+                {deepAnalysis
+                  ? "深度分析（启用迭代 / Darwinian 权重链路，速度更慢但论据更深）"
+                  : "标准分析（7 Agent 单次，默认）"}
+              </div>
             </div>
-          </div>
+          </label>
 
           {error && <Alert variant="destructive" className="mt-2"><AlertTitle>提交失败</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}
         </CardContent>
@@ -1002,9 +1026,18 @@ function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
   const handleReanalyze = async () => {
     setActionMsg(null)
     try {
+      // analysis-depth-mode v1.0: 「再分析」沿用原记录的 depth；
+      // ``detail.deep_analysis`` 由 DTO 直供，缺失时按 ``depth`` 推。
+      const reanalyzeDeep =
+        typeof detail.deep_analysis === "boolean"
+          ? detail.deep_analysis
+          : (detail.depth === "deep")
       const res = await apiPost<TaskSubmitResult>("/api/tasks/submit", {
         type: "analysis",
-        params: { ticker: detail.ticker, date: detail.date, depth: "standard" },
+        params: {
+          ticker: detail.ticker, date: detail.date,
+          deep_analysis: reanalyzeDeep,
+        },
       })
       if (res.task_id) window.location.href = `/analysis/${res.task_id}`
     } catch (err: unknown) {
@@ -1182,9 +1215,10 @@ function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
         {detail.provider && (
           <span>Provider：{detail.provider}{detail.model ? ` / ${detail.model}` : ""}</span>
         )}
-        {detail.depth && (
-          <span>深度：{depthLabel(detail.depth)}</span>
-        )}
+        {/* analysis-depth-mode v1.0: 优先读 deep_analysis bool，缺失则
+            fallback depth string；旧 NULL/quick 经 fallback 显示为「标准」。
+            所以 detail header 永远展示一个 badge，不再依赖字段存在性。 */}
+        <span>深度：{depthLabel(detail.depth, detail.deep_analysis)}</span>
         {detail.duration_sec != null && (
           <span>耗时：{Number(detail.duration_sec).toFixed(1)}s</span>
         )}
@@ -1591,7 +1625,7 @@ function RunningRow({ row, live, highlight, onSettled }: {
           : <Clock className="h-3.5 w-3.5 text-primary animate-spin shrink-0" />}
         <span className="font-mono font-semibold">{row.ticker || "—"}</span>
         <Badge variant="muted" className="text-[10px]">
-          {depthLabel(row.depth)}
+          {depthLabel(row.depth, row.deep_analysis)}
         </Badge>
         <Badge
           variant={isFailure ? "sell" : "default"}
@@ -1737,7 +1771,7 @@ function CompletedRow({ row, onChanged }: {
         <Badge variant={signalVariant(row.signal || "")} className="text-[10px]">
           {signalLabel(row.signal)}
         </Badge>
-        <Badge variant="muted" className="text-[10px]">{depthLabel(row.depth)}</Badge>
+        <Badge variant="muted" className="text-[10px]">{depthLabel(row.depth, row.deep_analysis)}</Badge>
         {/* analysis-rendering v1.7 — show LLM confidence chip when
             available; absent for legacy rows without rendering_json. */}
         {row.confidence_level && (
