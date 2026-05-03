@@ -104,6 +104,14 @@ def make_analysis_worker(get_analyzer, get_strategy_engine, get_portfolio, get_r
         from stock_trading_system.agents.rendering.state_normalizer import (
             normalize_state_to_text,
         )
+        # llm-fallback v1.0: zero the per-task fallback counters so the
+        # snapshot we attach to the result dict reflects this run only.
+        # Counter is module-level (shared across concurrent tasks) but
+        # this is telemetry, not correctness — operator visibility only.
+        from stock_trading_system.llm.resilient_chat import (
+            reset_fallback_counters, get_fallback_counters,
+        )
+        reset_fallback_counters()
 
         t_start = _time.perf_counter()
         ticker = (params.get("ticker") or "").upper().strip()
@@ -267,6 +275,11 @@ def make_analysis_worker(get_analyzer, get_strategy_engine, get_portfolio, get_r
                 "advice": advice_dict,
                 "holdings_snapshot": holdings_snapshot,
             }
+        # llm-fallback v1.0: surface fallback counts so /api/history can
+        # show how often the secondary provider stepped in. Top-level
+        # key (not nested under metrics) for parity with how the
+        # analysis DTO already echoes provenance fields.
+        out["fallback_counts"] = get_fallback_counters()
         return out
 
     def worker(params: dict, progress_cb: ProgressCb) -> dict:
@@ -581,6 +594,13 @@ def make_screen_v3_worker():
         import asyncio
         from stock_trading_system.config import get_config
         from stock_trading_system.screener.v3.pipeline import ScreenerV3Pipeline
+        # llm-fallback v1.0: per-task counter reset; snapshot below
+        # surfaces on metrics so the result page can show "备用 LLM
+        # 触发 N 次" if anyone wires that into the run-metadata banner.
+        from stock_trading_system.llm.resilient_chat import (
+            reset_fallback_counters, get_fallback_counters,
+        )
+        reset_fallback_counters()
 
         cfg = get_config()
         user_id = params.get("user_id")
@@ -679,6 +699,13 @@ def make_screen_v3_worker():
             raise _CancelledError(f"用户取消（阶段 {phase}）")
 
         progress_cb(98, "整理结果")
+        # llm-fallback v1.0: stash counters under metrics so
+        # ``/api/screen/v3/results`` can surface them via run_metadata.
+        # Always set the key (even when zero) so the contract is stable.
+        if isinstance(result, dict):
+            metrics = result.setdefault("metrics", {})
+            if isinstance(metrics, dict):
+                metrics["fallback_counts"] = get_fallback_counters()
         return result
 
     return worker

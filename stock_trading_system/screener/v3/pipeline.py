@@ -954,19 +954,24 @@ class ScreenerV3Pipeline:
 
     def _build_judge_llm_call(self, context):
         """Construct a thin ``llm_call(system, user) -> str`` closure
-        backed by the active LangChain chat model. Returns ``None`` if
+        backed by the active LangChain chat model.
+
+        llm-fallback v1.0: uses :func:`build_resilient_chat` directly so
+        the round-table judge + Round 3 bull-rebuttal LLM calls also
+        get cross-provider fallback on rate limits. Returns ``None`` if
         the chat model can't be built (missing API key etc.) — the
-        roundtable still runs in fallback mode without a judge."""
+        round-table then runs in fallback mode without a judge.
+        """
         try:
-            # Reuse BaseGuruAgent's chat model factory. Importing it
-            # via a stub instance avoids re-implementing the qwen /
-            # gemini provider switch. Any guru class works since the
-            # method is on the abstract base.
-            from stock_trading_system.screener.v3.guru_agents.buffett import (
-                BuffettAgent,
+            from stock_trading_system.llm.resilient_chat import (
+                build_resilient_chat,
             )
-            agent = BuffettAgent()
-            chat = agent._get_chat_model(context or {})
+            ctx = context or {}
+            chat = build_resilient_chat(
+                config=ctx.get("config", {}) or {},
+                kind="quick",
+                user_id=ctx.get("user_id"),
+            )
         except Exception as e:  # noqa: BLE001
             logger.info("roundtable judge llm unavailable: %s", e)
             return None
@@ -974,16 +979,13 @@ class ScreenerV3Pipeline:
         from langchain_core.messages import SystemMessage, HumanMessage
 
         def _call(system: str, user: str) -> str:
-            try:
-                resp = chat.invoke([
-                    SystemMessage(content=system),
-                    HumanMessage(content=user),
-                ])
-                return getattr(resp, "content", "") or ""
-            except Exception as e:  # noqa: BLE001
-                # roundtable.run_roundtable already tolerates raises by
-                # appending "评判失败 (e)" — propagate so it surfaces.
-                raise
+            # roundtable.run_roundtable already tolerates raises by
+            # appending "评判失败 (e)" — propagate so it surfaces.
+            resp = chat.invoke([
+                SystemMessage(content=system),
+                HumanMessage(content=user),
+            ])
+            return getattr(resp, "content", "") or ""
 
         return _call
 

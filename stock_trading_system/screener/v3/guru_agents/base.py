@@ -431,28 +431,22 @@ class BaseGuruAgent:
         raise NotImplementedError
 
     def _get_chat_model(self, context: dict):
-        """Get a LangChain chat model for the active provider."""
-        provider = context.get("provider", "qwen")
-        config = context.get("config", {})
+        """Get a LangChain chat model for the active provider.
 
-        if provider == "qwen":
-            from langchain_openai import ChatOpenAI
-            qwen_cfg = config.get("qwen", {})
-            return ChatOpenAI(
-                model=qwen_cfg.get("model", "qwen-plus"),
-                api_key=qwen_cfg.get("api_key", ""),
-                base_url=qwen_cfg.get("base_url",
-                    "https://dashscope.aliyuncs.com/compatible-mode/v1"),
-                timeout=120,
-            )
-        else:
-            from langchain_google_genai import ChatGoogleGenerativeAI
-            gemini_cfg = config.get("gemini", {})
-            return ChatGoogleGenerativeAI(
-                model=gemini_cfg.get("model", "gemini-2.5-flash"),
-                google_api_key=gemini_cfg.get("api_key", ""),
-                timeout=120,
-            )
+        llm-fallback v1.0: returns a Runnable that auto-falls-back to
+        the other provider on rate-limit errors. Single-request scope —
+        does not mutate state or override ``get_active_provider``.
+        Safely degrades to a bare primary chat when the secondary
+        provider has no api_key or fallback is explicitly disabled
+        (``config.llm.fallback_enabled = False``).
+        """
+        from stock_trading_system.llm.resilient_chat import build_resilient_chat
+        return build_resilient_chat(
+            config=context.get("config", {}) or {},
+            kind="quick",
+            user_id=context.get("user_id"),
+            timeout=120,
+        )
 
     def _llm_reason(
         self,

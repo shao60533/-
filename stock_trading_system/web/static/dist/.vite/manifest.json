@@ -191,7 +191,7 @@
     ]
   },
   "src/islands/analysis/main.tsx": {
-    "file": "assets/analysis-Cqeua4_S.js",
+    "file": "assets/analysis-CiYEZdNJ.js",
     "name": "analysis",
     "src": "src/islands/analysis/main.tsx",
     "isEntry": true,
@@ -211,6 +211,7 @@
       "src/components/shared/MarkdownBody.tsx",
       "src/components/shared/TVChart.tsx",
       "src/components/analysis/lazy-bundle.tsx",
+      "src/lib/socket.ts",
       "src/lib/socket.ts",
       "src/lib/socket.ts"
     ]

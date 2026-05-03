@@ -216,32 +216,18 @@ class StockAnalyzer:
         """Build a quick-think LangChain chat instance for the active provider.
 
         Used by :class:`RenderingExtractor` to convert the finished reports
-        into per-tab structured cards. Mirrors the model selection in
-        ``_configure_qwen`` / ``_configure_gemini`` so structured output uses
-        the same model that produced the underlying text.
-        """
-        from stock_trading_system.llm.router import get_active_provider
+        into per-tab structured cards.
 
-        provider = get_active_provider(self._config)
-        if provider == "qwen":
-            from langchain_openai import ChatOpenAI
-            qcfg = self._config.get("qwen", {}) or {}
-            return ChatOpenAI(
-                model=qcfg.get("model", "qwen-plus"),
-                api_key=qcfg.get("api_key", ""),
-                base_url=qcfg.get(
-                    "base_url",
-                    "https://dashscope.aliyuncs.com/compatible-mode/v1",
-                ),
-                temperature=0,
-                timeout=60,
-            )
-        from langchain_google_genai import ChatGoogleGenerativeAI
-        gcfg = self._config.get("gemini", {}) or {}
-        return ChatGoogleGenerativeAI(
-            model=gcfg.get("model", "gemini-2.5-flash"),
-            api_key=gcfg.get("api_key", ""),
-            temperature=0,
+        llm-fallback v1.0: now returns a resilient Runnable that
+        auto-falls-back to the other provider on rate-limit errors —
+        an 8-tab extraction won't get nuked by a single Gemini 429.
+        ``with_structured_output(Schema)`` passes through unchanged
+        (LangChain ≥0.3 ``RunnableWithFallbacks`` inherits Runnable).
+        """
+        from stock_trading_system.llm.resilient_chat import build_resilient_chat
+        return build_resilient_chat(
+            config=self._config,
+            kind="quick",
             timeout=60,
         )
 
