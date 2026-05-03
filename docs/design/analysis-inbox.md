@@ -427,9 +427,142 @@ useEffect 订阅该 task_id 的事件流 (subscribeTaskStream)
 | [paper-trade](./paper-trade.md) v1.3 / v1.15 | inbox 完成行的 [按此建议纸面交易] 按钮跳详情页操作（不在 inbox 行内执行）|
 | [tasks 任务中心](./architecture-upgrade.md) | **保持不变**——任务中心是跨类型 task 总览，不是 analysis 专属入口；分析提交不再让用户感觉"得去任务中心查"，因为 inbox 已显示所有运行中分析 |
 
+## 14. v1.3 增量：列表 / 详情 Header signal Badge 统一三态
+
+### 14.1 现状
+
+`/analysis` 列表行 [`<CompletedRow>`](../../stock_trading_system/web/frontend/src/islands/analysis/AnalysisPage.tsx) line 1711 直显原始 `row.signal`：
+- LLM 输出可能是 `Hold` / `Overweight` / `Underweight` / `Buy` / `Sell` / `Strong Buy` / `Strong Sell` / `BUY` / `SELL` / `HOLD` / `bullish` / `bearish` / `neutral` 多种形态
+- 截图实测：MSFT 显示 "Overweight"，TQQQ 显示 "Hold"，SNDK 显示 "Sell"，NVDA 显示 "Overweight"，SOXL 显示 "Sell" —— 同一列表里 7 档评级混杂三档操作语，用户读起来分不清
+
+详情页 Header [line 1083](../../stock_trading_system/web/frontend/src/islands/analysis/AnalysisPage.tsx) `{canonicalSignal(detail) || "N/A"}` 同样问题：直显原始字符串。
+
+`signalVariant(...)` 已经把所有变体映射到 4 个 Badge color variant (`buy/sell/hold/default`)，但**显示文本**没归一化。
+
+### 14.2 目标
+
+列表行 + 详情 Header 的 signal Badge **文本**统一为三档：`Buy` / `Sell` / `Hold`。
+
+OverviewCard 内 `<RatingBadge rating="Overweight">` 等 7 档**保持不动** —— 那是 LLM 评级（rating）维度，与 signal 列独立显示。
+
+### 14.3 映射规则
+
+| LLM 原始值（任意大小写 / 中文 / 子串） | 三态 |
+|---|---|
+| `Strong Buy` / `Buy` / `Overweight` / `BUY` / `ADD` / `加仓` / `bullish` / 含 "buy" 子串 | **Buy** |
+| `Strong Sell` / `Sell` / `Underweight` / `SELL` / `REDUCE` / `减仓` / `bearish` / 含 "sell" 子串 | **Sell** |
+| `Hold` / `HOLD` / `Neutral` / `WAIT` / `中性` / `neutral` / 含 "hold" 或 "neutral" 子串 | **Hold** |
+| 其它 / 缺失 / 空白 | **Hold**（保守默认）|
+
+### 14.4 实施
+
+**纯前端单点 helper**（不改 DTO / 不改 DB / 不改 LLM 输出）：
+
+`stock_trading_system/web/frontend/src/islands/analysis/AnalysisPage.tsx` 在 `signalVariant` 旁加 sibling helper：
+
+```tsx
+/** v1.3: Unify the long tail of LLM signal strings ("Overweight" /
+ *  "Strong Sell" / "BUY" / "bullish" / "Hold" / "Neutral" / 中文 / ...)
+ *  into the 3-state user-facing label. RatingBadge inside OverviewCard
+ *  preserves the 7-state rating ladder — that's a separate dimension. */
+function signalLabel(signal: string | null | undefined): "Buy" | "Sell" | "Hold" {
+  const s = (signal ?? "").toLowerCase().trim()
+  if (!s) return "Hold"
+  // Sell first — "underweight" contains "weight" not "buy", but
+  // "overweight" must not match "weight"+"buy" either. Order matters.
+  if (s.includes("sell") || s.includes("bearish")
+      || s.includes("underweight") || s.includes("减仓")
+      || s === "reduce") return "Sell"
+  if (s.includes("buy") || s.includes("bullish")
+      || s.includes("overweight") || s.includes("加仓")
+      || s === "add") return "Buy"
+  // Default to Hold for hold / neutral / wait / unknown / empty
+  return "Hold"
+}
+```
+
+调用点（仅 2 处）：
+
+1. **列表行** [line 1710-1712](../../stock_trading_system/web/frontend/src/islands/analysis/AnalysisPage.tsx)：
+   ```tsx
+   <Badge variant={signalVariant(row.signal || "")} className="text-[10px]">
+     {signalLabel(row.signal)}
+   </Badge>
+   ```
+   `signalVariant(row.signal)` 决定 Badge 颜色（仍接受任意原文输入），`signalLabel(row.signal)` 决定显示文本（必返三态之一）。
+
+2. **详情 Header** [line 1082-1084](../../stock_trading_system/web/frontend/src/islands/analysis/AnalysisPage.tsx)：
+   ```tsx
+   <Badge variant={signalVariant(canonicalSignal(detail))}>
+     {signalLabel(canonicalSignal(detail))}
+   </Badge>
+   ```
+
+### 14.5 不动
+
+- `OverviewCard` 内 `<RatingBadge rating={...}>` 7 档评级文本（评级维度独立）
+- `analysis_history.signal` 列原文（DB 不动）
+- `decision_action` 字段语义（v1.20 引入，仍是 Buy/Sell/Hold 三态本身，已合规）
+- `signalVariant(...)` 函数（保留作 Badge color 映射）
+- `canonicalSignal(...)` 函数（保留作 detail 信号源选择）
+- 后端任何 DTO / API / DB
+- v1.0 inbox 主体 / v1.1 顺序 / v1.2（如已存在）
+
+### 14.6 测试
+
+新建 `stock_trading_system/web/frontend/src/islands/analysis/__tests__/signal-label.test.tsx`：
+```tsx
+import { describe, it, expect } from "vitest"
+import { signalLabel } from "../AnalysisPage"  // export needed
+
+describe("signalLabel v1.3 tri-state mapping", () => {
+  it.each([
+    ["Buy",          "Buy"],
+    ["Strong Buy",   "Buy"],
+    ["Overweight",   "Buy"],
+    ["BUY",          "Buy"],
+    ["bullish",      "Buy"],
+    ["加仓",         "Buy"],
+    ["ADD",          "Buy"],
+  ])("maps %s → Buy", (raw, expected) => {
+    expect(signalLabel(raw)).toBe(expected)
+  })
+
+  it.each([
+    ["Sell",         "Sell"],
+    ["Strong Sell",  "Sell"],
+    ["Underweight",  "Sell"],
+    ["SELL",         "Sell"],
+    ["bearish",      "Sell"],
+    ["减仓",         "Sell"],
+    ["REDUCE",       "Sell"],
+  ])("maps %s → Sell", (raw, expected) => {
+    expect(signalLabel(raw)).toBe(expected)
+  })
+
+  it.each([
+    ["Hold",         "Hold"],
+    ["HOLD",         "Hold"],
+    ["Neutral",      "Hold"],
+    ["neutral",      "Hold"],
+    ["WAIT",         "Hold"],
+    ["中性",         "Hold"],
+    ["",             "Hold"],
+    [null,           "Hold"],
+    [undefined,      "Hold"],
+    ["unknown junk", "Hold"],
+  ])("maps %s → Hold (default)", (raw, expected) => {
+    expect(signalLabel(raw as string)).toBe(expected)
+  })
+})
+```
+
+需要把 `signalLabel` export（已在 module scope，加 `export function signalLabel(...)`）。
+
 ## 13. 版本历史
 
 | 版本 | 日期 | 变更 |
 |---|---|---|
 | v1.1 | 2026-05-02 | **顺序修正 + 空态文案 + `/api/tasks/submit` task_id 修复（用户反馈）**：v1.0 三处问题：(1) "分析记录"卡放在"发起分析"卡**上方**，与"先输入再看历史"产品意图相反；(2) 用户提交后"看不到反馈"——经 `git blame + grep` 排查根因不是前端逻辑缺失，而是 `/api/tasks/submit` 返回 `{id, type, title, ...}` 但前端 `AnalysisPage.tsx:320` 的 `if (res.task_id)` 读 `task_id` 字段，**字段名不匹配** → 乐观插入分支永远进不去 → 用户必须手动刷新才能看到 task；同样问题影响 `<ScreenerForm>` 提交跳转（行 333），但那段代码用 `data.task_id && window.location.href`，结果就是不跳；(3) 空态文案 "下方提交一个新分析开始" 与新顺序不再对应。修正：(A) `AnalysisPage` form 视图 children 顺序改为 [标题] → [发起分析] → [分析记录]（卡片 JSX 块直接换序）；(B) 空态文案统一为 "暂无分析记录，提交一个新分析后会在这里显示进度"；(C) **后端 `/api/tasks/submit` 响应体追加 `task_id` 字段**（值=`task["id"]`，原 `task` 全字段保留向后兼容）→ 前端 v1.0 乐观插入逻辑（`handleSubmit` setInbox prepend optimistic row → 订阅 task_events → settled 后 refreshInbox）**真正生效**——AnalysisPage.tsx:320-340 + 387-415 不变；`<ScreenerForm>` 提交跳转 `/screener-v3?task=<id>` 也跟着修。验收：(1) 页面顺序为 标题 → 发起分析 → 分析记录；(2) 提交"开始分析"后下方分析记录**立即**出现 ticker running row（之前要手刷）；(3) 进度条实时；(4) 完成后 row 替换为 completed analysis card；(5) `/history` 重定向不变；后端测试 `tests/web/test_history_inbox.py` 新增 `test_running_row_carries_all_required_fields`（锁字段契约）+ `test_submit_then_inbox_sees_running_row_immediately`（端到端 submit→inbox）。**不动** /api/history 契约、optimistic insert 逻辑、socket 订阅、`<RunningRow>/<CompletedRow>` 实现 |
 | v1.0 | 2026-05-02 | 初版：`/analysis` 主页改 Inbox 布局（顶部紧凑表单 + 时间线列表混合运行中 task + 已完成 analysis）；`/history` 路由 301 redirect 到 `/analysis` 保留 query string；Sidebar 去"分析记录"菜单项；`/api/history` 加 `include_running=true` 合并 tasks + analysis_history 按 created_at DESC 排序，`exclude_task_ids` 防 task_completed 与 DB 写入间的瞬时去重；新方法 `TaskStore.list_tasks_by_user_and_type`；前端新增 `<AnalysisHomeInbox> + <AnalysisFormHeader> + <AnalysisInboxList> + <RunningRow>`，行渲染 v1.18 HistoryPage 抽取为 `<CompletedRow>`；提交不跳页，列表顶部乐观插运行中卡，订阅 task_events 流，完成替换为 analysis 行，失败/取消行带重试；运行中行内嵌 PipelineDAG（桌面默认展开，移动默认折叠+进度条）；旧 `/analysis/<task_uuid>` URL `replaceState` 到 `/analysis?task=<uuid>` 滚动锚定；`<AnalysisDetailView>` 完整 8 tab 详情页保持不变（深链 / 分享 / SEO 友好）；任务中心 `/tasks` 不变（跨类型 task 总览，保留所有类型）|
+| v1.3 | 2026-05-03 | 列表 / 详情 Header signal Badge 统一三态（用户 2026-05-03 截图反馈）：现状 `/analysis` 列表行 [`AnalysisPage.tsx:1711`](../../stock_trading_system/web/frontend/src/islands/analysis/AnalysisPage.tsx) 直显原始 `row.signal`，截图实测 7 档评级（Hold / Overweight / Sell）混杂三档操作语，用户读不清；详情页 Header line 1083 同样问题。`signalVariant(...)` 已把所有变体映射到 4 个 Badge color variant 但**显示文本**没归一化。方案纯前端单点 helper（不改 DTO/DB/LLM 输出）：(A) 加 `signalLabel(signal): "Buy" \| "Sell" \| "Hold"`，规则 — Strong Buy/Buy/Overweight/BUY/ADD/加仓/bullish/含"buy"子串 → **Buy**；Strong Sell/Sell/Underweight/SELL/REDUCE/减仓/bearish/含"sell"子串 → **Sell**；Hold/HOLD/Neutral/WAIT/中性/neutral/含"hold"或"neutral"子串 → **Hold**；其它/缺失/空白 → **Hold**（保守默认）；Sell 检测顺序优先于 Buy（避免 "underweight" 被 "weight" 误命中其它）；(B) 列表行 Badge 文本 `{row.signal}` → `{signalLabel(row.signal)}`（`signalVariant` 仍接原文决定颜色）；(C) 详情 Header Badge 同样 `{canonicalSignal(detail)}` → `{signalLabel(canonicalSignal(detail))}`；(D) `signalLabel` 加 `export` 关键字以便测试 import。**不动** OverviewCard 内 `<RatingBadge rating>` 7 档评级文本（评级维度独立）/ `analysis_history.signal` DB 列原文 / `decision_action` 字段语义 / `signalVariant` 函数 / `canonicalSignal` 函数 / 后端任何 DTO/API/DB / inbox 主体 + 顺序。新增 `tests/frontend/AnalysisPage/signal-label.test.tsx` 24 case（7 Buy 变体 + 7 Sell 变体 + 10 Hold 变体含 null/undefined/unknown junk）；自写 ~50 LOC（含测试） |

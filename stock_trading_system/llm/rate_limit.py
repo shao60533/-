@@ -29,12 +29,21 @@ def is_rate_limit_error(exc: BaseException) -> bool:
     subclassed wrappers like ``httpx.HTTPStatusError`` or LangChain-
     wrapped provider errors.
     """
-    # google-api-core (Gemini)
+    # google-api-core (legacy Gemini SDK path)
     try:
         from google.api_core.exceptions import (
             ResourceExhausted, TooManyRequests,
         )
         if isinstance(exc, (ResourceExhausted, TooManyRequests)):
+            return True
+    except ImportError:
+        pass
+
+    # google-genai (new SDK used by langchain-google-genai 4.x). Raises
+    # ``ClientError`` with ``code=429`` for quota / rate-limit responses.
+    try:
+        from google.genai.errors import APIError
+        if isinstance(exc, APIError) and getattr(exc, "code", None) == 429:
             return True
     except ImportError:
         pass
