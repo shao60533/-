@@ -327,7 +327,7 @@ export function SettingsPage() {
                 <div className="space-y-1.5">
                   <label className="text-xs text-muted-foreground">模型</label>
                   <Input
-                    placeholder="qwen3.6-max-preview"
+                    placeholder="qwen3-max-preview"
                     value={qwenModel}
                     onChange={(e) => setQwenModel(e.target.value)}
                     disabled={!qwenEnabled}

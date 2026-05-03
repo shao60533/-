@@ -88,7 +88,7 @@ class QwenProvider:
         self._enabled = bool(qcfg.get("enabled") and qcfg.get("api_key"))
         self._api_key = qcfg.get("api_key", "")
         # 2026-05-04 default tracks default_config.yaml.
-        self._model = qcfg.get("model", "qwen3.6-max-preview")
+        self._model = qcfg.get("model", "qwen3-max-preview")
         self._base_url = qcfg.get(
             "base_url", "https://dashscope.aliyuncs.com/compatible-mode/v1"
         )
