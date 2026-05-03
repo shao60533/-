@@ -41,16 +41,29 @@
 | 模型切换测试用例 | 66 |
 | 移动端优化测试用例 | 82 |
 | 多租户测试用例 | 130 |
-| 选股 V3 测试用例 | 145 |
-| 纸面交易测试用例 | 89 |
-| 统一进度系统测试用例 | 101 |
-| UI React Island 测试用例（v1.0 + v2.0）| 182 |
+| 选股 V3 测试用例（v1.0 + v1.4 47 + history v1.1 6） | 198 |
+| 纸面交易测试用例（v1.0 + v1.4 17） | 106 |
+| 统一进度系统测试用例（v1.0 + v1.1 11） | 112 |
+| UI React Island 测试用例（v1.0 + v2.0 + v3.0 perf 13）| 195 |
 | 迁移验证测试用例 | 164 |
 | 迁移回归修复测试用例（v1.0 ~ v1.3）| 102 |
-| **总计** | **1526** |
+| AI 分析进度真源测试用例 | 4 |
+| AI 分析详情布局/顺序测试用例 | 6 |
+| 任务失败原因可见化测试用例 | 22 |
+| LLM 跨 provider fallback 测试用例 | 21 |
+| 报告 + 回测契约测试用例 | 7 |
+| AI 分析结构化卡片 v1.2/v1.3 测试用例 | 32 |
+| **总计** | **1712** |
 
-## 覆盖状态
+## 覆盖状态（2026-05-03 更新）
 
-- 自动化测试（Python + Node）：208 个已实现（170 Python + 38 Node）
-- 手动测试用例：465 个已定义
-- 缺口：纸面交易模块测试用例已补齐（v1.0 89 条，2026-04-19）
+- 自动化测试（Python pytest）：~700 已实现
+  - tests/llm: 45（rate limit + resilient chat + screener integration + router + client）
+  - tests/tasks: ~120（task_manager + workers + event_emitter + progress_truth_source + workers_qwen_errors + cleanup + task_store + task_api）
+  - tests/web: ~280（analysis_detail/sndk/rendering/normalize + history_inbox/dto_isolation/redirect/compare_timeline/dashboard/alerts + paper_track + backtest_contract + vite_asset_base + static_cache_headers + vite_modulepreload + screen_v3_trigger/results/run_metadata/history + task_detail_failure + signal_consistency + analysis_actions/depth/quick_info/delete_permission/paper_ticker_detail_privacy + …）
+  - tests/screener/v3: ~178（v14 contracts + pipeline_progress_events + guru_signal_uniqueness + theme_aware_prompts + pipeline_storage_fallback + concurrency + …）
+  - tests/strategy/paper_trader: ~60（signal_loader + backfill_user_advice + fresh_db_save_plan + plan_dedup + executive_summary 等）
+  - tests/auth + tests/portfolio + tests/data 等：~80
+- 自动化测试（Node vitest）：21 已实现（AnalysisCards 8 + OverviewCard.executive 4 + AnalysisDetailView.order 6 + depth-label 3）
+- 手动测试用例：~1700 已定义（设计文档 changelog 链路）
+- 测试基础设施：app_client fixture 现在会重置 settings._config 和 web.app 模块的 get_config 已绑定引用，防 monkeypatch lambda 跨测试泄露
