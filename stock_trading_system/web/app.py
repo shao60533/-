@@ -261,19 +261,30 @@ def _rendering_summary_for_analysis(analysis_id, db) -> dict | None:
     rendering = _parse_rendering(ana.get("rendering_json"))
     summary = (rendering or {}).get("summary") or {}
 
-    confidence_pct = None
+    # Confidence is a literal ``"high"|"medium"|"low"`` in the
+    # OverviewCard schema. We expose both ``confidence_level`` (so the
+    # frontend can drive the existing ``ConfidenceMeter level=...``)
+    # and ``confidence_pct`` (for any chart that wants a number, plus
+    # legacy clients). Numeric inputs are tolerated for forward
+    # compatibility with future schema changes.
+    confidence_pct: int | None = None
+    confidence_level: str | None = None
     raw_conf = summary.get("confidence")
-    if isinstance(raw_conf, (int, float)):
+    if isinstance(raw_conf, str):
+        candidate = raw_conf.strip().lower()
+        if candidate in ("high", "medium", "low"):
+            confidence_level = candidate
+            confidence_pct = {"high": 85, "medium": 50, "low": 25}[candidate]
+    elif isinstance(raw_conf, (int, float)):
         c = float(raw_conf)
         confidence_pct = int(round(c * 100)) if 0 <= c <= 1 else int(round(c))
-    elif isinstance(raw_conf, str):
-        # OverviewCard.confidence is a literal "high"|"medium"|"low";
-        # mirror the analysis-rendering v1.7 mapping so the paper-trade
-        # banner shows the same percent the /analysis/<id> page shows.
-        level_to_pct = {"high": 85, "medium": 50, "low": 25}
-        candidate = raw_conf.strip().lower()
-        if candidate in level_to_pct:
-            confidence_pct = level_to_pct[candidate]
+        if confidence_pct is not None:
+            if confidence_pct >= 75:
+                confidence_level = "high"
+            elif confidence_pct >= 40:
+                confidence_level = "medium"
+            else:
+                confidence_level = "low"
 
     return {
         "analysis_id":       int(analysis_id),
@@ -287,6 +298,7 @@ def _rendering_summary_for_analysis(analysis_id, db) -> dict | None:
         "executive_summary": ana.get("executive_summary"),
         "one_line_takeaway": summary.get("one_line_takeaway"),
         "confidence_pct":    confidence_pct,
+        "confidence_level":  confidence_level,
     }
 
 
