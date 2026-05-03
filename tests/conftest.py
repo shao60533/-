@@ -201,24 +201,7 @@ def app_client(tmp_path, isolated_config_dir, monkeypatch):
     _reset_app_singletons()
 
     from stock_trading_system.web import app as app_module
-    # Print debug to find isolation polluter
-    import os as _os
-    print(f"\n[conftest debug] STOCK_DB_PATH env = {_os.environ.get('STOCK_DB_PATH')!r}")
-    print(f"[conftest debug] expected db_path = {db_path!r}")
-    from stock_trading_system.config import get_config as _gc
-    _cfg_test = _gc()
-    print(f"[conftest debug] cfg portfolio.db_path = {_cfg_test.get('portfolio',{}).get('db_path')!r}")
-    # Verify users table NOW
-    _conn_dbg2 = _sq3.connect(str(db_path))
-    _u2 = _conn_dbg2.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='users'").fetchone()
-    print(f"[conftest debug] users table immediately before create_app: {_u2 is not None}")
-    _conn_dbg2.close()
     flask_app = app_module.create_app()
-    # And after create_app
-    _conn_dbg3 = _sq3.connect(str(db_path))
-    _u3 = _conn_dbg3.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='users'").fetchone()
-    print(f"[conftest debug] users table immediately after create_app: {_u3 is not None}")
-    _conn_dbg3.close()
     flask_app.config["TESTING"] = True
     flask_app.config["WTF_CSRF_ENABLED"] = False
 
