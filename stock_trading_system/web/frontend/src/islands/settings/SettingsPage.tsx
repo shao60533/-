@@ -33,6 +33,13 @@ interface SettingsResponse {
     to_address?: string
   }
   writable_paths?: string[]
+  /**
+   * v1.2 — map of dotted-path → true when an env var pins that field.
+   * UI surfaces a "锁定" hint so users don't waste a save trying to
+   * change a value the YAML can't actually override (env > user
+   * config in load_config priority).
+   */
+  env_locked?: Record<string, boolean>
 }
 
 // Whitelist mirrors WRITABLE_SETTING_PATHS in stock_trading_system/config/settings.py.
@@ -145,6 +152,16 @@ export function SettingsPage() {
     }
     if (geminiKey) payload["gemini.api_key"] = geminiKey
     if (qwenKey) payload["qwen.api_key"] = qwenKey
+    // v1.2 — drop env-locked keys before POST. The backend would
+    // accept and persist them to user-config YAML, but
+    // ``_apply_env_overrides`` would clobber them on the next
+    // ``load_config()`` so the round-trip would silently revert. We'd
+    // rather no-op here than mislead the user with a "saved!" toast
+    // that hides an env-driven rollback.
+    const locked = snapshot?.env_locked ?? {}
+    for (const k of Object.keys(payload)) {
+      if (locked[k]) delete payload[k]
+    }
     try {
       await apiPost("/api/settings", payload)
       setSaveMsg("设置已保存")
@@ -330,8 +347,14 @@ export function SettingsPage() {
                     placeholder="qwen3.6-max-preview"
                     value={qwenModel}
                     onChange={(e) => setQwenModel(e.target.value)}
-                    disabled={!qwenEnabled}
+                    disabled={!qwenEnabled || Boolean(snapshot?.env_locked?.["qwen.model"])}
                   />
+                  {snapshot?.env_locked?.["qwen.model"] && (
+                    <p className="text-[10px] text-amber-400 leading-snug">
+                      当前由环境变量 <code className="font-mono">QWEN_MODEL</code> 锁定，UI 修改无效。
+                      请到部署平台 (Railway Variables) 改值后重启 service，或删除该 env var 让此处生效。
+                    </p>
+                  )}
                 </div>
                 <div className="space-y-1.5 sm:col-span-2">
                   <label className="text-xs text-muted-foreground">Base URL</label>
