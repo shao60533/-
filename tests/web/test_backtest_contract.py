@@ -123,6 +123,76 @@ def test_report_submit_sends_type_field(alice_client, app_client):
     )
 
 
+def test_report_result_ref_link_owner_can_read(alice_client, app_client):
+    """Compatibility for /reports?id=task_results_generic:N.
+
+    The canonical URL is /reports?id=<task_id>, but a frontend regression
+    briefly emitted result_ref links. Those links must still resolve for the
+    owner instead of leaving the report detail page on a permanent skeleton.
+    """
+    import sqlite3
+    from stock_trading_system.tasks.task_store import TaskStore, hash_params
+
+    store = TaskStore(app_client["db_path"])
+    users = app_client["users"]
+    task_id = "test-report-ref-owner"
+    params = {"type": "daily"}
+    store.insert({
+        "id": task_id, "type": "report", "title": "daily",
+        "params_json": json.dumps(params),
+        "status": "success",
+        "params_hash": hash_params("report", params),
+        "created_by": users.alice.id,
+    })
+    ref = store.save_result(
+        "report", task_id,
+        {"type": "daily", "content": "# Daily\nok", "generated_at": "2026-05-04T00:00:00"},
+    )
+    with sqlite3.connect(app_client["db_path"]) as conn:
+        conn.execute(
+            "UPDATE tasks SET result_ref = ?, status = 'success' WHERE id = ?",
+            (ref, task_id),
+        )
+
+    resp = alice_client.get(f"/api/reports/result/{ref}")
+    assert resp.status_code == 200, resp.get_json()
+    body = resp.get_json()
+    assert body["task"]["id"] == task_id
+    assert body["result"]["content"] == "# Daily\nok"
+
+
+def test_report_result_ref_link_stays_private(
+    alice_client, bob_client, app_client,
+):
+    """A result_ref compatibility link must not bypass report privacy."""
+    import sqlite3
+    from stock_trading_system.tasks.task_store import TaskStore, hash_params
+
+    store = TaskStore(app_client["db_path"])
+    users = app_client["users"]
+    task_id = "test-report-ref-private"
+    params = {"type": "daily"}
+    store.insert({
+        "id": task_id, "type": "report", "title": "daily",
+        "params_json": json.dumps(params),
+        "status": "success",
+        "params_hash": hash_params("report", params),
+        "created_by": users.alice.id,
+    })
+    ref = store.save_result(
+        "report", task_id,
+        {"type": "daily", "content": "Alice private PnL"},
+    )
+    with sqlite3.connect(app_client["db_path"]) as conn:
+        conn.execute(
+            "UPDATE tasks SET result_ref = ?, status = 'success' WHERE id = ?",
+            (ref, task_id),
+        )
+
+    resp = bob_client.get(f"/api/reports/result/{ref}")
+    assert resp.status_code == 403
+
+
 # ── Backtest result endpoint — JSON columns unpacked ──────────────────
 
 
