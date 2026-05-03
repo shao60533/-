@@ -33,7 +33,11 @@ class MetaConfig:
 @dataclass(frozen=True)
 class IterationConfig:
     enabled: bool = False
-    model: str = "qwen3.6-plus"
+    # 2026-05-04: switched to qwen3.6-max-preview per default_config.yaml.
+    # ``fallback_model`` stays on the stable qwen-plus on purpose —
+    # if a preview model 5xx/429s, falling back to another preview
+    # defeats the resilience point.
+    model: str = "qwen3.6-max-preview"
     fallback_model: str = "qwen-plus"
     scorer: ScorerConfig = field(default_factory=ScorerConfig)
     darwinian: DarwinianConfig = field(default_factory=DarwinianConfig)
@@ -51,7 +55,7 @@ def load_iteration_config(raw: dict) -> IterationConfig:
 
     return IterationConfig(
         enabled=raw.get("enabled", False),
-        model=raw.get("model", "qwen3.6-plus"),
+        model=raw.get("model", "qwen3.6-max-preview"),
         fallback_model=raw.get("fallback_model", "qwen-plus"),
         scorer=ScorerConfig(**{k: v for k, v in scorer_raw.items()
                                if k in ScorerConfig.__dataclass_fields__}),

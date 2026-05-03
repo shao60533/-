@@ -1138,3 +1138,428 @@ F1 → F3（F3 需先跑一次全库回填 executive_summary，成本 ~¥5）→
 ---
 
 *v1.2 修订结束 — 全量自动追踪。等待确认后开始 Phase 1 实施*
+
+
+---
+
+## 二十八、v1.4 修订（2026-05-04）—— 个股详情页结构化决策同步
+
+> **背景**：用户截图 `/paper-trade/MSFT`（v1.18 R-fix-12 路由后）暴露三处与 [analysis-rendering v1.0+](./analysis-rendering.md) 结构化卡片体系脱节的旧渲染：
+> 1. **「当前策略」卡** 仍展示 `plan.thesis`（来自 [plan_parser.py](../../stock_trading_system/strategy/paper_trader/plan_parser.py) regex 正则解析） + `Plan #x · 分析 #N · YYYY-MM-DD HH:MM · regex · 3-6个月` 元信息底栏 + 7 档评级 Badge。表面看起来"有结构"，实际是 v1.3 F3 引入 `with_structured_output` 抽取列**之前**的 fallback 路径，与新 OverviewCard / Decision banner / Executive Summary 视觉**完全不一致**。
+> 2. **「AI 最终决策」卡** 是大段 raw markdown（`whitespace-pre-wrap` 渲染 `latest_trade_decision`），与 [/analysis/&lt;id&gt;](../../stock_trading_system/web/frontend/src/islands/analysis/AnalysisPage.tsx) 详情页 8 tab 结构化卡片（OverviewCard / DecisionCard 等）形成**双套**视觉语言。
+> 3. **「执行记录」按 Plan tab** 每行都是 `Plan #id` + thesis + `<details>` 折叠 markdown，定位为「策略历史」；但用户心智里这是 **「该股票的 AI 分析历史」**——希望每行能直接跳转到对应 `/analysis/<id>` 看完整 8 tab。
+
+### 28.1 § 现状诊断
+
+#### 28.1.1 三处旧渲染源头追踪
+
+| 位置 | 当前实现 | 行号 | 数据源 | 问题 |
+|------|----------|------|--------|------|
+| 当前策略卡 | `<Badge>{plan.rating}</Badge>` + `{plan.thesis}` + 元信息底栏 | [PaperTradePage.tsx:155-180](../../stock_trading_system/web/frontend/src/islands/paper-trade/PaperTradePage.tsx) | `data.active_plan`（store.get_active_plan，**不带 rendering_json**） | regex 解析的 thesis 颗粒度粗，与 OverviewCard 8 tab 体系脱节，元信息暴露 `parse_method=regex` 实现细节 |
+| AI 最终决策卡 | `<div whitespace-pre-wrap>{data.latest_trade_decision}</div>` | [PaperTradePage.tsx:240-256](../../stock_trading_system/web/frontend/src/islands/paper-trade/PaperTradePage.tsx) | `data.latest_trade_decision`（`analysis_history.trade_decision` 原文 markdown） | raw markdown 与新 8 tab 卡视觉双轨；用户已习惯结构化展示 |
+| 执行记录·按 Plan | `<PlanHistory plans={data.plan_history}>` 每行 Plan #id + thesis + `<details>` markdown | [PaperTradePage.tsx:432-466](../../stock_trading_system/web/frontend/src/islands/paper-trade/PaperTradePage.tsx) | `data.plan_history[]`（每条带 `trade_decision` raw markdown） | 用户心智 = 该股 AI 分析历史；缺跳详情页入口 |
+
+#### 28.1.2 后端数据 surface 状态
+
+- [`api_paper_ticker_detail`](../../stock_trading_system/web/app.py#L2933) 当前返回字段中：
+  - `active_plan` ← `store.get_active_plan(s_id)` —— 仅 `paper_trade_plans` 行字段（id / signal / rating / thesis / parse_method / holding_months / raw_summary / created_at / analysis_id），**无 rendering_json**
+  - `latest_trade_decision` ← `_db.get_analysis_by_id(latest_event.analysis_id).trade_decision` —— raw markdown 字符串
+  - `plan_history[].trade_decision` ← 同上，逐条贴 raw markdown
+  - `latest_advice` ← `_db.get_user_advice(uid, analysis_id)` —— **per-user 私有，正确**，不动
+- `analysis_history` 表已在 [analysis-rendering v1.0](./analysis-rendering.md#1-数据层) / [paper-trade v1.3 F3](#273-§-复用--reuse) 引入两列：
+  - `rendering_json` —— 8 tab 结构化 JSON（含 `summary: OverviewCard`，字段：rating / action_direction / confidence / key_metrics / debate_synthesis / decision_drivers / one_line_takeaway）
+  - `executive_summary` —— [`with_structured_output(ExecutiveSummary)`](#272-修法) 抽取的 1-2 句执行总结（[paper-trade v1.3 F3](#273-§-复用--reuse) 落地）
+- 因此前端要做的不是新建数据通道，而是**把已有 surface 在 ticker 详情页上接通**。
+
+### 28.2 § 方案
+
+#### 28.2.1 后端：新增 `analysis_summary` rendering 包并随 plan 下发
+
+**新增内部 helper**（[`web/app.py`](../../stock_trading_system/web/app.py)，置于 `api_paper_ticker_detail` 上方）：
+
+```python
+def _signal_to_tri_state(raw: str | None) -> str:
+    """Mirror frontend signalLabel(): 7 档评级 → Buy/Sell/Hold。
+
+    See analysis-inbox.md v1.3 for the canonical rule. Sell first
+    so 'underweight' doesn't get caught by 'buy' substring later.
+    """
+    if not raw or not str(raw).strip():
+        return "Hold"
+    s = str(raw).strip().lower()
+    if any(tok in s for tok in ("sell", "underweight", "reduce", "减仓", "bearish")):
+        return "Sell"
+    if any(tok in s for tok in ("buy", "overweight", "add", "加仓", "bullish")):
+        return "Buy"
+    if any(tok in s for tok in ("hold", "neutral", "wait", "中性")):
+        return "Hold"
+    return "Hold"
+
+
+def _rendering_summary_for_analysis(analysis_id: int | None, db) -> dict | None:
+    """Return a small struct used by paper-trade ticker detail page to
+    render the same OverviewCard-style banner that /analysis/<id> uses.
+
+    Shape (all fields optional, JSON-serializable):
+      {
+        "analysis_id": int,
+        "ticker": str | None,
+        "date": str | None,         # analysis_history.date
+        "created_at": str | None,
+        "signal_raw": str | None,   # 7-档原文（用于 Badge 颜色）
+        "signal_tri": "Buy"|"Sell"|"Hold",   # 用于 Badge 文本
+        "rating": str | None,       # OverviewCard.rating
+        "action_direction": str | None,
+        "executive_summary": str | None,
+        "one_line_takeaway": str | None,
+        "confidence_pct": int | None,         # 0..100
+      }
+
+    Missing rendering_json → still returns a row with signal_tri / executive_summary
+    populated when available. Never returns analysis full body or
+    legacy advice_json (privacy boundary, v1.18 R-fix-12).
+    """
+    if not analysis_id:
+        return None
+    try:
+        ana = db.get_analysis_by_id(int(analysis_id))
+    except Exception:
+        return None
+    if not ana:
+        return None
+
+    rendering = _parse_rendering(ana.get("rendering_json"))  # already defined above
+    summary = (rendering or {}).get("summary") or {}
+
+    confidence_pct = None
+    if isinstance(summary.get("confidence"), (int, float)):
+        c = float(summary["confidence"])
+        confidence_pct = int(round(c * 100)) if 0 <= c <= 1 else int(round(c))
+
+    return {
+        "analysis_id": int(analysis_id),
+        "ticker": ana.get("ticker"),
+        "date": ana.get("date"),
+        "created_at": ana.get("created_at"),
+        "signal_raw": ana.get("signal"),
+        "signal_tri": _signal_to_tri_state(ana.get("signal")),
+        "rating": summary.get("rating"),
+        "action_direction": summary.get("action_direction"),
+        "executive_summary": ana.get("executive_summary"),
+        "one_line_takeaway": summary.get("one_line_takeaway"),
+        "confidence_pct": confidence_pct,
+    }
+```
+
+**改造 `api_paper_ticker_detail`**：
+- `active_plan` 在 return 之前附加 `analysis_summary = _rendering_summary_for_analysis(active_plan.analysis_id, _db)`
+- `plan_history` 循环里把 `entry["trade_decision"] = …` 行**整段删除**，改为 `entry["analysis_summary"] = _rendering_summary_for_analysis(p.get("analysis_id"), _db)`
+- `latest_trade_decision` 字段**保留**（向后兼容；前端不再渲染但旧 client 不报错），值改为 `None`（原 raw markdown 不再下发，节省 payload）
+- 新增 `latest_analysis_summary = _rendering_summary_for_analysis(latest_event.analysis_id, _db)` 顶层字段（前端"当前策略"卡用 `active_plan.analysis_summary or latest_analysis_summary` 二选一）
+
+#### 28.2.2 前端 A：当前策略卡重写
+
+[`PaperTradePage.tsx:155-180`](../../stock_trading_system/web/frontend/src/islands/paper-trade/PaperTradePage.tsx) 当前策略卡片整段替换为新 `<ActiveStrategyCard plan={data.active_plan} fallback={data.latest_analysis_summary}>` 组件：
+
+```tsx
+function ActiveStrategyCard({ plan, fallback }: {
+  plan: ActivePlan | null;
+  fallback: AnalysisSummary | null;  // 当无 active_plan 时仍展示最新分析
+}) {
+  const summary = plan?.analysis_summary ?? fallback;
+  if (!plan && !summary) return null;  // 完全无数据 → 不渲染卡
+
+  return (
+    <div className="rounded-xl border bg-card text-card-foreground shadow-sm">
+      <div className="p-5">
+        {/* Decision banner: Rating Badge + ConfidenceMeter + action_direction */}
+        <div className="flex items-center justify-between flex-wrap gap-3 mb-3">
+          <div className="flex items-center gap-2">
+            {summary?.signal_raw && (
+              <Badge variant={signalVariant(summary.signal_raw)}>
+                {signalLabel(summary.signal_raw)}
+              </Badge>
+            )}
+            {summary?.rating && (
+              <Badge variant="outline" className="font-semibold">
+                {summary.rating}
+              </Badge>
+            )}
+            {typeof summary?.confidence_pct === "number" && (
+              <ConfidenceMeter pct={summary.confidence_pct} />
+            )}
+          </div>
+          {summary?.analysis_id && (
+            <a href={`/analysis/${summary.analysis_id}`}
+               className="text-xs text-muted-foreground hover:text-foreground hover:underline">
+              查看完整分析 →
+            </a>
+          )}
+        </div>
+
+        {/* action_direction —— 一句话执行方向 */}
+        {summary?.action_direction && (
+          <div className="text-base font-medium mb-3">
+            📍 {summary.action_direction}
+          </div>
+        )}
+
+        {/* Executive summary —— v1.6 OverviewCard 操作建议样式 */}
+        {summary?.executive_summary && (
+          <div className="border-l-4 border-primary/60 bg-primary/5 pl-3 py-2 mb-3">
+            <div className="flex items-center gap-2 text-sm font-semibold mb-1">
+              <ScrollText className="h-4 w-4" />
+              执行总结
+            </div>
+            <p className="text-sm leading-relaxed line-clamp-4">
+              {summary.executive_summary}
+            </p>
+          </div>
+        )}
+
+        {/* one_line_takeaway 兜底（无 executive_summary 时填补） */}
+        {!summary?.executive_summary && summary?.one_line_takeaway && (
+          <p className="text-sm text-muted-foreground mb-3">
+            {summary.one_line_takeaway}
+          </p>
+        )}
+
+        {/* Plan 元信息 —— 简化版，去掉 parse_method/regex 暴露细节 */}
+        {plan && (
+          <div className="text-xs text-muted-foreground border-t pt-3 mt-3 flex items-center gap-2 flex-wrap">
+            <span>策略 #{plan.id}</span>
+            <span>·</span>
+            <span>{formatDateTime(plan.created_at)}</span>
+            {plan.holding_months && (<><span>·</span><span>持有 {plan.holding_months} 个月</span></>)}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+```
+
+**关键设计点**：
+- Rating Badge 用 [analysis-inbox v1.3 `signalLabel`](./analysis-inbox.md#v13) 三态归一（Buy/Sell/Hold）
+- Executive Summary 视觉与 [analysis-rendering v1.6 OverviewCard](./analysis-rendering.md#v16) 一致（`border-l-4 border-primary/60 bg-primary/5` + `<ScrollText>` icon）
+- "查看完整分析"超链接是补偿：本卡是浓缩版，需要给用户跳到完整 8 tab 的明确入口
+- `parse_method=regex` 等实现细节**不再暴露**
+
+#### 28.2.3 前端 B：删除「AI 最终决策」卡
+
+[`PaperTradePage.tsx:240-256`](../../stock_trading_system/web/frontend/src/islands/paper-trade/PaperTradePage.tsx) 整段删除：
+
+```tsx
+{/* DELETE THIS BLOCK */}
+{data.latest_trade_decision && (
+  <Card>
+    <CardHeader><CardTitle>AI 最终决策</CardTitle></CardHeader>
+    <CardContent>
+      <div className="whitespace-pre-wrap text-sm">{data.latest_trade_decision}</div>
+    </CardContent>
+  </Card>
+)}
+```
+
+理由：信息已被 28.2.2 当前策略卡 + 28.2.4 历史列表完整覆盖；保留只会形成"banner+raw markdown 双轨"。
+
+#### 28.2.4 前端 C：执行记录·按 Plan → AI 分析历史列表
+
+[`PaperTradePage.tsx:432-466`](../../stock_trading_system/web/frontend/src/islands/paper-trade/PaperTradePage.tsx) `<PlanHistory>` 组件重构。**保留**外层 chip-row 切换（按 Plan / 按 Event），**重写**「按 Plan」视图为 AnalysisHistoryList（每个 plan 对应一次 AI 分析）：
+
+```tsx
+function AnalysisHistoryList({ plans }: { plans: PlanWithSummary[] }) {
+  if (plans.length === 0) {
+    return <p className="text-sm text-muted-foreground">尚无分析记录</p>;
+  }
+  // 按 created_at desc 已由后端排序
+  return (
+    <div className="divide-y">
+      {plans.map((p, idx) => {
+        const summary = p.analysis_summary;
+        const isActive = idx === 0;  // 最新 plan = 当前活跃
+        if (!summary) {
+          // Plan 关联 analysis 但 rendering 缺失 → 降级展示
+          return (
+            <a key={p.id}
+               href={p.analysis_id ? `/analysis/${p.analysis_id}` : "#"}
+               className="block py-3 px-2 hover:bg-accent">
+              <div className="flex items-center gap-2 text-sm">
+                {isActive && <Badge variant="secondary">★ 当前</Badge>}
+                <span className="text-muted-foreground">分析 #{p.analysis_id ?? "—"}</span>
+                <span className="text-xs text-muted-foreground ml-auto">
+                  {formatDateTime(p.created_at)}
+                </span>
+              </div>
+            </a>
+          );
+        }
+        return (
+          <a key={p.id}
+             href={`/analysis/${summary.analysis_id}`}
+             className="block py-3 px-2 hover:bg-accent transition-colors">
+            <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+              {isActive && <Badge variant="secondary">★ 当前</Badge>}
+              {summary.signal_raw && (
+                <Badge variant={signalVariant(summary.signal_raw)} className="text-xs">
+                  {signalLabel(summary.signal_raw)}
+                </Badge>
+              )}
+              {summary.rating && (
+                <Badge variant="outline" className="text-xs">{summary.rating}</Badge>
+              )}
+              {typeof summary.confidence_pct === "number" && (
+                <span className="text-xs text-muted-foreground">
+                  置信 {summary.confidence_pct}%
+                </span>
+              )}
+              <span className="text-xs text-muted-foreground ml-auto">
+                {formatDateTime(summary.created_at)}
+              </span>
+            </div>
+            {summary.action_direction && (
+              <div className="text-sm font-medium mb-1">📍 {summary.action_direction}</div>
+            )}
+            {(summary.executive_summary || summary.one_line_takeaway) && (
+              <p className="text-xs text-muted-foreground line-clamp-2">
+                {summary.executive_summary || summary.one_line_takeaway}
+              </p>
+            )}
+          </a>
+        );
+      })}
+    </div>
+  );
+}
+```
+
+**视觉参考**：[analysis-inbox v1.18 R-fix-12G `HistoryPage` 列表行风格](./analysis-inbox.md)（divide-y + hover bg-accent + 三态 Badge + ★ 当前标记）。
+
+**「按 Event」tab 不动**：仍由现有 `_renderPtvTimeline` / `EventList` 渲染（单个 event 不必映射到分析）。
+
+### 28.3 § 复用 / Reuse
+
+遵循 [engineering-principles.md](../engineering-principles.md) L0→L4 阶梯：
+
+**L0 项目内复用**：
+- [`_parse_rendering`](../../stock_trading_system/web/app.py#L175) 已有 helper（解析 `rendering_json` → dict，缺失/坏 JSON 静默 None） —— 后端 helper 直接调用
+- [`_db.get_analysis_by_id`](../../stock_trading_system/portfolio/database.py) 已有，含 `executive_summary` / `rendering_json` 列
+- [`_db.get_user_advice`](../../stock_trading_system/portfolio/database.py) 已正确隔离 per-user advice，**不改**
+- 前端 [`signalLabel` / `signalVariant`](../../stock_trading_system/web/frontend/src/islands/analysis/AnalysisPage.tsx)（[analysis-inbox v1.3](./analysis-inbox.md#v13)）已 export，直接 import
+- 前端 [`<ConfidenceMeter>`](../../stock_trading_system/web/frontend/src/islands/analysis/cards/OverviewCard.tsx)（analysis-rendering v1.0+）已是独立组件
+- shadcn `<Badge>` / lucide `<ScrollText>` 已在 bundle 中
+
+**L1 依赖库**：
+- 无新增
+
+**L2/L3/L4**：
+- 后端 ~70 LOC（`_signal_to_tri_state` + `_rendering_summary_for_analysis` + 3 处 detail 端点 wiring）
+- 前端 ~150 LOC（`<ActiveStrategyCard>` 重写 + `<PlanHistory>` 改 `<AnalysisHistoryList>` + 删 AI 最终决策卡）
+- 总计 ~220 LOC，**0 业务逻辑新增**，全部是把现有 rendering pipeline 在 ticker 详情页上接通
+
+### 28.4 § 不动清单（防回滚踩坑）
+
+明确**不**改的部分：
+- `paper_trade_plans` schema / `session_store.save_plan` 事务 / supersede 逻辑（v1.3 F1 已稳定）
+- `event_executor.py` plan 触发链 / [`plan_parser.py`](../../stock_trading_system/strategy/paper_trader/plan_parser.py) regex 解析（作为 LLM 失败 fallback 仍保留）
+- `latest_advice`（`get_user_advice` per-user 隐私边界，[v1.18 R-fix-12](./analysis-inbox.md) 已建立）
+- `events` / `dailies` / `trades` / `active_orders` / `session` 字段（不动）
+- "按 Event" tab 渲染 / 时间轴逻辑（不动）
+- `analysis_history.rendering_json` / `executive_summary` 列 schema（不动，仅读）
+- OverviewCard / 8 tab Card 组件（不动，详情页仍是 canonical view，ticker 详情页只是入口/浓缩）
+- `RoundtableResult` dataclass / screener 链路（不动）
+
+### 28.5 § 测试
+
+新增 `tests/frontend/paper-trade/active-strategy-card.test.tsx`：
+
+```tsx
+describe("ActiveStrategyCard v1.4", () => {
+  test("renders rating badge + tri-state signal + executive summary", () => {
+    const summary = {
+      analysis_id: 42, signal_raw: "Overweight", signal_tri: "Buy",
+      rating: "买入", action_direction: "分批建仓",
+      executive_summary: "公司 AI 资本支出可由现金流轻松覆盖", confidence_pct: 78,
+    };
+    render(<ActiveStrategyCard plan={{ id: 1, analysis_summary: summary } as any} fallback={null} />);
+    expect(screen.getByText("Buy")).toBeInTheDocument();  // signalLabel(Overweight)
+    expect(screen.getByText("买入")).toBeInTheDocument();  // rating
+    expect(screen.getByText(/分批建仓/)).toBeInTheDocument();
+    expect(screen.getByText(/AI 资本支出/)).toBeInTheDocument();
+    expect(screen.getByText("查看完整分析 →")).toHaveAttribute("href", "/analysis/42");
+    expect(screen.queryByText(/parse_method/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/regex/i)).not.toBeInTheDocument();
+  });
+
+  test("falls back to latest_analysis_summary when no active_plan", () => {
+    const fallback = { analysis_id: 7, signal_tri: "Hold", action_direction: "观望" };
+    render(<ActiveStrategyCard plan={null} fallback={fallback as any} />);
+    expect(screen.getByText("Hold")).toBeInTheDocument();
+    expect(screen.getByText(/观望/)).toBeInTheDocument();
+  });
+
+  test("renders nothing when both plan and fallback are null", () => {
+    const { container } = render(<ActiveStrategyCard plan={null} fallback={null} />);
+    expect(container).toBeEmptyDOMElement();
+  });
+});
+
+describe("AnalysisHistoryList v1.4", () => {
+  test("each row links to /analysis/<id> and first row marked ★ 当前", () => {
+    const plans = [
+      { id: 10, analysis_id: 42, analysis_summary: { analysis_id: 42, signal_raw: "Buy", action_direction: "建仓", created_at: "2026-05-04 10:00:00" } },
+      { id: 9,  analysis_id: 41, analysis_summary: { analysis_id: 41, signal_raw: "Hold", action_direction: "观望", created_at: "2026-05-03 10:00:00" } },
+    ];
+    render(<AnalysisHistoryList plans={plans as any} />);
+    const links = screen.getAllByRole("link");
+    expect(links[0]).toHaveAttribute("href", "/analysis/42");
+    expect(links[1]).toHaveAttribute("href", "/analysis/41");
+    expect(screen.getByText("★ 当前")).toBeInTheDocument();
+  });
+
+  test("no AI 最终决策 card rendered (deleted in v1.4)", () => {
+    render(<PaperTradePage />);  // mocked detail data with latest_trade_decision: <md>
+    expect(screen.queryByText("AI 最终决策")).not.toBeInTheDocument();
+  });
+});
+```
+
+后端 `tests/test_paper_trade_ticker_detail_v1_4.py`：
+
+```python
+def test_active_plan_carries_analysis_summary(client, db):
+    # arrange: insert analysis_history row with rendering_json + executive_summary
+    # arrange: insert paper_trade_plans row linked to that analysis_id
+    resp = client.get("/api/paper/tickers/MSFT").get_json()
+    ap = resp["active_plan"]
+    assert ap["analysis_summary"]["signal_tri"] in ("Buy", "Sell", "Hold")
+    assert ap["analysis_summary"]["executive_summary"]
+    assert ap["analysis_summary"]["analysis_id"] == ana_id
+
+def test_plan_history_no_longer_contains_trade_decision_markdown(client, db):
+    resp = client.get("/api/paper/tickers/MSFT").get_json()
+    for row in resp["plan_history"]:
+        assert "trade_decision" not in row or not row["trade_decision"]
+        assert "analysis_summary" in row
+
+def test_signal_to_tri_state_underweight_is_sell():
+    assert _signal_to_tri_state("Underweight") == "Sell"  # not Buy via 'weight' substring
+    assert _signal_to_tri_state("Strong Buy") == "Buy"
+    assert _signal_to_tri_state(None) == "Hold"
+```
+
+### 28.6 § 实施顺序
+
+1. 后端 helper（`_signal_to_tri_state` + `_rendering_summary_for_analysis`）+ 单测
+2. `api_paper_ticker_detail` wiring（attach `analysis_summary` 到 `active_plan` / `plan_history[]` / 顶层 `latest_analysis_summary`）+ 集成测试
+3. 前端 `<ActiveStrategyCard>` 新组件 + 替换 [PaperTradePage.tsx:155-180](../../stock_trading_system/web/frontend/src/islands/paper-trade/PaperTradePage.tsx)
+4. 删除「AI 最终决策」卡 [PaperTradePage.tsx:240-256](../../stock_trading_system/web/frontend/src/islands/paper-trade/PaperTradePage.tsx)
+5. 前端 `<AnalysisHistoryList>` 替换 `<PlanHistory>` 内容
+6. vitest 套件
+7. 手动回归 `/paper-trade/MSFT` 三处对照截图
+
+每步独立 commit，独立回滚单位。
+
+---
+
+*v1.4 修订结束 — 等待确认后开始实施*

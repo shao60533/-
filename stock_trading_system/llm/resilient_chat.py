@@ -76,10 +76,12 @@ def _build_chat(
     if provider == "qwen":
         from langchain_openai import ChatOpenAI
         qcfg = config.get("qwen", {}) or {}
+        # 2026-05-04 default tracks default_config.yaml; fires only when
+        # neither ``qwen.model`` nor ``qwen.deep_think_model`` is set.
         model = (
             qcfg.get("deep_think_model") if kind == "deep"
             else qcfg.get("model")
-        ) or "qwen-plus"
+        ) or "qwen3.6-max-preview"
         return ChatOpenAI(
             model=model,
             api_key=qcfg.get("api_key", ""),

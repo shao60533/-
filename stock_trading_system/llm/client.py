@@ -44,7 +44,10 @@ class QwenTextClient:
         base_url = qwen_cfg.get(
             "base_url", "https://dashscope.aliyuncs.com/compatible-mode/v1"
         )
-        self._model = qwen_cfg.get("model", "qwen-plus")
+        # 2026-05-04: source-level default tracks the YAML default
+        # (``qwen3.6-max-preview``). Fires only when the runtime config
+        # has no explicit ``qwen.model`` — production ships a value.
+        self._model = qwen_cfg.get("model", "qwen3.6-max-preview")
         self._client = OpenAI(api_key=api_key, base_url=base_url)
 
     def chat(

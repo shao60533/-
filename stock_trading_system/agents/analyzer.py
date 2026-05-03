@@ -220,7 +220,8 @@ class StockAnalyzer:
         if not qwen_key:
             raise RuntimeError("llm_provider=qwen but qwen.api_key is empty")
         os.environ["DASHSCOPE_API_KEY"] = qwen_key
-        model = qwen_config.get("model", "qwen-plus")
+        # 2026-05-04 default tracks default_config.yaml.
+        model = qwen_config.get("model", "qwen3.6-max-preview")
         ta_config["llm_provider"] = "qwen"
         ta_config["deep_think_llm"] = qwen_config.get("deep_think_model", model)
         ta_config["quick_think_llm"] = model

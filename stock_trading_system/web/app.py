@@ -3098,8 +3098,8 @@ def create_app(config_path=None):
             }), 400
         # Inject LLM provider/model into shared research task params for
         # cache dedup. Use the same per-provider resolver the analyzer uses
-        # so cache keys are stable (``qwen:qwen-plus``) rather than the
-        # legacy ``qwen:`` empty-model form.
+        # so cache keys are stable (``qwen:qwen3.6-max-preview``) rather
+        # than the legacy ``qwen:`` empty-model form.
         if task_type in ("analysis", "screen", "screen_v2", "screen_v3", "backtest"):
             from stock_trading_system.llm.router import resolve_active_model
             cfg = get_config()
