@@ -931,9 +931,40 @@ function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
     tabsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
   }
 
-  // Detect if analysis is still running (created < 5 min ago, no summary)
-  const isRecent = detail.created_at && (Date.now() - new Date(detail.created_at).getTime()) < 5 * 60 * 1000
-  const isRunning = isRecent && !detail.summary && !!detail.task_id
+  // analysis-progress-truth-source v1.0 / detail-layout v1.1:
+  // PipelineDAG visibility now keys off the *real* task lifecycle status
+  // instead of the old `created_at < 5min && !summary` heuristic. We
+  // fetch /api/tasks/<id> once when we have a task_id and subscribe to
+  // terminal envelopes so the DAG hides the moment the task settles.
+  // Falls back to ``null`` (DAG hidden) when there is no task_id at all
+  // (legacy analyses pre-dating the unified pipeline).
+  const [taskStatus, setTaskStatus] = useState<string | null>(null)
+  useEffect(() => {
+    if (!detail.task_id) {
+      setTaskStatus(null)
+      return
+    }
+    let cancelled = false
+    apiGet<{ status?: string }>(`/api/tasks/${detail.task_id}`)
+      .then(t => { if (!cancelled) setTaskStatus(t.status ?? null) })
+      .catch(() => { if (!cancelled) setTaskStatus(null) })
+    let sub: { destroy: () => void } | null = null
+    import("@/lib/socket").then(({ subscribeTaskStream }) => {
+      if (cancelled || !detail.task_id) return
+      sub = subscribeTaskStream({
+        taskIds: [detail.task_id],
+        onEvent: (env) => {
+          if (env.event === "task_started") setTaskStatus("running")
+          else if (env.event === "task_completed") setTaskStatus("success")
+          else if (env.event === "task_failed") setTaskStatus("failed")
+          else if (env.event === "task_cancelled") setTaskStatus("cancelled")
+        },
+        onStatusChange: () => {},
+      })
+    }).catch(() => { /* socket optional */ })
+    return () => { cancelled = true; sub?.destroy() }
+  }, [detail.task_id])
+  const isRunning = taskStatus === "running" || taskStatus === "pending"
 
   // Action-button state
   const [bookmarked, setBookmarked] = useState<boolean>(Boolean(detail.bookmarked))
