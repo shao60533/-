@@ -186,24 +186,6 @@ class TaskStore:
             ).fetchone()
             return dict(row) if row else None
 
-    def get_by_result_ref(self, result_ref: str) -> dict | None:
-        """Return the newest task row that owns ``result_ref``.
-
-        Report detail links briefly used ``task_results_generic:N`` in
-        ``/reports?id=...`` even though the canonical detail contract is
-        task-id based. This lookup lets the API support those already-shared
-        links without exposing the generic result table directly.
-        """
-        if not result_ref:
-            return None
-        with self._conn() as conn:
-            row = conn.execute(
-                "SELECT * FROM tasks WHERE result_ref = ? "
-                "ORDER BY completed_at DESC, created_at DESC, id DESC LIMIT 1",
-                (result_ref,),
-            ).fetchone()
-            return dict(row) if row else None
-
     def delete(self, task_id: str) -> bool:
         with self._lock, self._conn() as conn:
             cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))

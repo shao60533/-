@@ -258,7 +258,7 @@ const fmtPct = (v: number) => `${(v * 100).toFixed(1)}%`
 
 interface TaskSubmitResult { task_id: string; status: string }
 
-export function signalVariant(signal: string): "buy" | "sell" | "hold" | "default" {
+function signalVariant(signal: string): "buy" | "sell" | "hold" | "default" {
   const s = signal?.toLowerCase() ?? ""
   if (s.includes("buy") || s.includes("bullish")) return "buy"
   if (s.includes("sell") || s.includes("bearish")) return "sell"

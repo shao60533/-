@@ -261,33 +261,19 @@ def _rendering_summary_for_analysis(analysis_id, db) -> dict | None:
     rendering = _parse_rendering(ana.get("rendering_json"))
     summary = (rendering or {}).get("summary") or {}
 
-    # Confidence is a literal ``"high"|"medium"|"low"`` in the
-    # OverviewCard schema; we expose both ``confidence_level`` (so the
-    # frontend can drive the existing ``ConfidenceMeter level=...``)
-    # and ``confidence_pct`` (for any chart that wants a number, plus
-    # legacy clients). Numeric inputs are tolerated for forward
-    # compatibility with future schema changes.
-    confidence_pct: int | None = None
-    confidence_level: str | None = None
+    confidence_pct = None
     raw_conf = summary.get("confidence")
-    if isinstance(raw_conf, str):
-        candidate = raw_conf.strip().lower()
-        if candidate in ("high", "medium", "low"):
-            confidence_level = candidate
-            confidence_pct = {"high": 85, "medium": 50, "low": 25}[candidate]
-    elif isinstance(raw_conf, (int, float)):
+    if isinstance(raw_conf, (int, float)):
         c = float(raw_conf)
         confidence_pct = int(round(c * 100)) if 0 <= c <= 1 else int(round(c))
-        # Map numeric → level using the same thresholds the
-        # analysis-rendering v1.7 helper uses, so the meter ring colour
-        # stays consistent across pages.
-        if confidence_pct is not None:
-            if confidence_pct >= 75:
-                confidence_level = "high"
-            elif confidence_pct >= 40:
-                confidence_level = "medium"
-            else:
-                confidence_level = "low"
+    elif isinstance(raw_conf, str):
+        # OverviewCard.confidence is a literal "high"|"medium"|"low";
+        # mirror the analysis-rendering v1.7 mapping so the paper-trade
+        # banner shows the same percent the /analysis/<id> page shows.
+        level_to_pct = {"high": 85, "medium": 50, "low": 25}
+        candidate = raw_conf.strip().lower()
+        if candidate in level_to_pct:
+            confidence_pct = level_to_pct[candidate]
 
     return {
         "analysis_id":       int(analysis_id),
@@ -301,7 +287,6 @@ def _rendering_summary_for_analysis(analysis_id, db) -> dict | None:
         "executive_summary": ana.get("executive_summary"),
         "one_line_takeaway": summary.get("one_line_takeaway"),
         "confidence_pct":    confidence_pct,
-        "confidence_level":  confidence_level,
     }
 
 
@@ -3072,73 +3057,51 @@ def create_app(config_path=None):
             trades.extend(store.list_trades(s_id, limit=500))
         trades.sort(key=lambda t: str(t.get("entry_date") or ""), reverse=True)
 
-        # PortfolioDatabase handle reused for active_plan + plan_history
-        # + latest_advice / latest_analysis_summary lookups below.
-        from stock_trading_system.portfolio.database import PortfolioDatabase as _PDB
-        _db = _PDB(get_config().get("portfolio", {}).get("db_path", "data/portfolio.db"))
-
-        # Active plan = pick the one from the latest sibling that has
-        # one. v1.4: attach the OverviewCard-style summary so the React
-        # ActiveStrategyCard can render the same banner /analysis/<id>
-        # uses (rating + tri-state badge + executive_summary), instead
-        # of regex-parsed thesis + raw trade_decision markdown.
+        # Active plan = pick the one from the latest sibling that has one.
         active_plan = None
         for s_id in reversed(sib_ids):
             ap = store.get_active_plan(s_id)
             if ap is not None:
                 active_plan = ap
                 break
-        if active_plan is not None:
-            active_plan = {
-                **active_plan,
-                "analysis_summary": _rendering_summary_for_analysis(
-                    active_plan.get("analysis_id"), _db,
-                ),
-            }
         active_orders = (
             store.list_orders(plan_id=active_plan["id"]) if active_plan else []
         )
 
-        # Plan history: union across siblings, newest first. v1.4: each
-        # row now carries ``analysis_summary`` (same DTO as active_plan)
-        # so the front-end "执行记录·按 Plan" tab can render a clickable
-        # AI-analysis history list. Raw ``trade_decision`` markdown is
-        # NO LONGER returned — it's already on /analysis/<id>, and the
-        # paper-trade page links to that page rather than rendering a
-        # second copy.
+        # Plan history: union across siblings, newest first.
         all_plans: list[dict] = []
         for s_id in sib_ids:
             all_plans.extend(store.list_plans(s_id))
         all_plans.sort(key=lambda p: str(p.get("created_at") or ""), reverse=True)
 
         plan_history = []
+        from stock_trading_system.portfolio.database import PortfolioDatabase as _PDB
+        _db = _PDB(get_config().get("portfolio", {}).get("db_path", "data/portfolio.db"))
         for p in all_plans:
             p_orders = store.list_orders(plan_id=p["id"])
-            plan_history.append({
-                **p,
-                "orders": p_orders,
-                "analysis_summary": _rendering_summary_for_analysis(
-                    p.get("analysis_id"), _db,
-                ),
-            })
-
-        # v1.4: ``latest_trade_decision`` retained as null for backward
-        # compat (any old client that still reads it gets a benign
-        # null); new clients consume ``latest_analysis_summary`` which
-        # mirrors the active_plan banner and powers the ActiveStrategy
-        # card fallback when no plan exists yet.
+            entry = {**p, "orders": p_orders}
+            # Attach trade_decision text from the linked analysis
+            if p.get("analysis_id"):
+                try:
+                    _ana = _db.get_analysis_by_id(p["analysis_id"])
+                    entry["trade_decision"] = (_ana or {}).get("trade_decision") or ""
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("plan_history get_analysis_by_id failed: %s", e)
+                    entry["trade_decision"] = ""
+            plan_history.append(entry)
         latest = events[0] if events else None
-        latest_trade_decision = None
-        latest_analysis_summary = None
         latest_advice = None
+        latest_trade_decision = None
         if latest and latest.get("analysis_id"):
             analysis_id = int(latest["analysis_id"])
-            latest_analysis_summary = _rendering_summary_for_analysis(
-                analysis_id, _db,
-            )
-            # latest_advice MUST come from this user's private row,
-            # never the legacy advice_json on the shared
-            # analysis_history row (privacy boundary v1.18 R-fix-12).
+            try:
+                ana = _db.get_analysis_by_id(analysis_id)
+                if ana:
+                    latest_trade_decision = ana.get("trade_decision") or ""
+            except Exception as e:  # noqa: BLE001
+                logger.warning("ticker_detail: get_analysis_by_id failed: %s", e)
+            # latest_advice MUST come from this user's private row, never
+            # the legacy advice_json on the shared analysis_history row.
             try:
                 user_advice_row = _db.get_user_advice(uid, analysis_id)
             except Exception as e:  # noqa: BLE001
@@ -3163,10 +3126,7 @@ def create_app(config_path=None):
             "dailies": dailies,
             "trades": trades,
             "latest_advice": latest_advice,
-            # v1.4: kept for backward compat but always None — clients
-            # should consume ``latest_analysis_summary`` instead.
             "latest_trade_decision": latest_trade_decision,
-            "latest_analysis_summary": latest_analysis_summary,
             "active_plan": active_plan,
             "active_orders": active_orders,
             "plan_history": plan_history,
@@ -3224,7 +3184,7 @@ def create_app(config_path=None):
             }), 400
         # Inject LLM provider/model into shared research task params for
         # cache dedup. Use the same per-provider resolver the analyzer uses
-        # so cache keys are stable (``qwen:qwen3-max-preview``) rather
+        # so cache keys are stable (``qwen:qwen3.6-max-preview``) rather
         # than the legacy ``qwen:`` empty-model form.
         if task_type in ("analysis", "screen", "screen_v2", "screen_v3", "backtest"):
             from stock_trading_system.llm.router import resolve_active_model
@@ -3424,31 +3384,6 @@ def create_app(config_path=None):
         if task["status"] != "success" or not task.get("result_ref"):
             return jsonify({"status": task["status"], "message": "Result not ready"}), 404
         result = tm.get_result(task_id)
-        if result is None:
-            return jsonify({"error": "Result unavailable"}), 404
-        return jsonify({"task": task, "result": result})
-
-    @app.route("/api/reports/result/<path:result_ref>", methods=["GET"])
-    def api_report_result_by_ref(result_ref):
-        """Compatibility endpoint for report detail links that contain result_ref.
-
-        Canonical report URLs use ``/reports?id=<task_id>``. A short-lived
-        frontend regression emitted ``/reports?id=task_results_generic:N``;
-        those links need to resolve, but report payloads are private because
-        they include holdings/PnL. We therefore first resolve the owning task
-        row, require it to be a report task, then reuse the same owner/admin
-        check as ``/api/tasks/<task_id>/result``.
-        """
-        store = _get_task_store()
-        task = store.get_by_result_ref(result_ref)
-        if not task or task.get("type") != "report":
-            return jsonify({"error": "Report result not found"}), 404
-        err = _check_task_ownership(task)
-        if err:
-            return err
-        if task["status"] != "success" or not task.get("result_ref"):
-            return jsonify({"status": task["status"], "message": "Result not ready"}), 404
-        result = store.load_result(result_ref)
         if result is None:
             return jsonify({"error": "Result unavailable"}), 404
         return jsonify({"task": task, "result": result})

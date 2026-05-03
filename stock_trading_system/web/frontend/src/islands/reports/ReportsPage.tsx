@@ -179,24 +179,17 @@ function ReportDetail({ reportId, onBack }: { reportId: string; onBack: () => vo
 
     async function tick() {
       try {
-        const endpoint = reportId.includes(":")
-          ? `/api/reports/result/${encodeURIComponent(reportId)}`
-          : `/api/tasks/${reportId}/result`
         // Result endpoint returns 404 with ``{status, message}`` while
         // the task is still running — read both status codes the same
         // way (the apiGet wrapper rejects on 404, so fall back to the
         // task envelope to surface progress).
-        const res = await apiGet<TaskResultEnvelope>(endpoint)
+        const res = await apiGet<TaskResultEnvelope>(`/api/tasks/${reportId}/result`)
         if (cancelled) return
         setEnvelope(res)
         setStatus(res.task.status)
         return  // terminal — no more polls
       } catch {
         // Result not ready: peek at /api/tasks/<id> for status.
-      }
-      if (reportId.includes(":")) {
-        if (!cancelled) setError("报告结果引用不可用或无权限访问")
-        return
       }
       try {
         const t = await apiGet<{ status: string; error_message?: string }>(`/api/tasks/${reportId}`)

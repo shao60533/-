@@ -18,9 +18,9 @@ akshare: {}
 qwen:
   enabled: false
   api_key: ""
-  # 2026-05-04: 切到 qwen3-max-preview（用户报告新版上线）。
+  # 2026-05-04: 切到 qwen3.6-max-preview（用户报告新版上线）。
   # 旧值 "qwen-plus" 仍可用，按需在 ~/.stock_trading/config.yaml 覆盖。
-  model: "qwen3-max-preview"
+  model: "qwen3.6-max-preview"
   base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
   timeout: 30
 
@@ -111,8 +111,8 @@ portfolio:
 # Self-iterating agent evolution module (see docs/design/self-iterating-agents.md).
 iteration:
   enabled: false                  # Master switch — disabled by default
-  # 2026-05-04: Meta Agent + signal extraction 切到 qwen3-max-preview。
-  model: "qwen3-max-preview"
+  # 2026-05-04: Meta Agent + signal extraction 切到 qwen3.6-max-preview。
+  model: "qwen3.6-max-preview"
   # fallback 故意保留稳定的 qwen-plus —— preview 模型 5xx / 429 时退回到
   # 老线网，避免双 preview 失败链导致 Meta Agent 全停。
   fallback_model: "qwen-plus"

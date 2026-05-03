@@ -39,11 +39,7 @@ export function getTaskResultUrl(task: TaskLike): string {
       return ref ? `/backtest-v2/${ref}` : `/tasks/${task.id}`
 
     case "report":
-      // Report detail loads through /api/tasks/<task_id>/result so the
-      // owner/admin privacy check can run before exposing holdings/PnL.
-      // Never use result_ref here: task_results_generic:N is not a task id
-      // and will strand users on the loading skeleton.
-      return task.id ? `/reports?id=${task.id}` : "/reports"
+      return ref ? `/reports?id=${ref}` : `/reports`
 
     case "paper_trade":
       return params.ticker ? `/paper-trade/${params.ticker}` : "/paper-trade"

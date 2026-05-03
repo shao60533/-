@@ -81,7 +81,7 @@ def _build_chat(
         model = (
             qcfg.get("deep_think_model") if kind == "deep"
             else qcfg.get("model")
-        ) or "qwen3-max-preview"
+        ) or "qwen3.6-max-preview"
         return ChatOpenAI(
             model=model,
             api_key=qcfg.get("api_key", ""),
