@@ -42,6 +42,12 @@ _SYSTEM_PROMPT = """你是股票筛选助手。将用户的自然语言查询解
     - 如果用户没指定主题，"龙头股" 才解释为对应市场的大市值龙头。
 11. 如果用户查询是强主题查询（如"存储"/"AI"/"新能源"/"半导体"），themes / natural_fallback 必须保留主题关键词；
     不能只输出 "Large Cap" / "Quality" / "Value" 这类泛标签，否则下游会把主题信息丢失。
+12. 中文电力 / 能源 / 新能源主题消歧（v1.3 — 与 ``theme_universe.py`` 注册表对齐）：
+    - "电力" / "电力股" / "公用事业" / "发电" 默认指 **Utilities sector** 的发电+电力公用事业（NEE/SO/DUK/AEP/EXC/SRE/PEG/ED/XEL/D），**不是泛能源、不是科技、也不是金融**；themes 应包含 "Utilities" / "Power Generation"，sectors 应为 "Utilities"。
+    - "能源股" / "能源" 默认指 **Energy sector** 油气链（XOM/CVX/COP/EOG/SLB/LNG/MPC/PSX）；只有用户明确写「清洁能源」/「新能源」/「可再生」/「光伏」/「风电」/「储能」时才视为 clean_energy 主题。
+    - "新能源" / "清洁能源" / "可再生能源" 默认拆解为 **EV + 光伏 + 风电 + 储能 + 可再生能源公用事业**（NEE/FSLR/ENPH/SEDG/BEP/CWEN/ARRY/FLNC）；themes 应包含 "Renewable Energy" / "Solar" / "Wind" / "Energy Storage"。**严禁混入** AAPL/BRK-B/V/JPM/META/MSFT/GOOGL 等泛大盘股或纯油气股（XOM/CVX/COP）。
+    - "电网" / "输配电" / "电气化" / "电力设备" 对应 **Industrials 下电气设备 + 工程承包**（ETN/PWR/GE/GEV/HUBB/APTV/ABBNY），不是 Utilities。
+    - "龙头股" 仍指主题/行业内部龙头，不是全市场市值龙头。
 
 FilterSpec JSON 规范:
 {
@@ -247,31 +253,98 @@ class NLParser:
         parts.append("请输出 FilterSpec JSON。")
         return "\n".join(parts)
 
-    # Storage / cloud-storage keyword sets used by ``_fallback_spec`` so a
-    # LLM-down run on "存储龙头股" still produces a themed FilterSpec
-    # instead of a content-free fallback that loses the user's intent.
-    # Cloud-storage check runs FIRST because "云存储" contains "存储" and
-    # we want hyperscaler tickers (AMZN/MSFT/GOOGL) only when the user is
-    # explicitly asking for cloud, not as a side-effect of storage match.
-    _STORAGE_KEYWORDS = (
-        "存储", "内存", "闪存", "nand", "dram", "ssd", "硬盘", "hdd", "数据存储",
-    )
-    _CLOUD_STORAGE_KEYWORDS = (
-        "云存储", "云计算", "对象存储", "云服务",
-        "cloud storage", "object storage", "cloud computing",
-    )
+    # v1.3: ``_fallback_spec`` delegates theme detection to the
+    # canonical ``theme_universe.detect_theme`` so the no-LLM path uses
+    # exactly the same priority order (clean_energy before
+    # traditional_energy, power_utilities before traditional_energy)
+    # that ``UniverseFilter.filter_by_spec`` will use later. The
+    # per-theme FilterSpec template lives below.
+
+    _THEME_FALLBACK_TEMPLATES: dict[str, dict] = {
+        "memory_storage": {
+            "intent_label": "存储产业链龙头",
+            "sectors": ["Technology", "Semiconductors"],
+            "themes": [
+                "Memory", "DRAM", "NAND", "Flash Storage",
+                "SSD", "HDD", "Data Storage Hardware",
+                "Semiconductor Storage",
+            ],
+            "extra_fallback": [
+                "存储芯片", "内存", "DRAM", "NAND",
+                "闪存", "SSD", "硬盘", "数据存储硬件",
+            ],
+        },
+        # Cloud-storage carve-out lives in theme_universe via
+        # ``extra_when_explicit`` — the FilterSpec doesn't need a
+        # separate template; downstream ``UniverseFilter`` reads the
+        # cloud trigger keywords from the registry.
+        "power_utilities": {
+            "intent_label": "电力 / 公用事业龙头",
+            "sectors": ["Utilities"],
+            "themes": ["Utilities", "Power Generation", "Electric Utility"],
+            "extra_fallback": [
+                "电力", "公用事业", "发电",
+                "utility", "power generation",
+            ],
+        },
+        "traditional_energy": {
+            "intent_label": "油气能源龙头",
+            "sectors": ["Energy"],
+            "themes": [
+                "Oil & Gas", "Petroleum", "Refinery",
+                "Exploration & Production", "Upstream",
+            ],
+            "extra_fallback": [
+                "石油", "天然气", "油气", "炼油",
+                "oil", "gas", "petroleum",
+            ],
+        },
+        "clean_energy": {
+            "intent_label": "新能源 / 清洁能源龙头",
+            "sectors": [
+                "Renewable Energy", "Utilities",
+                "Solar", "Wind", "Energy Storage",
+            ],
+            "themes": [
+                "Renewable Energy", "Solar", "Wind",
+                "Battery Storage", "Energy Storage",
+                "Clean Energy", "Electric Vehicle",
+            ],
+            "extra_fallback": [
+                "新能源", "清洁能源", "可再生能源",
+                "光伏", "风电", "储能",
+                "renewable", "solar", "wind", "battery storage",
+            ],
+        },
+        "grid_electrification": {
+            "intent_label": "电网 / 电气化设备龙头",
+            "sectors": [
+                "Industrials", "Electrical Equipment",
+                "Construction & Engineering",
+            ],
+            "themes": [
+                "Grid", "Transmission", "Electrification",
+                "Power Equipment", "Power Infrastructure",
+            ],
+            "extra_fallback": [
+                "电网", "输配电", "电气化", "电力设备",
+                "grid", "transmission", "electrification",
+            ],
+        },
+    }
 
     @classmethod
     def _fallback_spec(cls, query: str, market: str, strategy_hint: str | None) -> FilterSpec:
         """Build a best-effort FilterSpec when Qwen is unavailable.
 
-        Theme-aware: a query containing storage / cloud-storage keywords
-        gets sectors + themes + natural_fallback pre-populated so the
-        downstream UniverseFilter still receives the user's subject even
+        Theme-aware: routes through ``theme_universe.detect_theme`` so
+        a "电力股龙头" / "新能源龙头" / "存储龙头股" / "能源股" query
+        all gets the right sectors + themes + natural_fallback even
         when the LLM never ran. Empty queries keep the legacy minimal
         spec — we never invent a theme out of nothing.
         """
-        q_lower = (query or "").lower()
+        from stock_trading_system.screener.v2.theme_universe import detect_theme
+
         fb = [query] if query else []
         if strategy_hint:
             fb.append(strategy_hint)
@@ -285,38 +358,22 @@ class NLParser:
                 raw_query=query,
             )
 
-        # Cloud storage first — "云存储" contains "存储" so the order
-        # matters. AMZN/MSFT/GOOGL only count as candidates when the user
-        # explicitly typed a cloud keyword.
-        if any(k in q_lower for k in cls._CLOUD_STORAGE_KEYWORDS):
+        theme = detect_theme(query)
+        template = (
+            cls._THEME_FALLBACK_TEMPLATES.get(theme.key)
+            if theme is not None
+            else None
+        )
+        if theme is not None and template is not None:
             return FilterSpec(
-                intent_summary=f"(LLM 不可用) 云存储 / 云计算主题 — {query[:30]}",
+                intent_summary=(
+                    f"(LLM 不可用) {template['intent_label']} — {query[:30]}"
+                ),
                 market=market,
-                sectors=["Technology"],
-                themes=["Cloud Storage", "Cloud Computing", "Object Storage"],
+                sectors=list(template["sectors"]),
+                themes=list(template["themes"]),
                 target_count=30,
-                natural_fallback=fb + [
-                    "云存储", "云计算", "对象存储", "cloud storage",
-                ],
-                raw_query=query,
-            )
-
-        # Memory / storage hardware (semiconductor sub-theme).
-        if any(k in q_lower for k in cls._STORAGE_KEYWORDS):
-            return FilterSpec(
-                intent_summary=f"(LLM 不可用) 存储产业链龙头 — {query[:30]}",
-                market=market,
-                sectors=["Technology", "Semiconductors"],
-                themes=[
-                    "Memory", "DRAM", "NAND", "Flash Storage",
-                    "SSD", "HDD", "Data Storage Hardware",
-                    "Semiconductor Storage",
-                ],
-                target_count=30,
-                natural_fallback=fb + [
-                    "存储芯片", "内存", "DRAM", "NAND",
-                    "闪存", "SSD", "硬盘", "数据存储硬件",
-                ],
+                natural_fallback=fb + list(template["extra_fallback"]),
                 raw_query=query,
             )
 

@@ -52,7 +52,11 @@ def test_storage_query_uses_theme_fallback_when_llm_unavailable():
         uf = UniverseFilter(config={})
         tickers, source = uf.filter_by_spec(spec, max_universe=10)
 
-    assert source == "theme_fallback"
+    # v1.3: short curated lists (9 < target 10) come back as
+    # ``partial_theme_fallback`` so the UI can warn — both labels are
+    # theme-aware. The forbidden source is ``default``.
+    # v1.4: LLM unavailable → Layer B → ``theme_fallback`` (single label).
+    assert source == "theme_fallback", source
     assert any(t in tickers for t in ("MU", "WDC", "STX", "SNDK"))
     for bad in _BROAD_POLLUTERS:
         assert bad not in tickers, f"{bad} leaked into {tickers}"
@@ -79,19 +83,24 @@ def test_empty_query_still_uses_default_universe():
 
 
 def test_cloud_storage_query_uses_cloud_theme():
-    """``云存储龙头股`` is the cloud-storage sub-theme — fallback list
-    must surface AMZN/MSFT/GOOGL (the hyperscaler S3/Azure/GCS leaders),
-    NOT the memory-chip universe."""
+    """``云存储龙头股`` resolves to the unified ``memory_storage`` theme
+    with the cloud trigger active — the curated chip universe stays AND
+    the hyperscalers (AMZN/MSFT/GOOGL) join via ``extra_when_explicit``.
+
+    v1.3 unified the old standalone ``cloud_storage`` table into the
+    memory_storage theme (single-source-of-truth refactor). Old
+    behaviour was "cloud query = AMZN/MSFT/GOOGL only, MU absent" — the
+    new behaviour is "cloud query = chips + hyperscalers" because both
+    are legitimate storage-stack members.
+    """
     spec = NLParser._fallback_spec("云存储龙头股", "us", None)
     with patch.object(UniverseFilter, "_get_llm", return_value=None), \
          patch.object(UniverseFilter, "_get_qwen", return_value=None):
         uf = UniverseFilter(config={})
         tickers, source = uf.filter_by_spec(spec, max_universe=10)
 
-    assert source == "theme_fallback"
+    # v1.4: LLM unavailable → Layer B → ``theme_fallback`` (single label).
+    assert source == "theme_fallback", source
     assert any(t in tickers for t in ("AMZN", "MSFT", "GOOGL"))
-    # The pure-memory names belong to the *other* fallback bucket and
-    # should not bleed in here. We only assert MU is absent — it's the
-    # only one in both lists' relevant-adjacent set, so a single check
-    # is enough; STX/WDC are even further from cloud-storage relevance.
-    assert "MU" not in tickers
+    for bad in _BROAD_POLLUTERS:
+        assert bad not in tickers, f"{bad} leaked into {tickers}"

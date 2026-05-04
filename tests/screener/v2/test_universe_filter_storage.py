@@ -52,7 +52,11 @@ def test_storage_query_with_no_llm_returns_theme_universe():
     # Broad-market polluters absent.
     for polluter in _BROAD_POLLUTERS:
         assert polluter not in tickers, f"{polluter} leaked into {tickers}"
-    assert source == "theme_fallback"
+    # v1.4: LLM unavailable → Layer B fires → source is
+    # ``theme_fallback`` (the conservative registry path). Forbidden
+    # sources are ``default`` (mega-cap leakage) and ``dynamic_llm``
+    # (would mean LLM ran, contradicting the patch above).
+    assert source == "theme_fallback", source
 
 
 # ── LLM returns garbage that includes polluters → blacklist filter ─────
@@ -82,7 +86,10 @@ def test_storage_query_filters_broad_market_pollution_from_llm_output():
     # important contract is that the BROAD polluters are gone.
     assert "MU" in tickers
     assert "WDC" in tickers
-    assert source == "llm"
+    # v1.4: LLM produced any post-cleaning candidates → source is
+    # ``dynamic_llm`` regardless of count. The "partial" notion got
+    # split off into a separate ``len(tickers) < target`` UI signal.
+    assert source == "dynamic_llm", source
 
 
 # ── Cloud-storage carve-out: AMZN/MSFT/GOOGL allowed when explicit ────
@@ -103,7 +110,9 @@ def test_cloud_storage_query_allows_hyperscalers():
     assert "GOOGL" in tickers
     for polluter in _BROAD_POLLUTERS:
         assert polluter not in tickers
-    assert source == "theme_fallback"
+    # v1.4: LLM unavailable → Layer B fires → source is
+    # ``theme_fallback`` (the conservative registry path).
+    assert source == "theme_fallback", source
 
 
 # ── Off-theme query keeps the legacy _DEFAULT_US fallback path ─────────

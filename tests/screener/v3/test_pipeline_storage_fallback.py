@@ -46,7 +46,11 @@ def test_storage_query_fallback_returns_theme_universe(pipeline):
     # the membership checks below see the ticker list, not the 3-tuple.
     tickers, _spec, source = _run(pipeline._get_candidates("存储龙头股", "us", 20))
     assert tickers, "fallback must return SOMETHING for a themed query"
-    assert source == "theme_fallback"
+    # v1.4: v2 layer raised → registry fallback fires → source is
+    # ``theme_fallback`` (single label). Forbidden sources are
+    # ``default`` (mega-cap leakage) and ``dynamic_llm`` (LLM didn't
+    # actually run).
+    assert source == "theme_fallback", source
     for required in ("MU", "WDC", "STX", "SNDK"):
         assert required in tickers, (
             f"{required} missing from themed fallback: {tickers}"

@@ -40,36 +40,14 @@ _DEFAULT_CN = [
 ]
 
 
-# Theme keyword + fallback constants. Put primary cloud-storage check
-# before bare-storage check because "云存储" contains "存储" and we don't
-# want hyperscalers to leak into a memory query.
-
-_STORAGE_KEYWORDS = {
-    "存储", "内存", "闪存", "nand", "dram", "ssd", "硬盘", "hdd", "数据存储",
-    "memory", "flash storage", "semiconductor storage", "data storage hardware",
-}
-
-_CLOUD_STORAGE_KEYWORDS = {
-    "云存储", "云计算", "对象存储", "云服务",
-    "cloud storage", "object storage", "cloud computing",
-}
-
-# Tickers that must NEVER appear in a storage-themed result — their
-# business has no direct memory/SSD/HDD exposure. Matches the spec
-# requirement: BRK-B/JPM/V/MA/PG/WMT/UNH dropped from storage screens.
-_STORAGE_EXCLUDED_US = {
-    "BRK-B", "BRK.B", "BRKB",
-    "JPM", "V", "MA", "PG", "WMT", "UNH",
-}
-
-_THEME_FALLBACKS_US = {
-    "storage_semiconductor": [
-        "MU", "WDC", "STX", "SNDK", "MRVL", "INTC", "AMD", "NVDA", "AVGO",
-    ],
-    "cloud_storage": [
-        "AMZN", "MSFT", "GOOGL", "ORCL", "IBM", "SNOW", "NET",
-    ],
-}
+# v1.3 (2026-05-04): Theme detection / on-theme fallback / off-theme
+# blacklist all live in ``theme_universe.py`` now. The legacy module-
+# level _STORAGE_KEYWORDS / _THEME_FALLBACKS_US / _CLOUD_STORAGE_KEYWORDS
+# / _STORAGE_EXCLUDED_US tables that lived here have been deleted —
+# adding a new theme used to require updating two places, which led to
+# the "电力能源股 / 电力股龙头 / 能源股龙头 / 新能源龙头" regression
+# where universe.py had no entry for them and silently fell back to
+# ``_DEFAULT_US``. Single-source-of-truth removes that footgun.
 
 
 class UniverseFilter:
@@ -86,58 +64,101 @@ class UniverseFilter:
     def filter_by_spec(self, spec: FilterSpec, max_universe: int = 40) -> tuple[list[str], str]:
         """Return (tickers, source_layer) for the given FilterSpec.
 
-        source_layer ∈ {"llm", "theme_fallback", "heuristic", "default"}
-        for transparency.
+        ``source_layer`` ∈ {"dynamic_llm", "theme_fallback",
+        "heuristic", "default"} — clear semantics per v1.4:
 
-        Theme-aware fallback order (v1.23):
-          1. LLM (Qwen / Gemini) — output is run through
-             ``_clean_theme_tickers`` so BRK-B/JPM/V/MA/PG/WMT/UNH never
-             survive a storage query even if the model hallucinated them.
-          2. Theme fallback — curated on-topic list (MU/WDC/STX/...) when
-             the spec text matches storage/cloud-storage keywords.
-             Strong-theme queries DO NOT fall through to ``_DEFAULT_US``.
-          3. Heuristic narrow over ``_DEFAULT_US`` — also passes through
-             ``_clean_theme_tickers`` in case the spec is themed but the
-             theme fallback returned empty (defensive).
-          4. Raw default — only for off-theme generic queries.
+        * ``dynamic_llm`` — Layer A succeeded. The LLM materialised a
+          spec-driven candidate list (input-driven, NOT a registry
+          lookup). Whether the count matched ``target`` is a separate
+          concern surfaced via ``len(tickers)`` — the source label
+          itself never lies about WHO produced the candidates.
+        * ``theme_fallback`` — Layer A failed/empty. Curated registry
+          list takes over so a themed query never silently degrades to
+          mega-caps. UI shows a "primary candidate generation failed —
+          using conservative fallback" warning when this fires.
+        * ``heuristic`` — non-themed off-LLM path narrows the
+          ``_DEFAULT_US`` list by spec criteria.
+        * ``default`` — pure off-theme fallback for generic queries
+          (e.g. "美股大盘"). Strong-theme queries are NOT allowed
+          here (fail-closed).
+
+        v1.4 dropped the ``partial_theme_fallback`` label that v1.3
+        introduced — it conflated "Layer A LLM produced 8 of 10
+        requested" with "Layer B fallback fired", which made the UI
+        falsely warn "primary failed" for legitimate dynamic results.
         """
+        from stock_trading_system.screener.v2 import theme_universe as tu
+
         market = (spec.market or "us").lower()
         target = min(max_universe, max(5, spec.target_count or 30))
 
-        # Compute theme fallback once — the same list seeds both the
-        # standalone Layer 2 and any Layer 3 narrowing.
-        theme_fallback = self._theme_fallback_universe(spec, market)
+        theme = self._detect_theme_for_spec(spec)
+        is_strong = tu.is_strong_theme(theme)
+        theme_fallback = (
+            tu.theme_fallback_universe(theme, query=spec.raw_query)
+            if (theme is not None and market == "us")
+            else []
+        )
 
-        # Layer A — LLM (Qwen or Gemini). Always run cleaning, even when
-        # the LLM succeeds, so a polluted answer never reaches scoring.
+        # Layer A — LLM (Qwen or Gemini). Always run cleaning, even
+        # when the LLM succeeds, so a polluted answer never reaches
+        # scoring. v1.4 — short LLM lists STAY ``dynamic_llm``: the
+        # candidate-level theme_fit gate downstream still runs, so a
+        # 6-ticker dynamic answer is materially different from a
+        # 6-ticker registry lookup and the UI should reflect that.
         llm = self._get_llm()
         if llm is not None:
             tickers = self._llm_universe(llm, spec, target, market)
-            tickers = self._clean_theme_tickers(tickers, spec, market)
+            tickers = self._clean_theme_tickers(
+                tickers, theme=theme, query=spec.raw_query,
+            )
             if tickers:
-                return tickers[:max_universe], "llm"
+                return tickers[:max_universe], "dynamic_llm"
             logger.info("Layer A (LLM) yielded 0 tickers, falling to Layer B")
 
-        # Layer B — Theme fallback. Strong-theme queries stop here even
-        # if the curated list is short; we'd rather return 4 on-topic
-        # tickers than 40 broad-market polluters.
+        # Layer B — Theme fallback. Conservative registry list, only
+        # fires when LLM is unavailable or returned nothing usable.
+        # The UI is expected to flag this with "primary candidate
+        # generation failed" since it means we couldn't honour the
+        # input-driven contract.
         if theme_fallback:
-            cleaned = self._clean_theme_tickers(theme_fallback, spec, market)
+            cleaned = self._clean_theme_tickers(
+                theme_fallback, theme=theme, query=spec.raw_query,
+            )
             if cleaned:
                 logger.info(
-                    "Layer B theme_fallback for %r → %d tickers",
+                    "Layer B theme_fallback for %r → %d tickers (theme=%s)",
                     spec.raw_query, len(cleaned),
+                    theme.key if theme else "?",
                 )
                 return cleaned[:max_universe], "theme_fallback"
 
-        # Layer C — Heuristic narrow over default list
+        # Layer C — Heuristic narrow over default list. Strong themes
+        # may still recover here when DataHelper finds matching
+        # sectors in the default list — but the result must STILL be
+        # blacklist-cleaned, otherwise BRK-B can ride a "Financials"
+        # sector match into a power-utility query.
         defaults = _DEFAULT_US if market == "us" else _DEFAULT_CN
         narrowed = self._heuristic_filter(defaults, spec)
-        narrowed = self._clean_theme_tickers(narrowed, spec, market)
+        narrowed = self._clean_theme_tickers(
+            narrowed, theme=theme, query=spec.raw_query,
+        )
         if narrowed:
             return narrowed[:max_universe], "heuristic"
 
-        # Layer D — Raw default (off-theme only)
+        # Layer D — Raw default. Strong themes are NOT allowed here
+        # (fail-closed): we'd rather return the empty curated theme
+        # universe than pollute a themed query with broad-market
+        # mega-caps. If we ever reach this branch with a strong theme
+        # both LLM AND the registry returned empty — should never
+        # happen in practice; surface as ``theme_fallback`` so the
+        # UI shows the source warning.
+        if is_strong:
+            logger.warning(
+                "Strong theme %r produced empty universe across all layers",
+                theme.key if theme else "?",
+            )
+            return list(theme_fallback)[:max_universe], "theme_fallback"
         return list(defaults)[:max_universe], "default"
 
     # ── Theme helpers ─────────────────────────────────────────────────
@@ -145,10 +166,7 @@ class UniverseFilter:
     @staticmethod
     def _spec_text(spec: FilterSpec) -> str:
         """Concatenate every signal-bearing field of the spec into a
-        single lower-case haystack for keyword matching. Includes
-        raw_query / intent_summary / themes / sectors / natural_fallback
-        so a partial NLParser output (LLM gave themes but no raw_query)
-        still triggers theme detection."""
+        single lower-case haystack for keyword matching."""
         return " ".join([
             spec.raw_query or "",
             spec.intent_summary or "",
@@ -157,46 +175,41 @@ class UniverseFilter:
             " ".join(spec.natural_fallback or []),
         ]).lower()
 
-    def _theme_fallback_universe(self, spec: FilterSpec, market: str) -> list[str]:
-        """Return a curated on-theme ticker list when the spec text
-        triggers a known theme. ``[]`` when off-theme."""
-        if market != "us":
-            return []
-        text = self._spec_text(spec)
-        if any(k in text for k in _CLOUD_STORAGE_KEYWORDS):
-            return list(_THEME_FALLBACKS_US["cloud_storage"])
-        if any(k in text for k in _STORAGE_KEYWORDS):
-            return list(_THEME_FALLBACKS_US["storage_semiconductor"])
-        return []
+    def _detect_theme_for_spec(self, spec: FilterSpec):
+        """v1.3: thin wrapper around ``theme_universe.detect_theme``
+        so call sites consistently feed the same set of FilterSpec
+        signals (raw_query + intent_summary + themes + sectors)."""
+        from stock_trading_system.screener.v2 import theme_universe as tu
+        return tu.detect_theme(
+            query=spec.raw_query,
+            intent_summary=spec.intent_summary,
+            themes=spec.themes,
+            sectors=spec.sectors,
+        )
 
-    def _is_storage_theme(self, spec: FilterSpec, market: str) -> bool:
-        """True when the spec maps to bare-storage (NOT cloud-storage).
-        Used to gate the BRK-B/JPM/V/... blacklist — cloud-storage
-        queries legitimately allow hyperscalers."""
-        if market != "us":
-            return False
-        text = self._spec_text(spec)
-        if any(k in text for k in _CLOUD_STORAGE_KEYWORDS):
-            return False
-        return any(k in text for k in _STORAGE_KEYWORDS)
-
+    @staticmethod
     def _clean_theme_tickers(
-        self, tickers: list[str], spec: FilterSpec, market: str,
+        tickers: list[str],
+        *,
+        theme=None,
+        query: str | None = None,
     ) -> list[str]:
-        """Drop blacklisted tickers (storage theme only), uppercase, and
-        de-duplicate while preserving order."""
-        out: list[str] = []
+        """Uppercase + de-dup + run ``filter_off_theme`` (theme-aware
+        broad-market blacklist + per-theme exclusions). Off-theme
+        queries skip the blacklist — generic "美股大盘" still passes
+        through unchanged."""
+        from stock_trading_system.screener.v2 import theme_universe as tu
+
+        # Normalise + dedupe in one pass.
+        normalised: list[str] = []
         seen: set[str] = set()
-        is_storage = self._is_storage_theme(spec, market)
         for t in tickers:
             tt = str(t or "").upper().strip()
             if not tt or tt in seen:
                 continue
-            if is_storage and tt in _STORAGE_EXCLUDED_US:
-                continue
             seen.add(tt)
-            out.append(tt)
-        return out
+            normalised.append(tt)
+        return tu.filter_off_theme(normalised, theme, query=query)
 
     # ── V1 legacy path (kept for backward compat) ──────────────────────
 
@@ -245,12 +258,23 @@ class UniverseFilter:
         criteria_text = self._spec_to_nl_criteria(spec)
         logger.info("LLM universe query: %s", criteria_text[:100])
 
-        # Prefer QwenProvider.screen_stocks data API when available
+        # v1.3: switched from the misnamed ``screen_stocks(criteria=,
+        # market=, count=)`` call (which always TypeError'd because
+        # ``screen_stocks`` actually expects ``(candidates, strategy,
+        # top_n)``) to ``materialize_universe(criteria, market,
+        # count)`` — a dedicated NL→candidates entry point. Pre-v1.3
+        # this whole branch silently failed every request and we fell
+        # straight to the generic LLM fallback below.
         qwen = self._get_qwen()
-        if qwen and hasattr(qwen, "screen_stocks") and qwen.enabled:
+        if qwen and hasattr(qwen, "materialize_universe") and qwen.enabled:
             try:
-                picks = qwen.screen_stocks(
-                    criteria=criteria_text,
+                # v1.4: prefer the FilterSpec-aware overload so the
+                # prompt gets structured sector/theme/keyword fields
+                # instead of a flattened criteria blob. Legacy
+                # ``criteria=`` kwarg is still accepted as a positional
+                # fallback for callers that don't have a spec.
+                picks = qwen.materialize_universe(
+                    spec=spec,
                     market=market,
                     count=target,
                 )
@@ -265,7 +289,7 @@ class UniverseFilter:
                 if out:
                     return out
             except Exception as e:  # noqa: BLE001
-                logger.warning("QwenProvider.screen_stocks failed: %s", e)
+                logger.warning("QwenProvider.materialize_universe failed: %s", e)
 
         # Generic LLM fallback. The system prompt is the strict v1.23
         # version: hard-codes the storage/cloud-storage carve-out so

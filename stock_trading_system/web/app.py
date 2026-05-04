@@ -3597,6 +3597,51 @@ def create_app(config_path=None):
         except (TypeError, ValueError):
             duration_sec = 0
 
+        # v1.4 input-driven transparency — surface every dimension
+        # used to BUILD the candidate pool (raw query, parsed
+        # sectors/themes/keywords, structured criteria) AND every
+        # filter that REJECTED candidates. UI uses this to render the
+        # "input → constraints → source → filter" chain end to end.
+        excluded_raw = payload.get("excluded_off_theme") or []
+        excluded: list[dict] = []
+        if isinstance(excluded_raw, list):
+            for item in excluded_raw:
+                if isinstance(item, dict):
+                    t = (item.get("ticker") or "").strip()
+                    if not t:
+                        continue
+                    excluded.append({
+                        "ticker": t,
+                        "sector": (item.get("sector") or "").strip(),
+                        "reason": (item.get("reason") or "").strip(),
+                    })
+                elif isinstance(item, str) and item.strip():
+                    # Backward compat: legacy rows persisted bare
+                    # ticker strings before v1.4 added the structured
+                    # shape — surface them with empty reason fields.
+                    excluded.append({"ticker": item.strip(),
+                                       "sector": "", "reason": ""})
+
+        try:
+            on_theme_count = int(payload.get("on_theme_count") or 0)
+        except (TypeError, ValueError):
+            on_theme_count = 0
+        theme_meta = payload.get("theme_metadata")
+        if not isinstance(theme_meta, dict):
+            theme_meta = None
+
+        # Pull parsed dimensions out of the persisted FilterSpec so
+        # the front-end can show "解析出的行业 / 主题 / 关键词" without
+        # re-running the parser.
+        spec = payload.get("filter_spec") or {}
+        if not isinstance(spec, dict):
+            spec = {}
+        parsed_sectors = spec.get("sectors") or []
+        parsed_themes = spec.get("themes") or []
+        parsed_keywords = spec.get("natural_fallback") or []
+        intent_summary = spec.get("intent_summary") or ""
+        raw_query = spec.get("raw_query") or task_params.get("nl_query") or ""
+
         return {
             "mode":                mode,
             "llm_calls":           llm_calls,
@@ -3607,6 +3652,17 @@ def create_app(config_path=None):
             "candidates_count":    int(payload.get("candidates_count")
                                         or len(candidates or [])),
             "roundtable_enabled":  roundtable_enabled,
+            # v1.3/1.4 input-driven transparency
+            "raw_query":           str(raw_query),
+            "intent_summary":      str(intent_summary),
+            "parsed_theme":        payload.get("parsed_theme"),
+            "theme_metadata":      theme_meta,
+            "parsed_sectors":      [str(x) for x in parsed_sectors if x],
+            "parsed_themes":       [str(x) for x in parsed_themes if x],
+            "parsed_keywords":     [str(x) for x in parsed_keywords if x],
+            "universe_source":     payload.get("universe_source"),
+            "on_theme_count":      on_theme_count,
+            "excluded_off_theme":  excluded,
         }
 
     def _normalize_v3_candidates(payload: dict) -> list[dict]:

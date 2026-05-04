@@ -266,6 +266,149 @@ class QwenProvider:
             })
         return results
 
+    def materialize_universe(
+        self,
+        criteria=None,
+        market: str = "us",
+        count: int = 30,
+        *,
+        spec=None,
+    ) -> list[dict]:
+        """v1.3+: turn a FilterSpec (or NL criteria blob) into a fresh
+        candidate ticker list.
+
+        This is the **input → candidates** entry point used by
+        ``UniverseFilter.filter_by_spec`` Layer A. Different intent
+        from ``screen_stocks`` (which RANKS pre-supplied candidates).
+
+        Two call shapes (v1.4):
+        * ``materialize_universe(spec=FilterSpec(...))`` — preferred.
+          Lets the prompt see structured sectors / themes / keywords /
+          target_count separately, which produces tighter relevance
+          than a flat criteria blob.
+        * ``materialize_universe(criteria="natural language", ...)`` —
+          legacy. Still supported so older call sites and tests keep
+          working; internally we just stuff the string into the user
+          prompt verbatim.
+
+        Returns a list of ``{ticker, name?, sector?}`` dicts. Empty
+        list on LLM unavailable / parsing failure / no usable picks.
+        Uppercases tickers; preserves return order.
+        """
+        if not self._enabled:
+            return []
+
+        # Accept FilterSpec via positional too — convenience for callers
+        # that don't bother with the kwarg.
+        if spec is None and criteria is not None and not isinstance(criteria, str):
+            spec = criteria
+            criteria = None
+
+        if spec is not None:
+            market = (getattr(spec, "market", None) or market or "us").lower()
+            count = count or getattr(spec, "target_count", None) or 30
+            criteria = self._spec_to_criteria_blob(spec)
+        elif criteria is None:
+            return []
+
+        target = max(1, int(count))
+        # The system prompt mirrors ``UniverseFilter._llm_universe``
+        # generic-fallback wording — same theme-fit / no-mega-cap
+        # constraints — so both paths produce comparable lists.
+        system = (
+            "你是股票候选池生成助手。根据用户筛选条件返回候选股票代码。"
+            "必须严格匹配用户主题，不要用泛大盘龙头、知名公司或高市值公司凑数。"
+            "如果用户查询包含行业/主题词，只能返回与该主题有直接业务暴露的公司。"
+            "「龙头股」表示该主题/行业内部的龙头，不是全市场市值龙头。"
+            "中文「电力 / 电力股 / 公用事业」默认指 Utilities sector "
+            "（NEE/SO/DUK/AEP/EXC/SRE/PEG/ED/XEL/D），不是泛能源、不是科技。"
+            "中文「能源股 / 能源」默认指 Energy sector 油气链 "
+            "（XOM/CVX/COP/EOG/SLB/LNG/MPC/PSX）；除非用户明确写「清洁能源」"
+            "/「新能源」/「可再生」/「光伏」/「风电」/「储能」，否则不要"
+            "把 NEE/FSLR/ENPH 当成默认能源股。"
+            "中文「新能源」默认拆解为 EV + 光伏 + 风电 + 储能 + 可再生能源 "
+            "（NEE/FSLR/ENPH/SEDG/BEP/CWEN/ARRY/FLNC），禁止混入 "
+            "AAPL/BRK-B/V/JPM/META/MSFT/GOOGL 等泛大盘股或纯油气股。"
+            "中文「存储」默认指存储芯片/内存/DRAM/NAND/闪存/SSD/HDD/数据存储硬件 "
+            "（MU/WDC/STX/SNDK/MRVL/INTC/AMD/NVDA/AVGO）；只有用户明确写"
+            "云存储/对象存储 时才把 AMZN/MSFT/GOOGL 视作主题成员。"
+            "禁止为强主题查询返回 BRK-B/JPM/V/MA/PG/WMT/UNH 等泛大盘股。"
+            f"市场: {market.upper()}。返回 JSON: "
+            f"{{\"tickers\": [{{\"ticker\":\"...\", \"name\":\"...\", "
+            f"\"sector\":\"...\"}}, ...]}}，不含其他文字。"
+            f"目标数量约 {target}；若直接相关股票不足，可以少于目标数量，"
+            "**绝对不允许用大盘股凑数**。"
+        )
+        data = self._call(system, criteria)
+        if not data:
+            return []
+        raw = data.get("tickers") or data.get("stocks") or data.get("picks") or []
+        if not isinstance(raw, list):
+            return []
+        out: list[dict] = []
+        for item in raw[: target * 2]:  # cap so a chatty LLM can't blow up
+            if isinstance(item, dict):
+                t = (item.get("ticker") or item.get("symbol") or "").strip()
+                if not t:
+                    continue
+                out.append({
+                    "ticker": t.upper(),
+                    "name":   (item.get("name") or "").strip(),
+                    "sector": (item.get("sector") or "").strip(),
+                })
+            elif isinstance(item, str):
+                t = item.strip()
+                if t:
+                    out.append({"ticker": t.upper(), "name": "", "sector": ""})
+        return out
+
+    @staticmethod
+    def _spec_to_criteria_blob(spec) -> str:
+        """v1.4: render a FilterSpec as a structured criteria blob for
+        ``materialize_universe``. We keep each parsed dimension on its
+        own labelled line so the LLM can ground each axis (sector vs
+        theme vs keyword vs numeric criteria) instead of flattening
+        them into a single fuzzy string. Used over the legacy ``;``
+        joined blob from ``UniverseFilter._spec_to_nl_criteria``.
+        """
+        lines: list[str] = []
+        raw_query = getattr(spec, "raw_query", None)
+        if raw_query:
+            lines.append(f"用户原始查询: {raw_query}")
+        intent = getattr(spec, "intent_summary", None)
+        if intent:
+            lines.append(f"核心意图: {intent}")
+        sectors = getattr(spec, "sectors", None) or []
+        if sectors:
+            lines.append("行业 (sector): " + ", ".join(sectors))
+        themes = getattr(spec, "themes", None) or []
+        if themes:
+            lines.append("主题 (theme): " + ", ".join(themes))
+        kw = getattr(spec, "natural_fallback", None) or []
+        if kw:
+            lines.append("关键词 (keywords): " + "; ".join(kw))
+        excludes = getattr(spec, "exclude_tickers", None) or []
+        if excludes:
+            lines.append("排除股票: " + ", ".join(excludes))
+        crit = getattr(spec, "criteria", None) or {}
+        crit_bits: list[str] = []
+        if crit.get("min_market_cap"):
+            crit_bits.append(f"市值≥{int(crit['min_market_cap']/1e9)}B USD")
+        if crit.get("max_pe"):
+            crit_bits.append(f"PE≤{crit['max_pe']}")
+        if crit.get("min_roe_pct"):
+            crit_bits.append(f"ROE≥{crit['min_roe_pct']}%")
+        if crit.get("min_revenue_growth_pct"):
+            crit_bits.append(f"收入增速≥{crit['min_revenue_growth_pct']}%")
+        if crit.get("min_dividend_yield_pct"):
+            crit_bits.append(f"股息率≥{crit['min_dividend_yield_pct']}%")
+        if crit_bits:
+            lines.append("数值约束: " + "; ".join(crit_bits))
+        target = getattr(spec, "target_count", None)
+        if target:
+            lines.append(f"目标候选数量约 {int(target)}")
+        return "\n".join(lines) or "大盘优质股票"
+
     def screen_stocks(
         self,
         candidates: list[str],

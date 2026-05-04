@@ -359,6 +359,21 @@ function ScreenerForm({ prefillTaskId = null }: ScreenerFormProps) {
 
 // v1.2: run-mode banner metadata. All fields tolerated as missing for
 // pre-v1.2 result rows (DTO emits zeros / empty list rather than null).
+interface ThemeMetadata {
+  key: string
+  keywords?: string[]
+  universe?: string[]
+  sectors?: string[]
+  disambiguation_note?: string
+  is_strong?: boolean
+}
+
+interface ExcludedItem {
+  ticker: string
+  sector?: string
+  reason?: string
+}
+
 interface RunMetadata {
   mode: string
   llm_calls: number
@@ -368,6 +383,20 @@ interface RunMetadata {
   gurus_used: string[]
   candidates_count: number
   roundtable_enabled: boolean
+  // v1.3/1.4 input-driven transparency. All optional so legacy rows
+  // still render — older records persisted before v1.4 only carry the
+  // ``parsed_theme`` / ``universe_source`` / ``excluded_off_theme``
+  // (string list shape) subset.
+  raw_query?: string
+  intent_summary?: string
+  parsed_theme?: string | null
+  theme_metadata?: ThemeMetadata | null
+  parsed_sectors?: string[]
+  parsed_themes?: string[]
+  parsed_keywords?: string[]
+  universe_source?: string | null
+  on_theme_count?: number
+  excluded_off_theme?: Array<ExcludedItem | string>
 }
 
 interface Votes { bullish: number; bearish: number; neutral: number; total: number }
@@ -464,6 +493,22 @@ function modeLabel(mode?: string): string {
        : mode === "agent" ? "Agent (无圆桌)"
        : mode === "classic" ? "经典阈值"
        : "Agent"
+}
+
+/** v1.4: human label for ``universe_source``. The raw enum value gets
+ *  paired with a Chinese gloss so the UI distinguishes the
+ *  *input-driven* path (dynamic_llm) from the *fallback* paths
+ *  (theme_fallback / heuristic / default). */
+function sourceLabel(src: string | null | undefined): string {
+  if (!src) return "—"
+  const map: Record<string, string> = {
+    dynamic_llm:    "dynamic_llm（LLM 动态生成）",
+    data_provider:  "data_provider（数据源动态查询）",
+    theme_fallback: "theme_fallback（保守降级）",
+    heuristic:      "heuristic（启发式）",
+    default:        "default（大盘默认池）",
+  }
+  return map[src] ?? src
 }
 
 /** Read a numeric fundamentals field; tolerates strings ("28.5") and
@@ -632,6 +677,135 @@ function ResultsView({ resultId }: { resultId: string }) {
         <Stat label="中性" value={String(neutral)} />
         <Stat label="共识率" value={`${consensusRate}%`} />
       </div>
+
+      {/* v1.4 — input-driven transparency banner. Renders the full
+          chain: 用户输入 → 解析约束 → 候选来源 → off-theme 过滤。
+          Hidden when there's literally nothing meaningful to show
+          (no theme parsed, no excluded, no source label). */}
+      {result.run_metadata && (
+        result.run_metadata.parsed_theme ||
+        (result.run_metadata.excluded_off_theme?.length ?? 0) > 0 ||
+        result.run_metadata.universe_source ||
+        (result.run_metadata.parsed_sectors?.length ?? 0) > 0 ||
+        (result.run_metadata.parsed_themes?.length ?? 0) > 0
+      ) && (
+        <Card>
+          <CardContent className="py-3 space-y-2 text-xs">
+            {/* Row 1: 用户原始输入 + 候选池来源 + 警告 */}
+            <div className="flex flex-wrap items-center gap-2">
+              {result.run_metadata.raw_query && (
+                <Badge variant="muted" className="font-mono">
+                  「{result.run_metadata.raw_query}」
+                </Badge>
+              )}
+              {result.run_metadata.intent_summary && (
+                <span className="text-muted-foreground">
+                  → {result.run_metadata.intent_summary}
+                </span>
+              )}
+              {result.run_metadata.universe_source && (
+                <>
+                  <span className="text-muted-foreground">·</span>
+                  <span>
+                    候选来源：
+                    <span className={cn(
+                      "font-medium",
+                      result.run_metadata.universe_source === "dynamic_llm" && "text-emerald-500",
+                      result.run_metadata.universe_source === "theme_fallback" && "text-amber-500",
+                      result.run_metadata.universe_source === "default" && "text-orange-500",
+                    )}>
+                      {sourceLabel(result.run_metadata.universe_source)}
+                    </span>
+                  </span>
+                </>
+              )}
+              {result.run_metadata.universe_source === "theme_fallback" && (
+                <Badge variant="sell" className="ml-auto">
+                  ⚠️ 主候选生成失败，使用保守降级候选
+                </Badge>
+              )}
+              {result.run_metadata.universe_source === "default" && (
+                <Badge variant="sell" className="ml-auto">
+                  ⚠️ 未命中主题，使用大盘默认池
+                </Badge>
+              )}
+            </div>
+
+            {/* Row 2: 解析出的主题 / 行业 / 关键词 */}
+            {(result.run_metadata.parsed_theme ||
+              (result.run_metadata.parsed_sectors?.length ?? 0) > 0 ||
+              (result.run_metadata.parsed_themes?.length ?? 0) > 0 ||
+              (result.run_metadata.parsed_keywords?.length ?? 0) > 0) && (
+              <div className="flex flex-wrap items-center gap-2">
+                {result.run_metadata.parsed_theme && (
+                  <Badge variant="default">🎯 {result.run_metadata.parsed_theme}</Badge>
+                )}
+                {(result.run_metadata.parsed_sectors?.length ?? 0) > 0 && (
+                  <span className="text-muted-foreground">
+                    行业：
+                    <span className="text-foreground/80">
+                      {result.run_metadata.parsed_sectors!.join(" / ")}
+                    </span>
+                  </span>
+                )}
+                {(result.run_metadata.parsed_themes?.length ?? 0) > 0 && (
+                  <span className="text-muted-foreground">
+                    主题：
+                    <span className="text-foreground/80">
+                      {result.run_metadata.parsed_themes!.join(" / ")}
+                    </span>
+                  </span>
+                )}
+                {(result.run_metadata.parsed_keywords?.length ?? 0) > 0 && (
+                  <span className="text-muted-foreground">
+                    关键词：
+                    <span className="text-foreground/80">
+                      {result.run_metadata.parsed_keywords!.join(", ")}
+                    </span>
+                  </span>
+                )}
+                {typeof result.run_metadata.on_theme_count === "number" &&
+                 result.run_metadata.on_theme_count > 0 && (
+                  <span className="text-muted-foreground ml-auto">
+                    on-theme {result.run_metadata.on_theme_count}
+                  </span>
+                )}
+              </div>
+            )}
+
+            {/* Row 3: 被剔除的 off-theme 列表（含原因） */}
+            {(result.run_metadata.excluded_off_theme?.length ?? 0) > 0 && (
+              <div className="flex flex-wrap items-start gap-2 pt-1 border-t border-border/40">
+                <span className="text-muted-foreground shrink-0">
+                  剔除 off-theme {result.run_metadata.excluded_off_theme!.length}：
+                </span>
+                <div className="flex flex-wrap gap-1.5">
+                  {result.run_metadata.excluded_off_theme!.slice(0, 12).map((ex, i) => {
+                    const obj = typeof ex === "string"
+                      ? { ticker: ex, sector: "", reason: "" }
+                      : ex
+                    return (
+                      <span key={`${obj.ticker}-${i}`}
+                            title={obj.reason || obj.sector || ""}
+                            className="font-mono px-1.5 py-0.5 rounded bg-muted text-foreground/80">
+                        {obj.ticker}
+                        {obj.sector && (
+                          <span className="ml-1 text-muted-foreground">· {obj.sector}</span>
+                        )}
+                      </span>
+                    )
+                  })}
+                  {result.run_metadata.excluded_off_theme!.length > 12 && (
+                    <span className="text-muted-foreground">
+                      … +{result.run_metadata.excluded_off_theme!.length - 12}
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* v1.2 — run-mode banner. Hidden for legacy rows that have no
           metadata (DTO emits zeros + empty list, which we read as

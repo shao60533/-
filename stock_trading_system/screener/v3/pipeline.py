@@ -129,6 +129,20 @@ class ScreenerV3Pipeline:
 
         # Build evaluation units: (guru, ticker, data_bundle)
         bundles = await self._prepare_data_bundles(candidates, market)
+
+        # Candidate-level theme_fit gate (v1.3): the universe filter's
+        # ``filter_off_theme`` only drops broad-market polluters from a
+        # known blacklist. The gate adds the stricter check —
+        # ``ticker ∈ theme.universe`` OR ``fundamentals.sector ∈
+        # theme.sectors`` — so an LLM hallucination like "AAPL belongs
+        # to power utilities" can't slip past two layers of filtering
+        # and waste 14 guru LLM calls on an off-theme name.
+        candidates, theme_gate, theme_meta = self._apply_theme_fit_gate(
+            candidates, bundles, filter_spec, nl_query,
+        )
+        context["theme"] = theme_meta
+        context["theme_gate"] = theme_gate
+
         units = [
             (guru, ticker, bundles[ticker])
             for ticker in candidates
@@ -179,6 +193,13 @@ class ScreenerV3Pipeline:
             "results": results,
             "universe_source": universe_source,
             "filter_spec": filter_spec,
+            # v1.3 theme transparency — the UI banner shows the user
+            # which theme was matched, how many candidates passed the
+            # fit gate, and which tickers were dropped as off-theme.
+            "parsed_theme": theme_gate.get("parsed_theme"),
+            "theme_metadata": theme_meta,
+            "on_theme_count": theme_gate.get("on_theme_count", len(candidates)),
+            "excluded_off_theme": theme_gate.get("excluded_off_theme", []),
             "metrics": {
                 "duration_sec": round(elapsed, 1),
                 "llm_calls": len(units),
@@ -200,10 +221,13 @@ class ScreenerV3Pipeline:
         themed query never silently degenerates into pure financial
         analysis.
 
-        Theme-aware fallback: when v2 throws on a themed query (storage,
-        cloud-storage, ...), the storage_semiconductor / cloud_storage
-        universes from ``UniverseFilter._THEME_FALLBACKS_US`` take
-        priority over the broad mega-cap default list.
+        Theme-aware fallback: when v2 raises on a themed query, we
+        consult the ``theme_universe`` registry directly so the curated
+        list (memory_storage / power_utilities / clean_energy / ...)
+        still wins over the broad mega-cap defaults. v1.3 unified the
+        per-theme tables into ``theme_universe._THEMES`` — this branch
+        no longer references the deleted ``_THEME_FALLBACKS_US`` /
+        ``_STORAGE_KEYWORDS`` symbols.
         """
         try:
             from stock_trading_system.screener.v2.nl_parser import NLParser
@@ -216,31 +240,123 @@ class ScreenerV3Pipeline:
             logger.info("V3 candidates: %d tickers (source=%s)", len(tickers), source)
             return tickers, spec.to_dict(), source
         except Exception as e:
-            logger.warning("V2 pipeline failed, using defaults: %s", e)
+            logger.warning("V2 pipeline failed, using theme registry fallback: %s", e)
             try:
-                from stock_trading_system.screener.v2.universe import (
-                    UniverseFilter as _UF,
-                    _THEME_FALLBACKS_US,
-                    _STORAGE_KEYWORDS,
-                    _CLOUD_STORAGE_KEYWORDS,
-                )
-
-                q_lower = (nl_query or "").lower()
-                if any(k in q_lower for k in _CLOUD_STORAGE_KEYWORDS):
-                    on_theme = list(_THEME_FALLBACKS_US["cloud_storage"])
-                    logger.info("V3 themed fallback: cloud_storage")
-                    return on_theme[:n], {}, "theme_fallback"
-                if any(k in q_lower for k in _STORAGE_KEYWORDS):
-                    on_theme = list(_THEME_FALLBACKS_US["storage_semiconductor"])
-                    logger.info("V3 themed fallback: storage_semiconductor")
-                    return on_theme[:n], {}, "theme_fallback"
+                from stock_trading_system.screener.v2 import theme_universe as tu
+                theme = tu.detect_theme(query=nl_query)
+                if theme is not None:
+                    on_theme = tu.theme_fallback_universe(theme, query=nl_query)
+                    if on_theme:
+                        # v1.4: this branch only fires when the v2
+                        # nl_parser/UniverseFilter raised — the LLM
+                        # path was effectively unavailable. Always
+                        # label as ``theme_fallback`` so the UI can
+                        # surface "primary candidate generation
+                        # failed" warning.
+                        logger.info(
+                            "V3 themed registry fallback (v2 unavailable): %s → %d tickers",
+                            theme.key, len(on_theme),
+                        )
+                        return (
+                            on_theme[:n],
+                            {"themes": [theme.key], "raw_query": nl_query or ""},
+                            "theme_fallback",
+                        )
             except Exception:  # pragma: no cover — defensive
-                pass
+                logger.exception("Theme registry fallback failed")
 
             defaults = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META",
                          "TSLA", "AVGO", "COST", "NFLX",
                          "AMD", "CRM", "ORCL", "ADBE", "QCOM"]
             return defaults[:n], {}, "default"
+
+    def _apply_theme_fit_gate(
+        self,
+        candidates: list[str],
+        bundles: dict[str, dict],
+        filter_spec: dict | None,
+        nl_query: str,
+    ) -> tuple[list[str], dict, dict | None]:
+        """v1.4 candidate-level theme fit filter.
+
+        Runs for **any** detected theme — not just strong ones — per
+        the v1.4 contract that says "no matter where candidates came
+        from, off-theme stocks must not enter guru scoring." Weak /
+        future themes therefore also benefit, while plain "美股大盘"
+        style queries (theme is None) skip the gate entirely.
+
+        For each candidate we collect a ``reason`` string so the UI
+        can tell the user *why* a name was dropped (sector mismatch /
+        unknown sector / off-universe). Reasons stay short — the
+        front-end shows them inline next to the ticker.
+
+        Sector-unknown candidates are kept by design: punishing the
+        user for a DataRouter outage is worse than occasionally
+        letting through a name we couldn't classify. The off-theme
+        list therefore only contains names we are CONFIDENT are off
+        topic.
+        """
+        from stock_trading_system.screener.v2 import theme_universe as tu
+
+        spec = filter_spec or {}
+        theme = tu.detect_theme(
+            query=nl_query,
+            intent_summary=spec.get("intent_summary"),
+            themes=spec.get("themes"),
+            sectors=spec.get("sectors"),
+        )
+        meta = tu.theme_metadata(theme.key) if theme else None
+
+        if theme is None:
+            # Off-theme query — gate is a no-op so generic
+            # "美股大盘" / "S&P500" runs still see the broad pool.
+            return list(candidates), {
+                "parsed_theme": None,
+                "on_theme_count": len(candidates),
+                "excluded_off_theme": [],
+            }, meta
+
+        on_universe = {t.upper() for t in theme.universe}
+        on_sectors = {s.lower() for s in theme.sectors}
+
+        kept: list[str] = []
+        excluded: list[dict] = []
+        for ticker in candidates:
+            tu_t = (ticker or "").upper()
+            if tu_t in on_universe:
+                kept.append(ticker)
+                continue
+            bundle = bundles.get(ticker) or {}
+            fund = bundle.get("fundamentals_current") or {}
+            sector_raw = (fund.get("sector") or "").strip()
+            sector = sector_raw.lower()
+            if not sector:
+                # Provider didn't return a sector — keep, don't punish
+                # the user for an upstream data hole.
+                kept.append(ticker)
+                continue
+            if sector in on_sectors:
+                kept.append(ticker)
+                continue
+            excluded.append({
+                "ticker": ticker,
+                "sector": sector_raw,
+                "reason": (
+                    f"sector={sector_raw} 不在主题 {theme.key} 约束 sectors={list(theme.sectors)}"
+                ),
+            })
+
+        if excluded:
+            logger.info(
+                "Theme fit gate (%s): kept %d, excluded %d off-theme: %s",
+                theme.key, len(kept), len(excluded),
+                [e["ticker"] for e in excluded],
+            )
+        return kept, {
+            "parsed_theme": theme.key,
+            "on_theme_count": len(kept),
+            "excluded_off_theme": excluded,
+        }, meta
 
     _BUNDLE_CONCURRENCY = 5
 

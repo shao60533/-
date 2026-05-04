@@ -95,7 +95,7 @@ def test_universe_llm_call(monkeypatch):
             tickers, source = uf.filter_by_spec(spec)
 
     assert len(tickers) >= 1
-    assert source == "llm"
+    assert source == "dynamic_llm"
     assert "AAPL" in tickers
 
 
