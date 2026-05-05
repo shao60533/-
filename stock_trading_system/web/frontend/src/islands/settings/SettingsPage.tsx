@@ -22,6 +22,26 @@ interface SettingsResponse {
     base_url?: string
     api_key_masked?: string
   }
+  // v1.0 (llm-openrouter): aggregator slice surfaced by /api/settings.
+  // presets[] / active{} are read here for the section's preset table;
+  // mutations to active.{deep,quick} go through the dedicated
+  // /api/settings/openrouter/active POST (the LLMSwitcher path), so
+  // this slice is mostly a *display* surface plus the scalar fields
+  // editable through WRITABLE_SETTING_PATHS.
+  openrouter?: {
+    enabled?: boolean
+    active?: boolean    // computed: env or yaml api_key present
+    base_url?: string
+    http_referer?: string
+    x_title?: string
+    timeout?: number
+    api_key_masked?: string
+    presets?: Array<{
+      id: string; label: string; model: string; role: string
+      provider_order?: string[]; kwargs?: Record<string, unknown>
+    }>
+    active_pointers?: { deep?: string; quick?: string }
+  }
   polygon?: { api_key_masked?: string }
   ib?: { host?: string; port?: string | number; client_id?: string | number; enabled?: boolean }
   telegram?: { bot_token_masked?: string; chat_id?: string }
@@ -48,7 +68,7 @@ export function SettingsPage() {
   const [snapshot, setSnapshot] = useState<SettingsResponse | null>(null)
   // Tracks which provider's "清空" button is currently in flight so we can
   // show a spinner without freezing the rest of the form.
-  const [clearing, setClearing] = useState<"gemini" | "qwen" | null>(null)
+  const [clearing, setClearing] = useState<"gemini" | "qwen" | "openrouter" | null>(null)
 
   // ── LLM section ────────────────────────────────────────────────────────
   const [geminiKey, setGeminiKey] = useState("")
@@ -57,6 +77,18 @@ export function SettingsPage() {
   const [qwenKey, setQwenKey] = useState("")
   const [qwenModel, setQwenModel] = useState("")
   const [qwenBaseUrl, setQwenBaseUrl] = useState("")
+
+  // ── OpenRouter section (v1.0) ──────────────────────────────────────────
+  // Form state mirrors the editable scalars in WRITABLE_SETTING_PATHS;
+  // presets[] / active{} surface as read-only blocks because edits go
+  // through the dedicated /openrouter/active endpoint (or yaml hand-edit
+  // for the v1.0 'add preset' path which the UI doesn't yet expose).
+  const [orEnabled, setOrEnabled] = useState(false)
+  const [orKey, setOrKey] = useState("")
+  const [orBaseUrl, setOrBaseUrl] = useState("")
+  const [orReferer, setOrReferer] = useState("")
+  const [orTitle, setOrTitle] = useState("")
+  const [orTimeout, setOrTimeout] = useState<number>(120)
 
   // ── Notification section ───────────────────────────────────────────────
   const [emailEnabled, setEmailEnabled] = useState(false)
@@ -76,6 +108,12 @@ export function SettingsPage() {
       setQwenEnabled(Boolean(res.qwen?.enabled))
       setQwenModel(res.qwen?.model ?? "")
       setQwenBaseUrl(res.qwen?.base_url ?? "")
+      // OR scalars
+      setOrEnabled(Boolean(res.openrouter?.enabled))
+      setOrBaseUrl(res.openrouter?.base_url ?? "https://openrouter.ai/api/v1")
+      setOrReferer(res.openrouter?.http_referer ?? "")
+      setOrTitle(res.openrouter?.x_title ?? "StockAI Terminal")
+      setOrTimeout(Number(res.openrouter?.timeout ?? 120))
       setEmailTo(res.email?.to_address ?? "")
       setEmailSmtpHost(res.email?.smtp_host ?? "")
       setEmailUsername(res.email?.username ?? "")
@@ -91,12 +129,14 @@ export function SettingsPage() {
     refreshSnapshot(true)
   }, [refreshSnapshot])
 
-  const clearProviderKey = async (provider: "gemini" | "qwen") => {
+  const clearProviderKey = async (provider: "gemini" | "qwen" | "openrouter") => {
     const masked = provider === "gemini"
       ? snapshot?.gemini?.api_key_masked
-      : snapshot?.qwen?.api_key_masked
+      : provider === "qwen"
+        ? snapshot?.qwen?.api_key_masked
+        : snapshot?.openrouter?.api_key_masked
     if (!masked) return  // nothing to clear
-    const label = provider === "gemini" ? "Gemini" : "Qwen"
+    const label = provider === "gemini" ? "Gemini" : provider === "qwen" ? "Qwen" : "OpenRouter"
     if (!window.confirm(`确定清空已保存的 ${label} API Key？此操作会立即生效，下一次分析将无法使用 ${label}。`)) {
       return
     }
@@ -112,6 +152,7 @@ export function SettingsPage() {
       // before the GET resolves.
       if (provider === "gemini") setGeminiKey("")
       if (provider === "qwen") setQwenKey("")
+      if (provider === "openrouter") setOrKey("")
       await refreshSnapshot()
       setSaveMsg(`${label} API Key 已清空`)
       setTimeout(() => setSaveMsg(null), 3000)
@@ -136,6 +177,13 @@ export function SettingsPage() {
       "qwen.enabled": qwenEnabled,
       "qwen.model": qwenModel,
       "qwen.base_url": qwenBaseUrl,
+      // OpenRouter scalars (presets[]/active{} go through the
+      // dedicated /api/settings/openrouter/active endpoint).
+      "openrouter.enabled":      orEnabled,
+      "openrouter.base_url":     orBaseUrl,
+      "openrouter.http_referer": orReferer,
+      "openrouter.x_title":      orTitle,
+      "openrouter.timeout":      orTimeout,
       "alerts.email.enabled": emailEnabled,
       "alerts.email.to_address": emailTo,
       "alerts.email.smtp_host": emailSmtpHost,
@@ -145,11 +193,13 @@ export function SettingsPage() {
     }
     if (geminiKey) payload["gemini.api_key"] = geminiKey
     if (qwenKey) payload["qwen.api_key"] = qwenKey
+    if (orKey) payload["openrouter.api_key"] = orKey
     try {
       await apiPost("/api/settings", payload)
       setSaveMsg("设置已保存")
       setGeminiKey("")
       setQwenKey("")
+      setOrKey("")
       await refreshSnapshot()
       setTimeout(() => setSaveMsg(null), 3000)
     } catch (err: unknown) {
@@ -346,6 +396,155 @@ export function SettingsPage() {
                   />
                 </div>
               </div>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* OpenRouter 聚合层（v1.0 — llm-openrouter） */}
+      <Card id="openrouter">
+        <CardHeader>
+          <div className="mobile-card-header">
+            <div className="mc-title min-w-0">
+              <CardTitle>OpenRouter (聚合层)</CardTitle>
+              <CardDescription className="break-words">
+                一个 key 解锁 100+ 模型；可在 Header 模型菜单中切换 deep / quick 预设。
+                设置 OPENROUTER_API_KEY 环境变量可在云部署中自动启用（覆盖 yaml）。
+              </CardDescription>
+            </div>
+            <div className="mc-actions">
+              <Switch
+                className="shrink-0"
+                checked={orEnabled}
+                onCheckedChange={setOrEnabled}
+              />
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-5">
+            {/* API key + base config row */}
+            <div className="grid gap-3 sm:grid-cols-2 grid-collapse-mobile">
+              <div className="space-y-1.5 min-w-0">
+                <div className="flex flex-wrap items-center justify-between gap-2 min-w-0">
+                  <label className="text-xs text-muted-foreground min-w-0 flex-1 truncate">
+                    API Key {snapshot?.openrouter?.api_key_masked && (
+                      <span className="ml-2 font-mono">已配置 <span className="text-safe inline-block max-w-[12rem] align-bottom">{snapshot.openrouter.api_key_masked}</span></span>
+                    )}
+                  </label>
+                  {snapshot?.openrouter?.api_key_masked && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 px-2 shrink-0 text-[var(--color-accent-red)] hover:text-[var(--color-accent-red)]"
+                      onClick={() => clearProviderKey("openrouter")}
+                      disabled={clearing !== null || saving}
+                      aria-label="清空 OpenRouter API Key"
+                    >
+                      {clearing === "openrouter"
+                        ? <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                        : <Trash2 className="h-3.5 w-3.5 mr-1" />}
+                      清空
+                    </Button>
+                  )}
+                </div>
+                <Input
+                  type={showKeys ? "text" : "password"}
+                  placeholder="sk-or-v1-...（或设 OPENROUTER_API_KEY 环境变量）"
+                  value={orKey}
+                  onChange={(e) => setOrKey(e.target.value)}
+                  disabled={!orEnabled && !snapshot?.openrouter?.active}
+                />
+              </div>
+              <div className="space-y-1.5 min-w-0">
+                <label className="text-xs text-muted-foreground">Base URL</label>
+                <Input
+                  placeholder="https://openrouter.ai/api/v1"
+                  value={orBaseUrl}
+                  onChange={(e) => setOrBaseUrl(e.target.value)}
+                />
+              </div>
+              <div className="space-y-1.5 min-w-0">
+                <label className="text-xs text-muted-foreground">HTTP-Referer (用于 OR 仪表盘归因)</label>
+                <Input
+                  placeholder="https://stockai.example.com"
+                  value={orReferer}
+                  onChange={(e) => setOrReferer(e.target.value)}
+                />
+              </div>
+              <div className="space-y-1.5 min-w-0">
+                <label className="text-xs text-muted-foreground">X-Title</label>
+                <Input
+                  placeholder="StockAI Terminal"
+                  value={orTitle}
+                  onChange={(e) => setOrTitle(e.target.value)}
+                />
+              </div>
+              <div className="space-y-1.5 min-w-0">
+                <label className="text-xs text-muted-foreground">Timeout (秒)</label>
+                <Input
+                  type="number"
+                  min={30}
+                  max={600}
+                  placeholder="120"
+                  value={orTimeout}
+                  onChange={(e) => setOrTimeout(Number(e.target.value) || 120)}
+                />
+              </div>
+            </div>
+
+            {/* Preset registry — read-only display. Active deep / quick
+                marked with ★. Edits via Header LLMSwitcher (active swap)
+                or yaml hand-edit (add/remove). v1.0 doesn't ship the
+                'add preset' dialog — adding a preset requires editing
+                ~/.stock_trading/config.yaml directly. Documented as a
+                deferred v1.1 feature. */}
+            <div className="space-y-2 min-w-0">
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-sm font-semibold">预设池 (presets)</div>
+                <span className="text-xs text-muted-foreground">
+                  {snapshot?.openrouter?.presets?.length ?? 0} 个预设
+                </span>
+              </div>
+              {(snapshot?.openrouter?.presets ?? []).length === 0 ? (
+                <p className="text-xs text-muted-foreground py-3 text-center border border-dashed rounded">
+                  暂无预设。编辑 yaml 添加自定义模型，或保留默认 yaml 中的 3 条预设。
+                </p>
+              ) : (
+                <div className="space-y-1.5">
+                  {(snapshot?.openrouter?.presets ?? []).map(p => {
+                    const isDeepActive  = p.id === snapshot?.openrouter?.active_pointers?.deep
+                    const isQuickActive = p.id === snapshot?.openrouter?.active_pointers?.quick
+                    const star = isDeepActive ? "★ deep" : isQuickActive ? "★ quick" : ""
+                    return (
+                      <div
+                        key={p.id}
+                        className="flex flex-wrap items-center gap-2 px-3 py-2 rounded border border-border/60 bg-card/30 min-w-0"
+                      >
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted shrink-0 uppercase tracking-wider">
+                          {p.role}
+                        </span>
+                        <span className="font-medium truncate min-w-0 flex-1">
+                          {p.label}
+                        </span>
+                        <span className="text-xs font-mono text-muted-foreground text-safe text-safe--wrap min-w-0 hidden sm:inline">
+                          {p.model}
+                        </span>
+                        {star && (
+                          <span className="text-[10px] text-amber-400 shrink-0">{star}</span>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+              <p className="text-[11px] text-muted-foreground">
+                切换 active deep / quick 在右上角「模型」菜单中操作。新增 / 编辑预设
+                请编辑 <code className="font-mono">~/.stock_trading/config.yaml</code>
+                的 <code className="font-mono">openrouter.presets</code> 数组（v1.1
+                将提供 UI 编辑入口）。
+              </p>
             </div>
           </div>
         </CardContent>

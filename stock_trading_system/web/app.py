@@ -2224,6 +2224,12 @@ def create_app(config_path=None):
             },
             "openrouter": {
                 "enabled": bool(openrouter.get("enabled")),
+                # ``active`` is a *boolean* here — true when env or yaml
+                # provides a usable api_key. The deep/quick pointer dict
+                # is reported as ``active_pointers`` to avoid colliding
+                # with this boolean in the DTO. (The /openrouter/active
+                # endpoint pair uses the dict shape natively because
+                # there's no boolean to collide with there.)
                 "active":  or_active,
                 "base_url": openrouter.get("base_url",
                     "https://openrouter.ai/api/v1"),
@@ -2231,8 +2237,8 @@ def create_app(config_path=None):
                 "x_title":      openrouter.get("x_title", ""),
                 "timeout":      int(openrouter.get("timeout", 120)),
                 "api_key_masked": _mask_secret(openrouter.get("api_key", "")),
-                # presets / active are nested structures — surface here for
-                # the SettingsPage OpenRouter table; mutations go through
+                # presets[] / active_pointers{} surface for the
+                # SettingsPage OpenRouter table; mutations go through
                 # /api/settings/openrouter/active (single-preset) or a
                 # future /api/settings/openrouter/presets bulk endpoint.
                 "presets": [
@@ -2246,7 +2252,7 @@ def create_app(config_path=None):
                     }
                     for p in (openrouter.get("presets") or [])
                 ],
-                "active": openrouter.get("active") or {},
+                "active_pointers": openrouter.get("active") or {},
             },
             "ib": {
                 "host": ib.get("host", ""),
