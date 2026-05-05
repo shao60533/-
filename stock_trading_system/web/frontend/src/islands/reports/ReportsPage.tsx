@@ -168,25 +168,32 @@ export function ReportsPage() {
       {report && (
         <Card>
           <CardHeader>
-            <div className="flex items-center justify-between">
-              <CardTitle>{report.title || "生成报告"}</CardTitle>
+            <div className="mobile-card-header">
+              <CardTitle className="mc-title break-words">{report.title || "生成报告"}</CardTitle>
               {report.generated_at && (
-                <Badge variant="muted">
+                <Badge variant="muted" className="mc-actions">
                   {report.generated_at.slice(0, 19).replace("T", " ")}
                 </Badge>
               )}
             </div>
           </CardHeader>
           <CardContent>
+            {/* Markdown tables / code blocks must scroll horizontally
+                instead of forcing the parent Card to grow past the
+                viewport. The `[&_table]` / `[&_pre]` selectors target
+                generated output without an extra plugin. */}
             {report.content && (
-              <div className="prose prose-sm prose-invert max-w-none text-[var(--color-text-secondary)]">
+              <div className="prose prose-sm prose-invert max-w-none text-[var(--color-text-secondary)]
+                              [&_table]:block [&_table]:max-w-full [&_table]:overflow-x-auto
+                              [&_pre]:overflow-x-auto [&_pre]:max-w-full
+                              [&_code]:break-words">
                 <Markdown remarkPlugins={[remarkGfm]}>{report.content}</Markdown>
               </div>
             )}
             {report.sections?.map((section, idx) => (
-              <div key={idx} className="mt-4">
-                <h3 className="font-semibold text-sm mb-1">{section.heading}</h3>
-                <p className="text-sm text-[var(--color-text-secondary)] leading-relaxed whitespace-pre-wrap">
+              <div key={idx} className="mt-4 min-w-0">
+                <h3 className="font-semibold text-sm mb-1 break-words">{section.heading}</h3>
+                <p className="text-sm text-[var(--color-text-secondary)] leading-relaxed whitespace-pre-wrap break-words">
                   {section.body}
                 </p>
               </div>

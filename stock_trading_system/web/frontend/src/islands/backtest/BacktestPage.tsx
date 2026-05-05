@@ -208,14 +208,14 @@ function BacktestDetail({ backtestId }: { backtestId: string }) {
   }, [equityCurve, trades])
 
   return (
-    <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-6">
-      <div className="flex items-center gap-3">
+    <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-6 min-w-0">
+      <div className="flex flex-wrap items-center gap-2 sm:gap-3 min-w-0">
         <Button variant="ghost" size="sm" onClick={() => window.location.href = "/backtest"}>
-          <ArrowLeft className="h-4 w-4" />
+          <ArrowLeft className="icon-fixed" />
         </Button>
-        <h1 className="text-xl font-bold">回测结果</h1>
-        {result.ticker && <Badge variant="outline" className="font-mono">{result.ticker}</Badge>}
-        {result.strategy && <Badge variant="muted">{result.strategy}</Badge>}
+        <h1 className="text-xl font-bold truncate">回测结果</h1>
+        {result.ticker && <Badge variant="outline" className="font-mono shrink-0">{result.ticker}</Badge>}
+        {result.strategy && <Badge variant="muted" className="shrink-0 max-w-full whitespace-normal text-left leading-snug">{result.strategy}</Badge>}
       </div>
 
       {/* Stat cards */}
@@ -238,9 +238,9 @@ function BacktestDetail({ backtestId }: { backtestId: string }) {
       {/* Trade log */}
       <Card>
         <CardHeader>
-          <div className="flex items-center justify-between">
-            <CardTitle className="text-sm">交易明细</CardTitle>
-            <Button variant="outline" size="sm" onClick={() => window.location.href = `/backtest?from=${backtestId}`}>
+          <div className="mobile-card-header">
+            <CardTitle className="mc-title text-sm truncate">交易明细</CardTitle>
+            <Button variant="outline" size="sm" className="mc-actions" onClick={() => window.location.href = `/backtest?from=${backtestId}`}>
               <RotateCw className="h-3.5 w-3.5 mr-1" />再次运行
             </Button>
           </div>
@@ -285,17 +285,17 @@ function BacktestDetail({ backtestId }: { backtestId: string }) {
               {/* Mobile */}
               <div className="md:hidden space-y-2">
                 {trades.map((t, i) => (
-                  <div key={i} className="border rounded-lg p-3">
-                    <div className="flex justify-between items-center">
-                      <div className="flex items-center gap-2">
-                        <Badge variant={t.action === "BUY" ? "buy" : "sell"}>{t.action}</Badge>
-                        <span className="font-mono text-xs">{t.date}</span>
+                  <div key={i} className="border rounded-lg p-3 min-w-0">
+                    <div className="flex flex-wrap justify-between items-center gap-2 min-w-0">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <Badge variant={t.action === "BUY" ? "buy" : "sell"} className="shrink-0">{t.action}</Badge>
+                        <span className="font-mono text-xs shrink-0">{t.date}</span>
                       </div>
-                      <span className={cn("font-mono text-sm", t.pnl >= 0 ? "text-[var(--color-accent-green)]" : "text-[var(--color-accent-red)]")}>
+                      <span className={cn("font-mono text-sm shrink-0", t.pnl >= 0 ? "text-[var(--color-accent-green)]" : "text-[var(--color-accent-red)]")}>
                         ${fmt(t.pnl || 0)}
                       </span>
                     </div>
-                    <div className="text-xs text-muted-foreground mt-1">{t.shares} 股 @ ${fmt(t.price)}</div>
+                    <div className="text-xs text-muted-foreground mt-1 break-words">{t.shares} 股 @ ${fmt(t.price)}</div>
                   </div>
                 ))}
               </div>

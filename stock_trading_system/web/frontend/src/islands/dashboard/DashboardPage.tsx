@@ -337,10 +337,13 @@ export function DashboardPage() {
         {/* Equity chart */}
         <Card className="lg:col-span-2">
           <CardHeader>
-            <div className="flex items-center justify-between gap-2">
-              <CardTitle className="text-sm">净值曲线</CardTitle>
-              <div className="flex items-center gap-2">
-                <ChipRow>
+            {/* Mobile: title + chips + 重新计算 wrap to three rows
+                cleanly; chips themselves scroll horizontally so the
+                6 range options never push the button off-screen. */}
+            <div className="mobile-card-header">
+              <CardTitle className="mc-title text-sm truncate">净值曲线</CardTitle>
+              <div className="mc-actions flex items-center gap-2 min-w-0 max-w-full overflow-hidden">
+                <ChipRow className="min-w-0">
                   {(["ALL", "1Y", "6M", "3M", "1M", "7D"] as Range[]).map(r => (
                     <Chip key={r} active={range === r} onClick={() => setRange(r)}>{r}</Chip>
                   ))}
@@ -352,7 +355,7 @@ export function DashboardPage() {
                   disabled={backfilling}
                   title="按交易日重新计算所有历史净值"
                   aria-label="重新计算历史净值"
-                  className="h-7 px-2 text-xs"
+                  className="h-7 px-2 text-xs shrink-0"
                 >
                   <RefreshCw className={cn("h-3.5 w-3.5 mr-1", backfilling && "animate-spin")} />
                   {backfilling ? "回填中" : "重新计算"}
@@ -360,7 +363,7 @@ export function DashboardPage() {
               </div>
             </div>
             {backfillMsg && (
-              <div className="text-xs text-muted-foreground mt-1">{backfillMsg}</div>
+              <div className="text-xs text-muted-foreground mt-1 break-words">{backfillMsg}</div>
             )}
           </CardHeader>
           <CardContent>
@@ -410,13 +413,16 @@ export function DashboardPage() {
                       ? "text-[var(--color-accent-red)]"
                       : "text-muted-foreground"
                   return (
-                    <div key={h.ticker} className="flex items-center justify-between text-sm border border-border rounded-lg px-4 py-2.5">
-                      <div className="flex items-center gap-3">
-                        <span className="font-mono font-semibold">{h.ticker}</span>
-                        <span className="text-xs text-muted-foreground">{h.market?.toUpperCase()}</span>
-                        <span className="text-xs text-muted-foreground">{h.shares} 股</span>
+                    // Holdings row wraps on mobile: ticker + market +
+                    // shares on row 1, PnL on row 2 (desktop keeps a
+                    // single line via flex-nowrap at sm+).
+                    <div key={h.ticker} className="flex flex-wrap sm:flex-nowrap items-center gap-x-3 gap-y-1 justify-between text-sm border border-border rounded-lg px-4 py-2.5 min-w-0">
+                      <div className="flex items-center gap-3 min-w-0 flex-1">
+                        <span className="font-mono font-semibold truncate">{h.ticker}</span>
+                        <span className="text-xs text-muted-foreground shrink-0">{h.market?.toUpperCase()}</span>
+                        <span className="text-xs text-muted-foreground shrink-0">{h.shares} 股</span>
                       </div>
-                      <div className="flex items-center gap-4 text-xs">
+                      <div className="flex items-center gap-4 text-xs shrink-0">
                         <span className="text-muted-foreground font-mono hidden md:inline">成本 ${fmt(h.avg_cost || 0)}</span>
                         <span className="text-muted-foreground font-mono hidden md:inline">现价 ${fmt(h.current_price || 0)}</span>
                         <span className={cn("font-mono tabular-nums", pnlClass)}>
@@ -453,11 +459,11 @@ export function DashboardPage() {
               {runningTasks.length === 0 ? (
                 <p className="text-muted-foreground text-sm text-center py-2">无运行中任务</p>
               ) : runningTasks.map(t => (
-                <div key={t.id} className="space-y-1.5 cursor-pointer"
+                <div key={t.id} className="space-y-1.5 cursor-pointer min-w-0"
                      onClick={() => window.location.href = `/tasks/${t.id}`}>
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-medium truncate">{t.title || t.type}</span>
-                    <span className="font-mono text-xs text-muted-foreground">{t.progress}%</span>
+                  <div className="flex items-center justify-between gap-2 min-w-0">
+                    <span className="text-xs font-medium truncate min-w-0 flex-1">{t.title || t.type}</span>
+                    <span className="font-mono text-xs text-muted-foreground shrink-0">{t.progress}%</span>
                   </div>
                   <Progress value={t.progress} />
                 </div>

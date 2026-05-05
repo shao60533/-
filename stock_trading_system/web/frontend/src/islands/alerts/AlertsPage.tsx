@@ -130,14 +130,14 @@ export function AlertsPage() {
   }
 
   return (
-    <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-6">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <Bell className="h-5 w-5 text-[var(--color-accent-yellow)]" />
-          <h1 className="text-xl font-bold">警报管理</h1>
+    <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-6 min-w-0">
+      <div className="mobile-card-header">
+        <div className="mc-title flex items-center gap-3 min-w-0">
+          <Bell className="icon-fixed h-5 w-5 text-[var(--color-accent-yellow)]" />
+          <h1 className="text-xl font-bold truncate">警报管理</h1>
         </div>
-        <Button size="sm" onClick={() => setAddOpen(true)}>
-          <Plus className="w-4 h-4 mr-1" /> 新建警报
+        <Button size="sm" onClick={() => setAddOpen(true)} className="mc-actions">
+          <Plus className="icon-fixed mr-1" /> 新建警报
         </Button>
       </div>
 
@@ -222,19 +222,19 @@ export function AlertsPage() {
               ) : (
                 <div className="divide-y divide-border/50">
                   {triggers.map((t) => (
-                    <div key={t.id} className="py-3 px-2">
-                      <div className="flex items-center gap-2">
-                        <HistoryIcon className="h-4 w-4 text-muted-foreground" />
-                        <span className="font-mono font-semibold text-sm">
+                    <div key={t.id} className="py-3 px-2 min-w-0">
+                      <div className="flex flex-wrap items-center gap-2 min-w-0">
+                        <HistoryIcon className="icon-fixed text-muted-foreground" />
+                        <span className="font-mono font-semibold text-sm shrink-0">
                           {t.ticker}
                         </span>
-                        <Badge variant="default">{t.condition}</Badge>
-                        <span className="ml-auto text-xs text-muted-foreground">
+                        <Badge variant="default" className="shrink-0 max-w-full whitespace-normal text-left leading-snug">{t.condition}</Badge>
+                        <span className="text-xs text-muted-foreground sm:ml-auto shrink-0">
                           {t.triggered_at?.slice(0, 19).replace("T", " ")}
                         </span>
                       </div>
                       {t.message && (
-                        <p className="text-sm text-muted-foreground mt-1 pl-6">
+                        <p className="text-sm text-muted-foreground mt-1 pl-6 break-words">
                           {t.message}
                         </p>
                       )}

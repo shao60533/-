@@ -96,11 +96,11 @@ export function PortfolioPage() {
   )
 
   return (
-    <div className="p-4 md:p-6 max-w-6xl mx-auto space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-bold">持仓管理</h1>
-        <Button size="sm" onClick={() => setBuyOpen(true)}>
-          <Plus className="w-4 h-4 mr-1" /> 买入
+    <div className="p-4 md:p-6 max-w-6xl mx-auto space-y-6 min-w-0">
+      <div className="mobile-card-header">
+        <h1 className="mc-title text-xl font-bold truncate">持仓管理</h1>
+        <Button size="sm" onClick={() => setBuyOpen(true)} className="mc-actions">
+          <Plus className="icon-fixed mr-1" /> 买入
         </Button>
       </div>
 
@@ -200,18 +200,21 @@ export function PortfolioPage() {
               {/* Mobile cards */}
               <div className="md:hidden space-y-2">
                 {filtered.map(h => (
-                  <div key={h.ticker} className="border rounded-lg p-3">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <span className="font-mono font-semibold">{h.ticker}</span>
-                        <span className="text-xs text-muted-foreground ml-1">{h.shares} 股</span>
+                  <div key={h.ticker} className="border rounded-lg p-3 min-w-0">
+                    <div className="flex items-center justify-between gap-2 min-w-0">
+                      <div className="min-w-0 flex items-center gap-1">
+                        <span className="font-mono font-semibold truncate">{h.ticker}</span>
+                        <span className="text-xs text-muted-foreground shrink-0">{h.shares} 股</span>
                       </div>
-                      <span className={cn("font-mono text-sm",
+                      <span className={cn("font-mono text-sm shrink-0",
                         h.pnl_pct >= 0 ? "text-[var(--color-accent-green)]" : "text-[var(--color-accent-red)]")}>
                         {fmtPct(h.pnl_pct)}
                       </span>
                     </div>
-                    <div className="flex justify-between text-xs text-muted-foreground mt-1">
+                    {/* 3-stat row wraps on 320px so 成本/盈亏/现价
+                        each get a full pixel column instead of being
+                        squeezed into a single overflowing line. */}
+                    <div className="flex flex-wrap justify-between gap-x-3 gap-y-0.5 text-xs text-muted-foreground mt-1 min-w-0">
                       <span>成本 ${fmt(h.avg_cost)}</span>
                       <span className={cn("font-mono", (h.pnl || 0) >= 0 ? "text-[var(--color-accent-green)]" : "text-[var(--color-accent-red)]")}>
                         盈亏 {(h.pnl || 0) >= 0 ? "+" : ""}${fmt(h.pnl || 0)}
@@ -273,10 +276,13 @@ export function PortfolioPage() {
                   {/* Mobile cards */}
                   <div className="md:hidden space-y-2">
                     {transactions.map(t => (
-                      <div key={t.id} className="border rounded-lg p-3">
-                        <div className="flex justify-between items-center">
-                          <span className="font-mono font-semibold">{t.ticker}</span>
-                          <span className={cn("text-xs font-medium", isBuy(t.action) ? "text-[var(--color-accent-green)]" : "text-[var(--color-accent-red)]")}>
+                      <div key={t.id} className="border rounded-lg p-3 min-w-0">
+                        {/* "BUY 100 @ $123.45" can run long for 4-digit
+                            share counts; flex-wrap lets it move below
+                            the ticker on narrow widths. */}
+                        <div className="flex flex-wrap justify-between items-baseline gap-x-2 gap-y-0.5 min-w-0">
+                          <span className="font-mono font-semibold truncate min-w-0 flex-1">{t.ticker}</span>
+                          <span className={cn("text-xs font-medium text-safe text-safe--wrap", isBuy(t.action) ? "text-[var(--color-accent-green)]" : "text-[var(--color-accent-red)]")}>
                             {t.action.toUpperCase()} {t.shares} @ ${fmt(t.price)}
                           </span>
                         </div>

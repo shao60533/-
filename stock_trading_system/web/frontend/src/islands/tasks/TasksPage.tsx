@@ -97,12 +97,13 @@ function TaskList() {
   }
 
   return (
-    <div className="p-4 md:p-6 max-w-4xl mx-auto">
-      <div className="flex items-center justify-between mb-4">
-        <h1 className="text-xl font-bold flex items-center gap-2">
-          <ListChecks className="w-5 h-5" /> 任务中心
+    <div className="p-4 md:p-6 max-w-4xl mx-auto min-w-0">
+      <div className="mobile-card-header mb-4">
+        <h1 className="mc-title text-xl font-bold flex items-center gap-2 min-w-0">
+          <ListChecks className="icon-fixed w-5 h-5" />
+          <span className="truncate">任务中心</span>
         </h1>
-        <Button variant="outline" size="sm" onClick={() => load(0)}>
+        <Button variant="outline" size="sm" onClick={() => load(0)} className="mc-actions">
           <RefreshCw className="w-3.5 h-3.5 mr-1" /> 刷新
         </Button>
       </div>
@@ -143,24 +144,24 @@ function TaskList() {
             <Card key={task.id} className="cursor-pointer hover:border-primary/30 transition-colors"
                   onClick={() => handleTaskClick(task)}>
               <CardContent className="p-4">
-                <div className="flex items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center justify-between gap-2 min-w-0">
                   <div className="flex-1 min-w-0">
                     <div className="font-medium text-sm truncate">{task.title || task.type}</div>
-                    <div className="flex items-center gap-2 mt-0.5">
-                      <span className="text-xs text-muted-foreground">{task.created_at}</span>
-                      <Badge variant="outline" className="text-[10px] px-1.5 py-0">
+                    <div className="flex flex-wrap items-center gap-2 mt-0.5 min-w-0">
+                      <span className="text-xs text-muted-foreground shrink-0">{task.created_at}</span>
+                      <Badge variant="outline" className="text-[10px] px-1.5 py-0 shrink-0">
                         {TYPE_LABELS[task.type] || task.type}
                       </Badge>
                     </div>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 shrink-0">
                     <Badge variant={STATUS_BADGE[task.status]?.variant || "muted"}>
                       {STATUS_BADGE[task.status]?.label || task.status}
                     </Badge>
                     {task.status === "success" && (
                       <Button variant="ghost" size="sm" className="h-7 px-2 text-[var(--color-accent-blue)]"
                               onClick={e => { e.stopPropagation(); window.location.href = getTaskResultUrl(task) }}>
-                        <ExternalLink className="w-3.5 h-3.5" />
+                        <ExternalLink className="icon-fixed w-3.5 h-3.5" />
                       </Button>
                     )}
                   </div>
@@ -248,17 +249,17 @@ function TaskDetail({ taskId }: { taskId: string }) {
   const isTerminal = ["success", "failed", "cancelled"].includes(task.status)
 
   return (
-    <div className="p-4 md:p-6 max-w-4xl mx-auto space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
+    <div className="p-4 md:p-6 max-w-4xl mx-auto space-y-4 min-w-0">
+      <div className="mobile-card-header">
+        <div className="mc-title min-w-0">
           <Button variant="ghost" size="sm" onClick={() => window.location.href = "/tasks"} className="mb-1">← 返回</Button>
-          <h1 className="text-lg font-bold">{task.title || task.type}</h1>
-          <div className="flex items-center gap-2 mt-0.5">
-            <span className="text-xs text-muted-foreground">{task.created_at}</span>
-            <Badge variant="outline" className="text-[10px]">{TYPE_LABELS[task.type] || task.type}</Badge>
+          <h1 className="text-lg font-bold break-words">{task.title || task.type}</h1>
+          <div className="flex flex-wrap items-center gap-2 mt-0.5 min-w-0">
+            <span className="text-xs text-muted-foreground shrink-0">{task.created_at}</span>
+            <Badge variant="outline" className="text-[10px] shrink-0">{TYPE_LABELS[task.type] || task.type}</Badge>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="mc-actions">
           <Badge variant={STATUS_BADGE[task.status]?.variant || "muted"}>
             {STATUS_BADGE[task.status]?.label || task.status}
           </Badge>
@@ -308,9 +309,9 @@ function TaskDetail({ taskId }: { taskId: string }) {
                 title = p.label || p.type; meta = p.duration_ms ? `${(p.duration_ms/1000).toFixed(1)}s` : ""
               }
               return (
-                <div key={i} className="flex items-center justify-between text-xs py-1 border-b border-border/30 last:border-0">
-                  <span>{icon} {title}</span>
-                  <span className="text-muted-foreground">{meta}</span>
+                <div key={i} className="flex flex-wrap items-center justify-between gap-2 text-xs py-1 border-b border-border/30 last:border-0 min-w-0">
+                  <span className="text-safe text-safe--wrap min-w-0 flex-1">{icon} {title}</span>
+                  <span className="text-muted-foreground shrink-0">{meta}</span>
                 </div>
               )
             })}
@@ -319,7 +320,7 @@ function TaskDetail({ taskId }: { taskId: string }) {
       </Card>
 
       {/* Actions */}
-      <div className="flex items-center justify-center gap-3">
+      <div className="mobile-action-row justify-center">
         {task.status === "success" && (
           <Button onClick={() => window.location.href = getTaskResultUrl(task)}>
             <Eye className="w-4 h-4 mr-1" /> 查看结果

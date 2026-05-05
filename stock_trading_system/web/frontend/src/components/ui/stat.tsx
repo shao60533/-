@@ -16,11 +16,11 @@ export function Stat({ label, value, delta, hint, icon, className, ...props }: S
   return (
     <Card className={cn("h-full", className)} {...props}>
       <CardContent className="pt-5">
-        <div className="flex items-center justify-between">
-          <span className="text-[11px] font-medium uppercase tracking-wider text-[var(--color-text-muted)]">
+        <div className="flex items-center justify-between gap-2 min-w-0">
+          <span className="text-[11px] font-medium uppercase tracking-wider text-[var(--color-text-muted)] truncate min-w-0">
             {label}
           </span>
-          {icon && <span className="text-[var(--color-text-muted)]">{icon}</span>}
+          {icon && <span className="text-[var(--color-text-muted)] shrink-0">{icon}</span>}
         </div>
         <div
           className="mt-3 font-mono font-semibold tracking-tight truncate overflow-hidden"

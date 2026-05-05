@@ -21,17 +21,28 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
  * regardless of pass/fail so the PR reviewer can eyeball the layouts.
  */
 
+// 12 islands × 3 widths = 36 tests covering the full mobile sweep.
+// Order matches the user's original verification list so the run-log
+// reads top-to-bottom in the same shape as the spec.
 const PAGES = [
-  { key: "screener-v3", url: "/e2e/dev/screener-v3.html" },
-  { key: "settings",    url: "/e2e/dev/settings.html"    },
-  { key: "paper-trade", url: "/e2e/dev/paper-trade.html" },
-  { key: "analysis",    url: "/e2e/dev/analysis.html"    },
+  { key: "dashboard",        url: "/e2e/dev/dashboard.html"        },
+  { key: "analysis",         url: "/e2e/dev/analysis.html"         },
+  { key: "reports",          url: "/e2e/dev/reports.html"          },
+  { key: "screener-v3",      url: "/e2e/dev/screener-v3.html"      },
+  { key: "portfolio",        url: "/e2e/dev/portfolio.html"        },
+  { key: "alerts",           url: "/e2e/dev/alerts.html"           },
+  { key: "paper-trade-list", url: "/e2e/dev/paper-trade-list.html" },
+  { key: "paper-trade",      url: "/e2e/dev/paper-trade.html"      },
+  { key: "tasks",            url: "/e2e/dev/tasks.html"            },
+  { key: "backtest",         url: "/e2e/dev/backtest.html"         },
+  { key: "settings",         url: "/e2e/dev/settings.html"         },
+  { key: "history",          url: "/e2e/dev/history.html"          },
 ]
 
 const WIDTHS = [320, 375, 414]
 
 const SCREENSHOT_DIR = path.resolve(
-  __dirname, "../../../../../docs/qa/mobile-2026-05-05",
+  __dirname, "../../../../../docs/qa/mobile-2026-05-05-phase2",
 )
 
 test.beforeAll(async () => {
