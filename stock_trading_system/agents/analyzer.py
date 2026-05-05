@@ -134,16 +134,29 @@ class StockAnalyzer:
     def _init_graph(self):
         """Lazy-init TradingAgents graph, cached per active provider.
 
-        Cache key is the active LLM provider name (``"qwen"``/``"gemini"``).
-        Switching providers creates a fresh graph; switching back hits the
-        cache. Model bumps within the same provider don't bust the cache —
-        TradingAgentsGraph rebinds the model lazily, so a per-provider entry
-        is sufficient.
+        Cache key strategy (v1.0 update for OpenRouter):
+        - qwen / gemini: provider name alone is enough — TradingAgentsGraph
+          rebinds the model lazily, so model bumps within the provider
+          don't bust the cache.
+        - openrouter: ``"openrouter:<deep_id>:<quick_id>"`` so swapping
+          deep preset (e.g. deepseek-v4-pro → gemini-3.1-pro) creates a
+          fresh graph with the new model bindings. Without this, the
+          graph would keep using the old model after a UI preset switch.
+
+        Switching providers / OR presets creates a fresh graph; switching
+        back hits the cache.
         """
         from stock_trading_system.llm.router import get_active_provider
 
         provider = get_active_provider(self._config)
-        cache_key = provider or ""
+
+        if provider == "openrouter":
+            from stock_trading_system.llm.router import resolve_openrouter_model
+            deep  = resolve_openrouter_model(self._config, role="deep")
+            quick = resolve_openrouter_model(self._config, role="quick")
+            cache_key = f"openrouter:{deep['id']}:{quick['id']}"
+        else:
+            cache_key = provider or ""
 
         with self._graph_lock:
             if cache_key in self._graphs:
@@ -161,6 +174,8 @@ class StockAnalyzer:
 
             if provider == "qwen":
                 self._configure_qwen(ta_config)
+            elif provider == "openrouter":
+                self._configure_openrouter(ta_config)
             else:
                 self._configure_gemini(ta_config)
 
@@ -212,13 +227,70 @@ class StockAnalyzer:
         ta_config["llm_deep_kwargs"] = {"extra_body": {"enable_thinking": True}, "timeout": 600}
         ta_config["llm_quick_kwargs"] = {"extra_body": {"enable_thinking": False}, "timeout": 120}
 
+    def _configure_openrouter(self, ta_config: dict) -> None:
+        """Wire TradingAgents to use OpenRouter as the LLM provider.
+
+        Upstream tradingagents already registers ``openrouter`` in its
+        ``_PROVIDER_CONFIG`` (factory reads ``OPENROUTER_API_KEY`` env),
+        so the entry point is just:
+          1. resolve active deep + quick presets via the router
+          2. set ta_config llm_provider / deep_think_llm / quick_think_llm
+          3. propagate OR-specific headers + base_url
+
+        v1.0 invariant: provider_order is intentionally NOT injected into
+        ta_config here — TradingAgents constructs its own ChatOpenAI
+        without honoring extra_body. Provider-fallback at the analyzer
+        layer would require monkey-patching the upstream factory; for
+        v1.0 we accept that the analyzer always hits the model OR's
+        primary endpoint serves (still the requested model_id, just
+        without the cross-vendor fallback chain). Guru screener and
+        screener-internal text client both honor provider_order via
+        their own ChatOpenAI / openai-python construction.
+        """
+        from stock_trading_system.llm.router import resolve_openrouter_model
+
+        or_cfg = self._config.get("openrouter", {}) or {}
+        api_key = (
+            os.environ.get("OPENROUTER_API_KEY")
+            or or_cfg.get("api_key", "")
+        )
+        if not api_key:
+            raise RuntimeError(
+                "llm_provider=openrouter but openrouter.api_key is empty"
+            )
+        # Upstream factory reads from env, not from the config dict.
+        os.environ["OPENROUTER_API_KEY"] = api_key
+
+        deep  = resolve_openrouter_model(self._config, role="deep")
+        quick = resolve_openrouter_model(self._config, role="quick")
+
+        ta_config["llm_provider"]    = "openrouter"  # see _PROVIDER_CONFIG in upstream openai_client.py
+        ta_config["deep_think_llm"]  = deep["model"]
+        ta_config["quick_think_llm"] = quick["model"]
+        ta_config["backend_url"]     = or_cfg.get(
+            "base_url", "https://openrouter.ai/api/v1")
+        # Deep timeout = 10min (long reasoning chains); quick = 2min.
+        ta_config["llm_deep_kwargs"]  = {"timeout": 600}
+        ta_config["llm_quick_kwargs"] = {"timeout": 120}
+
+        headers: dict = {}
+        if or_cfg.get("http_referer"):
+            headers["HTTP-Referer"] = or_cfg["http_referer"]
+        if or_cfg.get("x_title"):
+            headers["X-Title"] = or_cfg["x_title"]
+        if headers:
+            # Upstream ChatOpenAI accepts default_headers kwarg; pass
+            # through for OR analytics dashboard tagging.
+            ta_config["llm_default_headers"] = headers
+
     def _build_quick_llm(self):
         """Build a quick-think LangChain chat instance for the active provider.
 
         Used by :class:`RenderingExtractor` to convert the finished reports
         into per-tab structured cards. Mirrors the model selection in
-        ``_configure_qwen`` / ``_configure_gemini`` so structured output uses
-        the same model that produced the underlying text.
+        ``_configure_qwen`` / ``_configure_openrouter`` / ``_configure_gemini``
+        so structured output uses the same model that produced the
+        underlying text.
         """
         from stock_trading_system.llm.router import get_active_provider
 
@@ -235,6 +307,40 @@ class StockAnalyzer:
                 ),
                 temperature=0,
                 timeout=60,
+            )
+        if provider == "openrouter":
+            from langchain_openai import ChatOpenAI
+            from stock_trading_system.llm.router import resolve_openrouter_model
+
+            or_cfg = self._config.get("openrouter", {}) or {}
+            api_key = (
+                os.environ.get("OPENROUTER_API_KEY")
+                or or_cfg.get("api_key", "")
+            )
+            preset = resolve_openrouter_model(self._config, role="quick")
+
+            headers: dict = {}
+            if or_cfg.get("http_referer"):
+                headers["HTTP-Referer"] = or_cfg["http_referer"]
+            if or_cfg.get("x_title"):
+                headers["X-Title"] = or_cfg["x_title"]
+
+            extra_body: dict = {}
+            if preset["provider_order"]:
+                extra_body["provider"] = {
+                    "order": preset["provider_order"],
+                    "allow_fallbacks": True,
+                }
+
+            return ChatOpenAI(
+                model=preset["model"],
+                api_key=api_key,
+                base_url=or_cfg.get("base_url", "https://openrouter.ai/api/v1"),
+                default_headers=headers or None,
+                temperature=0,
+                timeout=60,
+                extra_body=extra_body or None,
+                **preset.get("kwargs", {}),
             )
         from langchain_google_genai import ChatGoogleGenerativeAI
         gcfg = self._config.get("gemini", {}) or {}
