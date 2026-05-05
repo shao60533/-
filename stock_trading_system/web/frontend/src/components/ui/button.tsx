@@ -26,6 +26,12 @@ const buttonVariants = cva(
         md:   "h-10 px-4 text-sm",
         lg:   "h-11 px-6 text-base",
         icon: "h-10 w-10",
+        // 2026-05-04: `wrap` allows long labels (e.g. "复制配置重跑",
+        // "保存设置并立即生效") to break across two lines instead of
+        // overflowing the parent flex row at 320px. Use inside
+        // `mobile-action-row` / Card footers; never inside icon-only
+        // toolbars where wrap would distort the icon column.
+        wrap: "min-h-10 px-4 py-2 text-sm whitespace-normal text-center leading-snug",
       },
     },
     defaultVariants: { variant: "default", size: "md" },

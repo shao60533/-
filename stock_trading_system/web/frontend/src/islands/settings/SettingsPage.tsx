@@ -186,25 +186,27 @@ export function SettingsPage() {
   }
 
   return (
-    <div className="p-4 md:p-6 max-w-4xl mx-auto space-y-6">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <Settings className="h-5 w-5 text-[var(--color-accent-blue)]" />
-          <h1 className="text-xl font-bold">系统设置</h1>
+    <div className="p-4 md:p-6 max-w-4xl mx-auto space-y-6 min-w-0">
+      <div className="mobile-card-header">
+        <div className="mc-title flex items-center gap-3 min-w-0">
+          <Settings className="icon-fixed text-[var(--color-accent-blue)] h-5 w-5" />
+          <h1 className="text-xl font-bold truncate">系统设置</h1>
         </div>
-        <Button onClick={handleSave} disabled={saving}>
-          {saving ? (
-            <>
-              <RefreshCw className="h-4 w-4 mr-1 animate-spin" />
-              保存中...
-            </>
-          ) : (
-            <>
-              <Save className="h-4 w-4 mr-1" />
-              保存设置
-            </>
-          )}
-        </Button>
+        <div className="mc-actions">
+          <Button onClick={handleSave} disabled={saving}>
+            {saving ? (
+              <>
+                <RefreshCw className="icon-fixed mr-1 animate-spin" />
+                保存中...
+              </>
+            ) : (
+              <>
+                <Save className="icon-fixed mr-1" />
+                保存设置
+              </>
+            )}
+          </Button>
+        </div>
       </div>
 
       {saveMsg && (
@@ -221,8 +223,8 @@ export function SettingsPage() {
       {/* AI 模型 */}
       <Card>
         <CardHeader>
-          <div className="flex items-center justify-between">
-            <div>
+          <div className="mobile-card-header">
+            <div className="mc-title min-w-0">
               <CardTitle>AI 模型</CardTitle>
               <CardDescription>
                 配置 Gemini 与 Qwen API 密钥及模型
@@ -231,9 +233,10 @@ export function SettingsPage() {
             <Button
               variant="ghost"
               size="sm"
+              className="mc-actions"
               onClick={() => setShowKeys(!showKeys)}
             >
-              {showKeys ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              {showKeys ? <EyeOff className="icon-fixed" /> : <Eye className="icon-fixed" />}
             </Button>
           </div>
         </CardHeader>
@@ -243,11 +246,11 @@ export function SettingsPage() {
             <div className="space-y-3">
               <div className="text-sm font-semibold">Gemini</div>
               <div className="grid gap-3 sm:grid-cols-2 grid-collapse-mobile">
-                <div className="space-y-1.5">
-                  <div className="flex items-center justify-between gap-2">
-                    <label className="text-xs text-muted-foreground">
+                <div className="space-y-1.5 min-w-0">
+                  <div className="flex flex-wrap items-center justify-between gap-2 min-w-0">
+                    <label className="text-xs text-muted-foreground min-w-0 flex-1 truncate">
                       API Key {snapshot?.gemini?.api_key_masked && (
-                        <span className="ml-2 font-mono">已配置 {snapshot.gemini.api_key_masked}</span>
+                        <span className="ml-2 font-mono">已配置 <span className="text-safe inline-block max-w-[12rem] align-bottom">{snapshot.gemini.api_key_masked}</span></span>
                       )}
                     </label>
                     {snapshot?.gemini?.api_key_masked && (
@@ -255,7 +258,7 @@ export function SettingsPage() {
                         type="button"
                         variant="ghost"
                         size="sm"
-                        className="h-6 px-2 text-[var(--color-accent-red)] hover:text-[var(--color-accent-red)]"
+                        className="h-6 px-2 shrink-0 text-[var(--color-accent-red)] hover:text-[var(--color-accent-red)]"
                         onClick={() => clearProviderKey("gemini")}
                         disabled={clearing !== null || saving}
                         aria-label="清空 Gemini API Key"
@@ -287,16 +290,16 @@ export function SettingsPage() {
 
             {/* Qwen */}
             <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="text-sm font-semibold">Qwen (通义千问)</div>
-                <Switch checked={qwenEnabled} onCheckedChange={setQwenEnabled} />
+              <div className="flex items-center justify-between gap-2 min-w-0">
+                <div className="text-sm font-semibold truncate">Qwen (通义千问)</div>
+                <Switch className="shrink-0" checked={qwenEnabled} onCheckedChange={setQwenEnabled} />
               </div>
               <div className="grid gap-3 sm:grid-cols-2 grid-collapse-mobile">
-                <div className="space-y-1.5">
-                  <div className="flex items-center justify-between gap-2">
-                    <label className="text-xs text-muted-foreground">
+                <div className="space-y-1.5 min-w-0">
+                  <div className="flex flex-wrap items-center justify-between gap-2 min-w-0">
+                    <label className="text-xs text-muted-foreground min-w-0 flex-1 truncate">
                       API Key {snapshot?.qwen?.api_key_masked && (
-                        <span className="ml-2 font-mono">已配置 {snapshot.qwen.api_key_masked}</span>
+                        <span className="ml-2 font-mono">已配置 <span className="text-safe inline-block max-w-[12rem] align-bottom">{snapshot.qwen.api_key_masked}</span></span>
                       )}
                     </label>
                     {snapshot?.qwen?.api_key_masked && (
@@ -304,7 +307,7 @@ export function SettingsPage() {
                         type="button"
                         variant="ghost"
                         size="sm"
-                        className="h-6 px-2 text-[var(--color-accent-red)] hover:text-[var(--color-accent-red)]"
+                        className="h-6 px-2 shrink-0 text-[var(--color-accent-red)] hover:text-[var(--color-accent-red)]"
                         onClick={() => clearProviderKey("qwen")}
                         disabled={clearing !== null || saving}
                         aria-label="清空 Qwen API Key"
@@ -360,9 +363,9 @@ export function SettingsPage() {
           <div className="space-y-5">
             {/* Email */}
             <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="text-sm font-semibold">邮件</div>
-                <Switch checked={emailEnabled} onCheckedChange={setEmailEnabled} />
+              <div className="flex items-center justify-between gap-2 min-w-0">
+                <div className="text-sm font-semibold truncate">邮件</div>
+                <Switch className="shrink-0" checked={emailEnabled} onCheckedChange={setEmailEnabled} />
               </div>
               <div className="grid gap-3 sm:grid-cols-2 grid-collapse-mobile">
                 <div className="space-y-1.5">
@@ -398,9 +401,10 @@ export function SettingsPage() {
 
             {/* Telegram */}
             <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="text-sm font-semibold">Telegram</div>
+              <div className="flex items-center justify-between gap-2 min-w-0">
+                <div className="text-sm font-semibold truncate">Telegram</div>
                 <Switch
+                  className="shrink-0"
                   checked={telegramEnabled}
                   onCheckedChange={setTelegramEnabled}
                 />
@@ -483,13 +487,13 @@ function SchedulerStatusCard() {
   return (
     <Card>
       <CardHeader>
-        <div className="flex items-center justify-between">
-          <div>
+        <div className="mobile-card-header">
+          <div className="mc-title min-w-0">
             <CardTitle>调度器</CardTitle>
-            <CardDescription>每日 16:30 (America/New_York) 自动写入 daily_snapshots</CardDescription>
+            <CardDescription className="break-words">每日 16:30 (America/New_York) 自动写入 daily_snapshots</CardDescription>
           </div>
-          <Button variant="ghost" size="sm" onClick={reload} disabled={loading}>
-            <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+          <Button variant="ghost" size="sm" className="mc-actions" onClick={reload} disabled={loading}>
+            <RefreshCw className={`icon-fixed ${loading ? "animate-spin" : ""}`} />
           </Button>
         </div>
       </CardHeader>
@@ -498,15 +502,15 @@ function SchedulerStatusCard() {
           <Skeleton className="h-20" />
         ) : (
           <div className="space-y-3 text-sm">
-            <div className="flex items-center gap-2">
-              <span className="text-muted-foreground">运行状态</span>
+            <div className="flex flex-wrap items-center gap-2 min-w-0">
+              <span className="text-muted-foreground shrink-0">运行状态</span>
               {status?.running ? (
-                <span className="text-[var(--color-accent-green)]">✓ Running</span>
+                <span className="text-[var(--color-accent-green)] shrink-0">✓ Running</span>
               ) : (
-                <span className="text-[var(--color-accent-red)]">✗ Stopped</span>
+                <span className="text-[var(--color-accent-red)] shrink-0">✗ Stopped</span>
               )}
               {status?.primary && (
-                <span className="text-xs text-muted-foreground">(primary worker pid={status.pid})</span>
+                <span className="text-xs text-muted-foreground text-safe text-safe--wrap min-w-0">(primary worker pid={status.pid})</span>
               )}
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
@@ -534,7 +538,7 @@ function SchedulerStatusCard() {
               </details>
             )}
             {isAdmin && (
-              <div className="flex items-center gap-3 pt-1">
+              <div className="mobile-action-row pt-1">
                 <Button
                   variant="outline"
                   size="sm"
@@ -542,13 +546,13 @@ function SchedulerStatusCard() {
                   disabled={running}
                 >
                   {running ? (
-                    <RefreshCw className="h-3.5 w-3.5 mr-1 animate-spin" />
+                    <RefreshCw className="icon-fixed mr-1 animate-spin h-3.5 w-3.5" />
                   ) : (
-                    <PlayCircle className="h-3.5 w-3.5 mr-1" />
+                    <PlayCircle className="icon-fixed mr-1 h-3.5 w-3.5" />
                   )}
                   立即跑一次
                 </Button>
-                {msg && <span className="text-xs text-muted-foreground">{msg}</span>}
+                {msg && <span className="text-xs text-muted-foreground text-safe text-safe--wrap min-w-0 flex-1 sm:flex-none">{msg}</span>}
               </div>
             )}
           </div>

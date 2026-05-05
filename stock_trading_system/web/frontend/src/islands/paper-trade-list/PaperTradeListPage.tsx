@@ -134,16 +134,16 @@ function TickerCard({ t }: { t: TickerSession }) {
     >
       <Card className="hover:border-[var(--color-border-bright)] transition-colors">
         <CardContent className="pt-5 space-y-2">
-          <div className="flex items-center gap-2">
-            <span className="font-mono font-semibold">{t.ticker}</span>
+          <div className="flex flex-wrap items-center gap-2 min-w-0">
+            <span className="font-mono font-semibold truncate">{t.ticker}</span>
             <Badge
               variant={t.status === "running" ? "default" : "muted"}
-              className="text-[10px]"
+              className="text-[10px] shrink-0"
             >
               {t.status}
             </Badge>
             {t.current_signal && (
-              <Badge variant="outline" className="text-[10px]">
+              <Badge variant="outline" className="text-[10px] shrink-0">
                 {t.current_signal}
               </Badge>
             )}
@@ -154,8 +154,11 @@ function TickerCard({ t }: { t: TickerSession }) {
             {t.last_eod && <span className="ml-2">EOD {t.last_eod}</span>}
           </div>
 
-          <div className="flex items-baseline gap-2">
-            <span className="text-lg font-mono">${fmtMoney(t.total_value)}</span>
+          {/* Mobile: PnL pct wraps to its own line so a long
+              total_value never pushes it off the card. flex-wrap +
+              min-w-0 keeps both pieces fully visible at 320px. */}
+          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 min-w-0">
+            <span className="text-lg font-mono truncate">${fmtMoney(t.total_value)}</span>
             <span
               className={
                 t.cum_pnl_pct > 0 ? "text-[var(--color-accent-green)] text-sm" :
@@ -183,8 +186,11 @@ function TickerCard({ t }: { t: TickerSession }) {
                 : "—"}
             </div>
             {t.last_skip_reason && (
-              <div className="pt-1">
-                <Badge variant="outline" className="text-[10px]">
+              <div className="pt-1 min-w-0">
+                {/* `whitespace-normal` overrides the Badge default
+                    nowrap so a long skip reason wraps inside the
+                    badge rather than pushing past the card edge. */}
+                <Badge variant="outline" className="text-[10px] max-w-full whitespace-normal text-left leading-snug py-1 break-words">
                   跳过: {t.last_skip_reason}
                 </Badge>
               </div>

@@ -277,7 +277,8 @@ class ScreenerV3Pipeline:
         filter_spec: dict | None,
         nl_query: str,
     ) -> tuple[list[str], dict, dict | None]:
-        """v1.4 candidate-level theme fit filter.
+        """v1.5 candidate-level theme fit filter — fail-closed under
+        strong themes.
 
         Runs for **any** detected theme — not just strong ones — per
         the v1.4 contract that says "no matter where candidates came
@@ -287,14 +288,22 @@ class ScreenerV3Pipeline:
 
         For each candidate we collect a ``reason`` string so the UI
         can tell the user *why* a name was dropped (sector mismatch /
-        unknown sector / off-universe). Reasons stay short — the
-        front-end shows them inline next to the ticker.
+        missing sector under strong theme / off-universe). Reasons
+        stay short — the front-end shows them inline next to the
+        ticker.
 
-        Sector-unknown candidates are kept by design: punishing the
-        user for a DataRouter outage is worse than occasionally
-        letting through a name we couldn't classify. The off-theme
-        list therefore only contains names we are CONFIDENT are off
-        topic.
+        v1.5 — sector-unknown handling diverges by theme strength:
+            * **strong theme** (``theme.is_strong``): fail-closed.
+              Provider didn't return a sector → exclude with
+              ``reason="missing sector under strong theme"``. Letting
+              the user run guru scoring on an unclassified ticker
+              under "电力股龙头" routinely resurrected IBM/ORCL/TSLA
+              every time DataRouter dropped a sector field.
+            * **weak theme**: keep the legacy permissive behavior so
+              we don't punish the user for a DataRouter outage on a
+              soft theme. (No registered themes are weak today; the
+              branch exists for forward-compat with future themes
+              that opt out via ``is_strong=False``.)
         """
         from stock_trading_system.screener.v2 import theme_universe as tu
 
@@ -317,13 +326,23 @@ class ScreenerV3Pipeline:
             }, meta
 
         on_universe = {t.upper() for t in theme.universe}
+        # ``extra_when_explicit`` extras (e.g. AMZN/MSFT/GOOGL when
+        # the user wrote "云存储") are on-theme members for that run
+        # and must pass the gate. Build the set once so we don't
+        # rerun the keyword scan per candidate.
+        explicit_extras: set[str] = set()
+        if nl_query and theme.extra_when_explicit:
+            for trigger, extras in theme.extra_when_explicit:
+                if trigger.lower() in nl_query.lower() or trigger in nl_query:
+                    explicit_extras.update(t.upper() for t in extras)
         on_sectors = {s.lower() for s in theme.sectors}
+        is_strong = bool(getattr(theme, "is_strong", True))
 
         kept: list[str] = []
         excluded: list[dict] = []
         for ticker in candidates:
             tu_t = (ticker or "").upper()
-            if tu_t in on_universe:
+            if tu_t in on_universe or tu_t in explicit_extras:
                 kept.append(ticker)
                 continue
             bundle = bundles.get(ticker) or {}
@@ -331,9 +350,22 @@ class ScreenerV3Pipeline:
             sector_raw = (fund.get("sector") or "").strip()
             sector = sector_raw.lower()
             if not sector:
-                # Provider didn't return a sector — keep, don't punish
-                # the user for an upstream data hole.
-                kept.append(ticker)
+                if is_strong:
+                    # v1.5 fail-closed — strong-theme queries (every
+                    # registered theme today) must not let a missing
+                    # sector through. The user can still see the
+                    # ticker in the "因数据缺失被剔除" UI list, but
+                    # it won't burn 14 guru LLM calls.
+                    excluded.append({
+                        "ticker": ticker,
+                        "sector": "",
+                        "reason": (
+                            f"missing sector under strong theme "
+                            f"{theme.key}"
+                        ),
+                    })
+                else:
+                    kept.append(ticker)
                 continue
             if sector in on_sectors:
                 kept.append(ticker)
@@ -342,14 +374,16 @@ class ScreenerV3Pipeline:
                 "ticker": ticker,
                 "sector": sector_raw,
                 "reason": (
-                    f"sector={sector_raw} 不在主题 {theme.key} 约束 sectors={list(theme.sectors)}"
+                    f"sector={sector_raw} 不在主题 {theme.key} 约束 "
+                    f"sectors={list(theme.sectors)}"
                 ),
             })
 
         if excluded:
             logger.info(
-                "Theme fit gate (%s): kept %d, excluded %d off-theme: %s",
-                theme.key, len(kept), len(excluded),
+                "Theme fit gate (%s, strong=%s): kept %d, excluded %d "
+                "off-theme: %s",
+                theme.key, is_strong, len(kept), len(excluded),
                 [e["ticker"] for e in excluded],
             )
         return kept, {

@@ -463,18 +463,20 @@ export function AnalysisPage() {
           301-redirects here. Inline ``PipelineDAG`` for running rows
           gives users live progress without leaving the page. */}
       <Card>
-        <CardHeader className="pb-2 flex flex-row items-center justify-between">
-          <CardTitle className="text-sm">分析记录</CardTitle>
-          <div className="flex items-center gap-2">
-            {runningTotal > 0 && (
-              <Badge variant="default" className="text-[10px]">
-                <Clock className="h-3 w-3 mr-1 animate-spin" />
-                {runningTotal} 运行中
-              </Badge>
-            )}
-            <Button variant="ghost" size="sm" onClick={refreshInbox}>
-              刷新
-            </Button>
+        <CardHeader className="pb-2">
+          <div className="mobile-card-header">
+            <CardTitle className="mc-title text-sm truncate">分析记录</CardTitle>
+            <div className="mc-actions">
+              {runningTotal > 0 && (
+                <Badge variant="default" className="text-[10px]">
+                  <Clock className="h-3 w-3 mr-1 animate-spin" />
+                  {runningTotal} 运行中
+                </Badge>
+              )}
+              <Button variant="ghost" size="sm" onClick={refreshInbox}>
+                刷新
+              </Button>
+            </div>
           </div>
         </CardHeader>
         <CardContent className="space-y-2">
@@ -665,6 +667,24 @@ function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
   // code on every visit.
   const klineSectionRef = useRef<HTMLDivElement>(null)
   const [klineVisible, setKlineVisible] = useState(false)
+
+  // 2026-05-04 mobile: shrink the K-line from 380→260px on ≤575.98px
+  // so the chart doesn't push the 8-tab report below the fold. Re-
+  // measure on resize to handle device rotation cleanly.
+  const [kChartHeight, setKChartHeight] = useState<number>(() =>
+    typeof window !== "undefined"
+      && window.matchMedia?.("(max-width: 575.98px)").matches
+      ? 260
+      : 380,
+  )
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return
+    const mql = window.matchMedia("(max-width: 575.98px)")
+    const apply = () => setKChartHeight(mql.matches ? 260 : 380)
+    apply()
+    mql.addEventListener?.("change", apply)
+    return () => mql.removeEventListener?.("change", apply)
+  }, [])
 
   // Primary: /api/quote/history (days-based, dedicated for chart rendering).
   // Fallback: /api/chart/{ticker} (period-based, predates the days API).
@@ -1100,16 +1120,20 @@ function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
       {/* K-line chart — viewport-gated. The container always mounts so
           IntersectionObserver has something to watch; TVChart itself is
           lazy-loaded only after the section scrolls into view, and the
-          /api/quote/history fetch fires from the same observer. */}
+          /api/quote/history fetch fires from the same observer.
+          2026-05-04 mobile: use a media-query-driven height (260 on
+          ≤575.98px, 380 otherwise) so the chart doesn't push the 8 tabs
+          below the fold on small screens. ``useMobileChartHeight`` lives
+          alongside the TVChart import so other pages can reuse it. */}
       <Card ref={klineSectionRef}>
         <CardHeader><CardTitle className="text-sm">K 线走势（近 3 个月）</CardTitle></CardHeader>
         <CardContent>
           {klineVisible ? (
-            <Suspense fallback={<Skeleton className="w-full" style={{ height: 380 }} />}>
-              <TVChart data={klineData} state={klineState} onRetry={refetchKline} height={380} />
+            <Suspense fallback={<Skeleton className="w-full" style={{ height: kChartHeight }} />}>
+              <TVChart data={klineData} state={klineState} onRetry={refetchKline} height={kChartHeight} />
             </Suspense>
           ) : (
-            <Skeleton className="w-full" style={{ height: 380 }} />
+            <Skeleton className="w-full" style={{ height: kChartHeight }} />
           )}
         </CardContent>
       </Card>
@@ -1118,7 +1142,10 @@ function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
       <Card ref={tabsRef}>
         <CardContent className="pt-6">
           <Tabs value={activeTab} onValueChange={setActiveTab}>
-            <TabsList className="tabs-scrollable w-full justify-start bg-transparent border-b rounded-none pb-0 gap-0">
+            {/* TabsList ships its own `mobile-tabs-scroll` wrapper now,
+                so the legacy `tabs-scrollable` class is dropped — keeping
+                both stacks two scroll containers on mobile. */}
+            <TabsList className="w-full justify-start bg-transparent border-b rounded-none pb-0 gap-0">
               {REPORT_TABS.map(tab => (
                 <TabsTrigger key={tab.key} value={tab.key}
                   className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent px-3 pb-2">
@@ -1270,10 +1297,12 @@ function QuickInfoCard({ icon, title, onClick, children }: {
 
 /** Two-column key/value row used by the Fundamentals quick-info grid. */
 function KV({ k, v }: { k: string; v: string }) {
+  // 2026-05-04: long values (e.g. enterprise valuation strings) need
+  // to wrap rather than push the label off-screen at 320px.
   return (
-    <div className="flex items-center justify-between">
-      <span className="text-muted-foreground">{k}</span>
-      <span>{v}</span>
+    <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 min-w-0">
+      <span className="text-muted-foreground shrink-0">{k}</span>
+      <span className="text-safe text-safe--wrap text-right">{v}</span>
     </div>
   )
 }
@@ -1291,8 +1320,8 @@ function InboxToolbar({ ticker, onTicker, total }: {
   total: number
 }) {
   return (
-    <div className="flex items-center gap-2 pb-2 border-b border-border/40">
-      <div className="relative flex-1 max-w-xs">
+    <div className="flex flex-wrap items-center gap-2 pb-2 border-b border-border/40 min-w-0">
+      <div className="relative flex-1 min-w-0 max-w-xs">
         <Input
           value={ticker}
           onChange={e => onTicker(e.target.value.toUpperCase())}
@@ -1300,7 +1329,7 @@ function InboxToolbar({ ticker, onTicker, total }: {
           className="h-8 text-sm"
         />
       </div>
-      <span className="text-xs text-muted-foreground ml-auto">
+      <span className="text-xs text-muted-foreground sm:ml-auto shrink-0">
         共 {total} 条
       </span>
     </div>
@@ -1362,7 +1391,7 @@ function RunningRow({ row, highlight, onSettled }: {
             {row.progress_pct}%
           </span>
         )}
-        <span className="text-xs text-muted-foreground ml-auto">
+        <span className="text-xs text-muted-foreground sm:ml-auto shrink-0">
           {fmtRelative(row.submitted_at)}
         </span>
         {!isFailure && (
@@ -1370,7 +1399,7 @@ function RunningRow({ row, highlight, onSettled }: {
             variant="ghost" size="sm"
             onClick={() => setCollapsed(c => !c)}
             title={collapsed ? "展开管线" : "折叠管线"}
-            className="h-6 px-1.5"
+            className="h-6 px-1.5 shrink-0"
           >
             {collapsed
               ? <ChevronRight className="h-3.5 w-3.5" />
@@ -1476,25 +1505,29 @@ function CompletedRow({ row, onChanged }: {
     <div
       className="rounded border border-border/50 bg-card/40 hover:border-primary/40 transition-colors"
     >
+      {/* Mobile inbox row: split into two visual rows. Row 1 = ticker
+          / signal / depth / date / created_by; row 2 = relative time
+          + bookmark/open/delete actions. flex-wrap + sm:flex-nowrap
+          keeps desktop on one line. */}
       <div
         onClick={toggle}
-        className="flex items-center gap-3 px-3 py-2 text-sm cursor-pointer"
+        className="flex flex-wrap items-center gap-2 sm:gap-3 px-3 py-2 text-sm cursor-pointer min-w-0"
       >
         {expanded
           ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
           : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />}
-        <span className="font-mono font-semibold">{row.ticker}</span>
-        <Badge variant={signalVariant(row.signal || "")} className="text-[10px]">
+        <span className="font-mono font-semibold truncate">{row.ticker}</span>
+        <Badge variant={signalVariant(row.signal || "")} className="text-[10px] shrink-0">
           {row.signal || "—"}
         </Badge>
-        <Badge variant="muted" className="text-[10px]">{depthLabel(row.depth)}</Badge>
-        <span className="text-xs text-muted-foreground">{row.date}</span>
+        <Badge variant="muted" className="text-[10px] shrink-0">{depthLabel(row.depth)}</Badge>
+        <span className="text-xs text-muted-foreground shrink-0">{row.date}</span>
         {row.created_by_name && (
           <span className="text-xs text-muted-foreground hidden sm:inline">
             · {row.created_by_name}
           </span>
         )}
-        <span className="text-xs text-muted-foreground ml-auto">
+        <span className="text-xs text-muted-foreground sm:ml-auto shrink-0">
           {fmtRelative(row.created_at)}
         </span>
         <button

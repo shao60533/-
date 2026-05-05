@@ -4,18 +4,28 @@ import { cn } from "@/lib/utils"
 
 export const Tabs = TabsPrimitive.Root
 
+/**
+ * 2026-05-04: wrap Radix's primitive in an outer `mobile-tabs-scroll`
+ * div so triggers horizontally scroll at narrow widths instead of
+ * wrapping (wrap would break the active-tab indicator pill). Every
+ * caller now gets scroll behaviour for free — pre-2026-05 each page
+ * had to remember to add a custom `tabs-scrollable` wrapper, and the
+ * 8-tab Analysis detail page kept forgetting.
+ */
 export const TabsList = React.forwardRef<
   React.ElementRef<typeof TabsPrimitive.List>,
   React.ComponentPropsWithoutRef<typeof TabsPrimitive.List>
 >(({ className, ...props }, ref) => (
-  <TabsPrimitive.List
-    ref={ref}
-    className={cn(
-      "inline-flex items-center gap-1 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] p-1 text-[var(--color-text-secondary)]",
-      className
-    )}
-    {...props}
-  />
+  <div className="mobile-tabs-scroll">
+    <TabsPrimitive.List
+      ref={ref}
+      className={cn(
+        "inline-flex items-center gap-1 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] p-1 text-[var(--color-text-secondary)]",
+        className
+      )}
+      {...props}
+    />
+  </div>
 ))
 TabsList.displayName = "TabsList"
 

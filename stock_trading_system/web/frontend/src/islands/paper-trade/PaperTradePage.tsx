@@ -129,10 +129,12 @@ function PaperTradeContent() {
   const sess = data.session
 
   return (
-    <div className="p-4 md:p-6 space-y-6 max-w-5xl mx-auto">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-bold">{ticker} 纸面交易</h1>
-        <Badge variant={sess.status === "running" ? "default" : "muted"}>{sess.status}</Badge>
+    <div className="p-4 md:p-6 space-y-6 max-w-5xl mx-auto min-w-0">
+      <div className="mobile-card-header">
+        <h1 className="mc-title text-xl font-bold truncate">{ticker} 纸面交易</h1>
+        <div className="mc-actions">
+          <Badge variant={sess.status === "running" ? "default" : "muted"}>{sess.status}</Badge>
+        </div>
       </div>
 
       {/* Main tab switch */}
@@ -154,11 +156,15 @@ function PaperTradeContent() {
         {/* Current Strategy */}
         <Card>
           <CardHeader>
-            <div className="flex items-center justify-between">
-              <CardTitle className="text-sm">当前策略</CardTitle>
-              {plan && <Badge variant={plan.rating === "BUY" || plan.rating === "Buy" ? "buy" : plan.rating === "SELL" ? "sell" : "muted"}>
-                {plan.rating || "—"}
-              </Badge>}
+            <div className="mobile-card-header">
+              <CardTitle className="mc-title text-sm truncate">当前策略</CardTitle>
+              {plan && (
+                <div className="mc-actions">
+                  <Badge variant={plan.rating === "BUY" || plan.rating === "Buy" ? "buy" : plan.rating === "SELL" ? "sell" : "muted"}>
+                    {plan.rating || "—"}
+                  </Badge>
+                </div>
+              )}
             </div>
           </CardHeader>
           <CardContent>
@@ -191,9 +197,9 @@ function PaperTradeContent() {
       {/* Order Tiers */}
       <Card>
         <CardHeader>
-          <div className="flex items-center justify-between">
-            <CardTitle className="text-sm">计划档位（已执行 / 待触发）</CardTitle>
-            <span className="text-xs text-muted-foreground">
+          <div className="mobile-card-header">
+            <CardTitle className="mc-title text-sm truncate">计划档位（已执行 / 待触发）</CardTitle>
+            <span className="mc-actions text-xs text-muted-foreground">
               {orders.filter(o => o.status === "triggered").length} 触发 · {orders.filter(o => o.status === "pending").length} 待触发
             </span>
           </div>
@@ -206,24 +212,30 @@ function PaperTradeContent() {
               {[...orders]
                 .sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0))
                 .map(o => (
+                  // Mobile: split tier rows into two visual lines —
+                  // status-icon + label/description on row 1, pct +
+                  // trigger metadata on row 2 (sm:flex-row brings it
+                  // back to single-line on tablets+).
                   <div key={o.id} className={cn(
-                    "flex items-center gap-3 rounded-lg border px-4 py-3",
+                    "flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border px-4 py-3 min-w-0",
                     o.status === "triggered" ? "border-green-500/30 bg-green-500/5" : "border-border",
                   )}>
-                    {STATUS_ICONS[o.status] ?? <Clock4 className="w-4 h-4" />}
+                    <div className="shrink-0">
+                      {STATUS_ICONS[o.status] ?? <Clock4 className="icon-fixed" />}
+                    </div>
                     <div className="flex-1 min-w-0">
-                      <div className="text-sm font-medium">
+                      <div className="text-sm font-medium truncate">
                         {ORDER_LABELS[o.order_type] ?? (o.order_type || "—")}
                       </div>
-                      <div className="text-xs text-muted-foreground">
+                      <div className="text-xs text-muted-foreground text-safe text-safe--wrap">
                         {o.description || o.trigger_kind || ""}
                       </div>
                     </div>
                     {(o.pct_target_total ?? 0) > 0 && (
-                      <span className="text-xs font-mono">{o.pct_target_total}%</span>
+                      <span className="text-xs font-mono shrink-0">{o.pct_target_total}%</span>
                     )}
                     {o.triggered_date && (
-                      <span className="text-xs text-muted-foreground">
+                      <span className="text-xs text-muted-foreground shrink-0">
                         {o.triggered_date} @ ${o.triggered_price ?? "—"}
                       </span>
                     )}
@@ -256,12 +268,14 @@ function PaperTradeContent() {
       {/* 执行记录（按 Plan / 按 Event） */}
       <Card>
         <CardHeader>
-          <div className="flex items-center justify-between">
-            <CardTitle className="text-sm">执行记录</CardTitle>
-            <ChipRow>
-              <Chip active={recordView === "plan"} onClick={() => setRecordView("plan")}>按 Plan</Chip>
-              <Chip active={recordView === "event"} onClick={() => setRecordView("event")}>按 Event</Chip>
-            </ChipRow>
+          <div className="mobile-card-header">
+            <CardTitle className="mc-title text-sm truncate">执行记录</CardTitle>
+            <div className="mc-actions">
+              <ChipRow>
+                <Chip active={recordView === "plan"} onClick={() => setRecordView("plan")}>按 Plan</Chip>
+                <Chip active={recordView === "event"} onClick={() => setRecordView("event")}>按 Event</Chip>
+              </ChipRow>
+            </div>
           </div>
         </CardHeader>
         <CardContent>
@@ -401,14 +415,16 @@ function DailyDataTab({ dailies }: { dailies: Daily[]; startCapital: number }) {
               {/* Mobile cards */}
               <div className="md:hidden space-y-2">
                 {[...dailies].reverse().slice(0, 20).map(d => (
-                  <div key={d.date} className="border rounded-lg p-3">
-                    <div className="flex justify-between items-center">
-                      <span className="font-mono text-xs">{d.date}</span>
-                      <span className={cn("font-mono text-sm", d.daily_pnl >= 0 ? "text-[var(--color-accent-green)]" : "text-[var(--color-accent-red)]")}>
+                  <div key={d.date} className="border rounded-lg p-3 min-w-0">
+                    <div className="flex justify-between items-center gap-2 min-w-0">
+                      <span className="font-mono text-xs shrink-0">{d.date}</span>
+                      <span className={cn("font-mono text-sm shrink-0", d.daily_pnl >= 0 ? "text-[var(--color-accent-green)]" : "text-[var(--color-accent-red)]")}>
                         ${fmt(d.daily_pnl)}
                       </span>
                     </div>
-                    <div className="flex justify-between text-xs text-muted-foreground mt-1">
+                    {/* Three-stat row wraps on 320px so the
+                        累计/回撤 numbers don't get clipped. */}
+                    <div className="flex flex-wrap justify-between gap-x-3 gap-y-0.5 text-xs text-muted-foreground mt-1 min-w-0">
                       <span>净值 ${fmt(d.total_value)}</span>
                       <span>累计 {d.cum_pnl_pct.toFixed(2)}%</span>
                       <span>回撤 {d.drawdown_pct.toFixed(2)}%</span>
@@ -433,13 +449,13 @@ function PlanHistory({ plans }: { plans: Plan[] }) {
           "rounded-lg border p-3",
           p.status === "active" ? "border-primary/30" : "border-border opacity-70",
         )}>
-          <div className="flex items-center gap-2 mb-1">
-            <Badge variant={p.status === "active" ? "default" : "muted"}>
+          <div className="flex flex-wrap items-center gap-2 mb-1 min-w-0">
+            <Badge variant={p.status === "active" ? "default" : "muted"} className="shrink-0">
               {p.rating || "—"}
             </Badge>
-            <span className="text-xs font-medium">Plan #{p.id}</span>
-            {p.status === "active" && <Badge variant="outline" className="text-[10px]">当前</Badge>}
-            <span className="text-xs text-muted-foreground ml-auto">{p.created_at}</span>
+            <span className="text-xs font-medium shrink-0">Plan #{p.id}</span>
+            {p.status === "active" && <Badge variant="outline" className="text-[10px] shrink-0">当前</Badge>}
+            <span className="text-xs text-muted-foreground sm:ml-auto">{p.created_at}</span>
           </div>
           {p.thesis && <p className="text-xs text-muted-foreground mb-1">{p.thesis}</p>}
           {p.trade_decision && (
@@ -461,12 +477,12 @@ function EventTimeline({ events }: { events: Event[] }) {
   return (
     <div className="space-y-2">
       {events.map(e => (
-        <div key={e.id} className="flex items-center gap-3 text-sm border-b border-border/50 pb-2">
-          <Badge variant={e.signal === "BUY" ? "buy" : e.signal === "SELL" ? "sell" : "muted"} className="text-[10px]">
+        <div key={e.id} className="flex flex-wrap items-center gap-3 text-sm border-b border-border/50 pb-2 min-w-0">
+          <Badge variant={e.signal === "BUY" ? "buy" : e.signal === "SELL" ? "sell" : "muted"} className="text-[10px] shrink-0">
             {e.signal}
           </Badge>
-          <span className="text-xs text-muted-foreground">{e.created_at}</span>
-          <span className="text-xs">{e.event_type}</span>
+          <span className="text-xs text-muted-foreground shrink-0">{e.created_at}</span>
+          <span className="text-xs text-safe text-safe--wrap min-w-0 flex-1">{e.event_type}</span>
         </div>
       ))}
     </div>

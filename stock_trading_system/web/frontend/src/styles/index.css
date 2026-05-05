@@ -164,3 +164,163 @@ body { margin: 0; font-size: var(--text-base); }
   -webkit-overflow-scrolling: touch;
 }
 .tabs-scrollable::-webkit-scrollbar { display: none; }
+
+/* ═══════════════════════════════════════════════════════════════
+   Mobile UI Baseline (2026-05-04)
+   See docs/design/mobile-ui-baseline.md for the rationale and the
+   per-page sweep checklist. These utilities cover the four flex
+   patterns most frequently responsible for icon / button / chip
+   overflow on 320–414px screens.
+   ═══════════════════════════════════════════════════════════════ */
+
+/* (1) `mobile-card-header` — replaces ad-hoc
+       ``flex items-center justify-between`` on CardHeader rows.
+       Title block gets ``min-w-0 flex-1`` so its truncate/break-words
+       can fire; right-side action group keeps ``shrink-0`` but can
+       wrap to the next line on narrow widths. */
+.mobile-card-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+.mobile-card-header > .mc-title {
+  flex: 1 1 0%;
+  min-width: 0;
+}
+.mobile-card-header > .mc-actions {
+  flex-shrink: 0;
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+@media (max-width: 575.98px) {
+  .mobile-card-header > .mc-actions {
+    /* Force action group to its own row at narrow widths so a long
+       title never gets clipped by the icon/button cluster. */
+    flex-basis: 100%;
+    justify-content: flex-end;
+  }
+}
+
+/* (2) `mobile-toolbar` — chart toolbars / filter bars / batch-action
+       rows. Always wraps; never lets a single child force horizontal
+       overflow. */
+.mobile-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+/* (3) `mobile-action-row` — bottom-of-card "view / cancel / delete"
+       button rows. Buttons never share a row with `ml-auto`; wraps
+       cleanly at 320px. */
+.mobile-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+@media (max-width: 575.98px) {
+  .mobile-action-row > * {
+    /* Touch-target floor; gives wrapped buttons consistent height. */
+    min-height: var(--touch-min);
+  }
+}
+
+/* (4) `mobile-scroll-row` — horizontal scroll container that ACTUALLY
+       scrolls. Critical: parents must `min-w-0` for this to engage
+       (otherwise flex-children stretch their parent). The min-w-0 on
+       the row itself + max-w-full guards against that. */
+.mobile-scroll-row {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 0.5rem;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: 0.25rem; /* leaves room so focus rings don't clip */
+}
+.mobile-scroll-row::-webkit-scrollbar { display: none; }
+.mobile-scroll-row > * { flex-shrink: 0; }
+
+/* (5) `mobile-tabs-scroll` — wraps `<TabsList>` so 8-tab + headers
+       pages don't blow out. Same scroll mechanics as
+       `mobile-scroll-row` plus `inline-flex` so it sits inline. */
+.mobile-tabs-scroll {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+.mobile-tabs-scroll::-webkit-scrollbar { display: none; }
+.mobile-tabs-scroll > * {
+  /* Force inner TabsList to lay out its triggers in a single
+     non-wrapping row — wrapping would break the active-tab pill. */
+  flex-wrap: nowrap !important;
+  width: max-content;
+  min-width: 100%;
+}
+
+/* (6) `mobile-chart-panel` — holds an ECharts/TradingView frame.
+       Mobile drops the height + padding so the chart never pushes the
+       primary CTAs below the fold; ECharts grid `left/right` should
+       be configured on the JS side via `useMobile()` or a prop. */
+.mobile-chart-panel {
+  width: 100%;
+  min-width: 0;
+}
+@media (max-width: 575.98px) {
+  .mobile-chart-panel {
+    /* Give pages a sensible default; specific charts can override. */
+    --chart-h: 260px;
+  }
+  .mobile-chart-panel .chart-host,
+  .mobile-chart-panel [data-chart-host] {
+    height: var(--chart-h, 260px) !important;
+  }
+}
+
+/* (7) `icon-fixed` — apply on lucide / svg icons that sit next to
+       wrapping flex text. Stops the icon from shrinking to 0 and
+       stops it from being pushed out of its parent. */
+.icon-fixed {
+  flex-shrink: 0;
+  width: 1rem;
+  height: 1rem;
+}
+
+/* (8) `text-safe` — long ticker / email / hash / key strings that
+       must not blow out the row. Truncates with ellipsis by default;
+       pair with `min-w-0` on the parent to make truncation fire.
+       For wrap-instead-of-truncate use `text-safe text-safe--wrap`. */
+.text-safe {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.text-safe--wrap {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+/* ═══ CardHeader / CardContent mobile padding (12px instead of 20px) ═══ */
+@media (max-width: 575.98px) {
+  [data-card-header],
+  [data-card-content] {
+    padding-left: 1rem !important;
+    padding-right: 1rem !important;
+  }
+}

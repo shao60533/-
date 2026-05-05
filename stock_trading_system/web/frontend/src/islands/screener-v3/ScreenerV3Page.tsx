@@ -207,17 +207,19 @@ function ScreenerForm({ prefillTaskId = null }: ScreenerFormProps) {
       )}
     <Card>
       <CardHeader>
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <CardTitle className="flex items-center gap-2">
-              <Zap className="h-4 w-4 text-[var(--color-accent-blue)]" />
-              智能选股 V3 · 大师 Agent
+        <div className="mobile-card-header">
+          <div className="mc-title">
+            <CardTitle className="flex items-center gap-2 min-w-0">
+              <Zap className="icon-fixed text-[var(--color-accent-blue)]" />
+              <span className="truncate">智能选股 V3 · 大师 Agent</span>
             </CardTitle>
             <p className="text-xs text-[var(--color-text-secondary)] mt-1">
               14 位投资大师深度评估 + Round-table 辩论
             </p>
           </div>
-          <Badge variant="blue">BETA</Badge>
+          <div className="mc-actions">
+            <Badge variant="blue">BETA</Badge>
+          </div>
         </div>
       </CardHeader>
 
@@ -657,13 +659,13 @@ function ResultsView({ resultId }: { resultId: string }) {
     null
 
   return (
-    <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-6">
-      <div className="flex items-center gap-3">
+    <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-6 min-w-0">
+      <div className="flex items-center gap-3 flex-wrap min-w-0">
         <Button variant="ghost" size="sm" onClick={() => window.location.href = "/screener-v3"}>
-          <ArrowLeft className="h-4 w-4" />
+          <ArrowLeft className="icon-fixed" />
         </Button>
-        <h1 className="text-xl font-bold">选股结果</h1>
-        <Badge variant="muted">{result.created_at?.slice(0, 16)}</Badge>
+        <h1 className="text-xl font-bold truncate min-w-0 flex-1">选股结果</h1>
+        <Badge variant="muted" className="shrink-0">{result.created_at?.slice(0, 16)}</Badge>
       </div>
 
       {/* v1.2 — 6 KPI columns. Pre-v1.2 rows without ``consensus`` /
@@ -720,12 +722,12 @@ function ResultsView({ resultId }: { resultId: string }) {
                 </>
               )}
               {result.run_metadata.universe_source === "theme_fallback" && (
-                <Badge variant="sell" className="ml-auto">
+                <Badge variant="sell" className="w-full sm:w-auto sm:ml-auto justify-center">
                   ⚠️ 主候选生成失败，使用保守降级候选
                 </Badge>
               )}
               {result.run_metadata.universe_source === "default" && (
-                <Badge variant="sell" className="ml-auto">
+                <Badge variant="sell" className="w-full sm:w-auto sm:ml-auto justify-center">
                   ⚠️ 未命中主题，使用大盘默认池
                 </Badge>
               )}
@@ -766,7 +768,7 @@ function ResultsView({ resultId }: { resultId: string }) {
                 )}
                 {typeof result.run_metadata.on_theme_count === "number" &&
                  result.run_metadata.on_theme_count > 0 && (
-                  <span className="text-muted-foreground ml-auto">
+                  <span className="text-muted-foreground sm:ml-auto">
                     on-theme {result.run_metadata.on_theme_count}
                   </span>
                 )}
@@ -830,7 +832,7 @@ function ResultsView({ resultId }: { resultId: string }) {
             <span className="text-muted-foreground">·</span>
             <span>耗时 {fmtDuration(result.run_metadata.duration_sec)}</span>
             {!result.run_metadata.roundtable_enabled && (
-              <Badge variant="muted" className="ml-auto">无圆桌</Badge>
+              <Badge variant="muted" className="sm:ml-auto">无圆桌</Badge>
             )}
           </CardContent>
         </Card>
@@ -849,11 +851,13 @@ function ResultsView({ resultId }: { resultId: string }) {
                         rt.split ? "border-orange-500/40" : "border-emerald-500/40",
                       )}>
                   <CardHeader className="pb-2">
-                    <div className="flex items-center justify-between">
-                      <CardTitle className="font-mono text-base">{rt.ticker}</CardTitle>
-                      <Badge variant={rt.split ? "sell" : "buy"}>
-                        {rt.split ? "CONTESTED" : "CONSENSUS"}
-                      </Badge>
+                    <div className="mobile-card-header">
+                      <CardTitle className="mc-title font-mono text-base truncate">{rt.ticker}</CardTitle>
+                      <div className="mc-actions">
+                        <Badge variant={rt.split ? "sell" : "buy"}>
+                          {rt.split ? "CONTESTED" : "CONSENSUS"}
+                        </Badge>
+                      </div>
                     </div>
                     <div className="text-xs text-muted-foreground">
                       共识 {rt.consensus?.length ?? 0} 人
@@ -969,22 +973,27 @@ function ResultsView({ resultId }: { resultId: string }) {
                   const sig = candidateSignal(c)
                   const isOpen = expanded === c.ticker
                   return (
-                    <div key={c.ticker} className="border rounded-lg p-3">
-                      <div className="flex justify-between items-center cursor-pointer"
+                    <div key={c.ticker} className="border rounded-lg p-3 min-w-0">
+                      {/* Mobile candidate row — split into two visual
+                          rows so ticker / score / signal / consensus
+                          never crowd into one 320px line. Row 1 shows
+                          rank + ticker + score + signal; row 2 shows
+                          votes bar + consensus pill. */}
+                      <div className="flex flex-wrap items-center gap-2 cursor-pointer"
                            onClick={() => setExpanded(isOpen ? null : c.ticker)}>
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs text-muted-foreground">#{i + 1}</span>
-                          <span className="font-mono font-semibold">{c.ticker}</span>
+                        <div className="flex items-center gap-2 min-w-0 flex-1">
+                          <span className="text-xs text-muted-foreground shrink-0">#{i + 1}</span>
+                          <span className="font-mono font-semibold truncate">{c.ticker}</span>
                         </div>
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 shrink-0">
                           <span className="font-mono text-sm">{candidateScore(c).toFixed(1)}</span>
                           <Badge variant={signalBadge(sig)}>{sig.toUpperCase()}</Badge>
                         </div>
                       </div>
-                      <div className="flex items-center gap-2 mt-2">
+                      <div className="flex flex-wrap items-center gap-2 mt-2 min-w-0">
                         <VotesBar votes={c.votes} />
                         <Badge variant={consensusBadge(c.consensus ?? "")}
-                               className="text-[10px] ml-auto">
+                               className="text-[10px] sm:ml-auto">
                           {consensusLabel(c.consensus ?? "")}
                         </Badge>
                       </div>
@@ -1042,14 +1051,14 @@ function CandidateExpanded({ c, f }: {
         {sigs.map((s, i) => (
           <Card key={i} className="bg-card/50">
             <CardContent className="pt-3 space-y-2">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <span className="font-semibold text-sm">{s.guru}</span>
+              <div className="mobile-card-header">
+                <div className="mc-title flex items-center gap-2 min-w-0">
+                  <span className="font-semibold text-sm truncate">{s.guru}</span>
                   {s.tier && (
-                    <Badge variant="muted" className="text-[9px]">{tierLabel(s.tier)}</Badge>
+                    <Badge variant="muted" className="text-[9px] shrink-0">{tierLabel(s.tier)}</Badge>
                   )}
                 </div>
-                <Badge variant={signalBadge(s.signal)} className="text-[10px]">
+                <Badge variant={signalBadge(s.signal)} className="text-[10px] mc-actions">
                   {(s.signal ?? "—").toUpperCase()}
                 </Badge>
               </div>
@@ -1107,10 +1116,14 @@ function CandidateExpanded({ c, f }: {
 }
 
 function KV({ k, v }: { k: string; v: string }) {
+  // Mobile: long values (e.g. raw FilterSpec criteria, multi-tag
+  // sector lists) need to wrap rather than push the label off-screen.
+  // `min-w-0` on both children + `text-safe text-safe--wrap` on the
+  // value cell makes that wrap reliable.
   return (
-    <div className="flex items-center justify-between">
-      <span className="text-muted-foreground">{k}</span>
-      <span>{v}</span>
+    <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 min-w-0">
+      <span className="text-muted-foreground shrink-0">{k}</span>
+      <span className="text-safe text-safe--wrap text-right">{v}</span>
     </div>
   )
 }
@@ -1137,14 +1150,14 @@ function Section({ icon, title, subtitle, action, children }: {
   icon: React.ReactNode; title: string; subtitle?: string; action?: React.ReactNode; children: React.ReactNode
 }) {
   return (
-    <div className="space-y-2.5">
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2 text-[var(--color-text-primary)]">
-          <span className="text-[var(--color-text-muted)]">{icon}</span>
-          <span className="text-sm font-semibold">{title}</span>
-          {subtitle && <span className="text-[11px] text-[var(--color-text-muted)] ml-1">{subtitle}</span>}
+    <div className="space-y-2.5 min-w-0">
+      <div className="mobile-card-header">
+        <div className="mc-title flex items-center gap-2 text-[var(--color-text-primary)] min-w-0">
+          <span className="text-[var(--color-text-muted)] shrink-0">{icon}</span>
+          <span className="text-sm font-semibold truncate">{title}</span>
+          {subtitle && <span className="text-[11px] text-[var(--color-text-muted)] ml-1 truncate">{subtitle}</span>}
         </div>
-        {action}
+        {action && <div className="mc-actions">{action}</div>}
       </div>
       {children}
     </div>
@@ -1227,14 +1240,16 @@ function RecentScreensCard() {
 
   return (
     <Card>
-      <CardHeader className="pb-2 flex flex-row items-center justify-between">
-        <CardTitle className="text-sm">最近选股</CardTitle>
-        <a
-          href="/screener-v3/history"
-          className="text-xs text-[var(--color-accent-blue)] hover:underline"
-        >
-          查看全部 →
-        </a>
+      <CardHeader className="pb-2">
+        <div className="mobile-card-header">
+          <CardTitle className="mc-title text-sm truncate">最近选股</CardTitle>
+          <a
+            href="/screener-v3/history"
+            className="mc-actions text-xs text-[var(--color-accent-blue)] hover:underline"
+          >
+            查看全部 →
+          </a>
+        </div>
       </CardHeader>
       <CardContent>
         {loading ? (
@@ -1264,9 +1279,9 @@ function RecentScreenCard({ row }: { row: HistoryRow }) {
       }}
       className="cursor-pointer rounded border bg-card/50 hover:border-primary/40 transition-colors p-3 space-y-1.5 text-xs"
     >
-      <div className="flex items-center justify-between">
-        <span className="text-muted-foreground">{fmtRelative(row.created_at)}</span>
-        <Badge variant="muted" className="text-[9px]">
+      <div className="flex items-center justify-between gap-2 min-w-0">
+        <span className="text-muted-foreground truncate">{fmtRelative(row.created_at)}</span>
+        <Badge variant="muted" className="text-[9px] shrink-0">
           {MODE_LABEL[row.params.mode] ?? row.params.mode}
         </Badge>
       </div>
@@ -1348,15 +1363,15 @@ function ScreenerHistoryList() {
 
   return (
     <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-4">
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3 flex-wrap min-w-0">
         <Button
           variant="ghost" size="sm"
           onClick={() => { window.location.href = "/screener-v3" }}
         >
-          <ArrowLeft className="h-4 w-4" />
+          <ArrowLeft className="icon-fixed" />
         </Button>
-        <h1 className="text-xl font-bold">选股记录</h1>
-        <Badge variant="muted" className="ml-auto">{total} 条</Badge>
+        <h1 className="text-xl font-bold truncate min-w-0 flex-1">选股记录</h1>
+        <Badge variant="muted" className="shrink-0">{total} 条</Badge>
       </div>
 
       <Card>
@@ -1482,7 +1497,11 @@ function ScreenHistoryRow({
             <span className="text-red-400">{s.votes.bearish}✗</span>
           </span>
         )}
-        <div className="ml-auto flex gap-1">
+        {/* Mobile-safe action group: gets its own row at narrow widths
+            via `mobile-action-row`; on desktop it sits right via
+            `sm:ml-auto`. Keeps the "查看 / 复制配置重跑 / 删除" buttons
+            from being pushed off-screen. */}
+        <div className="mobile-action-row sm:ml-auto sm:w-auto w-full">
           <Button
             size="sm" variant="outline"
             onClick={() => {

@@ -27,10 +27,16 @@ export const Chip = React.forwardRef<HTMLButtonElement, ChipProps>(
 Chip.displayName = "Chip"
 
 export function ChipRow({ children, className }: { children: React.ReactNode; className?: string }) {
+  // 2026-05-04: `min-w-0 max-w-full flex-nowrap` are non-negotiable —
+  // without them, flex children stretch the parent and overflow-x-auto
+  // never fires (the regression that blew out the dashboard time-range
+  // row at 320px). The shared `.mobile-scroll-row` rule pins
+  // `flex-shrink: 0` on each child so chips keep their natural width.
   return (
     <div
       className={cn(
-        "flex gap-2 overflow-x-auto pb-1 [&::-webkit-scrollbar]:hidden [scrollbar-width:none]",
+        "mobile-scroll-row flex flex-nowrap gap-2 min-w-0 max-w-full overflow-x-auto pb-1",
+        "[&::-webkit-scrollbar]:hidden [scrollbar-width:none]",
         className
       )}
     >
