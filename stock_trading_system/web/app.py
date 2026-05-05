@@ -444,6 +444,55 @@ def _probe_providers() -> dict:
         except Exception as e:  # noqa: BLE001
             results["schwab"] = {"ok": False, "error": str(e)[:200]}
 
+    # ── OpenRouter (v1.0 — llm-openrouter) ─────────────────────────
+    # OR is technically an LLM aggregator, not a market-data provider,
+    # but the diagnostics dashboard already aggregates "everything that
+    # could fail at runtime" so we surface it here too. The probe is a
+    # cheap HEAD against /api/v1/models — that endpoint requires the
+    # api key and ~50ms round-trip; failure indicates either missing
+    # key or network egress problem.
+    from stock_trading_system.llm.router import has_provider_key as _has_or_key
+    if _has_or_key(cfg, "openrouter"):
+        import time as _t
+        import requests as _rq
+        or_cfg = cfg.get("openrouter") or {}
+        api_key = (
+            os.environ.get("OPENROUTER_API_KEY")
+            or or_cfg.get("api_key", "")
+        )
+        base_url = or_cfg.get("base_url", "https://openrouter.ai/api/v1")
+        start = _t.perf_counter()
+        try:
+            r = _rq.head(
+                f"{base_url}/models",
+                headers={"Authorization": f"Bearer {api_key}"},
+                timeout=10,
+            )
+            ok = 200 <= r.status_code < 400
+            results["openrouter"] = {
+                "ok":         ok,
+                "latency_ms": int((_t.perf_counter() - start) * 1000),
+                "status":     r.status_code,
+                "error":      None if ok else f"HTTP {r.status_code}",
+                "has_key":    True,
+            }
+        except Exception as e:  # noqa: BLE001
+            results["openrouter"] = {
+                "ok":         False,
+                "latency_ms": int((_t.perf_counter() - start) * 1000),
+                "error":      str(e)[:200],
+                "has_key":    True,
+            }
+    else:
+        # Surface as a known-disabled item (rather than absent) so the
+        # diagnostics page can show "OR not configured" alongside the
+        # other providers.
+        results["openrouter"] = {
+            "ok": False, "latency_ms": 0,
+            "error": "openrouter not configured (no api_key in env or yaml)",
+            "has_key": False,
+        }
+
     return results
 
 
