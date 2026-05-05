@@ -455,7 +455,15 @@ def make_screen_v3_worker():
 
         cfg = get_config()
         user_id = params.get("user_id")
-        provider = params.get("provider", "qwen")
+        # v1.0 (openrouter): default the provider from the router's
+        # active resolution chain (env > user > yaml > auto-detect)
+        # instead of hardcoding qwen. params['provider'] is still
+        # honored when the caller set it explicitly (e.g. tests).
+        from stock_trading_system.llm.router import get_active_provider
+        provider = (
+            params.get("provider")
+            or get_active_provider(cfg, user_id=user_id)
+        )
 
         # Use unified emit_event for all progress events
         from stock_trading_system.tasks.event_emitter import emit_event

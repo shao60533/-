@@ -64,13 +64,21 @@ class ScreenerV3Pipeline:
         self,
         config: dict,
         user_id: int | None = None,
-        provider: str = "qwen",
+        provider: str | None = None,
         local_cache: Any | None = None,
         on_progress: Callable | None = None,
         cancel_check: Callable[[], bool] | None = None,
     ):
         self._config = config
         self._user_id = user_id
+        # v1.0 (openrouter): when caller doesn't pin a provider, defer
+        # to the router so env / per-user / yaml / auto-detect all
+        # take effect. Pre-v1.0 the default was hardcoded "qwen",
+        # which silently won over the cloud-only OPENROUTER_API_KEY
+        # env path.
+        if provider is None:
+            from stock_trading_system.llm.router import get_active_provider
+            provider = get_active_provider(config, user_id=user_id)
         self._provider = provider
         self._cache = local_cache
         self._on_progress = on_progress
