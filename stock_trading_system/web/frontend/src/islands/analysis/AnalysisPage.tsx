@@ -55,6 +55,14 @@ interface AnalysisDetail {
   // never see ``rendering_json`` raw. Missing or null values fall back to
   // the markdown body (kept inside a ``<details>`` collapsible).
   rendering?: RenderingDict | null
+  // v1.7 (2026-05-06): structured-summary state machine. Drives the
+  // detail-page fallback strategy — when ``rendering_status`` is not
+  // ``success``/``partial`` the per-tab area renders the markdown body
+  // directly instead of folding it into the debug ``<details>``.
+  rendering_status?: "success" | "partial" | "failed" | "empty" | "pending" | null
+  rendering_error?: string | null
+  rendering_generated_at?: string | null
+  rendering_available_tabs?: string[] | null
   // v1.20: canonical trade action parsed from ``trade_decision`` text.
   // Always prefer ``decision_action`` over ``signal`` when present —
   // ``signal_mismatch=true`` means the stored signal disagreed with the

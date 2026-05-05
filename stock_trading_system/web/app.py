@@ -1864,6 +1864,41 @@ def create_app(config_path=None):
             )
         return jsonify({"error": "format must be md|pdf"}), 400
 
+    @app.route("/api/history/<int:analysis_id>/rendering/retry", methods=["POST"])
+    def api_rendering_retry(analysis_id):
+        """v1.7 — enqueue a structured-summary backfill for one row.
+
+        Used by the "重新生成结构化摘要" button on the detail page when
+        ``rendering_status`` is ``failed`` / ``empty`` / ``pending``.
+        Returns the new ``analysis_rendering_backfill`` task_id so the
+        UI can subscribe to its completion event and refresh the page.
+        """
+        if g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
+        from stock_trading_system.portfolio.database import PortfolioDatabase
+        db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
+        db = PortfolioDatabase(db_path)
+        record = db.get_analysis_by_id(analysis_id)
+        if not record:
+            return jsonify({"error": "not found"}), 404
+        # Anyone logged in can retry — it's idempotent and only writes
+        # to the rendering columns. ``analysis_history`` is shared
+        # research, so non-owners benefit from the structured cards too.
+        tm = _get_task_manager()
+        task = tm.submit(
+            task_type="analysis_rendering_backfill",
+            params={"analysis_id": int(analysis_id)},
+            title=f"补结构化摘要 #{analysis_id}",
+            user_id=g.user.id,
+        )
+        return jsonify({
+            "ok": True,
+            "task_id": task["id"],
+            "id": task["id"],
+            "analysis_id": int(analysis_id),
+        })
+
+
     @app.route("/api/history/<int:analysis_id>/bookmark", methods=["POST"])
     def api_bookmark_toggle(analysis_id):
         if g.user is None:

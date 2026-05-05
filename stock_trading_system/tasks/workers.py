@@ -915,6 +915,189 @@ class WorkerDeps:
         self.socketio = socketio
 
 
+def make_rendering_backfill_worker(get_analyzer):
+    """Backfill ``rendering_json`` for analysis_history rows that don't
+    have structured cards yet.
+
+    Two modes:
+        * ``params["analysis_id"]`` — single row retry (used by the
+          "重新生成结构化摘要" button on the detail page).
+        * ``params["limit"]`` — batch over rows where ``rendering_json``
+          is empty / NULL OR ``rendering_status='failed'``, sorted
+          newest first. Default limit is 10 to keep one task call
+          bounded; users can re-submit for the next batch.
+
+    Behaviour:
+        * Re-uses ``RenderingExtractor`` against the saved per-tab text
+          columns. Builds a lightweight result-shaped object so the
+          extractor doesn't need the full analyzer pipeline.
+        * Writes ``rendering_json / rendering_status / rendering_error
+          / rendering_generated_at`` via ``database.update_rendering``.
+        * Never touches ``signal``, ``advice_*``, paper-trade tables,
+          or any other column. Strict storage isolation — backfill is
+          purely a UI-data fixup.
+        * Per-row failures are caught and logged; the task continues.
+
+    Returns: ``{processed, succeeded, failed, partial, skipped, items: [...]}``.
+    """
+    def worker(params: dict, progress_cb: ProgressCb) -> dict:
+        from datetime import datetime as _dt
+        from stock_trading_system.config import get_config
+        from stock_trading_system.portfolio.database import PortfolioDatabase
+        from stock_trading_system.agents.rendering.extractor import (
+            RenderingExtractor,
+        )
+        from stock_trading_system.agents.rendering.status import classify
+
+        cfg = get_config()
+        db_path = (cfg.get("portfolio") or {}).get("db_path", "data/portfolio.db")
+        db = PortfolioDatabase(db_path)
+
+        # ── Selection: single id OR batch ────────────────────────
+        analysis_id = params.get("analysis_id")
+        rows: list[dict]
+        if analysis_id is not None:
+            with db._get_conn() as conn:
+                row = conn.execute(
+                    "SELECT * FROM analysis_history WHERE id = ?",
+                    (int(analysis_id),),
+                ).fetchone()
+                rows = [dict(row)] if row else []
+            mode_label = f"single id={analysis_id}"
+        else:
+            limit = max(1, min(int(params.get("limit") or 10), 50))
+            with db._get_conn() as conn:
+                rs = conn.execute(
+                    """SELECT * FROM analysis_history
+                          WHERE COALESCE(rendering_json, '') = ''
+                             OR COALESCE(rendering_status, '') IN
+                                  ('failed', 'pending', '')
+                          ORDER BY id DESC
+                          LIMIT ?""",
+                    (limit,),
+                ).fetchall()
+                rows = [dict(r) for r in rs]
+            mode_label = f"batch limit={limit}"
+
+        progress_cb(5, f"扫描候选 ({mode_label})", stage="scan")
+
+        if not rows:
+            progress_cb(95, "没有待回填的行")
+            return {"processed": 0, "succeeded": 0, "failed": 0,
+                    "partial": 0, "skipped": 0, "items": []}
+
+        # Reuse the main analyzer's quick LLM so the model + key path
+        # match the live extraction. The analyzer initialises lazily on
+        # first call so we don't pay startup cost when rows is empty.
+        analyzer = get_analyzer()
+        try:
+            llm = analyzer._build_quick_llm()
+            data_manager = analyzer._get_data_manager()
+        except Exception as e:  # noqa: BLE001
+            raise RuntimeError(
+                f"backfill could not build LLM ({type(e).__name__}: {e})"
+            )
+        extractor = RenderingExtractor(llm, data_manager=data_manager)
+
+        items: list[dict] = []
+        succeeded = failed = partial = skipped = 0
+
+        class _StubResult:
+            """Minimal duck-type to feed RenderingExtractor without the
+            full TradingAgents state. Field names mirror the analyzer's
+            ``AnalysisResult`` dataclass (see analyzer.py)."""
+
+        for idx, row in enumerate(rows, start=1):
+            pct = 5 + int(round(idx / len(rows) * 90))
+            ticker = (row.get("ticker") or "").upper()
+            progress_cb(pct, f"提取 {ticker} ({idx}/{len(rows)})",
+                         stage="extract")
+            stub = _StubResult()
+            stub.market_report = row.get("market_report") or ""
+            stub.sentiment_report = row.get("sentiment_report") or ""
+            stub.news_report = row.get("news_report") or ""
+            stub.fundamentals_report = row.get("fundamentals_report") or ""
+            stub.investment_debate = row.get("investment_debate") or ""
+            stub.risk_assessment = row.get("risk_assessment") or ""
+            stub.trade_decision = row.get("trade_decision") or ""
+
+            # Skip rows whose source markdown is entirely empty —
+            # nothing for the extractor to chew on. Mark as ``empty``
+            # so the next backfill pass doesn't re-pick them.
+            if not any([
+                stub.market_report, stub.sentiment_report, stub.news_report,
+                stub.fundamentals_report, stub.investment_debate,
+                stub.risk_assessment, stub.trade_decision,
+            ]):
+                db.update_rendering(
+                    int(row["id"]),
+                    rendering_json="", status="empty",
+                    error="no source reports to extract from",
+                )
+                skipped += 1
+                items.append({"id": row["id"], "ticker": ticker,
+                               "status": "empty", "reason": "no source"})
+                continue
+
+            try:
+                rendering = extractor.extract(stub, ticker=ticker)
+                json_str = json.dumps(rendering, ensure_ascii=False)
+                # Use the same source-tab presence logic as the live
+                # worker so partial classification matches.
+                source_tabs = []
+                for k, present in [
+                    ("Market", stub.market_report),
+                    ("Sentiment", stub.sentiment_report),
+                    ("News", stub.news_report),
+                    ("Fundamentals", stub.fundamentals_report),
+                    ("Investment Debate", stub.investment_debate),
+                    ("Risk Assessment", stub.risk_assessment),
+                    ("Decision", stub.trade_decision),
+                ]:
+                    if present:
+                        source_tabs.append(k)
+                if source_tabs:
+                    source_tabs.append("summary")
+                status, err = classify(rendering, source_tabs_present=source_tabs)
+                db.update_rendering(
+                    int(row["id"]), rendering_json=json_str,
+                    status=status, error=err,
+                )
+                if status == "success":
+                    succeeded += 1
+                elif status == "partial":
+                    partial += 1
+                else:
+                    failed += 1
+                items.append({"id": row["id"], "ticker": ticker,
+                               "status": status, "reason": err})
+            except Exception as e:  # noqa: BLE001
+                err_msg = f"{type(e).__name__}: {e}"[:240]
+                logger.warning(
+                    "backfill row %s (%s) failed: %s",
+                    row.get("id"), ticker, err_msg,
+                )
+                db.update_rendering(
+                    int(row["id"]), rendering_json="", status="failed",
+                    error=err_msg,
+                )
+                failed += 1
+                items.append({"id": row["id"], "ticker": ticker,
+                               "status": "failed", "reason": err_msg})
+
+        progress_cb(95, "整理结果")
+        return {
+            "processed": len(rows),
+            "succeeded": succeeded,
+            "partial":   partial,
+            "failed":    failed,
+            "skipped":   skipped,
+            "items":     items,
+            "completed_at": _dt.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+    return worker
+
+
 def register_default_workers(tm, deps: WorkerDeps) -> None:
     """Register every worker whose dependencies are available.
 
