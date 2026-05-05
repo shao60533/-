@@ -8,11 +8,31 @@ docs/design/llm-openrouter.md v1.0 §6.4 — 3 cases:
 
 from __future__ import annotations
 
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from stock_trading_system.agents.analyzer import StockAnalyzer
+
+
+@pytest.fixture(autouse=True)
+def _restore_or_env():
+    """``_configure_openrouter`` writes ``os.environ['OPENROUTER_API_KEY']``
+    directly so the upstream tradingagents factory can pick it up. That
+    mutation isn't reverted by pytest's monkeypatch (which only tracks
+    its own setenv calls), so without this fixture the OR tests leak the
+    key into every subsequent test that reads env-driven provider state
+    (notably tests/web/test_llm_provider_api.py::test_get_returns_state
+    which expects active in {qwen, gemini}). Snapshot before / restore
+    after so per-test setup is untouched but the leak is bounded.
+    """
+    snapshot = os.environ.get("OPENROUTER_API_KEY")
+    yield
+    if snapshot is None:
+        os.environ.pop("OPENROUTER_API_KEY", None)
+    else:
+        os.environ["OPENROUTER_API_KEY"] = snapshot
 
 
 def _or_config(deep_id="deepseek-v4-pro", api_key="sk-or-test"):
