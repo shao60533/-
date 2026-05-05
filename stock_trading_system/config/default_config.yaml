@@ -1,10 +1,52 @@
-llm_provider: null   # null -> legacy auto-detect; "qwen" | "gemini" -> force
+llm_provider: null   # null -> legacy auto-detect; "qwen" | "gemini" | "openrouter" -> force
 
 gemini:
   api_key: ""
   model: "gemini-3.1-pro-preview"
   deep_think_model: "gemini-3.1-pro-preview"
   thinking_level: "high"
+
+# OpenRouter — aggregator that exposes 100+ models behind a single key.
+# Set OPENROUTER_API_KEY env to auto-enable in cloud (highest priority,
+# beats both yaml api_key and the qwen / gemini auto-detect).
+#
+# Model selection is two-tier:
+#   * `presets[]` is the pool — you can add / remove / edit entries.
+#   * `active.{deep,quick}` are pointers into that pool.
+# Switching deep model = swap `active.deep` to a different preset id.
+# `provider_order` controls which underlying vendor OR routes to first
+# (with fallback to the rest); leave empty to let OR choose.
+openrouter:
+  enabled: false
+  api_key: ""                                       # 或 env OPENROUTER_API_KEY
+  base_url: "https://openrouter.ai/api/v1"
+  http_referer: ""
+  x_title: "StockAI Terminal"
+  timeout: 120
+  presets:
+    - id: "deepseek-v4-pro"
+      label: "DeepSeek V4 Pro"
+      model: "deepseek/deepseek-v4-pro"
+      role: "deep"
+      provider_order: ["deepseek", "novita"]
+      kwargs: {}
+    - id: "gemini-3.1-pro"
+      label: "Gemini 3.1 Pro"
+      # OR currently lists Gemini 3.1 Pro as a preview tag; rename
+      # here when Google flips the GA suffix.
+      model: "google/gemini-3.1-pro-preview"
+      role: "deep"
+      provider_order: ["google-ai-studio", "google-vertex"]
+      kwargs: {}
+    - id: "deepseek-v4-flash"
+      label: "DeepSeek V4 Flash"
+      model: "deepseek/deepseek-v4-flash"
+      role: "quick"
+      provider_order: ["deepseek", "novita", "fireworks"]
+      kwargs: {}
+  active:
+    deep:  "deepseek-v4-pro"
+    quick: "deepseek-v4-flash"
 
 # Polygon.io — disabled by default (free tier is rate-limited; not cloud-friendly).
 # Enable explicitly via providers.polygon_enabled when you have a paid key.
