@@ -67,7 +67,11 @@ def _build_roundtable_theme_clause(nl_query: str | None) -> str:
     return ""
 
 
-def _build_theme_instruction(query: str | None, spec: dict | None) -> str:
+def _build_theme_instruction(
+    query: str | None,
+    spec: dict | None,
+    theme_metadata: dict | None = None,
+) -> str:
     """Return the universal theme/spec-aware preamble.
 
     Always non-empty so every guru evaluation produces a `theme_fit`
@@ -75,10 +79,21 @@ def _build_theme_instruction(query: str | None, spec: dict | None) -> str:
     of whether we detected a theme. Empty inputs degrade gracefully:
     the LLM sees ``"用户原始筛选意图: "`` and ``"结构化筛选条件: {}"``
     and the cap-rules become no-ops because theme_fit defaults to 5.
+
+    v1.5 — theme-specific guidance is now driven by the registry
+    (``theme_universe.theme_metadata``). The previous version had a
+    hardcoded "存储" rule (rule 10), which meant adding a new theme
+    required editing the prompt template here AND the v2 registry
+    AND the pipeline gate. The registry is now the single source of
+    truth: ``theme_metadata`` ships disambiguation_note, allowed
+    universe, sectors, and explicit-extras triggers; the prompt
+    renders the matching theme's block on demand. Off-theme runs
+    (theme_metadata is None) keep the same generic body so the
+    structured-output contract is unchanged.
     """
     q = query or ""
     s = spec if isinstance(spec, dict) else {}
-    return f"""
+    base = f"""
 
 用户原始筛选意图: {q}
 结构化筛选条件: {s}
@@ -98,13 +113,70 @@ def _build_theme_instruction(query: str | None, spec: dict | None) -> str:
 7. 如果 theme_fit < 4，total_score 不应超过 60。
 8. 如果 theme_fit < 2，signal 必须是 neutral 或 bearish。
 9. 不能因为公司财务稳健，就在主题明显不匹配时给 bullish。
-10. 如果用户查询包含"存储/内存/DRAM/NAND/SSD/HDD/闪存/数据存储硬件"，
-    默认指半导体存储或存储硬件产业链。
-    直接相关公司示例：MU, WDC, STX, SNDK。
-    可作为产业链相关但需说明理由的公司：MRVL, INTC, AMD, NVDA, AVGO。
-    无直接相关性的公司示例：BRK-B, JPM, V, MA, PG, WMT, UNH。
-    除非用户明确写"云存储/云计算/对象存储"，否则 AMZN/MSFT/GOOGL 不应被默认视为存储龙头。
 """
+    if not isinstance(theme_metadata, dict):
+        return base
+    return base + _render_theme_metadata_block(theme_metadata, query=q)
+
+
+def _render_theme_metadata_block(meta: dict, *, query: str) -> str:
+    """Render a single registered theme's metadata into prompt text.
+
+    Pulled out so each guru's system message gets the same authoritative
+    block (anchored to the user's verbatim query), and so unit tests
+    can assert per-theme content without re-running the whole guru
+    pipeline.
+    """
+    key = meta.get("key", "?")
+    universe = meta.get("universe") or []
+    sectors = meta.get("sectors") or []
+    note = (meta.get("disambiguation_note") or "").strip()
+    extras_blocks = meta.get("extra_when_explicit") or []
+
+    # Honor only the extras whose trigger appears in the user's query.
+    triggered_extras: list[str] = []
+    if query and extras_blocks:
+        for entry in extras_blocks:
+            trig = entry.get("trigger") or ""
+            if not trig:
+                continue
+            if trig.lower() in query.lower() or trig in query:
+                for t in (entry.get("extras") or []):
+                    if t and t not in triggered_extras:
+                        triggered_extras.append(t)
+
+    lines: list[str] = [f"\n主题约束 (theme={key})："]
+    if note:
+        lines.append(f"  - {note}")
+    if universe:
+        lines.append(
+            "  - 主题龙头（curated universe）：" + ", ".join(universe)
+        )
+    if sectors:
+        lines.append(
+            "  - 允许的 GICS sector：" + ", ".join(sectors)
+            + "。其它 sector（如 Technology / Financials / Communication "
+            "Services 等大盘股板块）默认视为不在主题。"
+        )
+    if triggered_extras:
+        lines.append(
+            "  - 用户显式触发的扩展龙头（仅本次有效）：" + ", ".join(triggered_extras)
+        )
+    if extras_blocks and not triggered_extras:
+        skipped = ", ".join(
+            sorted({t for e in extras_blocks for t in (e.get("extras") or [])})
+        )
+        if skipped:
+            lines.append(
+                f"  - 仅在用户明确写出特定关键词时才能纳入：{skipped}（本次未触发）"
+            )
+    lines.append(
+        "  - 对该主题，禁止把 BRK-B / JPM / V / MA / UNH / WMT / PG / AAPL / "
+        "MSFT / GOOGL（除非显式触发）等大盘金融/消费/科技anchor 视为"
+        "主题龙头。它们不在 curated universe 也不在 allowed sectors，"
+        "应给出 theme_fit ≤ 2 + bearish/neutral。"
+    )
+    return "\n".join(lines) + "\n"
 
 
 def _enforce_theme_fit(signal: "GuruSignal", context: dict | None) -> "GuruSignal":
@@ -328,9 +400,16 @@ class BaseGuruAgent:
         # subject (not a paraphrase) plus the structured fields. Always
         # non-empty — off-theme runs simply get default-permissive caps
         # via `_enforce_theme_fit` because theme_fit defaults to 5.
+        # v1.5 — pipeline injects the matched ``theme_metadata`` into
+        # ``context["theme"]`` so this prompt builder uses the registry
+        # as the single source of truth instead of a hardcoded "存储"
+        # rule. Off-theme runs leave ``theme`` as None and the prompt
+        # renders without a per-theme block.
+        ctx = context or {}
         theme_instruction = _build_theme_instruction(
-            query=(context or {}).get("nl_query"),
-            spec=(context or {}).get("filter_spec"),
+            query=ctx.get("nl_query"),
+            spec=ctx.get("filter_spec"),
+            theme_metadata=ctx.get("theme"),
         )
 
         # Build messages with explicit schema example
