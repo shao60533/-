@@ -1889,7 +1889,7 @@ def create_app(config_path=None):
             task_type="analysis_rendering_backfill",
             params={"analysis_id": int(analysis_id)},
             title=f"补结构化摘要 #{analysis_id}",
-            user_id=g.user.id,
+            created_by=g.user.id,
         )
         return jsonify({
             "ok": True,
