@@ -288,17 +288,25 @@ def _reset_config_dependent_singletons(paths: list[str]):
     Called after a successful /api/settings POST so the next request picks
     up the new config. We only reset the ones we know about — the scheduler
     thread is left alone (user can restart it from the UI if needed).
+
+    v1.0.1 (P1-C): added ``openrouter.`` prefix recognition. Pre-fix, a
+    user changing OR api_key / base_url / headers / timeout / preset
+    via /api/settings POST would NOT bust the analyzer cache; the next
+    analysis kept using the stale config until manual provider switch
+    or process restart.
     """
     global _analyzer, _alert_monitor, _data_manager, _screener, _strategy_engine, _report_gen
     paths = paths or []
     touched_gemini = any(p.startswith("gemini.") for p in paths)
     touched_qwen = any(p.startswith("qwen.") for p in paths)
+    touched_openrouter = any(p.startswith("openrouter.") for p in paths)
     touched_polygon = any(p.startswith("polygon.") for p in paths)
     touched_ib = any(p.startswith("ib.") for p in paths)
     touched_alerts = any(p.startswith("alerts.") for p in paths)
     touched_llm = any(p.startswith("llm") for p in paths)
-    # Analyzer uses LLM provider config.
-    if touched_gemini or touched_qwen or touched_llm:
+    # Analyzer uses LLM provider config — qwen / gemini / openrouter
+    # all need to bust the cached analyzer + its TradingAgents graphs.
+    if touched_gemini or touched_qwen or touched_openrouter or touched_llm:
         _analyzer = None
     # Data manager fans out to IB/Polygon/Qwen.
     if touched_ib or touched_polygon or touched_qwen:
@@ -2713,7 +2721,12 @@ def create_app(config_path=None):
         new_active = dict(or_cfg.get("active") or {})
         new_active[role] = preset_id
         save_config({"openrouter": {**or_cfg, "active": new_active}})
-        _reset_config_dependent_singletons(["llm_provider"])
+        # v1.0.1: pass openrouter.active so the reset matcher catches
+        # this AND the llm_provider clause (analyzer reset). Pre-fix
+        # ``["llm_provider"]`` worked by coincidence because the OR
+        # active swap also affects the analyzer's deep/quick model
+        # bindings; making the path explicit here documents that.
+        _reset_config_dependent_singletons(["openrouter.active", "llm_provider"])
         return jsonify({"active": new_active})
 
     # ── Screen V2 (async task-based) ────────────────────────────────────
