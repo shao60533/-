@@ -663,7 +663,13 @@ function AnalysisRunningView({ taskId, ticker, onComplete }: {
 
 /* ── Detail view with TVChart K-line + pipeline + quick-info + 7-tab ── */
 
-function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
+function AnalysisDetailView({ detail: initialDetail }: { detail: AnalysisDetail }) {
+  // v1.7 — local mirror so the structured-summary retry banner can
+  // re-fetch ``/api/history/<id>`` after the backfill task settles
+  // and swap in the freshly-rendered cards without a full page
+  // reload. Initial value is the prop the parent fetched.
+  const [detail, setDetail] = useState<AnalysisDetail>(initialDetail)
+  useEffect(() => { setDetail(initialDetail) }, [initialDetail])
   const [klineData, setKlineData] = useState<OHLCVRow[]>([])
   const [klineState, setKlineState] = useState<TVChartState>("loading")
   const [activeTab, setActiveTab] = useState("summary")
@@ -1146,6 +1152,19 @@ function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
         </CardContent>
       </Card>
 
+      {/* v1.7 — structured-summary status banner. Shows up between the
+          actions row and the tabs when extraction failed/empty/pending
+          so the user sees WHY the cards aren't showing and can retry
+          with one click. ``success`` and ``partial`` skip the banner —
+          partial still has the cards that did render plus markdown
+          fallback for the others, no banner needed. */}
+      <RenderingStatusBanner detail={detail} onRetried={() => {
+        // Re-pull the detail after the backfill task finishes so the
+        // structured cards swap in. Detail is fetched once on mount;
+        // we do a quick re-fetch here without remounting the page.
+        apiGet<AnalysisDetail>(`/api/history/${detail.id}`).then(setDetail).catch(() => {})
+      }} />
+
       {/* 7-tab report */}
       <Card ref={tabsRef}>
         <CardContent className="pt-6">
@@ -1164,79 +1183,94 @@ function AnalysisDetailView({ detail }: { detail: AnalysisDetail }) {
             {REPORT_TABS.map(tab => {
               const content = reportContent[tab.key] || ""
               const rawStruct = detail.rendering?.[tab.key as keyof RenderingDict]
-              // Defense-in-depth: even if production DB still has a stale
-              // payload that the backend ``_normalize_card`` didn't
-              // sanitise (or a future regression bypasses it), we
-              // re-normalise client-side before the card sees it. The
-              // post-normalise structure is null when the input is
-              // unrecoverably malformed (e.g. ``Market: "string"``).
               const struct = rawStruct
                 ? normalizeCardForClient(tab.key, rawStruct)
                 : null
               const hasStruct = !!struct
+              // v1.7 — when the per-tab card didn't render (rendering
+              // status failed/empty/pending or this specific tab is
+              // missing), the markdown body becomes the PRIMARY view
+              // instead of being folded into a debug ``<details>``.
+              // The user reported "原始模型输出 折叠" was making
+              // legitimate analysis content look hidden — fix is to
+              // promote markdown to the main render slot whenever
+              // there's no structured card.
               return (
                 <TabsContent key={tab.key} value={tab.key} className="mt-4 space-y-4">
-                  {/* Per-tab boundary: a single malformed structured card
-                      should NOT take down the whole detail page (the
-                      production /analysis/17 white-screen). On error we
-                      hide just this tab's structured card and let the
-                      Markdown ``<details>`` below render the same
-                      content from the analyst report text. */}
                   {hasStruct ? (
-                    <ErrorBoundary
-                      resetKey={`${detail.id}:${tab.key}`}
-                      onError={(err) => {
-                        // Telemetry only — never echo report bodies.
-                        // ``describeShape`` walks two levels deep and
-                        // emits field name + type so an operator can
-                        // diagnose which key is malformed without us
-                        // leaking PII or analyst conclusions to logs.
-                        // eslint-disable-next-line no-console
-                        console.error("[analysis card] render failed", {
-                          analysis_id: detail.id,
-                          tab_key: tab.key,
-                          error_name: err.name,
-                          error_message: err.message,
-                          struct_shape: describeShape(struct),
-                        })
-                      }}
-                      fallback={({ error }) => (
-                        <CardFallback error={error} />
-                      )}
-                    >
-                      <Suspense fallback={<Skeleton className="h-32 w-full" />}>
-                        <AnalysisCards tabKey={tab.key} data={struct} />
-                      </Suspense>
-                    </ErrorBoundary>
-                  ) : null}
-                  {content ? (
-                    <details className="rounded border border-border/50">
-                      <summary className="cursor-pointer px-4 py-2 text-xs text-muted-foreground hover:bg-muted/30">
-                        {hasStruct
-                          ? "原始模型输出（点击展开 · 仅供调试参考）"
-                          : "原始模型输出"}
-                      </summary>
-                      <div className="prose prose-invert prose-sm max-w-none px-4 py-3 max-h-[600px] overflow-y-auto text-[var(--color-text-secondary)]">
-                        {looksLikeRawDict(content) && (
-                          <div className="mb-3 rounded border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs text-amber-300 not-prose">
-                            原始输出格式异常（疑似 Python dict / JSON），已优先展示结构化摘要。
-                          </div>
+                    <>
+                      <ErrorBoundary
+                        resetKey={`${detail.id}:${tab.key}`}
+                        onError={(err) => {
+                          // eslint-disable-next-line no-console
+                          console.error("[analysis card] render failed", {
+                            analysis_id: detail.id,
+                            tab_key: tab.key,
+                            error_name: err.name,
+                            error_message: err.message,
+                            struct_shape: describeShape(struct),
+                          })
+                        }}
+                        fallback={({ error }) => (
+                          <CardFallback error={error} />
                         )}
-                        <ErrorBoundary
-                          resetKey={`${detail.id}:${tab.key}:md`}
-                          fallback={
-                            <pre className="text-xs whitespace-pre-wrap">{content}</pre>
-                          }
-                        >
-                          <Suspense fallback={<Skeleton className="h-24 w-full" />}>
-                            <MarkdownBody>{content}</MarkdownBody>
-                          </Suspense>
-                        </ErrorBoundary>
-                      </div>
-                    </details>
-                  ) : (!hasStruct && (
+                      >
+                        <Suspense fallback={<Skeleton className="h-32 w-full" />}>
+                          <AnalysisCards tabKey={tab.key} data={struct} />
+                        </Suspense>
+                      </ErrorBoundary>
+                      {/* Markdown body stays available behind a details
+                          summary on success, since the structured card
+                          already covers the main view. */}
+                      {content && (
+                        <details className="rounded border border-border/50">
+                          <summary className="cursor-pointer px-4 py-2 text-xs text-muted-foreground hover:bg-muted/30">
+                            原始模型输出（点击展开 · 仅供调试参考）
+                          </summary>
+                          <div className="prose prose-invert prose-sm max-w-none px-4 py-3 max-h-[600px] overflow-y-auto text-[var(--color-text-secondary)]">
+                            {looksLikeRawDict(content) && (
+                              <div className="mb-3 rounded border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs text-amber-300 not-prose">
+                                原始输出格式异常（疑似 Python dict / JSON），已优先展示结构化摘要。
+                              </div>
+                            )}
+                            <ErrorBoundary
+                              resetKey={`${detail.id}:${tab.key}:md`}
+                              fallback={
+                                <pre className="text-xs whitespace-pre-wrap">{content}</pre>
+                              }
+                            >
+                              <Suspense fallback={<Skeleton className="h-24 w-full" />}>
+                                <MarkdownBody>{content}</MarkdownBody>
+                              </Suspense>
+                            </ErrorBoundary>
+                          </div>
+                        </details>
+                      )}
+                    </>
+                  ) : content ? (
+                    /* No structured card → render markdown DIRECTLY
+                       as the main view. The "原始模型输出" framing is
+                       wrong when the markdown IS the primary output. */
+                    <div className="prose prose-invert prose-sm max-w-none text-[var(--color-text-secondary)]">
+                      {looksLikeRawDict(content) && (
+                        <div className="mb-3 rounded border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs text-amber-300 not-prose">
+                          原始输出格式异常（疑似 Python dict / JSON），结构化摘要待补齐。
+                        </div>
+                      )}
+                      <ErrorBoundary
+                        resetKey={`${detail.id}:${tab.key}:md-primary`}
+                        fallback={
+                          <pre className="text-xs whitespace-pre-wrap">{content}</pre>
+                        }
+                      >
+                        <Suspense fallback={<Skeleton className="h-24 w-full" />}>
+                          <MarkdownBody>{content}</MarkdownBody>
+                        </Suspense>
+                      </ErrorBoundary>
+                    </div>
+                  ) : (
                     <p className="text-sm text-muted-foreground py-8 text-center">暂无数据</p>
-                  ))}
+                  )}
                 </TabsContent>
               )
             })}
@@ -1270,6 +1304,91 @@ function CardFallback({ error }: { error: Error }) {
           {error.name}: {error.message}
         </code>
       </details>
+    </div>
+  )
+}
+
+/* ── Rendering status banner ───────────────────────────────── */
+
+/**
+ * v1.7 — show when the structured-summary state machine is anything
+ * other than ``success`` / ``partial``. Offers a one-click retry that
+ * enqueues the ``analysis_rendering_backfill`` task; on completion
+ * the parent re-fetches ``/api/history/<id>`` and the cards swap in.
+ *
+ * ``partial`` is intentionally NOT a banner case: the cards that did
+ * render are real value, the missing tabs already fall back to
+ * markdown directly, and an extra banner adds noise without action.
+ */
+function RenderingStatusBanner({
+  detail, onRetried,
+}: {
+  detail: AnalysisDetail
+  onRetried: () => void
+}) {
+  const status = detail.rendering_status
+  const [retrying, setRetrying] = useState(false)
+  const [msg, setMsg] = useState<string | null>(null)
+
+  const handleRetry = async () => {
+    setRetrying(true); setMsg(null)
+    try {
+      await apiPost(`/api/history/${detail.id}/rendering/retry`, {})
+      setMsg("已提交重试任务，约 30 秒后刷新查看")
+      // Give the backend ~30s to finish the backfill, then bounce.
+      window.setTimeout(() => { onRetried() }, 30_000)
+    } catch (err: unknown) {
+      setMsg(err instanceof Error ? `重试失败：${err.message}` : "重试失败")
+    } finally {
+      setRetrying(false)
+    }
+  }
+
+  // Skip rendering for healthy + partial states.
+  if (!status || status === "success" || status === "partial") return null
+
+  const headline =
+    status === "failed"  ? "结构化摘要生成失败" :
+    status === "pending" ? "结构化摘要待生成" :
+    /* empty */          "未生成结构化摘要"
+  const tone = status === "failed"
+    ? "border-amber-500/50 bg-amber-500/10 text-amber-200"
+    : "border-zinc-500/40 bg-zinc-500/5 text-zinc-300"
+
+  return (
+    <div className={`rounded border px-3 py-2 text-xs flex flex-wrap items-start gap-2 ${tone}`}>
+      <div className="flex-1 min-w-0">
+        <div className="font-semibold">{headline}</div>
+        <div className="opacity-80 mt-0.5 break-words">
+          {status === "failed"
+            ? "完整论述已显示在下方各 tab，可点击重试重新生成结构化卡片。"
+            : status === "empty"
+            ? "本次分析没有结构化卡片（旧记录或快速模式）。可点击重试按当前数据补一份。"
+            : "结构化摘要任务正在排队，稍候自动出现；也可手动触发重试。"}
+        </div>
+        {detail.rendering_error && (
+          <details className="mt-1">
+            <summary className="cursor-pointer text-[10px] opacity-70">
+              错误详情（开发者）
+            </summary>
+            <code className="block mt-1 text-[10px] font-mono whitespace-pre-wrap opacity-70 break-words">
+              {detail.rendering_error}
+            </code>
+          </details>
+        )}
+        {msg && (
+          <div className="mt-1 text-[11px] opacity-90">{msg}</div>
+        )}
+      </div>
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={handleRetry}
+        disabled={retrying}
+        className="shrink-0"
+      >
+        {retrying ? "提交中…" : "重新生成结构化摘要"}
+      </Button>
     </div>
   )
 }
