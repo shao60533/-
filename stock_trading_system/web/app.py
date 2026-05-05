@@ -2182,11 +2182,19 @@ def create_app(config_path=None):
         polygon = cfg.get("polygon", {}) or {}
         ib = cfg.get("ib", {}) or {}
         qwen = cfg.get("qwen", {}) or {}
+        openrouter = cfg.get("openrouter", {}) or {}
         telegram = (cfg.get("alerts", {}) or {}).get("telegram", {}) or {}
         email = (cfg.get("alerts", {}) or {}).get("email", {}) or {}
         portfolio_cfg = cfg.get("portfolio", {}) or {}
 
         qwen_active = bool(qwen.get("enabled") and qwen.get("api_key"))
+        # v1.0: OR is "active" (i.e. has a usable key) when env or yaml
+        # provides one; the enabled flag is treated as advisory rather
+        # than gating because the env-only cloud path doesn't write yaml.
+        or_active = bool(
+            os.environ.get("OPENROUTER_API_KEY")
+            or openrouter.get("api_key")
+        )
 
         # Data source liveness (best-effort, non-blocking checks)
         dm_status = {}
@@ -2213,6 +2221,32 @@ def create_app(config_path=None):
                 "model": qwen.get("model", ""),
                 "base_url": qwen.get("base_url", ""),
                 "api_key_masked": _mask_secret(qwen.get("api_key", "")),
+            },
+            "openrouter": {
+                "enabled": bool(openrouter.get("enabled")),
+                "active":  or_active,
+                "base_url": openrouter.get("base_url",
+                    "https://openrouter.ai/api/v1"),
+                "http_referer": openrouter.get("http_referer", ""),
+                "x_title":      openrouter.get("x_title", ""),
+                "timeout":      int(openrouter.get("timeout", 120)),
+                "api_key_masked": _mask_secret(openrouter.get("api_key", "")),
+                # presets / active are nested structures — surface here for
+                # the SettingsPage OpenRouter table; mutations go through
+                # /api/settings/openrouter/active (single-preset) or a
+                # future /api/settings/openrouter/presets bulk endpoint.
+                "presets": [
+                    {
+                        "id":             p.get("id"),
+                        "label":          p.get("label"),
+                        "model":          p.get("model"),
+                        "role":           p.get("role"),
+                        "provider_order": p.get("provider_order") or [],
+                        "kwargs":         p.get("kwargs") or {},
+                    }
+                    for p in (openrouter.get("presets") or [])
+                ],
+                "active": openrouter.get("active") or {},
             },
             "ib": {
                 "host": ib.get("host", ""),
@@ -2435,6 +2469,12 @@ def create_app(config_path=None):
 
     # ── LLM Provider Switch ──────────────────────────────────────────
 
+    # v1.0 (2026-05-05): three-state LLM switch — qwen / gemini / openrouter.
+    # GET adds has_openrouter_key so the UI can disable the OR option when
+    # neither yaml api_key nor OPENROUTER_API_KEY env is set. POST validates
+    # provider against VALID_PROVIDERS (which now includes 'openrouter').
+    _PROVIDER_LABEL = {"qwen": "Qwen", "gemini": "Gemini", "openrouter": "OpenRouter"}
+
     @app.route("/api/settings/llm-provider", methods=["GET"])
     def get_llm_provider():
         from stock_trading_system.llm.router import (
@@ -2442,10 +2482,11 @@ def create_app(config_path=None):
         )
         cfg = get_config()
         return jsonify({
-            "active": get_active_provider(cfg),
-            "has_qwen_key": has_provider_key(cfg, "qwen"),
-            "has_gemini_key": has_provider_key(cfg, "gemini"),
-            "locked_by_env": is_provider_locked_by_env(),
+            "active":             get_active_provider(cfg),
+            "has_qwen_key":       has_provider_key(cfg, "qwen"),
+            "has_gemini_key":     has_provider_key(cfg, "gemini"),
+            "has_openrouter_key": has_provider_key(cfg, "openrouter"),
+            "locked_by_env":      is_provider_locked_by_env(),
         })
 
     @app.route("/api/settings/llm-provider", methods=["POST"])
@@ -2460,12 +2501,83 @@ def create_app(config_path=None):
             return jsonify({"reason": "invalid_provider", "message": f"provider 必须是 {sorted(VALID_PROVIDERS)} 之一"}), 400
         cfg = get_config()
         if not has_provider_key(cfg, provider):
-            label = "Qwen" if provider == "qwen" else "Gemini"
-            return jsonify({"reason": "missing_api_key", "message": f"{label} 未配置 API key"}), 400
+            label = _PROVIDER_LABEL.get(provider, provider)
+            return jsonify({
+                "reason":  "missing_api_key",
+                "message": f"{label} 未配置 API key",
+            }), 400
         save_config({"llm_provider": provider})
         # Reset analyzer so next analysis uses new provider
         _reset_config_dependent_singletons(["llm_provider"])
         return jsonify({"active": provider, "source": "user_config"})
+
+    # ── OpenRouter active preset switch (deep / quick) ───────────────
+    #
+    # The provider switch (above) only flips qwen|gemini|openrouter.
+    # When OR is active, this endpoint surfaces the preset pool and
+    # lets the UI swap which preset is active for deep / quick roles
+    # without leaving the page. Persists to yaml the same way the
+    # provider switch does (via save_config + _reset_config_dependent_
+    # singletons).
+
+    @app.route("/api/settings/openrouter/active", methods=["GET"])
+    def get_openrouter_active():
+        if g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
+        from stock_trading_system.llm.router import (
+            get_active_provider, resolve_openrouter_model,
+        )
+        cfg = get_config()
+        or_cfg = cfg.get("openrouter") or {}
+        return jsonify({
+            "deep":    resolve_openrouter_model(cfg, role="deep"),
+            "quick":   resolve_openrouter_model(cfg, role="quick"),
+            "presets": [
+                {
+                    "id":             p.get("id"),
+                    "label":          p.get("label"),
+                    "model":          p.get("model"),
+                    "role":           p.get("role"),
+                    "provider_order": p.get("provider_order") or [],
+                    "kwargs":         p.get("kwargs") or {},
+                }
+                for p in (or_cfg.get("presets") or [])
+            ],
+            "active":          or_cfg.get("active") or {},
+            "active_provider": "openrouter" if get_active_provider(cfg) == "openrouter" else None,
+        })
+
+    @app.route("/api/settings/openrouter/active", methods=["POST"])
+    def set_openrouter_active():
+        if g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
+        from stock_trading_system.llm.router import is_provider_locked_by_env
+        if is_provider_locked_by_env():
+            return jsonify({
+                "reason":  "locked_by_env",
+                "message": "LLM_PROVIDER 已由环境变量锁定",
+            }), 409
+        body = request.get_json(silent=True) or {}
+        role = (body.get("role") or "").strip().lower()
+        preset_id = (body.get("preset_id") or "").strip()
+        if role not in ("deep", "quick"):
+            return jsonify({
+                "reason":  "invalid_role",
+                "message": "role 必须是 deep|quick",
+            }), 400
+        cfg = get_config()
+        or_cfg = cfg.get("openrouter") or {}
+        presets = {p["id"] for p in (or_cfg.get("presets") or []) if p.get("id")}
+        if preset_id not in presets:
+            return jsonify({
+                "reason":  "unknown_preset",
+                "message": f"preset_id={preset_id} 不存在",
+            }), 400
+        new_active = dict(or_cfg.get("active") or {})
+        new_active[role] = preset_id
+        save_config({"openrouter": {**or_cfg, "active": new_active}})
+        _reset_config_dependent_singletons(["llm_provider"])
+        return jsonify({"active": new_active})
 
     # ── Screen V2 (async task-based) ────────────────────────────────────
 

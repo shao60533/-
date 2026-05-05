@@ -159,6 +159,18 @@ WRITABLE_SETTING_PATHS: set[str] = {
     "alerts.email.password",
     "alerts.email.to_address",
     "alerts.email.enabled",
+    # OpenRouter (v1.0 — llm-openrouter). presets[] / active{} are
+    # nested arrays / dicts so they're written via the dedicated
+    # /api/settings/openrouter/active endpoint, not through
+    # WRITABLE_SETTING_PATHS dotted-path machinery. This whitelist
+    # covers the scalar / simple fields exposed in the SettingsPage
+    # OR section.
+    "openrouter.enabled",
+    "openrouter.api_key",
+    "openrouter.base_url",
+    "openrouter.http_referer",
+    "openrouter.x_title",
+    "openrouter.timeout",
 }
 
 
