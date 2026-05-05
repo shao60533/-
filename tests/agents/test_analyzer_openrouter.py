@@ -140,6 +140,96 @@ def test_graph_cache_key_changes_on_deep_preset_swap(monkeypatch):
 
 
 @pytest.mark.integration
+def test_or_factory_patch_injects_provider_order_into_deep_call(monkeypatch):
+    """v1.0.1 P1-A fix — the analyzer's _patch_tradingagents_qwen now
+    also wraps create_llm_client so OpenRouter calls receive
+    ``extra_body.provider.order`` + ``default_headers`` matching the
+    active preset. Without this, the main 7-agent analysis path hit
+    OR's primary endpoint without honoring the preset's vendor
+    fallback chain.
+
+    Verifies: when create_llm_client is invoked with provider=openrouter
+    and model=<active deep model id>, the wrapper adds the deep
+    preset's provider_order to extra_body and forwards Referer/Title
+    headers from the OR config.
+    """
+    monkeypatch.setenv("LLM_PROVIDER", "openrouter")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+
+    # The patch reads config via get_config(), so swap the module-level
+    # config getter to our test fixture. Reset _stockai_patched so
+    # the patch reapplies under our config.
+    from stock_trading_system.config import settings as cfg_settings
+    from tradingagents.llm_clients import factory as _factory
+    from tradingagents.llm_clients import openai_client as _oc
+
+    or_cfg = _or_config()
+    monkeypatch.setattr(cfg_settings, "get_config", lambda: or_cfg)
+    # __init__ re-exports get_config so patch the bare module too —
+    # production code does ``from stock_trading_system.config import get_config``.
+    import stock_trading_system.config as _cfg_pkg
+    monkeypatch.setattr(_cfg_pkg, "get_config", lambda: or_cfg)
+
+    # Force re-patch by clearing the idempotency flag.
+    if hasattr(_factory, "_stockai_patched"):
+        monkeypatch.setattr(_factory, "_stockai_patched", False, raising=False)
+    # Snapshot _PASSTHROUGH_KWARGS so we can verify it's extended; the
+    # autouse env-restore fixture handles env.
+    original_passthrough = tuple(_oc._PASSTHROUGH_KWARGS)
+    monkeypatch.setattr(_oc, "_PASSTHROUGH_KWARGS", original_passthrough)
+    original_factory = _factory.create_llm_client
+    monkeypatch.setattr(_factory, "create_llm_client", original_factory)
+
+    # Replace the unpatched factory itself with a capture stub. The
+    # patched wrapper installed by ``_patch_tradingagents_qwen`` calls
+    # the closure-captured original — so we install our capture as the
+    # factory's current `create_llm_client` BEFORE running the patch,
+    # the patch then captures our stub as `_orig`.
+    captured: list[dict] = []
+
+    def _capture_orig(provider, model, base_url=None, **kwargs):
+        captured.append({
+            "provider": provider, "model": model,
+            "base_url": base_url, "kwargs": dict(kwargs),
+        })
+        return MagicMock()
+
+    monkeypatch.setattr(_factory, "create_llm_client", _capture_orig)
+
+    # Trigger the patch — wraps our _capture_orig as _orig.
+    StockAnalyzer._patch_tradingagents_qwen()
+    # Sanity: passthrough now includes the OR-required kwargs.
+    assert "extra_body" in _oc._PASSTHROUGH_KWARGS
+    assert "default_headers" in _oc._PASSTHROUGH_KWARGS
+
+    # Invoke through the patched factory like upstream graph would.
+    _factory.create_llm_client(
+        provider="openrouter",
+        model="deepseek/deepseek-v4-pro",
+        base_url="https://openrouter.ai/api/v1",
+    )
+    assert captured, "factory wrapper never called the original"
+    call = captured[-1]
+    assert call["provider"] == "openrouter"
+    eb = call["kwargs"].get("extra_body") or {}
+    assert eb.get("provider", {}).get("order") == ["deepseek", "novita"], call
+    assert eb["provider"]["allow_fallbacks"] is True
+    headers = call["kwargs"].get("default_headers") or {}
+    assert headers.get("X-Title") == "StockAI Terminal"
+    assert headers.get("HTTP-Referer") == "https://stockai.example.com"
+
+    # And again for the quick model id — should pick quick's provider_order.
+    captured.clear()
+    _factory.create_llm_client(
+        provider="openrouter",
+        model="deepseek/deepseek-v4-flash",
+        base_url="https://openrouter.ai/api/v1",
+    )
+    quick_call = captured[-1]
+    assert quick_call["kwargs"]["extra_body"]["provider"]["order"] == ["deepseek"], quick_call
+
+
+@pytest.mark.integration
 def test_build_quick_llm_openrouter_uses_quick_preset(monkeypatch):
     """_build_quick_llm under provider=openrouter must construct
     ChatOpenAI bound to the active *quick* preset (not deep), with

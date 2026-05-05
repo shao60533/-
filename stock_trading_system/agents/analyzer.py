@@ -103,33 +103,116 @@ class StockAnalyzer:
 
     @staticmethod
     def _patch_tradingagents_qwen():
-        """Monkey-patch TradingAgents factory to accept 'qwen'/'dashscope' providers.
+        """Monkey-patch TradingAgents factory to accept 'qwen'/'dashscope' providers
+        AND inject OpenRouter ``extra_body.provider.order`` / ``default_headers``
+        per active preset.
 
-        The upstream factory only knows openai/anthropic/google/xai/ollama/openrouter.
-        DashScope uses an OpenAI-compatible endpoint, so we register it as a custom
-        provider in the same OpenAIClient, but WITHOUT use_responses_api.
+        Two pieces:
+
+        1. **Qwen / DashScope** registration — the upstream factory only knows
+           openai / anthropic / google / xai / ollama / openrouter. DashScope
+           uses an OpenAI-compatible endpoint, so we register it as a custom
+           provider in the same OpenAIClient (without ``use_responses_api``).
+
+        2. **OpenRouter cross-vendor routing** (v1.0.1 fix) — upstream
+           ``_PASSTHROUGH_KWARGS`` doesn't include ``extra_body`` or
+           ``default_headers``, and ``_get_provider_kwargs`` returns ``{}``
+           for openrouter — so the analyzer's main 7-agent path was hitting
+           OR's primary endpoint without honoring the preset's
+           ``provider_order``. The patch:
+
+           * Extends ``_PASSTHROUGH_KWARGS`` to forward ``extra_body`` and
+             ``default_headers`` through ``OpenAIClient.get_llm()``.
+           * Wraps ``create_llm_client`` so OR calls receive
+             ``extra_body.provider = {"order": [...], "allow_fallbacks": True}``
+             matched per-model: when ``model`` matches the active deep
+             preset's model id, deep's provider_order is used; same for
+             quick. Headers (HTTP-Referer / X-Title) ride along too.
+
         Idempotent — safe to call multiple times.
         """
         _MAINLAND_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
         try:
             from tradingagents.llm_clients import factory as _factory
             from tradingagents.llm_clients import openai_client as _oc
+
+            already_patched = bool(getattr(_factory, "_stockai_patched", False))
+
+            # ── Qwen / DashScope provider registration ───────────────
             existing = getattr(_oc, "_PROVIDER_CONFIG", {}).get("qwen")
-            if existing == (_MAINLAND_URL, "DASHSCOPE_API_KEY"):
+            if existing != (_MAINLAND_URL, "DASHSCOPE_API_KEY"):
+                _oc._PROVIDER_CONFIG["qwen"] = (_MAINLAND_URL, "DASHSCOPE_API_KEY")
+                _oc._PROVIDER_CONFIG["dashscope"] = (_MAINLAND_URL, "DASHSCOPE_API_KEY")
+
+            # ── _PASSTHROUGH_KWARGS extension for OR ─────────────────
+            # Add extra_body + default_headers so ChatOpenAI sees them.
+            current_kwargs = tuple(_oc._PASSTHROUGH_KWARGS)
+            for extra in ("extra_body", "default_headers"):
+                if extra not in current_kwargs:
+                    current_kwargs = current_kwargs + (extra,)
+            _oc._PASSTHROUGH_KWARGS = current_kwargs
+
+            if already_patched:
                 return
-            _oc._PROVIDER_CONFIG["qwen"] = (_MAINLAND_URL, "DASHSCOPE_API_KEY")
-            _oc._PROVIDER_CONFIG["dashscope"] = (_MAINLAND_URL, "DASHSCOPE_API_KEY")
+
+            # ── create_llm_client wrapper ────────────────────────────
             _orig = _factory.create_llm_client
 
             def _patched(provider, model, base_url=None, **kwargs):
-                if provider.lower() in ("qwen", "dashscope"):
-                    return _oc.OpenAIClient(model, base_url, provider=provider.lower(), **kwargs)
+                p = provider.lower()
+                if p in ("qwen", "dashscope"):
+                    return _oc.OpenAIClient(model, base_url, provider=p, **kwargs)
+
+                # OR: inject extra_body.provider.order matched per-model.
+                # Read config fresh so post-init preset swaps take effect.
+                if p == "openrouter":
+                    try:
+                        from stock_trading_system.config import get_config
+                        from stock_trading_system.llm.router import (
+                            resolve_openrouter_model,
+                        )
+                        cfg = get_config()
+                        or_cfg = cfg.get("openrouter") or {}
+                        deep  = resolve_openrouter_model(cfg, role="deep")
+                        quick = resolve_openrouter_model(cfg, role="quick")
+                        # Match by model id — TradingAgentsGraph constructs
+                        # deep + quick clients separately so this fires twice
+                        # per graph init, once per role.
+                        if model == deep["model"]:
+                            preset = deep
+                        elif model == quick["model"]:
+                            preset = quick
+                        else:
+                            preset = None
+                        if preset and preset.get("provider_order"):
+                            existing_extra = dict(kwargs.get("extra_body") or {})
+                            existing_extra["provider"] = {
+                                "order": list(preset["provider_order"]),
+                                "allow_fallbacks": True,
+                            }
+                            kwargs["extra_body"] = existing_extra
+                        # Headers — once-shared between deep/quick.
+                        headers: dict = {}
+                        if or_cfg.get("http_referer"):
+                            headers["HTTP-Referer"] = or_cfg["http_referer"]
+                        if or_cfg.get("x_title"):
+                            headers["X-Title"] = or_cfg["x_title"]
+                        if headers:
+                            kwargs.setdefault("default_headers", headers)
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(
+                            "OR provider_order injection failed (continuing without): %s", e,
+                        )
+
                 return _orig(provider, model, base_url, **kwargs)
 
             _factory.create_llm_client = _patched
-            logger.info("Patched TradingAgents factory for Qwen/DashScope")
+            _factory._stockai_patched = True
+            logger.info(
+                "Patched TradingAgents factory for Qwen/DashScope + OR provider_order",
+            )
         except Exception as e:
-            logger.warning("Failed to patch TradingAgents for Qwen: %s", e)
+            logger.warning("Failed to patch TradingAgents factory: %s", e)
 
     def _init_graph(self):
         """Lazy-init TradingAgents graph, cached per active provider.
