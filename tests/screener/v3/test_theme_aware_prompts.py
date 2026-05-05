@@ -49,16 +49,45 @@ def test_theme_instruction_requires_theme_fit_subanalysis():
 
 
 def test_theme_instruction_includes_required_storage_carveout():
-    inst = _build_theme_instruction(query="存储龙头股", spec={})
-    # Spec section 7 rule 10 — exact ticker examples.
+    """v1.5 — theme content comes from ``theme_universe.theme_metadata``,
+    not a hardcoded prompt rule. The pipeline injects the matched
+    theme's metadata via ``context["theme"]`` so the test mirrors that
+    flow with an explicit ``theme_metadata`` arg.
+    """
+    from stock_trading_system.screener.v2 import theme_universe as tu
+    meta = tu.theme_metadata("memory_storage")
+    # Cloud trigger query — extras AMZN/MSFT/GOOGL must be rendered as
+    # explicit-extras (only-when-triggered).
+    inst = _build_theme_instruction(
+        query="云存储龙头股", spec={}, theme_metadata=meta,
+    )
+    # Curated universe members surface in the prompt.
     for required in ("MU", "WDC", "STX", "SNDK"):
-        assert required in inst
+        assert required in inst, f"{required} missing from rendered universe"
+    # Broad-market polluters listed in the prompt's anchor blacklist.
     for forbidden in ("BRK-B", "JPM", "V", "MA", "PG", "WMT", "UNH"):
         assert forbidden in inst, f"{forbidden} missing from forbidden list"
-    # Cloud carve-out must be explicit.
-    assert "云存储" in inst
+    # Cloud carve-out: AMZN/MSFT/GOOGL are explicit extras when the
+    # trigger keyword is in the query.
     for cloud in ("AMZN", "MSFT", "GOOGL"):
         assert cloud in inst
+
+
+def test_theme_instruction_omits_explicit_extras_when_not_triggered():
+    """When the user query is plain "存储龙头股" (no cloud keyword),
+    the prompt MUST NOT advertise AMZN/MSFT/GOOGL as on-theme extras —
+    that was the cloud-storage / regular-storage drift bug."""
+    from stock_trading_system.screener.v2 import theme_universe as tu
+    meta = tu.theme_metadata("memory_storage")
+    inst = _build_theme_instruction(
+        query="存储龙头股", spec={}, theme_metadata=meta,
+    )
+    # MU is the curated universe — must surface.
+    assert "MU" in inst
+    # Cloud extras must NOT appear in the "explicit triggers active"
+    # line. They MAY appear in a "only-when-triggered" deferred-list
+    # line; either way, they must not be rendered as on-theme members.
+    assert "本次未触发" in inst or "MSFT" not in inst.split("主题龙头")[1].split("仅在用户")[0]
 
 
 def test_theme_instruction_constrains_leader_to_user_theme():
@@ -67,6 +96,83 @@ def test_theme_instruction_constrains_leader_to_user_theme():
     # The contract is theme-internal leader, NOT market-cap leader.
     assert "用户指定主题/行业内的龙头" in inst or "主题/行业内的龙头" in inst
     assert "全市场市值龙头" in inst
+
+
+# ── 1.b v1.5 — theme-registry-driven prompts for the 4 new themes ───────
+
+def _meta(key: str) -> dict:
+    from stock_trading_system.screener.v2 import theme_universe as tu
+    m = tu.theme_metadata(key)
+    assert m is not None, f"registry missing {key}"
+    return m
+
+
+def test_theme_instruction_power_utilities_block():
+    """`电力股龙头` must yield a SystemMessage that names Utilities,
+    lists the curated NEE/SO/DUK/AEP/EXC universe, and forbids
+    big-tech / mega-cap-bank anchors."""
+    inst = _build_theme_instruction(
+        query="电力股龙头", spec={"themes": ["power_utilities"]},
+        theme_metadata=_meta("power_utilities"),
+    )
+    assert "power_utilities" in inst
+    assert "Utilities" in inst
+    for member in ("NEE", "SO", "DUK", "AEP", "EXC"):
+        assert member in inst, f"{member} missing from power_utilities prompt"
+    # Must call out forbidden-anchor list so the LLM can't justify
+    # JPM / AAPL as a "leader" via market-cap.
+    for forbidden in ("BRK-B", "JPM", "AAPL", "MSFT"):
+        assert forbidden in inst, f"{forbidden} missing from anchor blacklist"
+    # disambiguation_note must reach the model verbatim.
+    assert "Utilities sector" in inst
+
+
+def test_theme_instruction_traditional_energy_block():
+    inst = _build_theme_instruction(
+        query="能源股龙头", spec={"themes": ["traditional_energy"]},
+        theme_metadata=_meta("traditional_energy"),
+    )
+    assert "traditional_energy" in inst
+    assert "Energy" in inst
+    for member in ("XOM", "CVX", "COP", "EOG", "SLB"):
+        assert member in inst
+    # Disambiguation note must steer "新能源 / 清洁能源" away from
+    # this theme.
+    assert "清洁能源" in inst or "clean_energy" in inst
+
+
+def test_theme_instruction_clean_energy_block():
+    inst = _build_theme_instruction(
+        query="新能源龙头", spec={"themes": ["clean_energy"]},
+        theme_metadata=_meta("clean_energy"),
+    )
+    assert "clean_energy" in inst
+    for member in ("NEE", "FSLR", "ENPH", "SEDG", "BEP"):
+        assert member in inst
+    # The clean-energy disambiguation note explicitly forbids
+    # mixing in oil-&-gas heavyweights and broad-market anchors.
+    assert "禁止" in inst
+    # XOM / CVX must not appear as on-theme members. They're in the
+    # forbidden anchor list rendered by the prompt builder; check
+    # they're explicitly NOT in the curated universe block.
+    universe_section = inst.split("主题龙头")[1].split("允许的")[0]
+    for fossil in ("XOM", "CVX"):
+        assert fossil not in universe_section, (
+            f"{fossil} leaked into clean_energy universe section"
+        )
+
+
+def test_theme_instruction_grid_electrification_block():
+    inst = _build_theme_instruction(
+        query="电网设备龙头", spec={"themes": ["grid_electrification"]},
+        theme_metadata=_meta("grid_electrification"),
+    )
+    assert "grid_electrification" in inst
+    for member in ("ETN", "PWR", "GE", "GEV", "HUBB"):
+        assert member in inst
+    # Industrials sector must surface so the LLM doesn't classify
+    # ETN as a Utility.
+    assert "Industrials" in inst
 
 
 # ── 2. _llm_reason injects the theme instruction into SystemMessage ─────

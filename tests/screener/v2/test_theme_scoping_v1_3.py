@@ -169,22 +169,91 @@ def test_theme_fit_gate_passes_through_when_off_theme():
     assert meta is None
 
 
-def test_theme_fit_gate_keeps_unknown_sector_permissive():
-    """Sector-unknown candidates pass through — we don't penalise the
-    user for a DataRouter outage by dropping the ticker."""
+def test_theme_fit_gate_fails_closed_on_missing_sector_under_strong_theme():
+    """v1.5 — strong-theme queries must NOT keep candidates whose
+    sector is missing. The previous permissive behaviour resurrected
+    LLM-hallucinated names every time the DataRouter dropped a sector
+    field; under "电力股龙头" that meant IBM/ORCL/TSLA routinely got
+    14 guru LLM calls each and polluted the result list.
+
+    Curated-universe membership wins over the missing-sector rule
+    (NEE / AEP / DUK are first-class members of ``power_utilities``;
+    the gate accepts them even with a blank sector because the
+    registry is the source of truth, not the upstream provider).
+    """
     pipe = ScreenerV3Pipeline(config={}, user_id=None)
-    candidates = ["NEE", "AEP"]
+    # NEE is in the curated universe; IBM/ORCL/TSLA are not, so the
+    # missing-sector branch fires for them and they must be excluded.
+    candidates = ["NEE", "IBM", "ORCL", "TSLA"]
     bundles = {
-        "NEE": {"fundamentals_current": {"sector": "Utilities"}},
-        "AEP": {"fundamentals_current": {}},  # missing sector
+        "NEE":  {"fundamentals_current": {}},          # in universe → kept
+        "IBM":  {"fundamentals_current": {}},          # missing sector → excluded
+        "ORCL": {"fundamentals_current": {"sector": ""}},  # blank sector → excluded
+        "TSLA": {"fundamentals_current": None},        # bundle exists but no fund → excluded
     }
     kept, gate, _ = pipe._apply_theme_fit_gate(
         candidates, bundles,
         filter_spec={"themes": ["power_utilities"]},
         nl_query="电力股龙头",
     )
-    assert "AEP" in kept, "Unknown-sector candidate must NOT be dropped"
+    assert kept == ["NEE"], (
+        f"Strong-theme gate must fail-closed on missing sector; got "
+        f"kept={kept}"
+    )
+    excluded_tickers = sorted(e["ticker"] for e in gate["excluded_off_theme"])
+    assert excluded_tickers == ["IBM", "ORCL", "TSLA"]
+    # Every excluded item must carry the canonical reason string so
+    # the UI can group "因数据缺失被剔除" separately from "sector
+    # mismatch" rejections.
+    for item in gate["excluded_off_theme"]:
+        assert "missing sector under strong theme" in item["reason"], (
+            f"reason for {item['ticker']} should call out missing sector: {item}"
+        )
+        assert item["sector"] == ""
+
+
+def test_theme_fit_gate_universe_member_kept_even_with_missing_sector():
+    """Guard against the regression of throwing out a curated universe
+    member because the provider hiccup'd on its sector. The registry
+    is authoritative; ``in theme.universe`` short-circuits the
+    sector check."""
+    pipe = ScreenerV3Pipeline(config={}, user_id=None)
+    candidates = ["NEE", "DUK", "AEP"]
+    bundles = {
+        "NEE": {"fundamentals_current": {}},
+        "DUK": {"fundamentals_current": {"sector": ""}},
+        "AEP": {"fundamentals_current": None},
+    }
+    kept, gate, _ = pipe._apply_theme_fit_gate(
+        candidates, bundles,
+        filter_spec={"themes": ["power_utilities"]},
+        nl_query="电力股龙头",
+    )
+    assert kept == ["NEE", "DUK", "AEP"]
     assert gate["excluded_off_theme"] == []
+
+
+def test_theme_fit_gate_explicit_extras_pass_through():
+    """``extra_when_explicit`` triggers must let the LLM-mentioned
+    extras (AMZN/MSFT/GOOGL for cloud-storage queries) through the
+    gate even when their sector is Technology — the registry says
+    they're on-theme for that specific query keyword.
+    """
+    pipe = ScreenerV3Pipeline(config={}, user_id=None)
+    candidates = ["MU", "AMZN", "AAPL"]
+    bundles = {
+        "MU":   {"fundamentals_current": {"sector": "Semiconductors"}},
+        "AMZN": {"fundamentals_current": {"sector": "Communication Services"}},
+        "AAPL": {"fundamentals_current": {"sector": "Technology"}},
+    }
+    kept, gate, _ = pipe._apply_theme_fit_gate(
+        candidates, bundles,
+        filter_spec={"themes": ["memory_storage"]},
+        nl_query="云存储龙头",  # triggers AMZN/MSFT/GOOGL extras
+    )
+    assert "AMZN" in kept, "explicit-extras trigger must pass AMZN"
+    assert "MU" in kept       # curated universe member
+    assert "AAPL" not in kept  # not on theme
 
 
 # ── Sanity: every strong theme has on-theme members + ≥1 sector ──────
