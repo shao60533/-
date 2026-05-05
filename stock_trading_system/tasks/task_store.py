@@ -443,9 +443,11 @@ class TaskStore:
                     entry_low, entry_high, stop_loss, take_profit,
                     model, steps_json,
                     created_by, provider, config_hash, task_id, duration_sec, bookmarked,
-                    depth, rendering_json)
+                    depth, rendering_json,
+                    rendering_status, rendering_error, rendering_generated_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                           ?, ?, ?, ?, ?, ?, ?, ?)""",
+                           ?, ?, ?, ?, ?, ?, ?, ?,
+                           ?, ?, ?)""",
                 (
                     result.get("ticker", ""), result.get("date", ""),
                     result.get("signal", ""),
@@ -477,6 +479,13 @@ class TaskStore:
                     0,
                     _normalize_depth(result.get("depth")),
                     result.get("rendering_json") or "",
+                    # v1.7 — structured-summary state machine. Worker
+                    # populates these via ``_rendering_outputs`` so the
+                    # task center / detail page can show "结构化摘要
+                    # 生成失败" without re-running the classifier.
+                    result.get("rendering_status") or "pending",
+                    result.get("rendering_error"),
+                    result.get("rendering_generated_at"),
                 ),
             )
             return f"analysis_history:{cur.lastrowid}"
@@ -589,6 +598,11 @@ class TaskStore:
                 # v1.19: per-tab structured cards. JSON blob; the DTO
                 # parses it into a dict before exposing to the API.
                 ("rendering_json", "TEXT"),
+                # v1.7 (2026-05-06): structured-summary state machine.
+                # See portfolio.database for the canonical CREATE TABLE.
+                ("rendering_status", "TEXT DEFAULT 'pending'"),
+                ("rendering_error", "TEXT"),
+                ("rendering_generated_at", "TEXT"),
             ]
             for name, typ in additions:
                 if name not in cols:

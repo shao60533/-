@@ -235,6 +235,64 @@ def _serialize_rendering(rendering) -> str:
         return ""
 
 
+def _rendering_outputs(rendering, result) -> dict:
+    """v1.7 — bundle the 4 rendering-status fields the worker needs to
+    persist on the analysis_history row.
+
+    ``result.rendering`` is the dict ``RenderingExtractor`` returned (may
+    be empty / partial / fully populated). We also peek at the analyzer
+    result to figure out which source reports actually had content, so
+    a tab whose source markdown was empty is classified as ``empty``
+    instead of ``failed``.
+    """
+    from datetime import datetime as _dt
+    from stock_trading_system.agents.rendering.status import classify
+
+    # Source-tab presence — derived from analyzer fields. Empty / missing
+    # source means we shouldn't blame the LLM if the tab is empty.
+    source_present: list[str] = []
+    if getattr(result, "market_report", "") or "":
+        source_present.append("Market")
+    if getattr(result, "sentiment_report", "") or "":
+        source_present.append("Sentiment")
+    if getattr(result, "news_report", "") or "":
+        source_present.append("News")
+    if getattr(result, "fundamentals_report", "") or "":
+        source_present.append("Fundamentals")
+    if getattr(result, "investment_debate", None):
+        source_present.append("Investment Debate")
+    if getattr(result, "risk_assessment", None):
+        source_present.append("Risk Assessment")
+    if getattr(result, "trade_decision", None):
+        source_present.append("Decision")
+    # Overview is always derivable when any other source is present.
+    if source_present:
+        source_present.append("summary")
+
+    json_str = _serialize_rendering(rendering)
+    status, error = classify(rendering, source_tabs_present=source_present)
+
+    # Promote any analyzer-side failure reason. ``_maybe_extract_rendering``
+    # stashes the exception on ``result.rendering_error`` when it caught
+    # one — keep that wording verbatim so an operator can grep for it.
+    explicit_err = getattr(result, "rendering_error", None)
+    if explicit_err and isinstance(explicit_err, str):
+        # Truncate aggressively — never carry report bodies into status.
+        error = explicit_err[:240]
+        if status == "success":
+            # Sanity: explicit error implies extraction didn't fully
+            # succeed. Demote to failed so the UI banner shows up.
+            status = "failed"
+
+    return {
+        "rendering_json": json_str,
+        "rendering_status": status,
+        "rendering_error": error,
+        "rendering_generated_at":
+            _dt.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+
 def _build_advice_with_snapshot(
     result, ticker, get_strategy_engine, get_portfolio, get_router,
 ) -> tuple[dict | None, str | None]:
@@ -899,6 +957,16 @@ def register_default_workers(tm, deps: WorkerDeps) -> None:
     if deps.get_analyzer and deps.get_strategy_engine and deps.get_portfolio \
             and deps.get_router:
         tm.register("batch_analysis", make_batch_analysis_worker(deps))
+
+    # v1.7 — backfill structured rendering for older analysis_history
+    # rows (or retry a single freshly-failed one). Re-uses the saved
+    # tab text so it costs ~8 LLM calls per row but never re-runs the
+    # main pipeline.
+    if deps.get_analyzer:
+        tm.register(
+            "analysis_rendering_backfill",
+            make_rendering_backfill_worker(deps.get_analyzer),
+        )
 
     # ── Agent score update (daily backfill + Darwinian weights) ──
     if deps.get_router:

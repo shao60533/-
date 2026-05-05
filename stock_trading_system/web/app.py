@@ -98,6 +98,41 @@ def _get_scheduler():
     return _scheduler
 
 
+def _rendering_available_tabs(raw) -> list[str]:
+    """Tab keys that are populated in ``rendering_json``. v1.7 helper —
+    surfaces a structural list the frontend uses for "已生成结构化卡片
+    N/8" hints, without re-parsing the cards themselves."""
+    if not raw:
+        return []
+    try:
+        from stock_trading_system.agents.rendering.status import available_tabs
+        parsed = json.loads(raw) if isinstance(raw, str) else raw
+        return available_tabs(parsed) if isinstance(parsed, dict) else []
+    except (json.JSONDecodeError, TypeError, ImportError):
+        return []
+
+
+def _infer_rendering_status_legacy(record: dict) -> str:
+    """v1.7 — fallback for rows that predate the status state machine
+    (``rendering_status`` column NULL because the row was written
+    before this release migrated). We compute the status on the fly
+    from ``rendering_json``: empty → ``empty``, otherwise re-classify.
+    Once the row has been re-saved by the worker / backfill the
+    persisted column wins."""
+    raw = record.get("rendering_json")
+    if not raw:
+        return "empty"
+    try:
+        from stock_trading_system.agents.rendering.status import classify
+        parsed = json.loads(raw) if isinstance(raw, str) else raw
+        if not isinstance(parsed, dict):
+            return "empty"
+        status, _ = classify(parsed)
+        return status
+    except (json.JSONDecodeError, TypeError, ImportError):
+        return "empty"
+
+
 def _parse_rendering(raw) -> dict:
     """Best-effort decode + DTO normalize of ``analysis_history.rendering_json``.
 
@@ -1618,6 +1653,18 @@ def create_app(config_path=None):
             # itself, that's a storage detail and could trip clients
             # expecting structured data.
             "rendering":          _parse_rendering(record.get("rendering_json")),
+            # v1.7 (2026-05-06): structured-summary state machine. The
+            # frontend uses ``rendering_status`` to choose between the
+            # structured cards and the markdown fallback (success/partial
+            # → cards primary, failed/empty/pending → markdown primary +
+            # retry banner). ``rendering_available_tabs`` lets the UI
+            # show a per-tab badge when only some cards rendered.
+            "rendering_status":   record.get("rendering_status")
+                                    or _infer_rendering_status_legacy(record),
+            "rendering_error":    record.get("rendering_error"),
+            "rendering_generated_at": record.get("rendering_generated_at"),
+            "rendering_available_tabs":
+                _rendering_available_tabs(record.get("rendering_json")),
         })
 
     def _merge_user_advice_into_records(db, records: list[dict],

@@ -384,9 +384,17 @@ class StockAnalyzer:
                 data_manager=self._get_data_manager(),
             )
             result.rendering = extractor.extract(result, ticker=ticker)
+            # Clear any stale error from a previous in-process retry.
+            result.rendering_error = None
         except Exception as e:  # noqa: BLE001
-            logger.warning("rendering extraction skipped: %s", e)
+            # v1.7 — surface the failure reason on the result so the
+            # worker can persist it as ``rendering_error`` for the UI
+            # banner / retry button. Truncate to 240 chars and use the
+            # exception class + message; never include report bodies.
+            err_msg = f"{type(e).__name__}: {e}"[:240]
+            logger.warning("rendering extraction skipped: %s", err_msg)
             result.rendering = {}
+            result.rendering_error = err_msg
 
     def _configure_gemini(self, ta_config: dict) -> None:
         gemini_config = self._config.get("gemini", {})
