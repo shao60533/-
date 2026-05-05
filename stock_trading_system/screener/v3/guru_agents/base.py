@@ -353,7 +353,14 @@ class BaseGuruAgent:
         raise NotImplementedError
 
     def _get_chat_model(self, context: dict):
-        """Get a LangChain chat model for the active provider."""
+        """Get a LangChain chat model for the active provider.
+
+        14 gurus run on the *deep* tier — Pro / Gemini-3.1-Pro / etc —
+        so the OpenRouter branch resolves role='deep' and forwards the
+        preset's provider_order to OR via ``extra_body`` (lets the
+        agg layer prefer first-party endpoints and fall back without
+        crashing the call).
+        """
         provider = context.get("provider", "qwen")
         config = context.get("config", {})
 
@@ -366,6 +373,43 @@ class BaseGuruAgent:
                 base_url=qwen_cfg.get("base_url",
                     "https://dashscope.aliyuncs.com/compatible-mode/v1"),
                 timeout=120,
+            )
+        elif provider == "openrouter":
+            import os as _os
+            from langchain_openai import ChatOpenAI
+            from stock_trading_system.llm.router import resolve_openrouter_model
+
+            or_cfg = config.get("openrouter", {}) or {}
+            api_key = (
+                _os.environ.get("OPENROUTER_API_KEY")
+                or or_cfg.get("api_key", "")
+            )
+            preset = resolve_openrouter_model(config, role="deep")  # 14 大师 = deep tier
+
+            headers: dict = {}
+            if or_cfg.get("http_referer"):
+                headers["HTTP-Referer"] = or_cfg["http_referer"]
+            if or_cfg.get("x_title"):
+                headers["X-Title"] = or_cfg["x_title"]
+
+            extra_body: dict = {}
+            if preset["provider_order"]:
+                # OR-side fallback chain — first-party first, second-party
+                # next; allow_fallbacks lets OR walk the list when the
+                # primary throttles instead of failing the call.
+                extra_body["provider"] = {
+                    "order": preset["provider_order"],
+                    "allow_fallbacks": True,
+                }
+
+            return ChatOpenAI(
+                model=preset["model"],
+                api_key=api_key,
+                base_url=or_cfg.get("base_url", "https://openrouter.ai/api/v1"),
+                default_headers=headers or None,
+                timeout=or_cfg.get("timeout", 120),
+                extra_body=extra_body or None,
+                **preset.get("kwargs", {}),
             )
         else:
             from langchain_google_genai import ChatGoogleGenerativeAI
