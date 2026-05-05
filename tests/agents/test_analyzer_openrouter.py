@@ -35,6 +35,52 @@ def _restore_or_env():
         os.environ["OPENROUTER_API_KEY"] = snapshot
 
 
+@pytest.fixture
+def stub_tradingagents_graph(monkeypatch):
+    """v1.0.1 P1-D fix — pre-stub ``tradingagents.graph.trading_graph``
+    in ``sys.modules`` so ``patch('tradingagents.graph.trading_graph.
+    TradingAgentsGraph')`` works in environments where the real module
+    can't be imported (langgraph.prebuilt missing, etc).
+
+    User reported ``ModuleNotFoundError: No module named
+    'langgraph.prebuilt'`` when running these tests. unittest.mock.patch
+    resolves the dotted path AT call time, which means the import chain
+    runs first; if any step fails, the patch fails before the test body
+    executes. Pre-stubbing the leaf + every parent in sys.modules with
+    a MagicMock short-circuits import resolution.
+    """
+    import sys
+    import types
+
+    fakes: list[str] = []
+    # The chain we have to satisfy: tradingagents.graph.trading_graph
+    # plus any lazy submodule imports that happen during real import
+    # (langgraph.prebuilt is the one biting CI today).
+    for mod_name in (
+        "langgraph",
+        "langgraph.prebuilt",
+        "tradingagents.graph.trading_graph",
+        "tradingagents.default_config",
+    ):
+        if mod_name not in sys.modules:
+            stub = types.ModuleType(mod_name)
+            sys.modules[mod_name] = stub
+            fakes.append(mod_name)
+            # Inject the symbol the patch path expects.
+            if mod_name == "tradingagents.graph.trading_graph":
+                stub.TradingAgentsGraph = MagicMock(name="TradingAgentsGraph_stub")
+            if mod_name == "tradingagents.default_config":
+                stub.DEFAULT_CONFIG = {}
+
+    # Mock the patched class so analyzer._init_graph receives a callable
+    # constructor that returns a benign MagicMock graph.
+    yield sys.modules["tradingagents.graph.trading_graph"].TradingAgentsGraph
+
+    # Cleanup — only modules we created
+    for m in fakes:
+        sys.modules.pop(m, None)
+
+
 def _or_config(deep_id="deepseek-v4-pro", api_key="sk-or-test"):
     """Minimal yaml-shape config with OR enabled and 2 deep presets so
     cache-key tests can swap which one is active."""
@@ -104,41 +150,70 @@ def test_configure_openrouter_raises_when_no_key(monkeypatch):
 
 
 @pytest.mark.integration
-def test_graph_cache_key_changes_on_deep_preset_swap(monkeypatch):
-    """The cache key for OR is ``openrouter:<deep_id>:<quick_id>`` so
-    swapping the active deep preset (UI / yaml) creates a fresh
+def test_graph_cache_key_changes_on_deep_preset_swap(monkeypatch, stub_tradingagents_graph):
+    """The cache key for OR is ``openrouter:<deep_id>:<quick_id>@<scope>``
+    so swapping the active deep preset (UI / yaml) creates a fresh
     TradingAgents graph with the new model bindings instead of
-    silently reusing the old one."""
+    silently reusing the old one.
+
+    v1.0.1 P1-D — uses the ``stub_tradingagents_graph`` fixture so the
+    test runs in environments where ``tradingagents.graph.trading_graph``
+    can't be imported directly (e.g. langgraph.prebuilt missing in CI).
+    """
     monkeypatch.setenv("LLM_PROVIDER", "openrouter")
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
 
     cfg = _or_config(deep_id="deepseek-v4-pro")
     analyzer = StockAnalyzer(cfg)
 
-    # First _init_graph — should cache under deepseek-pro key.
-    with patch("tradingagents.graph.trading_graph.TradingAgentsGraph") as mock_tag:
-        mock_tag.return_value = MagicMock()
-        analyzer._init_graph()
+    # ``stub_tradingagents_graph`` is the MagicMock that replaced the
+    # real TradingAgentsGraph class — use it directly as the patch.
+    stub_tradingagents_graph.return_value = MagicMock()
+    analyzer._init_graph()
 
     cache_keys_before = list(analyzer._graphs.keys())
-    # v1.0.1: cache key suffix is @<user_id|global> — no user_id passed
-    # to analyze() in this test → @global.
     assert cache_keys_before == ["openrouter:deepseek-v4-pro:deepseek-v4-flash@global"]
 
-    # Now the user swaps active.deep to gemini-3.1-pro (e.g. via UI POST
-    # to /api/settings/openrouter/active). Mutate the live config dict
-    # the analyzer holds — this mirrors what _reset_config_dependent_singletons
-    # does in production after a save.
+    # Swap active.deep — mutating the live config dict mirrors what
+    # /api/settings/openrouter/active POST + save_config does after
+    # _reset_config_dependent_singletons clears the analyzer.
     analyzer._config["openrouter"]["active"]["deep"] = "gemini-3.1-pro"
 
-    with patch("tradingagents.graph.trading_graph.TradingAgentsGraph") as mock_tag:
-        mock_tag.return_value = MagicMock()
-        analyzer._init_graph()
+    analyzer._init_graph()
 
-    # New entry, not a cache hit.
     cache_keys_after = list(analyzer._graphs.keys())
     assert "openrouter:gemini-3.1-pro:deepseek-v4-flash@global" in cache_keys_after
     assert len(cache_keys_after) == 2
+
+
+@pytest.mark.integration
+def test_init_graph_smoke_when_langgraph_unavailable(monkeypatch, stub_tradingagents_graph):
+    """v1.0.1 P1-D smoke — StockAnalyzer._init_graph completes (does
+    NOT raise) in an environment where the real
+    ``tradingagents.graph.trading_graph`` module would fail to import
+    due to a missing transitive dependency (e.g. langgraph.prebuilt).
+
+    The fixture pre-injects a stub module so ``from tradingagents.
+    graph.trading_graph import TradingAgentsGraph`` returns our
+    MagicMock without ever loading the real chain.
+    """
+    monkeypatch.setenv("LLM_PROVIDER", "openrouter")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    cfg = _or_config()
+    analyzer = StockAnalyzer(cfg)
+
+    stub_tradingagents_graph.return_value = MagicMock()
+    # Should not raise even if langgraph.prebuilt isn't installed —
+    # the stub fixture pre-loads sys.modules to short-circuit the
+    # real import chain.
+    analyzer._init_graph()
+
+    assert stub_tradingagents_graph.called, (
+        "TradingAgentsGraph stub was never invoked — _init_graph "
+        "didn't reach the construction call"
+    )
+    assert len(analyzer._graphs) == 1
 
 
 @pytest.mark.integration
