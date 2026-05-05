@@ -149,16 +149,27 @@ export function ReportsPage() {
           {submitResult && !report && (
             <Alert variant="success" className="mt-4">
               <AlertTitle>任务已提交</AlertTitle>
-              <AlertDescription>
-                任务 ID:{" "}
-                <code className="font-mono">{submitResult.task_id}</code>
-                ，状态: {submitResult.status}。
-                <a
-                  href="/tasks"
-                  className="ml-2 text-[var(--color-accent-blue)] hover:underline"
-                >
-                  查看任务进度
-                </a>
+              {/* v1.6 mobile: long task_ids (UUIDs) used to overflow the
+                  Alert at 320/375. Wrap-everywhere + standalone link
+                  block so the link reflows below the id on mobile. */}
+              <AlertDescription className="break-words min-w-0 space-y-1">
+                <div className="text-safe text-safe--wrap">
+                  任务 ID:{" "}
+                  <code className="font-mono break-all">
+                    {submitResult.task_id}
+                  </code>
+                </div>
+                <div className="text-safe text-safe--wrap">
+                  状态：{submitResult.status}
+                </div>
+                <div>
+                  <a
+                    href="/tasks"
+                    className="text-[var(--color-accent-blue)] hover:underline"
+                  >
+                    查看任务进度 →
+                  </a>
+                </div>
               </AlertDescription>
             </Alert>
           )}

@@ -184,15 +184,24 @@ export function MobileTabbar() {
           <div className="mb-3 border-b border-border pb-3">
             <LLMSwitcher />
           </div>
-          <div className="grid grid-cols-4 gap-3 mt-2">
+          {/* v1.6 mobile fix: 4-col grid on 320px squashes long Chinese
+              labels (e.g. "纸面交易记录") into 2-line wraps that touch
+              the next cell. Drop to 3-col under sm + truncate per cell
+              so labels stay one line; tooltips via ``title`` keep the
+              full text accessible. ``min-w-0`` on both icon wrapper
+              and label prevents flex overflow inside the cell. */}
+          <div className="grid grid-cols-3 sm:grid-cols-4 gap-3 mt-2">
             {MOBILE_MORE.map((item) => (
               <a
                 key={item.href}
                 href={item.href}
-                className="flex flex-col items-center gap-1.5 p-3 rounded-lg hover:bg-muted/50 transition-colors text-muted-foreground hover:text-foreground"
+                title={item.label}
+                className="flex flex-col items-center gap-1.5 p-3 rounded-lg hover:bg-muted/50 transition-colors text-muted-foreground hover:text-foreground min-w-0"
               >
-                {item.icon}
-                <span className="text-[11px]">{item.label}</span>
+                <span className="min-w-0 shrink-0">{item.icon}</span>
+                <span className="text-[11px] truncate max-w-full text-center">
+                  {item.label}
+                </span>
               </a>
             ))}
           </div>

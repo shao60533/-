@@ -174,12 +174,16 @@ export function AlertsPage() {
               ) : (
                 <div className="divide-y divide-border/50">
                   {alerts.map((a) => (
+                    // v1.6: mobile two-line layout. Outer wraps so on
+                    // 320px the date + delete button drop to row 2 inside
+                    // ``mobile-action-row`` instead of squeezing the
+                    // ticker/condition column to 0px.
                     <div
                       key={a.id}
-                      className="flex items-center gap-3 py-3 px-2"
+                      className="flex flex-wrap items-center gap-2 py-3 px-2 min-w-0"
                     >
                       <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <span className="font-mono font-semibold">
                             {a.ticker}
                           </span>
@@ -189,21 +193,23 @@ export function AlertsPage() {
                             {a.enabled ? "启用" : "禁用"}
                           </Badge>
                         </div>
-                        <p className="text-sm text-muted-foreground mt-0.5">
+                        <p className="text-sm text-muted-foreground mt-0.5 break-words">
                           {a.condition} {a.threshold}
                         </p>
                       </div>
-                      <span className="text-xs text-muted-foreground whitespace-nowrap">
-                        {a.created_at?.slice(0, 10)}
-                      </span>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="text-red-500 shrink-0"
-                        onClick={() => handleDelete(a.id)}
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
+                      <div className="mobile-action-row sm:ml-auto items-center gap-2">
+                        <span className="text-xs text-muted-foreground whitespace-nowrap">
+                          {a.created_at?.slice(0, 10)}
+                        </span>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-red-500 shrink-0"
+                          onClick={() => handleDelete(a.id)}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
                     </div>
                   ))}
                 </div>

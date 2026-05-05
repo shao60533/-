@@ -298,11 +298,30 @@ function DailyDataTab({ dailies }: { dailies: Daily[]; startCapital: number }) {
   const latest = dailies.length > 0 ? dailies[dailies.length - 1] : null
   const maxDrawdown = dailies.length > 0 ? Math.min(...dailies.map(d => d.drawdown_pct)) : 0
 
+  // v1.6 mobile chart sizing: track viewport ≤575.98px so the ECharts
+  // ``grid`` margins shrink (60→32 left, 20→8 right) and the panel
+  // height drops to 280 to keep the stat row + chart on one fold.
+  // ``useState`` initialised lazily so SSR / first paint matches the
+  // matchMedia state without a mid-render flicker.
+  const [isMobile, setIsMobile] = useState(() =>
+    typeof window !== "undefined"
+      && window.matchMedia?.("(max-width: 575.98px)").matches,
+  )
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return
+    const mq = window.matchMedia("(max-width: 575.98px)")
+    const handler = (e: MediaQueryListEvent) => setIsMobile(e.matches)
+    mq.addEventListener?.("change", handler)
+    return () => mq.removeEventListener?.("change", handler)
+  }, [])
+
   const chartOption = useMemo((): EChartsOption | null => {
     if (dailies.length === 0) return null
     const dates = dailies.map(d => d.date)
     const values = dailies.map(d => d.total_value)
     const drawdowns = dailies.map(d => d.drawdown_pct)
+    const gridLeft = isMobile ? 38 : 60
+    const gridRight = isMobile ? 10 : 20
 
     // Find drawdown areas (continuous negative drawdown)
     const markAreas: [{ xAxis: string }, { xAxis: string }][] = []
@@ -321,8 +340,8 @@ function DailyDataTab({ dailies }: { dailies: Daily[]; startCapital: number }) {
       backgroundColor: "transparent",
       tooltip: { trigger: "axis" },
       grid: [
-        { left: 60, right: 20, top: 30, height: "55%" },
-        { left: 60, right: 20, top: "75%", height: "18%" },
+        { left: gridLeft, right: gridRight, top: 30, height: "55%" },
+        { left: gridLeft, right: gridRight, top: "75%", height: "18%" },
       ],
       xAxis: [
         { type: "category", data: dates, gridIndex: 0, axisLine: { lineStyle: { color: "#444" } } },
@@ -349,7 +368,7 @@ function DailyDataTab({ dailies }: { dailies: Daily[]; startCapital: number }) {
         },
       ],
     }
-  }, [dailies])
+  }, [dailies, isMobile])
 
   return (
     <div className="space-y-4">
@@ -362,11 +381,19 @@ function DailyDataTab({ dailies }: { dailies: Daily[]; startCapital: number }) {
         <Stat label="交易天数" value={String(dailies.length)} />
       </div>
 
-      {/* Equity chart */}
+      {/* Equity chart — v1.6 mobile-chart-panel wrapper drops the
+          panel + ECharts host to a sane mobile height so the chart
+          never pushes the trade list below the fold on 320/375. */}
       <Card>
         <CardHeader><CardTitle className="text-sm">权益曲线</CardTitle></CardHeader>
         <CardContent>
-          <ChartPanel option={chartOption} height={360} loading={dailies.length === 0} />
+          <div className="mobile-chart-panel" data-chart-host>
+            <ChartPanel
+              option={chartOption}
+              height={isMobile ? 280 : 360}
+              loading={dailies.length === 0}
+            />
+          </div>
         </CardContent>
       </Card>
 
