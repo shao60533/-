@@ -141,6 +141,17 @@ class PortfolioDatabase:
                     model TEXT,
                     steps_json TEXT,
                     rendering_json TEXT,
+                    -- v1.7 (2026-05-06): structured-summary status state
+                    -- machine. status ∈ {success, partial, failed, empty,
+                    -- pending}. ``rendering_error`` carries a short reason
+                    -- (truncated, no report bodies) when status != success.
+                    -- ``rendering_generated_at`` ISO timestamp lets us
+                    -- tell "rendering was tried recently and failed" from
+                    -- "rendering was never tried (legacy row)" — both have
+                    -- empty rendering_json but different intent.
+                    rendering_status TEXT DEFAULT 'pending',
+                    rendering_error TEXT,
+                    rendering_generated_at TEXT,
                     -- v1.14 provenance: who ran this, with which LLM, hashed
                     -- LLM config so the same prompt+model collapses to one
                     -- cache hit, plus task_id back-reference and timing.
@@ -351,6 +362,14 @@ class PortfolioDatabase:
             # extractor failure); the DTO parses it into a dict and the
             # frontend falls back to markdown when a key is missing or null.
             ("rendering_json", "TEXT"),
+            # v1.7 — structured-summary state machine (see CREATE TABLE
+            # above). New columns; older DBs get migrated lazily via
+            # this list. Default ``rendering_status='pending'`` makes
+            # legacy rows readable as "structured summary not yet
+            # generated" so the backfill task can pick them up.
+            ("rendering_status", "TEXT DEFAULT 'pending'"),
+            ("rendering_error", "TEXT"),
+            ("rendering_generated_at", "TEXT"),
         ]
         for name, typ in additions:
             if name not in cols:
@@ -622,9 +641,11 @@ class PortfolioDatabase:
                     action, confidence, position_pct,
                     entry_low, entry_high, stop_loss, take_profit, model, steps_json,
                     created_by, provider, config_hash, task_id, duration_sec, bookmarked,
-                    depth, rendering_json)
+                    depth, rendering_json,
+                    rendering_status, rendering_error, rendering_generated_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                           ?, ?, ?, ?, ?, ?, ?, ?)""",
+                           ?, ?, ?, ?, ?, ?, ?, ?,
+                           ?, ?, ?)""",
                 (
                     data["ticker"], data["date"], data["signal"],
                     data.get("market_report", ""),
@@ -653,9 +674,37 @@ class PortfolioDatabase:
                     int(bool(data.get("bookmarked", 0))),
                     _normalize_depth(data.get("depth")),
                     data.get("rendering_json", ""),
+                    data.get("rendering_status") or "pending",
+                    data.get("rendering_error"),
+                    data.get("rendering_generated_at"),
                 ),
             )
             return int(cur.lastrowid)
+
+    def update_rendering(
+        self, analysis_id: int, *,
+        rendering_json: str,
+        status: str,
+        error: str | None = None,
+        generated_at: str | None = None,
+    ) -> bool:
+        """v1.7 — atomic update of the 4 rendering fields. Used by the
+        worker after extraction succeeds *and* by the backfill task
+        for legacy rows. Doesn't touch any other column so an in-flight
+        re-extract can't accidentally clobber signal / advice / etc.
+        """
+        ts = generated_at or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with self._get_conn() as conn:
+            cur = conn.execute(
+                """UPDATE analysis_history
+                       SET rendering_json = ?,
+                           rendering_status = ?,
+                           rendering_error = ?,
+                           rendering_generated_at = ?
+                     WHERE id = ?""",
+                (rendering_json, status, error, ts, analysis_id),
+            )
+            return cur.rowcount > 0
 
     def get_analysis_history(self, ticker: str | None = None, limit: int = 50) -> list[dict]:
         with self._get_conn() as conn:

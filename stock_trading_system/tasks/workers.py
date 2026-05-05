@@ -138,7 +138,14 @@ def make_analysis_worker(get_analyzer, get_strategy_engine, get_portfolio, get_r
             # storage. Empty string when the analyzer skipped extraction
             # (extractor unavailable, error, or per-tab failures already
             # rendered as ``None`` inside the dict).
-            "rendering_json": _serialize_rendering(getattr(result, "rendering", None)),
+            #
+            # v1.7 (2026-05-06): also persist the status state machine so
+            # the API + UI can distinguish "partial" / "failed" / "empty"
+            # without re-running the classifier on every read. The
+            # post-save hook on the TaskManager surfaces non-success
+            # statuses on the task envelope so the task center can show
+            # "结构化摘要生成失败".
+            **_rendering_outputs(getattr(result, "rendering", None), result),
         }
         if final_state is not None:
             try:
