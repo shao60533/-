@@ -1,1 +1,8 @@
 node_modules/
+
+# Playwright test artifacts (traces / screenshots-on-failure / report)
+e2e/.results/
+playwright-report/
+
+# Local debug script (not committed; rebuild on demand)
+e2e/debug.mjs
