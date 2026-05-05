@@ -44,7 +44,8 @@ def test_analyzer_uses_qwen(monkeypatch):
         mock_tag.return_value = MagicMock()
         analyzer._init_graph()
 
-        assert "qwen" in analyzer._graphs
+        # v1.0.1: cache key now includes user scope suffix.
+        assert any(k.startswith("qwen") for k in analyzer._graphs), list(analyzer._graphs)
         # Verify ta_config passed to TradingAgentsGraph had llm_provider=qwen
         call_kwargs = mock_tag.call_args
         ta_config = call_kwargs[1]["config"] if "config" in (call_kwargs[1] or {}) else call_kwargs[0][0] if call_kwargs[0] else None
@@ -65,7 +66,8 @@ def test_analyzer_uses_gemini(monkeypatch):
         mock_tag.return_value = MagicMock()
         analyzer._init_graph()
 
-        assert "gemini" in analyzer._graphs
+        # v1.0.1: cache key now includes user scope suffix.
+        assert any(k.startswith("gemini") for k in analyzer._graphs), list(analyzer._graphs)
 
 
 # ── TC-MS-I3: switch → second _init_graph creates new graph ──────
@@ -81,11 +83,12 @@ def test_graph_cached_per_provider(monkeypatch):
     with patch("tradingagents.graph.trading_graph.TradingAgentsGraph") as mock_tag:
         mock_tag.return_value = MagicMock()
         analyzer._init_graph()
-        assert set(analyzer._graphs.keys()) == {"qwen"}
+        # v1.0.1: cache key suffix is @<user_id|global>.
+        assert set(analyzer._graphs.keys()) == {"qwen@global"}
 
         monkeypatch.setenv("LLM_PROVIDER", "gemini")
         analyzer._init_graph()
-        assert set(analyzer._graphs.keys()) == {"qwen", "gemini"}
+        assert set(analyzer._graphs.keys()) == {"qwen@global", "gemini@global"}
         assert mock_tag.call_count == 2
 
 
@@ -152,4 +155,5 @@ def test_concurrent_init_single_creation(monkeypatch):
 
         # Lock ensures only one creation despite 8 concurrent threads
         assert call_count["n"] == 1
-        assert analyzer._graphs["qwen"] is original_graph
+        # v1.0.1: cache key suffix is @<user_id|global>.
+        assert analyzer._graphs["qwen@global"] is original_graph

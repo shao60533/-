@@ -65,16 +65,44 @@ def make_analysis_worker(get_analyzer, get_strategy_engine, get_portfolio, get_r
 
         progress_cb(15, "启动 7 Agent 分析")
         # Adapter compatibility: older / fake analyzers don't accept the
-        # ``progress_cb`` / ``depth`` kwargs. Try the richest call first
-        # and degrade signature-by-signature so legacy fakes still work.
+        # ``progress_cb`` / ``depth`` / ``user_id`` kwargs. Try the
+        # richest call first and degrade signature-by-signature so
+        # legacy fakes still work.
+        # v1.0.1: pass user_id so the analyzer's _init_graph resolves
+        # the per-user provider (router honors user_settings.llm_provider)
+        # and caches the graph under the user's scope.
         try:
             raw = analyzer.analyze(
                 ticker, date,
-                progress_cb=_analysis_progress, depth=depth,
+                progress_cb=_analysis_progress, depth=depth, user_id=user_id,
             )
         except TypeError as e:
             msg = str(e)
-            if "depth" in msg:
+            if "user_id" in msg:
+                # Older analyzer without user_id support — fall through
+                # to the previous signature ladder.
+                try:
+                    raw = analyzer.analyze(
+                        ticker, date,
+                        progress_cb=_analysis_progress, depth=depth,
+                    )
+                except TypeError as e2:
+                    msg2 = str(e2)
+                    if "depth" in msg2:
+                        try:
+                            raw = analyzer.analyze(
+                                ticker, date, progress_cb=_analysis_progress,
+                            )
+                        except TypeError as e3:
+                            if "progress_cb" in str(e3):
+                                raw = analyzer.analyze(ticker, date)
+                            else:
+                                raise
+                    elif "progress_cb" in msg2:
+                        raw = analyzer.analyze(ticker, date)
+                    else:
+                        raise
+            elif "depth" in msg:
                 try:
                     raw = analyzer.analyze(
                         ticker, date, progress_cb=_analysis_progress,

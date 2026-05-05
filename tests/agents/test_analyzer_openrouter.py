@@ -121,7 +121,9 @@ def test_graph_cache_key_changes_on_deep_preset_swap(monkeypatch):
         analyzer._init_graph()
 
     cache_keys_before = list(analyzer._graphs.keys())
-    assert cache_keys_before == ["openrouter:deepseek-v4-pro:deepseek-v4-flash"]
+    # v1.0.1: cache key suffix is @<user_id|global> — no user_id passed
+    # to analyze() in this test → @global.
+    assert cache_keys_before == ["openrouter:deepseek-v4-pro:deepseek-v4-flash@global"]
 
     # Now the user swaps active.deep to gemini-3.1-pro (e.g. via UI POST
     # to /api/settings/openrouter/active). Mutate the live config dict
@@ -135,8 +137,55 @@ def test_graph_cache_key_changes_on_deep_preset_swap(monkeypatch):
 
     # New entry, not a cache hit.
     cache_keys_after = list(analyzer._graphs.keys())
-    assert "openrouter:gemini-3.1-pro:deepseek-v4-flash" in cache_keys_after
+    assert "openrouter:gemini-3.1-pro:deepseek-v4-flash@global" in cache_keys_after
     assert len(cache_keys_after) == 2
+
+
+@pytest.mark.integration
+def test_init_graph_uses_per_user_provider_and_cache_scope(monkeypatch):
+    """v1.0.1 P1-B fix — analyzer.analyze(user_id=N) makes _init_graph
+    resolve the provider with that user's scope (router honors
+    user_settings.llm_provider) AND scopes the graph cache under the
+    user id, so user A on qwen and user B on openrouter never share
+    a graph.
+
+    Verifies:
+    - cache_key for user_id=42 + global LLM_PROVIDER=openrouter ends
+      with '@42' rather than the legacy unscoped key.
+    - cache_key for user_id=None still ends with '@global'.
+    - Two different user ids produce two separate cache entries.
+    """
+    monkeypatch.setenv("LLM_PROVIDER", "openrouter")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    cfg = _or_config()
+    analyzer = StockAnalyzer(cfg)
+
+    # First init — user A
+    analyzer._active_user_id = 42
+    with patch("tradingagents.graph.trading_graph.TradingAgentsGraph") as mock_tag:
+        mock_tag.return_value = MagicMock()
+        analyzer._init_graph()
+    keys_a = list(analyzer._graphs.keys())
+    assert any(k.endswith("@42") for k in keys_a), keys_a
+
+    # Second init — user B
+    analyzer._active_user_id = 99
+    with patch("tradingagents.graph.trading_graph.TradingAgentsGraph") as mock_tag:
+        mock_tag.return_value = MagicMock()
+        analyzer._init_graph()
+    keys_b = list(analyzer._graphs.keys())
+    assert any(k.endswith("@99") for k in keys_b), keys_b
+    assert len(keys_b) == 2, "expected 2 cache entries for 2 different users"
+
+    # Third init — no user_id (e.g. legacy direct caller). Maps to @global.
+    analyzer._active_user_id = None
+    with patch("tradingagents.graph.trading_graph.TradingAgentsGraph") as mock_tag:
+        mock_tag.return_value = MagicMock()
+        analyzer._init_graph()
+    keys_c = list(analyzer._graphs.keys())
+    assert any(k.endswith("@global") for k in keys_c), keys_c
+    assert len(keys_c) == 3
 
 
 @pytest.mark.integration

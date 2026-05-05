@@ -217,29 +217,33 @@ class StockAnalyzer:
     def _init_graph(self):
         """Lazy-init TradingAgents graph, cached per active provider.
 
-        Cache key strategy (v1.0 update for OpenRouter):
-        - qwen / gemini: provider name alone is enough — TradingAgentsGraph
-          rebinds the model lazily, so model bumps within the provider
-          don't bust the cache.
-        - openrouter: ``"openrouter:<deep_id>:<quick_id>"`` so swapping
-          deep preset (e.g. deepseek-v4-pro → gemini-3.1-pro) creates a
-          fresh graph with the new model bindings. Without this, the
-          graph would keep using the old model after a UI preset switch.
+        Cache key strategy (v1.0.1 — per-user scope):
+        - Provider resolved with the active user_id (if set), so user A
+          on qwen and user B on openrouter never share a graph.
+        - qwen / gemini: cache key is ``"<provider>@<user_id|global>"``.
+        - openrouter: ``"openrouter:<deep_id>:<quick_id>@<user_id|global>"``
+          — swapping deep preset (e.g. deepseek-v4-pro → gemini-3.1-pro)
+          creates a fresh graph with new model bindings, scoped per user.
 
-        Switching providers / OR presets creates a fresh graph; switching
-        back hits the cache.
+        Switching providers / OR presets / users creates a fresh graph;
+        switching back hits the cache.
         """
         from stock_trading_system.llm.router import get_active_provider
 
-        provider = get_active_provider(self._config)
+        # v1.0.1: prefer the user-scoped resolution captured in
+        # ``analyze(user_id=...)``. Falls back to global when the
+        # caller didn't pass a user (tests / cron / direct callers).
+        user_id = getattr(self, "_active_user_id", None)
+        provider = get_active_provider(self._config, user_id=user_id)
+        scope = str(user_id) if user_id is not None else "global"
 
         if provider == "openrouter":
             from stock_trading_system.llm.router import resolve_openrouter_model
             deep  = resolve_openrouter_model(self._config, role="deep")
             quick = resolve_openrouter_model(self._config, role="quick")
-            cache_key = f"openrouter:{deep['id']}:{quick['id']}"
+            cache_key = f"openrouter:{deep['id']}:{quick['id']}@{scope}"
         else:
-            cache_key = provider or ""
+            cache_key = f"{provider or ''}@{scope}"
 
         with self._graph_lock:
             if cache_key in self._graphs:
@@ -373,11 +377,14 @@ class StockAnalyzer:
         into per-tab structured cards. Mirrors the model selection in
         ``_configure_qwen`` / ``_configure_openrouter`` / ``_configure_gemini``
         so structured output uses the same model that produced the
-        underlying text.
+        underlying text. v1.0.1 — uses the same per-user scope as
+        ``_init_graph`` so user A on OR and user B on qwen each get
+        their own quick LLM, not a shared global one.
         """
         from stock_trading_system.llm.router import get_active_provider
 
-        provider = get_active_provider(self._config)
+        user_id = getattr(self, "_active_user_id", None)
+        provider = get_active_provider(self._config, user_id=user_id)
         if provider == "qwen":
             from langchain_openai import ChatOpenAI
             qcfg = self._config.get("qwen", {}) or {}
@@ -502,6 +509,7 @@ class StockAnalyzer:
         date: str,
         progress_cb: Optional[Callable[[dict], None]] = None,
         depth: str = "standard",
+        user_id: int | None = None,
     ) -> AnalysisResult:
         """Run full multi-agent analysis on a stock.
 
@@ -517,6 +525,13 @@ class StockAnalyzer:
                 toggle: ``quick`` forces single-pass (no reflection), ``deep``
                 forces iteration on (where available), ``standard`` defers to
                 the config flag. Unknown values fall back to ``standard``.
+            user_id: Per-user provider scope (v1.0.1). When set, the graph
+                resolves the active LLM provider via the per-user
+                ``user_settings.llm_provider`` row before falling back to
+                global config. The cache key includes the resolved
+                provider so users with different settings don't share a
+                graph. None → fall back to global resolution (existing
+                behaviour for callers that haven't been updated).
 
         Returns:
             AnalysisResult with signal, reports, decision details and per-step
@@ -524,6 +539,10 @@ class StockAnalyzer:
         """
         depth = depth if depth in ("quick", "standard", "deep") else "standard"
         self._depth_override: str | None = depth
+        # v1.0.1: capture user_id so _init_graph and _build_quick_llm
+        # resolve provider with per-user scope. None preserves the
+        # legacy global-resolution path for tests / direct callers.
+        self._active_user_id: int | None = user_id
         self._init_graph()
 
         logger.info("Starting analysis for %s on %s", ticker, date)
