@@ -501,15 +501,17 @@ export function SettingsPage() {
                 ~/.stock_trading/config.yaml directly. Documented as a
                 deferred v1.1 feature. */}
             <div className="space-y-2 min-w-0">
-              <div className="flex items-center justify-between gap-2">
-                <div className="text-sm font-semibold">预设池 (presets)</div>
-                <span className="text-xs text-muted-foreground">
+              <div className="flex flex-wrap items-center justify-between gap-2 min-w-0">
+                <div className="text-sm font-semibold">
+                  预设池 (presets) <span className="text-[10px] text-muted-foreground font-normal ml-1">只读 · v1.0</span>
+                </div>
+                <span className="text-xs text-muted-foreground shrink-0">
                   {snapshot?.openrouter?.presets?.length ?? 0} 个预设
                 </span>
               </div>
               {(snapshot?.openrouter?.presets ?? []).length === 0 ? (
                 <p className="text-xs text-muted-foreground py-3 text-center border border-dashed rounded">
-                  暂无预设。编辑 yaml 添加自定义模型，或保留默认 yaml 中的 3 条预设。
+                  暂无预设。请编辑 <code className="font-mono">~/.stock_trading/config.yaml</code> 添加，或保留默认 yaml 中的 3 条预设。
                 </p>
               ) : (
                 <div className="space-y-1.5">
@@ -539,12 +541,24 @@ export function SettingsPage() {
                   })}
                 </div>
               )}
-              <p className="text-[11px] text-muted-foreground">
-                切换 active deep / quick 在右上角「模型」菜单中操作。新增 / 编辑预设
-                请编辑 <code className="font-mono">~/.stock_trading/config.yaml</code>
-                的 <code className="font-mono">openrouter.presets</code> 数组（v1.1
-                将提供 UI 编辑入口）。
-              </p>
+              {/* v1.0.1 — explicit read-only scope so users don't keep
+                  hunting for non-existent CRUD buttons. v1.1 roadmap
+                  will add POST/DELETE /openrouter/presets endpoints +
+                  add/edit/test-ping UI. */}
+              <div className="rounded border border-amber-500/30 bg-amber-500/5 px-3 py-2 space-y-1 text-[11px]">
+                <div className="text-amber-400 font-medium">
+                  ⓘ 此区为只读视图（v1.0）
+                </div>
+                <div className="text-muted-foreground">
+                  v1.0 只支持<b>切换</b>已有预设的 active deep / quick 指针（在右上角「模型」菜单中操作）。
+                  <b>新增 / 编辑 / 删除</b>预设请编辑 <code className="font-mono">~/.stock_trading/config.yaml</code> 中
+                  的 <code className="font-mono">openrouter.presets</code> 数组，重启服务后生效。
+                </div>
+                <div className="text-muted-foreground">
+                  v1.1 路线：UI 编辑入口（添加预设 dialog / 测试 ping / 删除按钮）+ 后端
+                  <code className="font-mono"> POST/DELETE /api/settings/openrouter/presets</code>。
+                </div>
+              </div>
             </div>
           </div>
         </CardContent>
