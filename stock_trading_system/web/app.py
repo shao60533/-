@@ -1296,15 +1296,27 @@ def create_app(config_path=None):
         if not ticker:
             return jsonify({"error": "ticker required"}), 400
         from stock_trading_system.utils.helpers import today_str
-        from stock_trading_system.portfolio.database import _normalize_depth
+        # v1.0.3 — depth two-state contract: ``deep_analysis`` boolean
+        # is the canonical wire shape from the new Switch UI; ``depth``
+        # string still accepted for backwards compat. ``normalize_
+        # analysis_depth`` is the single helper used by /api/analyze,
+        # /api/tasks/submit, and the analysis worker so all three see
+        # the same {"standard","deep"} two-state output regardless of
+        # which shape the client sent.
+        from stock_trading_system.portfolio.database import normalize_analysis_depth
         date = data.get("date") or today_str()
-        depth = _normalize_depth(data.get("depth"))
+        normalized = normalize_analysis_depth(data)
 
         tm = _get_task_manager()
         params = {
             "ticker": ticker,
             "date": date,
-            "depth": depth,
+            # Pass both fields through so the worker can re-normalize
+            # via the same helper (paranoid: defends against future
+            # callers that bypass /api/analyze and submit raw to
+            # TaskManager directly).
+            "depth": normalized["depth"],
+            "deep_analysis": normalized["deep_analysis"],
             "__user_id__": g.user.id,
         }
         task = tm.submit(
