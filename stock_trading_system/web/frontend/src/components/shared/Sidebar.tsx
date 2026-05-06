@@ -179,7 +179,7 @@ export function MobileTabbar() {
         <SheetContent side="bottom" className="pb-8">
           <SheetHeader>
             <SheetTitle>更多功能</SheetTitle>
-            <SheetDescription>快速导航到其他页面</SheetDescription>
+            <SheetDescription>导航到其他页面</SheetDescription>
           </SheetHeader>
           <div className="mb-3 border-b border-border pb-3">
             <LLMSwitcher />
