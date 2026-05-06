@@ -240,18 +240,26 @@ def test_init_graph_smoke_when_langgraph_unavailable(monkeypatch, stub_tradingag
 
 
 @pytest.mark.integration
-def test_init_graph_uses_per_user_provider_and_cache_scope(monkeypatch):
+def test_init_graph_uses_per_user_provider_and_cache_scope(
+    monkeypatch, stub_tradingagents_graph,
+):
     """v1.0.1 P1-B fix — analyzer.analyze(user_id=N) makes _init_graph
     resolve the provider with that user's scope (router honors
     user_settings.llm_provider) AND scopes the graph cache under the
     user id, so user A on qwen and user B on openrouter never share
     a graph.
 
+    v1.0.3 — converted from raw ``patch("tradingagents.graph...")`` to
+    the ``stub_tradingagents_graph`` fixture so it runs in environments
+    without ``langgraph.prebuilt`` (the patch path was resolving the
+    real import chain at test-collection time).
+
     Verifies:
     - cache_key for user_id=42 + global LLM_PROVIDER=openrouter ends
       with '@42' rather than the legacy unscoped key.
     - cache_key for user_id=None still ends with '@global'.
-    - Two different user ids produce two separate cache entries.
+    - Two different user ids produce two separate cache entries with
+      distinct graph instances.
     """
     monkeypatch.setenv("LLM_PROVIDER", "openrouter")
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
@@ -259,28 +267,32 @@ def test_init_graph_uses_per_user_provider_and_cache_scope(monkeypatch):
     cfg = _or_config()
     analyzer = StockAnalyzer(cfg)
 
-    # v1.0.2 — _init_graph takes user_id as a param; no shared state.
+    # Each call to TradingAgentsGraph(...) returns a distinct sentinel
+    # so we can prove different users got different graph instances.
+    graph_instances: list = []
+
+    def _new_graph(*args, **kwargs):
+        g = MagicMock(name=f"graph_{len(graph_instances)}")
+        graph_instances.append(g)
+        return g
+
+    stub_tradingagents_graph.side_effect = _new_graph
+
     # First init — user A.
-    with patch("tradingagents.graph.trading_graph.TradingAgentsGraph") as mock_tag:
-        mock_tag.return_value = MagicMock()
-        graph_a = analyzer._init_graph(user_id=42)
+    graph_a = analyzer._init_graph(user_id=42)
     assert graph_a is not None, "_init_graph should return the graph"
     keys_a = list(analyzer._graphs.keys())
     assert any(k.endswith("@42") for k in keys_a), keys_a
 
-    # Second init — user B
-    with patch("tradingagents.graph.trading_graph.TradingAgentsGraph") as mock_tag:
-        mock_tag.return_value = MagicMock()
-        graph_b = analyzer._init_graph(user_id=99)
+    # Second init — user B.
+    graph_b = analyzer._init_graph(user_id=99)
     keys_b = list(analyzer._graphs.keys())
     assert any(k.endswith("@99") for k in keys_b), keys_b
     assert len(keys_b) == 2, "expected 2 cache entries for 2 different users"
     assert graph_b is not graph_a, "different users must get different graphs"
 
-    # Third init — no user_id (e.g. legacy direct caller). Maps to @global.
-    with patch("tradingagents.graph.trading_graph.TradingAgentsGraph") as mock_tag:
-        mock_tag.return_value = MagicMock()
-        graph_g = analyzer._init_graph()
+    # Third init — no user_id (legacy direct caller). Maps to @global.
+    graph_g = analyzer._init_graph()
     keys_c = list(analyzer._graphs.keys())
     assert any(k.endswith("@global") for k in keys_c), keys_c
     assert len(keys_c) == 3

@@ -42,3 +42,35 @@ def test_tradingagents_graph_module_imports():
         "tradingagents.graph.trading_graph imported but no "
         "TradingAgentsGraph symbol exposed"
     )
+
+
+def test_langgraph_prebuilt_toolnode_imports():
+    """v1.0.3 — direct ``from langgraph.prebuilt import ToolNode`` smoke.
+
+    Why this lives separately from the tradingagents test above:
+    langgraph 1.x split ``langgraph.prebuilt`` into a SEPARATE package
+    (``langgraph-prebuilt``) that ``pip install langgraph`` does NOT
+    pull. A user can have ``langgraph 1.1.10`` installed and still
+    hit ``ModuleNotFoundError: No module named 'langgraph.prebuilt'``
+    if ``langgraph-prebuilt`` wasn't pulled separately. Requirements
+    now pin ``langgraph-prebuilt>=1.0.9,<2`` explicitly; this test
+    fails loud the day someone removes that pin.
+    """
+    # Clear cached stubs so we test the real install.
+    for k in list(sys.modules):
+        if k == "langgraph.prebuilt" or k == "langgraph":
+            del sys.modules[k]
+
+    try:
+        mod = importlib.import_module("langgraph.prebuilt")
+    except ModuleNotFoundError as e:
+        pytest.fail(
+            f"langgraph.prebuilt missing — requirements likely lost the "
+            f"explicit langgraph-prebuilt pin (v1.0.3). Original: {e}"
+        )
+
+    assert hasattr(mod, "ToolNode"), (
+        "langgraph.prebuilt imported but ToolNode missing — "
+        "TradingAgents uses ToolNode at graph construction; "
+        "pinned version too old or upstream rename"
+    )
