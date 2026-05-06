@@ -422,6 +422,30 @@ function DailyDataTab({ ticker, dailies, hasActivePlan, onRefresh }: {
 
   return (
     <div className="space-y-4">
+      {/* paper-trade v1.5: empty + refresh control. When the session
+          has an active plan but no daily_stats yet (typical right
+          after submitting an analysis on a US holiday or pre-EOD),
+          surface "尚未跑 EOD" so the user knows it's not a backend
+          regression. */}
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="text-xs text-muted-foreground">
+          {dailies.length === 0 && hasActivePlan
+            ? "尚未跑 EOD — 点击右侧刷新即可补齐到最近交易日"
+            : `已记录 ${dailies.length} 个交易日`}
+        </div>
+        <div className="flex items-center gap-2">
+          {eodMsg && (
+            <span className="text-xs text-muted-foreground">{eodMsg}</span>
+          )}
+          <Button
+            variant="outline" size="sm"
+            onClick={runEod} disabled={eodBusy}
+          >
+            {eodBusy ? "刷新中…" : "刷新日度数据"}
+          </Button>
+        </div>
+      </div>
+
       {/* Stat cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 grid-collapse-mobile">
         <Stat label="当前净值" value={latest ? `$${fmt(latest.total_value)}` : "-"} />
