@@ -2915,6 +2915,12 @@ def create_app(config_path=None):
         except Exception as e:  # noqa: BLE001
             logger.warning("price lookup for /api/paper/track failed: %s", e)
 
+        # paper-trade v1.5: ``process_analysis`` internally runs
+        # ``DailyUpdater.update_session(sid)`` after saving the plan
+        # (event_executor._sync_daily_stats) so the manual /api/paper/
+        # track path closes the daily-stats loop in a single call.
+        # ``new_daily_rows`` in the response surfaces how many EOD
+        # rows landed.
         res = process_analysis(
             store,
             analysis_id=aid,
@@ -2954,6 +2960,11 @@ def create_app(config_path=None):
             "plan_id": res.get("plan_id"),
             "num_orders": res.get("num_orders", 0),
             "triggered": len(res.get("triggered") or []),
+            # paper-trade v1.5: how many daily_stats rows the bundled
+            # DailyUpdater pass produced. 0 typically means today is
+            # already up-to-date or markets are closed.
+            "new_daily_rows": int(res.get("new_daily_rows") or 0),
+            "dropped_orders": int(len(res.get("dropped_orders") or [])),
         })
 
     @app.route("/api/paper/track/<int:tracked_id>", methods=["DELETE"])

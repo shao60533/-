@@ -500,6 +500,12 @@ class TaskManager:
                             current_price = pd.get("last") or pd.get("close")
                 except Exception as e:  # noqa: BLE001
                     logger.debug("price lookup for auto paper-trade failed: %s", e)
+                # paper-trade v1.5: ``process_analysis`` itself runs
+                # ``DailyUpdater.update_session(sid)`` at the end via
+                # ``_sync_daily_stats`` (event_executor.py:109) once
+                # the plan is saved + immediate orders fire. We do
+                # NOT call DailyUpdater here because doing it twice
+                # would double-iterate the EOD bars window.
                 process_analysis(
                     store,
                     analysis_id=analysis_id,

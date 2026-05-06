@@ -28,7 +28,17 @@ langchain-google-genai>=2.0
 # break ``from tradingagents.graph.trading_graph import TradingAgentsGraph``.
 # Pin a known-compatible floor so Railway / fresh CI installs don't
 # regress to a too-old transitive dep. See v1.0.2 P1-#1.
-langgraph>=0.2,<2
+langgraph>=1.1.6,<2
+# v1.0.3 — pin langgraph-prebuilt explicitly. langgraph 1.x split
+# ``langgraph.prebuilt`` into a SEPARATE package ``langgraph-prebuilt``;
+# `pip install langgraph` no longer auto-pulls the submodule, so
+# ``from langgraph.prebuilt import ToolNode`` (which TradingAgents
+# uses at module load) fails with ModuleNotFoundError when only
+# langgraph (without -prebuilt) is installed. Pin floor to a known-
+# working version that ships ToolNode + the pieces TradingAgents
+# imports.  ``test_tradingagents_import.py::test_langgraph_prebuilt_toolnode``
+# guards future regressions.
+langgraph-prebuilt>=1.0.9,<2
 # gthread worker (matches Procfile / railway.toml startCommand). The
 # eventlet worker stack stopped working under Python 3.13 + recent
 # greenlet — Railway's auto-fix bot detected this on 2026-05-05 and

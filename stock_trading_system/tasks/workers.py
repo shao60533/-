@@ -1262,11 +1262,30 @@ def make_screen_v2_worker():
 # ─────────────────────────────────────────────────────────────────
 
 def make_paper_trade_worker():
-    """Worker for paper-trade session replay/run.
+    """Worker for paper-trade **replay backtest** sessions.
 
-    Lazily builds one PaperTradeSimulator per process.
-    Result is stored directly on the session row by the simulator; we
-    return a result_ref pointing back to the session.
+    paper-trade v1.5 — Finding 10: this worker drives the LEGACY
+    single-portfolio backtester ``PaperTradeSimulator``, which replays
+    a full date range over the global ``analysis_history`` signal
+    stream. It is intentionally NOT the same code path as forward
+    tracking — that lives in ``event_executor.process_analysis`` +
+    ``order_engine.evaluate_day`` + ``DailyUpdater`` and runs
+    automatically after a fresh analysis (TaskManager
+    ``_post_analysis_save``) or via ``/api/paper/track`` for manual
+    user-scoped enrolment.
+
+    Forward vs replay split:
+      * **Forward (canonical)** — per-ticker session, multi-stage
+        plan, EOD risk via DailyUpdater. Used for live decision
+        tracking from `analysis_history` rows the user just produced.
+      * **Replay (this worker)** — global portfolio backtester. Used
+        for backtest-style "replay the last N days" runs against the
+        full signal stream. ``/api/paper/sessions/<id>/run`` POSTs to
+        this path.
+
+    Lazily builds one PaperTradeSimulator per process. Result is
+    stored directly on the session row by the simulator; we return
+    a result_ref pointing back to the session.
     """
     cache = {"sim": None, "store": None}
 
