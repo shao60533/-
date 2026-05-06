@@ -277,6 +277,22 @@ class StockAnalyzer:
                 self._graph = cached  # legacy compat for quick_screen
                 return cached
 
+            # paper-trade v1.5 / openrouter v1.0.3: validate the active
+            # provider's API key BEFORE we touch ``tradingagents.graph``.
+            # Two reasons:
+            #   1. ``test_gemini_missing_key_raises`` (and any future
+            #      ``test_qwen_missing_key_raises`` / ``test_or_missing_key_raises``)
+            #      runs in environments without ``langgraph.prebuilt``
+            #      installed; importing ``TradingAgentsGraph`` would
+            #      crash with an unhelpful ImportError before our
+            #      RuntimeError ever fires.
+            #   2. ``StockAnalyzer(cfg)._init_graph()`` is the canonical
+            #      entry from worker code — failing fast on a missing
+            #      key surfaces the friendly worker-wrapper message
+            #      ("Qwen API Key 未配置" / "Gemini API Key 未配置")
+            #      without first dragging in the heavy graph framework.
+            self._assert_provider_credentials(provider)
+
             self._patch_tradingagents_qwen()
 
             from tradingagents.graph.trading_graph import TradingAgentsGraph
@@ -356,6 +372,39 @@ class StockAnalyzer:
     # ``_iteration_for(depth)`` directly.
     def _is_iteration_enabled(self, depth: str) -> bool:
         return self._iteration_for(depth)
+
+    def _assert_provider_credentials(self, provider: str | None) -> None:
+        """Pre-flight check for ``_init_graph`` (paper-trade v1.5 / OR
+        v1.0.3). Raises ``RuntimeError`` when the active provider's
+        credential is missing — BEFORE we attempt to import
+        ``tradingagents.graph.trading_graph`` (which itself depends
+        on ``langgraph.prebuilt`` and is unavailable in some test
+        environments).
+
+        Mirrors the same error messages each ``_configure_*`` raises
+        post-import, so existing ``pytest.raises(..., match="...")``
+        assertions still match.
+        """
+        if provider == "qwen":
+            qkey = self._config.get("qwen", {}).get("api_key", "")
+            if not qkey:
+                raise RuntimeError("llm_provider=qwen but qwen.api_key is empty")
+        elif provider == "openrouter":
+            or_cfg = self._config.get("openrouter", {})
+            api_key = (
+                os.environ.get("OPENROUTER_API_KEY")
+                or or_cfg.get("api_key", "")
+            )
+            if not api_key:
+                raise RuntimeError(
+                    "llm_provider=openrouter but openrouter.api_key is empty"
+                )
+        else:
+            # ``gemini`` (default fallback) — also covers any unknown
+            # provider that gets routed to gemini config below.
+            gkey = self._config.get("gemini", {}).get("api_key", "")
+            if not gkey:
+                raise RuntimeError("llm_provider=gemini but gemini.api_key is empty")
 
     def _configure_qwen(self, ta_config: dict) -> None:
         qwen_config = self._config.get("qwen", {})
