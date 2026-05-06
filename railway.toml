@@ -2,7 +2,13 @@
 builder = "NIXPACKS"
 
 [deploy]
-startCommand = "gunicorn -k gthread -w 1 --threads 4 --timeout 120 --bind 0.0.0.0:$PORT \"stock_trading_system.web.app:create_app()\""
+# v1.0.4 — pre-flight LangGraph install-health check before gunicorn
+# starts. If the langgraph-prebuilt wheel landed without its actual
+# package directory (a recurring pip / Railway-cache issue), the
+# script exits 1 with the suggested ``pip install --force-reinstall``
+# command — surfaces in deploy log INSTEAD of crashing on first
+# analysis with an opaque ModuleNotFoundError.
+startCommand = "python scripts/check_langgraph_install.py && gunicorn -k gthread -w 1 --threads 4 --timeout 120 --bind 0.0.0.0:$PORT \"stock_trading_system.web.app:create_app()\""
 healthcheckPath = "/api/health"
 healthcheckTimeout = 120
 restartPolicyType = "ON_FAILURE"

@@ -1,9 +1,9 @@
 {
-  "_ChartPanel-gIkjgeiu.js": {
-    "file": "assets/ChartPanel-gIkjgeiu.js",
+  "_ChartPanel-BIUr7quK.js": {
+    "file": "assets/ChartPanel-BIUr7quK.js",
     "name": "ChartPanel",
     "imports": [
-      "_preload-helper-ckwbz45p.js",
+      "_preload-helper-BzUabfra.js",
       "_card-Dw2m2O9A.js",
       "_icons-vendor-DIg5GFQi.js",
       "_skeleton-KqrEJjUR.js"
@@ -98,8 +98,8 @@
       "_icons-vendor-DIg5GFQi.js"
     ]
   },
-  "_preload-helper-ckwbz45p.js": {
-    "file": "assets/preload-helper-ckwbz45p.js",
+  "_preload-helper-BzUabfra.js": {
+    "file": "assets/preload-helper-BzUabfra.js",
     "name": "preload-helper"
   },
   "_react-vendor-C46J0kjZ.js": {
@@ -151,7 +151,7 @@
     ]
   },
   "src/components/analysis/lazy-bundle.tsx": {
-    "file": "assets/lazy-bundle-tRhVJuR_.js",
+    "file": "assets/lazy-bundle-DBTg_yI6.js",
     "name": "lazy-bundle",
     "src": "src/components/analysis/lazy-bundle.tsx",
     "isDynamicEntry": true,
@@ -161,7 +161,7 @@
       "_icons-vendor-DIg5GFQi.js",
       "_badge-CZQkgUbg.js",
       "_react-vendor-C46J0kjZ.js",
-      "_preload-helper-ckwbz45p.js",
+      "_preload-helper-BzUabfra.js",
       "_input-CUAujCa_.js",
       "_skeleton-KqrEJjUR.js",
       "_alert-DiR1u_Mm.js",
@@ -216,14 +216,14 @@
     ]
   },
   "src/islands/analysis/main.tsx": {
-    "file": "assets/analysis-DamhCn9T.js",
+    "file": "assets/analysis-C-1nsGva.js",
     "name": "analysis",
     "src": "src/islands/analysis/main.tsx",
     "isEntry": true,
     "imports": [
       "_card-Dw2m2O9A.js",
       "_icons-vendor-DIg5GFQi.js",
-      "_preload-helper-ckwbz45p.js",
+      "_preload-helper-BzUabfra.js",
       "_badge-CZQkgUbg.js",
       "_input-CUAujCa_.js",
       "_skeleton-KqrEJjUR.js",
@@ -244,7 +244,7 @@
     ]
   },
   "src/islands/backtest/main.tsx": {
-    "file": "assets/backtest-Cv1K3ZmM.js",
+    "file": "assets/backtest-CFnZckuW.js",
     "name": "backtest",
     "src": "src/islands/backtest/main.tsx",
     "isEntry": true,
@@ -256,15 +256,15 @@
       "_skeleton-KqrEJjUR.js",
       "_stat-RsE7c1_C.js",
       "_alert-DiR1u_Mm.js",
-      "_ChartPanel-gIkjgeiu.js",
+      "_ChartPanel-BIUr7quK.js",
       "_select-DMNKckZZ.js",
       "_react-vendor-C46J0kjZ.js",
-      "_preload-helper-ckwbz45p.js",
+      "_preload-helper-BzUabfra.js",
       "_index-BiCEHdYk.js"
     ]
   },
   "src/islands/dashboard/main.tsx": {
-    "file": "assets/dashboard-BMmmU4EJ.js",
+    "file": "assets/dashboard-BPpysBFZ.js",
     "name": "dashboard",
     "src": "src/islands/dashboard/main.tsx",
     "isEntry": true,
@@ -273,10 +273,10 @@
       "_icons-vendor-DIg5GFQi.js",
       "_stat-RsE7c1_C.js",
       "_chip-CMNERMLP.js",
-      "_ChartPanel-gIkjgeiu.js",
+      "_ChartPanel-BIUr7quK.js",
       "src/lib/socket.ts",
       "_react-vendor-C46J0kjZ.js",
-      "_preload-helper-ckwbz45p.js",
+      "_preload-helper-BzUabfra.js",
       "_skeleton-KqrEJjUR.js"
     ]
   },
@@ -311,7 +311,7 @@
     ]
   },
   "src/islands/paper-trade/main.tsx": {
-    "file": "assets/paper-trade-CKa6Ne9X.js",
+    "file": "assets/paper-trade-B3gHLM5g.js",
     "name": "paper-trade",
     "src": "src/islands/paper-trade/main.tsx",
     "isEntry": true,
@@ -323,9 +323,9 @@
       "_stat-RsE7c1_C.js",
       "_skeleton-KqrEJjUR.js",
       "_alert-DiR1u_Mm.js",
-      "_ChartPanel-gIkjgeiu.js",
+      "_ChartPanel-BIUr7quK.js",
       "_react-vendor-C46J0kjZ.js",
-      "_preload-helper-ckwbz45p.js"
+      "_preload-helper-BzUabfra.js"
     ]
   },
   "src/islands/portfolio/main.tsx": {
@@ -362,14 +362,14 @@
     ]
   },
   "src/islands/screener-v3/main.tsx": {
-    "file": "assets/screener-v3-COklj04X.js",
+    "file": "assets/screener-v3-D5nVgNK7.js",
     "name": "screener-v3",
     "src": "src/islands/screener-v3/main.tsx",
     "isEntry": true,
     "imports": [
       "_card-Dw2m2O9A.js",
       "_icons-vendor-DIg5GFQi.js",
-      "_preload-helper-ckwbz45p.js",
+      "_preload-helper-BzUabfra.js",
       "_badge-CZQkgUbg.js",
       "_index-BiCEHdYk.js",
       "_chip-CMNERMLP.js",
