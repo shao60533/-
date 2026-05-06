@@ -73,7 +73,10 @@ def _inner(store, *, analysis_id, ticker, analysis_date, signal, advice,
         ana_blob.setdefault("trade_decision", advice.get("reasoning") or "")
         ana_blob.setdefault("risk_assessment", advice.get("risk_warning") or "")
 
-    plan, parse_method = extract_plan(ana_blob, advice, qwen_provider=qwen_provider)
+    plan, parse_method = extract_plan(
+        ana_blob, advice, qwen_provider=qwen_provider,
+        current_price=current_price,
+    )
 
     holding = (plan.get("holding_months_min"), plan.get("holding_months_max"))
     raw_summary = None
@@ -100,6 +103,11 @@ def _inner(store, *, analysis_id, ticker, analysis_date, signal, advice,
                 ticker, analysis_id, plan_id, parse_method,
                 len(plan.get("orders", [])), len(triggered))
 
+    # ── 3. Sync the daily-stats window so the detail page sees the
+    # new equity / cum_pnl row immediately. Best-effort — failures
+    # log + don't break the analysis task. paper-trade v1.5.
+    new_daily_rows = _sync_daily_stats(store, sid)
+
     return {
         "ok": True,
         "session_id": sid,
@@ -107,9 +115,29 @@ def _inner(store, *, analysis_id, ticker, analysis_date, signal, advice,
         "parse_method": parse_method,
         "num_orders": len(plan.get("orders", [])),
         "triggered": triggered,
+        "new_daily_rows": new_daily_rows,
         "rating": plan.get("rating"),
         "thesis": plan.get("thesis"),
+        "dropped_orders": plan.get("dropped_orders") or [],
     }
+
+
+def _sync_daily_stats(store, session_id: int) -> int:
+    """Push the session's daily-stats window forward to the latest
+    available bar. Caller should treat ``0`` as a soft signal that
+    EOD will fill in later. Never raises."""
+    try:
+        from stock_trading_system.config import get_config
+        from stock_trading_system.strategy.paper_trader.daily_updater import (
+            DailyUpdater,
+        )
+        cfg = get_config()
+        rows = DailyUpdater(cfg, store).update_session(session_id)
+        return len(rows)
+    except Exception as e:  # noqa: BLE001 — best-effort
+        logger.warning("daily stats sync failed for session %s: %s",
+                        session_id, e)
+        return 0
 
 
 def _bar_from_price(day: str, price: float | None) -> dict | None:

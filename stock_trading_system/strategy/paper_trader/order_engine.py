@@ -54,6 +54,11 @@ def evaluate_day(store, session_id: int, ticker: str, day: str,
     cash = _derive_cash(store, session_id, start_capital)
     equity = cash + shares * close
 
+    # paper-trade v1.5: collect plan-level stop/target prices once so
+    # _execute_order can pin them onto the open_trade row when a new
+    # entry fires.
+    plan_levels = _collect_plan_levels(orders)
+
     triggered = []
     for o in orders:
         trig = o.get("trigger") or {}
@@ -62,9 +67,49 @@ def evaluate_day(store, session_id: int, ticker: str, day: str,
         if not fired:
             continue
 
+        # paper-trade v1.5: defensive guard against nonsensical exit
+        # levels that snuck past plan_parser._normalize (e.g. produced
+        # by a future free-form parser, or a manually inserted plan).
+        # For long positions, an exit_stop with price >= avg_cost or
+        # >= today close is almost certainly an LLM mistake — skip
+        # rather than auto-close at a profit-side level.
+        if open_trade and o.get("order_type") == "exit_stop" \
+                and kind == "price_below":
+            avg_cost = float(open_trade.get("entry_price") or 0) or None
+            target = float(trig.get("price") or 0)
+            invalid = (
+                (avg_cost is not None and target >= avg_cost)
+                or (close is not None and target >= close)
+            )
+            if invalid:
+                store.insert_strategy_event(
+                    session_id=session_id,
+                    analysis_id=o.get("plan_id") or 0,
+                    event_date=day,
+                    prev_signal=None,
+                    new_signal="EXIT_STOP",
+                    advice_action="exit_stop",
+                    action="skipped",
+                    shares_delta=0,
+                    price=target,
+                    trade_id=open_trade.get("id"),
+                    target_position_pct=0.0,
+                    reasoning=(
+                        f"skip_reason=invalid_stop_above_entry "
+                        f"(stop {target:.2f} >= "
+                        f"avg_cost {avg_cost or 0:.2f} / close {close or 0:.2f})"
+                    ),
+                )
+                store.mark_order_triggered(
+                    o["id"], triggered_date=day,
+                    triggered_price=target, trade_id=None,
+                )
+                continue
+
         # Execute
         exec_res = _execute_order(store, session_id, ticker, day, o,
-                                   fill_price, equity, open_trade, reason)
+                                   fill_price, equity, open_trade, reason,
+                                   plan_levels=plan_levels)
         if exec_res:
             triggered.append(exec_res)
             # Refresh state for subsequent orders in the same day
@@ -158,7 +203,8 @@ def _evaluate(kind: str, trig: dict, bar: dict, recent: pd.DataFrame | None,
 def _execute_order(store, session_id: int, ticker: str, day: str,
                     order: dict, fill_price: float | None,
                     equity: float, open_trade: dict | None,
-                    reason: str) -> dict | None:
+                    reason: str,
+                    plan_levels: dict | None = None) -> dict | None:
     if fill_price is None or fill_price <= 0:
         return None
 
@@ -172,6 +218,7 @@ def _execute_order(store, session_id: int, ticker: str, day: str,
     action = "hold"
 
     current_shares = float(open_trade["shares"]) if open_trade else 0.0
+    plan_levels = plan_levels or {}
 
     if otype in ("entry_initial", "entry_add"):
         if target_shares > current_shares:
@@ -180,21 +227,43 @@ def _execute_order(store, session_id: int, ticker: str, day: str,
                 blended = ((float(open_trade["entry_price"]) * current_shares +
                             fill_price * (target_shares - current_shares))
                            / target_shares)
+                # paper-trade v1.5: refresh the open_trade's risk limits
+                # from the plan's exit_stop/exit_target so the daily
+                # mark-to-market guard and the planned-orders agree.
+                refreshed_stop = _validated_stop(
+                    plan_levels.get("stop"), entry=blended,
+                    fill=fill_price, otype=otype,
+                ) or open_trade.get("stop_loss")
+                refreshed_target = _validated_target(
+                    plan_levels.get("target"), entry=blended,
+                    fill=fill_price, otype=otype,
+                ) or open_trade.get("take_profit")
                 store.update_open_trade(
                     open_trade["id"], shares=target_shares,
                     entry_price=blended,
-                    stop_loss=open_trade.get("stop_loss"),
-                    take_profit=open_trade.get("take_profit"),
+                    stop_loss=refreshed_stop,
+                    take_profit=refreshed_target,
                 )
                 trade_id = open_trade["id"]
                 shares_delta = target_shares - current_shares
                 action = "add"
             else:
+                # paper-trade v1.5: pin plan stop/target onto the new
+                # open_trade so a downstream EOD pass that lacks the
+                # planned_orders context still has correct risk bounds.
+                stop_at_open = _validated_stop(
+                    plan_levels.get("stop"), entry=fill_price,
+                    fill=fill_price, otype=otype,
+                )
+                target_at_open = _validated_target(
+                    plan_levels.get("target"), entry=fill_price,
+                    fill=fill_price, otype=otype,
+                )
                 trade_id = store.insert_open_trade(
                     session_id, ticker,
                     entry_analysis_id=None, entry_date=day,
                     entry_price=fill_price, shares=target_shares,
-                    stop_loss=None, take_profit=None,
+                    stop_loss=stop_at_open, take_profit=target_at_open,
                 )
                 shares_delta = target_shares
                 action = "open"
@@ -235,6 +304,76 @@ def _execute_order(store, session_id: int, ticker: str, day: str,
                 ticker, otype, order["id"], action, shares_delta, fill_price, reason)
     return {"order_id": order["id"], "action": action,
             "price": fill_price, "shares_delta": shares_delta, "reason": reason}
+
+
+# ── Plan-level risk helpers (paper-trade v1.5) ───────────────────────────
+
+def _collect_plan_levels(orders: list[dict]) -> dict:
+    """Pull the canonical exit_stop / exit_target prices out of the
+    pending orders so a fresh open_trade can pin them as risk bounds.
+
+    Returns ``{"stop": float | None, "target": float | None}``. When
+    multiple matching orders exist (e.g. an explicit stop and a
+    trailing-MA stop), the explicit price-based one wins so the
+    open_trade.stop_loss column has a meaningful number. Pattern
+    triggers without a price (``trailing_ma`` / ``time_stop``) are
+    left to be evaluated by the planned_orders path.
+    """
+    stop_price: float | None = None
+    target_price: float | None = None
+    for o in orders:
+        otype = o.get("order_type")
+        trig = o.get("trigger") or {}
+        kind = trig.get("kind")
+        if kind not in ("price_below", "price_above"):
+            continue
+        try:
+            price = float(trig.get("price") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not price:
+            continue
+        if otype == "exit_stop" and stop_price is None:
+            stop_price = price
+        elif otype == "exit_target" and target_price is None:
+            target_price = price
+    return {"stop": stop_price, "target": target_price}
+
+
+def _validated_stop(stop: float | None, *, entry: float | None,
+                     fill: float | None, otype: str) -> float | None:
+    """Return ``stop`` only if it makes sense as the long-position
+    stop_loss bound: stop must be strictly below the cost basis and
+    below the fill price (otherwise it would trigger immediately and
+    is almost certainly an LLM mistake). Pattern-trigger stops without
+    a price are surfaced as ``None`` so the column stays NULL rather
+    than being set to a garbage number."""
+    if stop is None or stop <= 0:
+        return None
+    if otype not in ("entry_initial", "entry_add"):
+        return None
+    refs = [v for v in (entry, fill) if v is not None and v > 0]
+    if not refs:
+        return float(stop)
+    if stop >= min(refs):
+        return None
+    return float(stop)
+
+
+def _validated_target(target: float | None, *, entry: float | None,
+                       fill: float | None, otype: str) -> float | None:
+    """Mirror of ``_validated_stop`` for take-profit bound: must be
+    strictly above both cost basis and fill."""
+    if target is None or target <= 0:
+        return None
+    if otype not in ("entry_initial", "entry_add"):
+        return None
+    refs = [v for v in (entry, fill) if v is not None and v > 0]
+    if not refs:
+        return float(target)
+    if target <= max(refs):
+        return None
+    return float(target)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────

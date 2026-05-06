@@ -3157,15 +3157,25 @@ def create_app(config_path=None):
 
     @app.route("/api/paper/tickers/<ticker>/eod", methods=["POST"])
     def api_paper_ticker_eod(ticker: str):
+        # paper-trade v1.5: require login + scope to current user. Without
+        # user_id, find_session_by_ticker may return another user's older
+        # session for the same ticker → manual EOD updates the wrong row
+        # and the calling user's detail page stays empty.
+        if g.user is None:
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
         store = _get_paper_store()
-        sess = store.find_session_by_ticker(ticker.upper())
+        sess = store.find_session_by_ticker(ticker.upper(), user_id=g.user.id)
         if not sess:
             return jsonify({"ok": False, "error": "Not found"}), 404
         try:
             from stock_trading_system.strategy.paper_trader import DailyUpdater
             updater = DailyUpdater(get_config(), store)
             rows = updater.update_session(int(sess["id"]))
-            return jsonify({"ok": True, "new_rows": len(rows)})
+            return jsonify({
+                "ok": True,
+                "new_rows": len(rows),
+                "session_id": int(sess["id"]),
+            })
         except Exception as e:
             logger.error("Manual EOD failed for %s: %s", ticker, e)
             return jsonify({"ok": False, "error": str(e)}), 500

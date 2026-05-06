@@ -121,19 +121,22 @@ def test_task_store_persists_depth(tmp_path):
 def test_analyzer_iteration_toggle_quick_vs_deep(tmp_path):
     """``analyze(depth='quick')`` must force iteration off even when
     config.iteration.enabled=True; ``depth='deep'`` must force on even
-    when config disables it."""
+    when config disables it.
+
+    v1.0.2 — the v1.0.1 ``self._iteration_enabled`` property + its
+    backing ``self._depth_override`` shared mutable attr were removed
+    (concurrent-call safety, see analyzer.py refactor). Iteration is
+    now resolved by the pure ``_iteration_for(depth)`` method.
+    """
     from stock_trading_system.agents.analyzer import StockAnalyzer
     analyzer = StockAnalyzer({"iteration": {"enabled": True}})
 
     # Standard defers to config.
-    analyzer._depth_override = "standard"
-    assert analyzer._iteration_enabled is True
+    assert analyzer._iteration_for("standard") is True
 
     # Quick overrides config-on.
-    analyzer._depth_override = "quick"
-    assert analyzer._iteration_enabled is False
+    assert analyzer._iteration_for("quick") is False
 
     # Deep overrides config-off.
     analyzer2 = StockAnalyzer({"iteration": {"enabled": False}})
-    analyzer2._depth_override = "deep"
-    assert analyzer2._iteration_enabled is True
+    assert analyzer2._iteration_for("deep") is True

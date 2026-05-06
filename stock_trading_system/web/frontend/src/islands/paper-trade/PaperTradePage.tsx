@@ -12,7 +12,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Alert } from "@/components/ui/alert"
 import { ChartPanel } from "@/components/shared/ChartPanel"
 import type { EChartsOption } from "@/lib/echarts"
-import { apiGet } from "@/lib/api"
+import { apiGet, apiPost } from "@/lib/api"
 import { cn } from "@/lib/utils"
 
 interface PaperPayload {
@@ -105,11 +105,19 @@ function PaperTradeContent() {
   // ErrorBoundary upstream shows "页面渲染异常" instead of the real UI.
   const [mainTab, setMainTab] = useState<"strategy" | "daily">("strategy")
 
-  useEffect(() => {
-    if (!ticker) { setError("未指定股票代码"); setLoading(false); return }
-    apiGet<PaperPayload>(`/api/paper/tickers/${ticker}`)
+  // paper-trade v1.5: extracted into a function so the EOD refresh
+  // button on the daily tab can re-pull after triggering /api/paper/
+  // tickers/<t>/eod. Initial mount still fires inside useEffect.
+  const refresh = () => {
+    if (!ticker) return
+    return apiGet<PaperPayload>(`/api/paper/tickers/${ticker}`)
       .then(d => { setData(d); setLoading(false) })
       .catch(e => { setError(e.message || "加载失败"); setLoading(false) })
+  }
+  useEffect(() => {
+    if (!ticker) { setError("未指定股票代码"); setLoading(false); return }
+    refresh()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ticker])
 
   if (loading) return <LoadingSkeleton />
@@ -147,7 +155,15 @@ function PaperTradeContent() {
         </Chip>
       </ChipRow>
 
-      {mainTab === "daily" && <DailyDataTab dailies={data.dailies ?? []} startCapital={sess.start_capital ?? 0} />}
+      {mainTab === "daily" && (
+        <DailyDataTab
+          ticker={ticker}
+          dailies={data.dailies ?? []}
+          startCapital={sess.start_capital ?? 0}
+          hasActivePlan={!!data.active_plan}
+          onRefresh={() => refresh()}
+        />
+      )}
       {mainTab === "strategy" && (<>
       {/* BEGIN strategy tab */}
 
@@ -232,7 +248,12 @@ function PaperTradeContent() {
                       </div>
                     </div>
                     {(o.pct_target_total ?? 0) > 0 && (
-                      <span className="text-xs font-mono shrink-0">{o.pct_target_total}%</span>
+                      <span className="text-xs font-mono shrink-0">
+                        {/* paper-trade v1.5: pct_target_total is 0..1
+                            fraction; render as integer percent so
+                            ``0.10`` shows as ``10%`` not ``0.1%``. */}
+                        {((o.pct_target_total ?? 0) * 100).toFixed(0)}%
+                      </span>
                     )}
                     {o.triggered_date && (
                       <span className="text-xs text-muted-foreground shrink-0">
@@ -294,9 +315,38 @@ function PaperTradeContent() {
 
 /* ── Daily Data Tab ─────────────────────────────────────────── */
 
-function DailyDataTab({ dailies }: { dailies: Daily[]; startCapital: number }) {
+function DailyDataTab({ ticker, dailies, hasActivePlan, onRefresh }: {
+  ticker: string
+  dailies: Daily[]
+  startCapital: number
+  hasActivePlan: boolean
+  onRefresh: () => void | Promise<unknown>
+}) {
   const latest = dailies.length > 0 ? dailies[dailies.length - 1] : null
   const maxDrawdown = dailies.length > 0 ? Math.min(...dailies.map(d => d.drawdown_pct)) : 0
+  const [eodBusy, setEodBusy] = useState(false)
+  const [eodMsg, setEodMsg] = useState<string | null>(null)
+
+  const runEod = async () => {
+    if (!ticker || eodBusy) return
+    setEodBusy(true)
+    setEodMsg(null)
+    try {
+      const res = await apiPost<{ ok: boolean; new_rows?: number; error?: string }>(
+        `/api/paper/tickers/${ticker}/eod`, {},
+      )
+      if (res.ok) {
+        setEodMsg(`已刷新 ${res.new_rows ?? 0} 条日度数据`)
+        await onRefresh()
+      } else {
+        setEodMsg(res.error || "EOD 刷新失败")
+      }
+    } catch (e) {
+      setEodMsg((e as Error)?.message || "EOD 刷新失败")
+    } finally {
+      setEodBusy(false)
+    }
+  }
 
   // v1.6 mobile chart sizing: track viewport ≤575.98px so the ECharts
   // ``grid`` margins shrink (60→32 left, 20→8 right) and the panel

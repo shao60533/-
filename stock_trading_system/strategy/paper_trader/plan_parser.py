@@ -309,13 +309,37 @@ def _is_valid(plan: dict) -> bool:
     return True
 
 
-def _normalize(plan: dict, signal: str, advice: dict | None) -> dict:
-    """Clamp fields and ensure required keys."""
+def _normalize(plan: dict, signal: str, advice: dict | None,
+               current_price: float | None = None) -> dict:
+    """Clamp fields, ensure required keys, AND drop trade-semantic
+    nonsense (paper-trade v1.5).
+
+    Reference price priority for BUY plans:
+        1. ``current_price`` (live router quote)
+        2. immediate entry_initial trigger.price (when present)
+        3. earliest entry zone_low / zone_high midpoint
+        4. advice.entry_price_low / entry_price_high midpoint
+        5. None (no validation possible — pass everything through)
+
+    With a ref price in hand:
+        * BUY/OVERWEIGHT: ``exit_stop.price`` MUST be strictly < ref.
+                          ``exit_target.price`` MUST be strictly > ref.
+        * SELL/UNDERWEIGHT: inverted — exit_stop above, exit_target below.
+        * HOLD or no ref price: pass through.
+
+    Invalid levels are dropped from ``orders`` and recorded in
+    ``plan["dropped_orders"]`` with ``skip_reason`` so the executor /
+    UI can surface "AI 给的止损位高于入场价，已忽略" instead of silently
+    triggering a same-day stop on the open. The ``order_engine``
+    ``evaluate_day`` path adds a second guard for orders that
+    survived (e.g. produced by a future free-form parser).
+    """
     plan = dict(plan)
     plan["rating"] = (plan.get("rating") or signal or "BUY").upper()
     plan["thesis"] = plan.get("thesis") or ""
-    orders = []
-    for o in plan.get("orders") or []:
+    orders: list[dict] = []
+    raw = plan.get("orders") or []
+    for o in raw:
         if not isinstance(o, dict):
             continue
         t = o.get("type")
@@ -332,8 +356,99 @@ def _normalize(plan: dict, signal: str, advice: dict | None) -> dict:
         orders.append({
             "type": t,
             "pct_target_total": pct if pct is not None else 0.0,
-            "trigger": trig,
+            "trigger": dict(trig),
             "desc": o.get("desc") or o.get("description") or "",
         })
-    plan["orders"] = orders
+
+    # ── Resolve reference price for semantic validation ─────────────
+    ref = _resolve_reference_price(orders, advice, current_price)
+    rating_long = plan["rating"] in ("BUY", "OVERWEIGHT")
+    rating_short = plan["rating"] in ("SELL", "UNDERWEIGHT")
+    kept: list[dict] = []
+    dropped: list[dict] = []
+    for o in orders:
+        skip = _validate_exit_level(o, ref, rating_long, rating_short)
+        if skip:
+            dropped.append({**o, "skip_reason": skip})
+            logger.warning(
+                "Drop %s order with invalid level (rating=%s, ref=%s): %s",
+                o.get("type"), plan["rating"], ref, skip,
+            )
+            continue
+        kept.append(o)
+    plan["orders"] = kept
+    if dropped:
+        plan["dropped_orders"] = dropped
+    plan["reference_price"] = ref
     return plan
+
+
+def _resolve_reference_price(orders: list[dict], advice: dict | None,
+                              current_price: float | None) -> float | None:
+    """Best-effort reference price for stop/target sanity checks."""
+    if current_price and current_price > 0:
+        return float(current_price)
+    # immediate entry_initial → its trigger.price (rare but possible)
+    for o in orders:
+        if o.get("type") == "entry_initial":
+            t = o.get("trigger") or {}
+            p = t.get("price")
+            if p:
+                try:
+                    return float(p)
+                except (TypeError, ValueError):
+                    pass
+            zl, zh = t.get("zone_low"), t.get("zone_high")
+            if zl and zh:
+                try:
+                    return (float(zl) + float(zh)) / 2.0
+                except (TypeError, ValueError):
+                    pass
+    if isinstance(advice, dict):
+        lo = advice.get("entry_price_low") or advice.get("entry_low")
+        hi = advice.get("entry_price_high") or advice.get("entry_high")
+        try:
+            if lo and hi:
+                return (float(lo) + float(hi)) / 2.0
+            if lo:
+                return float(lo)
+            if hi:
+                return float(hi)
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
+def _validate_exit_level(order: dict, ref: float | None,
+                          rating_long: bool, rating_short: bool) -> str | None:
+    """Return a skip_reason when the order's exit level contradicts the
+    rating direction. ``None`` means the order passes the semantic gate.
+
+    Only ``price_above`` / ``price_below`` triggers carry a comparable
+    price; pattern triggers (breakout_retest / trailing_ma / time_stop /
+    immediate) are passed through unchanged.
+    """
+    t = order.get("type")
+    if t not in ("exit_stop", "exit_target"):
+        return None
+    trig = order.get("trigger") or {}
+    kind = trig.get("kind")
+    if kind not in ("price_above", "price_below"):
+        return None
+    try:
+        price = float(trig.get("price") or 0)
+    except (TypeError, ValueError):
+        return None
+    if not price or ref is None:
+        return None
+    if rating_long:
+        if t == "exit_stop" and price >= ref:
+            return f"invalid_stop_above_ref ({price:.2f} >= ref {ref:.2f})"
+        if t == "exit_target" and price <= ref:
+            return f"invalid_target_below_ref ({price:.2f} <= ref {ref:.2f})"
+    if rating_short:
+        if t == "exit_stop" and price <= ref:
+            return f"invalid_short_stop_below_ref ({price:.2f} <= ref {ref:.2f})"
+        if t == "exit_target" and price >= ref:
+            return f"invalid_short_target_above_ref ({price:.2f} >= ref {ref:.2f})"
+    return None
