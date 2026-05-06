@@ -29,7 +29,7 @@ def make_analysis_worker(get_analyzer, get_strategy_engine, get_portfolio, get_r
     def worker(params: dict, progress_cb: ProgressCb) -> dict:
         import time as _time
         from stock_trading_system.config import get_config
-        from stock_trading_system.portfolio.database import _normalize_depth
+        from stock_trading_system.portfolio.database import normalize_analysis_depth
         from stock_trading_system.agents.rendering.state_normalizer import (
             normalize_state_to_text,
         )
@@ -43,11 +43,16 @@ def make_analysis_worker(get_analyzer, get_strategy_engine, get_portfolio, get_r
             from stock_trading_system.utils.helpers import today_str
             date = today_str()
 
-        # Depth (quick/standard/deep) drives the analyzer's iteration
-        # toggle and is persisted onto the shared analysis_history row
-        # so the detail page can show what depth the user paid for.
-        # Unknown values fall back to ``standard``.
-        depth = _normalize_depth(params.get("depth"))
+        # v2.1 — single normalizer reads ``deep_analysis`` (canonical
+        # boolean from the new UI Switch) first, falls back to the
+        # legacy ``depth`` string. Returns standard|deep — never
+        # ``quick`` — so storage / paper-trade replay can't carry the
+        # deprecated state forward. ``deep_analysis`` is also surfaced
+        # on the result for paper-trade / future consumers that prefer
+        # the boolean form.
+        _normalized = normalize_analysis_depth(params)
+        depth = _normalized["depth"]
+        deep_analysis = _normalized["deep_analysis"]
 
         progress_cb(5, "初始化分析管线")
         analyzer = get_analyzer()
@@ -161,7 +166,8 @@ def make_analysis_worker(get_analyzer, get_strategy_engine, get_portfolio, get_r
             "duration_sec": _time.perf_counter() - t_start,
             "task_id": task_id or None,
             "created_by": user_id,
-            "depth": depth,
+            "depth": depth,            # standard | deep (canonical)
+            "deep_analysis": deep_analysis,  # boolean alias for new UI
             # v1.19: best-effort structured-rendering blob serialized for
             # storage. Empty string when the analyzer skipped extraction
             # (extractor unavailable, error, or per-tab failures already

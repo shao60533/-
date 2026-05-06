@@ -26,21 +26,58 @@ def _coerce_float(v):
     return None
 
 
-VALID_DEPTHS = ("quick", "standard", "deep")
+# v2.1 (2026-05-07) — depth ladder collapsed to 2 user-visible states.
+# Internal storage / dispatch is now strictly ``standard | deep``.
+# Legacy ``quick`` rows from earlier releases are accepted as input
+# (e.g. when a stale frontend or a stored params_json arrives) but
+# always normalize to ``standard`` so neither the worker nor the DB
+# row carries the deprecated value forward.
+VALID_DEPTHS = ("standard", "deep")
+# Inputs we still recognise — see ``_normalize_depth``. ``quick`` is
+# kept here purely so we don't fall through to the default branch and
+# log a noisy "unknown depth" warning on legacy traffic.
+_LEGACY_DEPTH_ALIASES = {"quick": "standard"}
 
 
 def _normalize_depth(v) -> str:
-    """Coerce ``depth`` to one of {quick, standard, deep}; default standard.
+    """Coerce ``depth`` to one of {standard, deep}; default standard.
 
     Centralised so workers, save_analysis, and the API DTO all agree on
-    the canonical set. Anything we don't recognise falls back to
-    ``standard`` rather than failing loudly — depth is a UX hint, not a
-    safety-critical invariant.
+    the canonical set. ``quick`` (legacy) is collapsed to ``standard``;
+    anything else we don't recognise falls back to ``standard`` rather
+    than failing loudly — depth is a UX hint, not a safety-critical
+    invariant.
     """
     if v is None:
         return "standard"
     s = str(v).strip().lower()
+    if s in _LEGACY_DEPTH_ALIASES:
+        return _LEGACY_DEPTH_ALIASES[s]
     return s if s in VALID_DEPTHS else "standard"
+
+
+def normalize_analysis_depth(params: dict | None) -> dict:
+    """v2.1 — single source of truth for the boolean / legacy-string
+    depth contract. Returns ``{"depth": "standard"|"deep",
+    "deep_analysis": bool}``.
+
+    Resolution rules (boolean wins over legacy string):
+      1. ``deep_analysis=True``  → depth=deep
+      2. ``deep_analysis=False`` → depth=standard
+      3. ``deep_analysis`` absent or non-bool → fall back to legacy
+         ``depth`` field via ``_normalize_depth`` (quick → standard).
+
+    The boolean form is canonical for new clients; legacy ``depth``
+    stays accepted for backward-compat with stored params_json + any
+    older frontend that hasn't migrated.
+    """
+    p = params or {}
+    raw_bool = p.get("deep_analysis")
+    if isinstance(raw_bool, bool):
+        depth = "deep" if raw_bool else "standard"
+    else:
+        depth = _normalize_depth(p.get("depth"))
+    return {"depth": depth, "deep_analysis": depth == "deep"}
 
 
 class PortfolioDatabase:

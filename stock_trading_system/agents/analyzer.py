@@ -330,20 +330,27 @@ class StockAnalyzer:
             return graph
 
     def _iteration_for(self, depth: str) -> bool:
-        """Per-call iteration toggle (replaces the v1.0.1
-        ``_iteration_enabled`` property which read ``self._depth_override``).
+        """v2.1 — per-call iteration toggle, deterministically derived
+        from ``depth`` only. ``config.iteration.enabled`` is no longer
+        consulted because the user-visible contract collapsed to two
+        states:
 
-        depth:
-            quick    → force off (single-pass)
-            deep     → force on (when iteration code is available)
-            standard → fall back to ``config.iteration.enabled``
+            standard → iteration OFF (single-pass 7-agent pipeline)
+            deep     → iteration ON (multi-pass with reflection)
+
+        Earlier releases let ``standard`` fall through to
+        ``config.iteration.enabled``, which made the same UI button
+        do different things depending on a YAML toggle nobody could
+        see — defeating the purpose of having a 2-state UX. Legacy
+        ``quick`` rows that still arrive on the wire are normalised
+        to ``standard`` upstream by ``normalize_analysis_depth``;
+        this branch keeps a defensive ``quick → False`` mapping in
+        case a legacy code path slips one through.
         """
-        cfg_enabled = bool(self._config.get("iteration", {}).get("enabled", False))
-        if depth == "quick":
-            return False
         if depth == "deep":
             return True
-        return cfg_enabled
+        # standard / quick / anything else → off.
+        return False
 
     # Back-compat alias used by ``_init_graph``. New code should call
     # ``_iteration_for(depth)`` directly.
