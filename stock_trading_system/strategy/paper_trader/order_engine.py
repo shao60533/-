@@ -84,7 +84,15 @@ def evaluate_day(store, session_id: int, ticker: str, day: str,
             if invalid:
                 store.insert_strategy_event(
                     session_id=session_id,
-                    analysis_id=o.get("plan_id") or 0,
+                    # paper-trade v1.5.2: NEVER pass plan_id as analysis_id.
+                    # paper_trade_strategy_events.analysis_id is a foreign
+                    # reference into analysis_history.id; mixing in a
+                    # plan_id can collide with an unrelated analysis row
+                    # (e.g. plan_id=30 for AAPL but analysis #30 = SMR),
+                    # causing /api/paper/tickers/<ticker> to surface a
+                    # different ticker's trade_decision. Resolve through
+                    # the plan instead.
+                    analysis_id=_resolve_analysis_id(store, o),
                     event_date=day,
                     prev_signal=None,
                     new_signal="EXIT_STOP",
@@ -285,8 +293,12 @@ def _execute_order(store, session_id: int, ticker: str, day: str,
         return None
 
     # Write strategy event
+    # paper-trade v1.5.2: see _resolve_analysis_id — passing plan_id
+    # here was the root cause of the AAPL→SMR ticker bleed in the
+    # /api/paper/tickers/<ticker> detail page.
     store.insert_strategy_event(
-        session_id=session_id, analysis_id=order.get("plan_id") or 0,
+        session_id=session_id,
+        analysis_id=_resolve_analysis_id(store, order),
         event_date=day,
         prev_signal=None,
         new_signal=otype.upper(),
@@ -296,7 +308,7 @@ def _execute_order(store, session_id: int, ticker: str, day: str,
         price=fill_price,
         trade_id=trade_id,
         target_position_pct=target_pct,
-        reasoning=f"{order.get('description') or ''} | {reason}",
+        reasoning=f"{order.get('description') or ''} | {reason} | plan_id={order.get('plan_id')}",
     )
     store.mark_order_triggered(order["id"], triggered_date=day,
                                 triggered_price=fill_price, trade_id=trade_id)
@@ -304,6 +316,43 @@ def _execute_order(store, session_id: int, ticker: str, day: str,
                 ticker, otype, order["id"], action, shares_delta, fill_price, reason)
     return {"order_id": order["id"], "action": action,
             "price": fill_price, "shares_delta": shares_delta, "reason": reason}
+
+
+# ── Strategy event helpers (paper-trade v1.5.2) ──────────────────────────
+
+def _resolve_analysis_id(store, order: dict) -> int:
+    """Look up the canonical ``analysis_history.id`` for a planned order.
+
+    paper-trade v1.5.2 bugfix: ``paper_trade_strategy_events.analysis_id``
+    must always reference ``analysis_history.id``. Pre-fix the order
+    engine wrote ``order.get("plan_id")`` directly into that column —
+    integers collide silently (plan #30 vs analysis #30 = different
+    tickers), and the detail API's ``get_analysis_by_id`` lookup then
+    surfaced a totally different ticker's ``trade_decision``.
+
+    Resolution chain:
+        1. ``order["plan_id"]`` → ``store.get_plan(plan_id).analysis_id``
+        2. fallback: ``0`` (caller writes a sentinel; downstream API has
+           a ticker-consistency guard so ``0`` won't bleed into the UI).
+
+    Raises nothing — best-effort. ``0`` is a safer sentinel than the
+    pre-fix ``plan_id`` because no real ``analysis_history`` row has
+    id=0.
+    """
+    plan_id = order.get("plan_id")
+    if not plan_id:
+        return 0
+    try:
+        plan = store.get_plan(int(plan_id))
+    except Exception:  # noqa: BLE001 — store may not exist in unit tests
+        return 0
+    if not plan:
+        return 0
+    aid = plan.get("analysis_id")
+    try:
+        return int(aid) if aid is not None else 0
+    except (TypeError, ValueError):
+        return 0
 
 
 # ── Plan-level risk helpers (paper-trade v1.5) ───────────────────────────

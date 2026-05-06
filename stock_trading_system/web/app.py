@@ -3123,6 +3123,16 @@ def create_app(config_path=None):
         plan_history = []
         from stock_trading_system.portfolio.database import PortfolioDatabase as _PDB
         _db = _PDB(get_config().get("portfolio", {}).get("db_path", "data/portfolio.db"))
+        # paper-trade v1.5.2: ticker consistency guard. Pre-fix the
+        # order engine wrote plan_id into strategy_event.analysis_id;
+        # that integer could collide with an unrelated analysis_history
+        # row. Even now, with the order engine fixed, legacy events on
+        # the production DB still carry the wrong analysis_id (a
+        # backfill migration is shipped alongside this commit). Guard
+        # the read path so a mismatch never bleeds into the detail
+        # JSON: if ana.ticker != current ticker, drop the trade_decision
+        # / advice and log a warning.
+        ticker_upper = ticker.upper()
         for p in all_plans:
             p_orders = store.list_orders(plan_id=p["id"])
             entry = {**p, "orders": p_orders}
@@ -3130,7 +3140,16 @@ def create_app(config_path=None):
             if p.get("analysis_id"):
                 try:
                     _ana = _db.get_analysis_by_id(p["analysis_id"])
-                    entry["trade_decision"] = (_ana or {}).get("trade_decision") or ""
+                    if _ana and (_ana.get("ticker") or "").upper() != ticker_upper:
+                        logger.warning(
+                            "plan_history ticker mismatch: plan #%s analysis_id=%s "
+                            "→ analysis.ticker=%s, page ticker=%s; dropping",
+                            p["id"], p["analysis_id"],
+                            _ana.get("ticker"), ticker_upper,
+                        )
+                        entry["trade_decision"] = ""
+                    else:
+                        entry["trade_decision"] = (_ana or {}).get("trade_decision") or ""
                 except Exception as e:  # noqa: BLE001
                     logger.warning("plan_history get_analysis_by_id failed: %s", e)
                     entry["trade_decision"] = ""
@@ -3143,28 +3162,43 @@ def create_app(config_path=None):
             try:
                 ana = _db.get_analysis_by_id(analysis_id)
                 if ana:
-                    latest_trade_decision = ana.get("trade_decision") or ""
+                    # paper-trade v1.5.2: drop trade_decision when the
+                    # underlying analysis row is for a different ticker
+                    # — this is the AAPL→SMR bleed gate.
+                    if (ana.get("ticker") or "").upper() != ticker_upper:
+                        logger.warning(
+                            "ticker_detail mismatch: latest event analysis_id=%s "
+                            "→ analysis.ticker=%s, page ticker=%s; suppressing "
+                            "trade_decision + advice",
+                            analysis_id, ana.get("ticker"), ticker_upper,
+                        )
+                        ana = None  # suppress both trade_decision and advice
+                    else:
+                        latest_trade_decision = ana.get("trade_decision") or ""
             except Exception as e:  # noqa: BLE001
                 logger.warning("ticker_detail: get_analysis_by_id failed: %s", e)
+                ana = None
             # latest_advice MUST come from this user's private row, never
             # the legacy advice_json on the shared analysis_history row.
-            try:
-                user_advice_row = _db.get_user_advice(uid, analysis_id)
-            except Exception as e:  # noqa: BLE001
-                logger.warning("ticker_detail: get_user_advice failed: %s", e)
-                user_advice_row = None
-            if user_advice_row:
-                latest_advice = {
-                    "action":                  user_advice_row.get("action"),
-                    "confidence":              user_advice_row.get("confidence"),
-                    "suggested_position_pct":  user_advice_row.get("position_pct"),
-                    "entry_price_low":         user_advice_row.get("entry_low"),
-                    "entry_price_high":        user_advice_row.get("entry_high"),
-                    "stop_loss":               user_advice_row.get("stop_loss"),
-                    "take_profit":             user_advice_row.get("take_profit"),
-                    "reasoning":               user_advice_row.get("reasoning") or "",
-                    "risk_warning":            user_advice_row.get("risk_warning") or "",
-                }
+            # Only fetch when the ticker check above passed (ana is truthy).
+            if ana:
+                try:
+                    user_advice_row = _db.get_user_advice(uid, analysis_id)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("ticker_detail: get_user_advice failed: %s", e)
+                    user_advice_row = None
+                if user_advice_row:
+                    latest_advice = {
+                        "action":                  user_advice_row.get("action"),
+                        "confidence":              user_advice_row.get("confidence"),
+                        "suggested_position_pct":  user_advice_row.get("position_pct"),
+                        "entry_price_low":         user_advice_row.get("entry_low"),
+                        "entry_price_high":        user_advice_row.get("entry_high"),
+                        "stop_loss":               user_advice_row.get("stop_loss"),
+                        "take_profit":             user_advice_row.get("take_profit"),
+                        "reasoning":               user_advice_row.get("reasoning") or "",
+                        "risk_warning":            user_advice_row.get("risk_warning") or "",
+                    }
         return jsonify({
             "session": sess,
             "session_ids": sib_ids,
