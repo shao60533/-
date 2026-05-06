@@ -29,5 +29,9 @@ langchain-google-genai>=2.0
 # Pin a known-compatible floor so Railway / fresh CI installs don't
 # regress to a too-old transitive dep. See v1.0.2 P1-#1.
 langgraph>=0.2,<2
-gunicorn>=22.0.0
-eventlet>=0.36.0
+# gthread worker (matches Procfile / railway.toml startCommand). The
+# eventlet worker stack stopped working under Python 3.13 + recent
+# greenlet — Railway's auto-fix bot detected this on 2026-05-05 and
+# moved production to gthread. Upper bound pin avoids future major-
+# version Behavior changes (e.g. gunicorn 28+ command flag breaks).
+gunicorn>=22.0.0,<28.0.0
