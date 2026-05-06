@@ -35,84 +35,74 @@ def _make_config(*, llm_provider=None, qwen_key="", gemini_key=""):
 
 
 @pytest.mark.integration
-def test_analyzer_uses_qwen(monkeypatch):
+def test_analyzer_uses_qwen(monkeypatch, stub_tradingagents_graph):
     monkeypatch.setenv("LLM_PROVIDER", "qwen")
     cfg = _make_config(qwen_key="sk-test", gemini_key="AIza-test")
     analyzer = StockAnalyzer(cfg)
 
-    with patch("tradingagents.graph.trading_graph.TradingAgentsGraph") as mock_tag:
-        mock_tag.return_value = MagicMock()
-        analyzer._init_graph()
+    # v1.0.2 — fixture pre-stubs sys.modules so this works even if
+    # langgraph.prebuilt isn't installed in the test env.
+    stub_tradingagents_graph.return_value = MagicMock()
+    analyzer._init_graph()
 
-        # v1.0.1: cache key now includes user scope suffix.
-        assert any(k.startswith("qwen") for k in analyzer._graphs), list(analyzer._graphs)
-        # Verify ta_config passed to TradingAgentsGraph had llm_provider=qwen
-        call_kwargs = mock_tag.call_args
-        ta_config = call_kwargs[1]["config"] if "config" in (call_kwargs[1] or {}) else call_kwargs[0][0] if call_kwargs[0] else None
-        # The graph was created — that's the key assertion
-        assert mock_tag.called
+    assert any(k.startswith("qwen") for k in analyzer._graphs), list(analyzer._graphs)
+    assert stub_tradingagents_graph.called
 
 
 # ── TC-MS-I2: active=gemini → graph uses gemini config ────────────
 
 
 @pytest.mark.integration
-def test_analyzer_uses_gemini(monkeypatch):
+def test_analyzer_uses_gemini(monkeypatch, stub_tradingagents_graph):
     monkeypatch.setenv("LLM_PROVIDER", "gemini")
     cfg = _make_config(qwen_key="sk-test", gemini_key="AIza-test")
     analyzer = StockAnalyzer(cfg)
 
-    with patch("tradingagents.graph.trading_graph.TradingAgentsGraph") as mock_tag:
-        mock_tag.return_value = MagicMock()
-        analyzer._init_graph()
+    stub_tradingagents_graph.return_value = MagicMock()
+    analyzer._init_graph()
 
-        # v1.0.1: cache key now includes user scope suffix.
-        assert any(k.startswith("gemini") for k in analyzer._graphs), list(analyzer._graphs)
+    assert any(k.startswith("gemini") for k in analyzer._graphs), list(analyzer._graphs)
 
 
 # ── TC-MS-I3: switch → second _init_graph creates new graph ──────
 
 
 @pytest.mark.integration
-def test_graph_cached_per_provider(monkeypatch):
+def test_graph_cached_per_provider(monkeypatch, stub_tradingagents_graph):
     cfg = _make_config(qwen_key="sk-test", gemini_key="AIza-test")
 
     monkeypatch.setenv("LLM_PROVIDER", "qwen")
     analyzer = StockAnalyzer(cfg)
 
-    with patch("tradingagents.graph.trading_graph.TradingAgentsGraph") as mock_tag:
-        mock_tag.return_value = MagicMock()
-        analyzer._init_graph()
-        # v1.0.1: cache key suffix is @<user_id|global>.
-        assert set(analyzer._graphs.keys()) == {"qwen@global"}
+    stub_tradingagents_graph.return_value = MagicMock()
+    analyzer._init_graph()
+    assert set(analyzer._graphs.keys()) == {"qwen@global"}
 
-        monkeypatch.setenv("LLM_PROVIDER", "gemini")
-        analyzer._init_graph()
-        assert set(analyzer._graphs.keys()) == {"qwen@global", "gemini@global"}
-        assert mock_tag.call_count == 2
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
+    analyzer._init_graph()
+    assert set(analyzer._graphs.keys()) == {"qwen@global", "gemini@global"}
+    assert stub_tradingagents_graph.call_count == 2
 
 
 # ── TC-MS-I4: switch back → cache hit, no new graph ──────────────
 
 
 @pytest.mark.integration
-def test_switch_back_hits_cache(monkeypatch):
+def test_switch_back_hits_cache(monkeypatch, stub_tradingagents_graph):
     cfg = _make_config(qwen_key="sk-test", gemini_key="AIza-test")
 
     monkeypatch.setenv("LLM_PROVIDER", "qwen")
     analyzer = StockAnalyzer(cfg)
 
-    with patch("tradingagents.graph.trading_graph.TradingAgentsGraph") as mock_tag:
-        mock_tag.return_value = MagicMock()
+    stub_tradingagents_graph.return_value = MagicMock()
+    analyzer._init_graph()  # create qwen
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
+    analyzer._init_graph()  # create gemini
+    assert stub_tradingagents_graph.call_count == 2
 
-        analyzer._init_graph()  # create qwen
-        monkeypatch.setenv("LLM_PROVIDER", "gemini")
-        analyzer._init_graph()  # create gemini
-        assert mock_tag.call_count == 2
-
-        monkeypatch.setenv("LLM_PROVIDER", "qwen")
-        analyzer._init_graph()  # should hit cache
-        assert mock_tag.call_count == 2  # no new creation
+    monkeypatch.setenv("LLM_PROVIDER", "qwen")
+    analyzer._init_graph()  # should hit cache
+    assert stub_tradingagents_graph.call_count == 2  # no new creation
 
 
 # ── TC-MS-I5: gemini key empty → RuntimeError ────────────────────
@@ -132,7 +122,7 @@ def test_gemini_missing_key_raises(monkeypatch):
 
 
 @pytest.mark.integration
-def test_concurrent_init_single_creation(monkeypatch):
+def test_concurrent_init_single_creation(monkeypatch, stub_tradingagents_graph):
     monkeypatch.setenv("LLM_PROVIDER", "qwen")
     cfg = _make_config(qwen_key="sk-test")
     analyzer = StockAnalyzer(cfg)
@@ -146,12 +136,15 @@ def test_concurrent_init_single_creation(monkeypatch):
         time.sleep(0.05)  # simulate slow init
         return original_graph
 
-    with patch("tradingagents.graph.trading_graph.TradingAgentsGraph", side_effect=slow_init):
-        threads = [threading.Thread(target=analyzer._init_graph) for _ in range(8)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
+    stub_tradingagents_graph.side_effect = slow_init
+    threads = [threading.Thread(target=analyzer._init_graph) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    # Wrap the rest in a no-op block so the original ``with`` body
+    # indentation matches the new flat-fixture layout.
+    if True:
 
         # Lock ensures only one creation despite 8 concurrent threads
         assert call_count["n"] == 1

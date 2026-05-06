@@ -23,5 +23,11 @@ tenacity>=9.0
 langchain>=1.0
 langchain-openai>=0.3
 langchain-google-genai>=2.0
+# langgraph >=0.2 ships ``langgraph.prebuilt`` which TradingAgents
+# imports at module load time; older releases lack the submodule and
+# break ``from tradingagents.graph.trading_graph import TradingAgentsGraph``.
+# Pin a known-compatible floor so Railway / fresh CI installs don't
+# regress to a too-old transitive dep. See v1.0.2 P1-#1.
+langgraph>=0.2,<2
 gunicorn>=22.0.0
 eventlet>=0.36.0

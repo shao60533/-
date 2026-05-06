@@ -35,50 +35,8 @@ def _restore_or_env():
         os.environ["OPENROUTER_API_KEY"] = snapshot
 
 
-@pytest.fixture
-def stub_tradingagents_graph(monkeypatch):
-    """v1.0.1 P1-D fix — pre-stub ``tradingagents.graph.trading_graph``
-    in ``sys.modules`` so ``patch('tradingagents.graph.trading_graph.
-    TradingAgentsGraph')`` works in environments where the real module
-    can't be imported (langgraph.prebuilt missing, etc).
-
-    User reported ``ModuleNotFoundError: No module named
-    'langgraph.prebuilt'`` when running these tests. unittest.mock.patch
-    resolves the dotted path AT call time, which means the import chain
-    runs first; if any step fails, the patch fails before the test body
-    executes. Pre-stubbing the leaf + every parent in sys.modules with
-    a MagicMock short-circuits import resolution.
-    """
-    import sys
-    import types
-
-    fakes: list[str] = []
-    # The chain we have to satisfy: tradingagents.graph.trading_graph
-    # plus any lazy submodule imports that happen during real import
-    # (langgraph.prebuilt is the one biting CI today).
-    for mod_name in (
-        "langgraph",
-        "langgraph.prebuilt",
-        "tradingagents.graph.trading_graph",
-        "tradingagents.default_config",
-    ):
-        if mod_name not in sys.modules:
-            stub = types.ModuleType(mod_name)
-            sys.modules[mod_name] = stub
-            fakes.append(mod_name)
-            # Inject the symbol the patch path expects.
-            if mod_name == "tradingagents.graph.trading_graph":
-                stub.TradingAgentsGraph = MagicMock(name="TradingAgentsGraph_stub")
-            if mod_name == "tradingagents.default_config":
-                stub.DEFAULT_CONFIG = {}
-
-    # Mock the patched class so analyzer._init_graph receives a callable
-    # constructor that returns a benign MagicMock graph.
-    yield sys.modules["tradingagents.graph.trading_graph"].TradingAgentsGraph
-
-    # Cleanup — only modules we created
-    for m in fakes:
-        sys.modules.pop(m, None)
+# ``stub_tradingagents_graph`` fixture moved to tests/agents/conftest.py
+# in v1.0.2 (P1-#1) so test_analyzer_provider_switch.py can use it too.
 
 
 def _or_config(deep_id="deepseek-v4-pro", api_key="sk-or-test"):
@@ -187,6 +145,71 @@ def test_graph_cache_key_changes_on_deep_preset_swap(monkeypatch, stub_tradingag
 
 
 @pytest.mark.integration
+def test_concurrent_analyze_users_dont_share_graph(
+    monkeypatch, stub_tradingagents_graph,
+):
+    """v1.0.2 P1-#2 — concurrent analyze() calls with different
+    user_ids must each see their own graph reference; the analyzer's
+    cache key is per-user so they get DIFFERENT graphs.
+
+    Pre-v1.0.2 ``self._active_user_id`` + ``self._graph`` were shared
+    mutable per-call attrs that two concurrent threads could overwrite.
+    Now ``_init_graph(user_id, depth) -> graph`` returns locally and
+    callers hold local references — race-free.
+    """
+    import threading
+
+    monkeypatch.setenv("LLM_PROVIDER", "openrouter")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    cfg = _or_config()
+    analyzer = StockAnalyzer(cfg)
+
+    # Each call to TradingAgentsGraph(...) gets a unique sentinel so
+    # we can prove the two users got different graph instances.
+    sentinels = []
+
+    def factory(*args, **kwargs):
+        s = MagicMock(name=f"graph_{len(sentinels)}")
+        sentinels.append(s)
+        # Sleep inside graph init to maximize the chance of
+        # interleaved execution between threads.
+        import time as _t
+        _t.sleep(0.05)
+        return s
+
+    stub_tradingagents_graph.side_effect = factory
+
+    results: dict[int, object] = {}
+
+    def run(uid: int):
+        # Each thread inherits the parent's contextvar context but
+        # its own subtree — _init_graph sets _OR_ROUTING_CTX inside
+        # the call, so two threads don't see each other's value.
+        results[uid] = analyzer._init_graph(user_id=uid)
+
+    t1 = threading.Thread(target=run, args=(42,))
+    t2 = threading.Thread(target=run, args=(99,))
+    t1.start(); t2.start()
+    t1.join(); t2.join()
+
+    g_42 = results[42]
+    g_99 = results[99]
+    assert g_42 is not g_99, "concurrent users should NOT share a graph"
+    # Cache reflects two distinct entries.
+    keys = set(analyzer._graphs.keys())
+    assert any(k.endswith("@42") for k in keys), keys
+    assert any(k.endswith("@99") for k in keys), keys
+    # Verify each user's local return matches the cache entry under
+    # their scope — proves the local reference is stable even if
+    # ``self._graph`` got overwritten by the other thread mid-flight.
+    for uid in (42, 99):
+        per_user_keys = [k for k in keys if k.endswith(f"@{uid}")]
+        assert len(per_user_keys) == 1
+        assert analyzer._graphs[per_user_keys[0]] is results[uid]
+
+
+@pytest.mark.integration
 def test_init_graph_smoke_when_langgraph_unavailable(monkeypatch, stub_tradingagents_graph):
     """v1.0.1 P1-D smoke — StockAnalyzer._init_graph completes (does
     NOT raise) in an environment where the real
@@ -236,31 +259,32 @@ def test_init_graph_uses_per_user_provider_and_cache_scope(monkeypatch):
     cfg = _or_config()
     analyzer = StockAnalyzer(cfg)
 
-    # First init — user A
-    analyzer._active_user_id = 42
+    # v1.0.2 — _init_graph takes user_id as a param; no shared state.
+    # First init — user A.
     with patch("tradingagents.graph.trading_graph.TradingAgentsGraph") as mock_tag:
         mock_tag.return_value = MagicMock()
-        analyzer._init_graph()
+        graph_a = analyzer._init_graph(user_id=42)
+    assert graph_a is not None, "_init_graph should return the graph"
     keys_a = list(analyzer._graphs.keys())
     assert any(k.endswith("@42") for k in keys_a), keys_a
 
     # Second init — user B
-    analyzer._active_user_id = 99
     with patch("tradingagents.graph.trading_graph.TradingAgentsGraph") as mock_tag:
         mock_tag.return_value = MagicMock()
-        analyzer._init_graph()
+        graph_b = analyzer._init_graph(user_id=99)
     keys_b = list(analyzer._graphs.keys())
     assert any(k.endswith("@99") for k in keys_b), keys_b
     assert len(keys_b) == 2, "expected 2 cache entries for 2 different users"
+    assert graph_b is not graph_a, "different users must get different graphs"
 
     # Third init — no user_id (e.g. legacy direct caller). Maps to @global.
-    analyzer._active_user_id = None
     with patch("tradingagents.graph.trading_graph.TradingAgentsGraph") as mock_tag:
         mock_tag.return_value = MagicMock()
-        analyzer._init_graph()
+        graph_g = analyzer._init_graph()
     keys_c = list(analyzer._graphs.keys())
     assert any(k.endswith("@global") for k in keys_c), keys_c
     assert len(keys_c) == 3
+    assert graph_g is not graph_a and graph_g is not graph_b
 
 
 @pytest.mark.integration
@@ -280,19 +304,24 @@ def test_or_factory_patch_injects_provider_order_into_deep_call(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER", "openrouter")
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
 
-    # The patch reads config via get_config(), so swap the module-level
-    # config getter to our test fixture. Reset _stockai_patched so
-    # the patch reapplies under our config.
-    from stock_trading_system.config import settings as cfg_settings
+    # v1.0.2 — the patch wrapper reads OR routing from the
+    # ``_OR_ROUTING_CTX`` ContextVar, not from get_config(). Set it
+    # explicitly here to mirror what _init_graph does in production.
+    from stock_trading_system.agents import analyzer as _analyzer_mod
     from tradingagents.llm_clients import factory as _factory
     from tradingagents.llm_clients import openai_client as _oc
 
-    or_cfg = _or_config()
-    monkeypatch.setattr(cfg_settings, "get_config", lambda: or_cfg)
-    # __init__ re-exports get_config so patch the bare module too —
-    # production code does ``from stock_trading_system.config import get_config``.
-    import stock_trading_system.config as _cfg_pkg
-    monkeypatch.setattr(_cfg_pkg, "get_config", lambda: or_cfg)
+    routing = {
+        "deep_model": "deepseek/deepseek-v4-pro",
+        "quick_model": "deepseek/deepseek-v4-flash",
+        "deep_provider_order": ["deepseek", "novita"],
+        "quick_provider_order": ["deepseek"],
+        "headers": {
+            "HTTP-Referer": "https://stockai.example.com",
+            "X-Title": "StockAI Terminal",
+        },
+    }
+    token = _analyzer_mod._OR_ROUTING_CTX.set(routing)
 
     # Force re-patch by clearing the idempotency flag.
     if hasattr(_factory, "_stockai_patched"):
@@ -351,6 +380,49 @@ def test_or_factory_patch_injects_provider_order_into_deep_call(monkeypatch):
     )
     quick_call = captured[-1]
     assert quick_call["kwargs"]["extra_body"]["provider"]["order"] == ["deepseek"], quick_call
+
+    # Cleanup ContextVar token (autouse fixture handles env restore;
+    # we own the ContextVar life-cycle in this test).
+    _analyzer_mod._OR_ROUTING_CTX.reset(token)
+
+
+@pytest.mark.integration
+def test_or_factory_passthrough_when_routing_ctx_unset(monkeypatch):
+    """v1.0.2 P1-#3 — when ``_OR_ROUTING_CTX`` is not set (e.g. legacy
+    caller, or a non-OR call to the factory), the wrapper must pass
+    through to the original ``create_llm_client`` UNCHANGED. No
+    extra_body / default_headers should be injected from a stale
+    global.
+    """
+    monkeypatch.setenv("LLM_PROVIDER", "openrouter")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+
+    from stock_trading_system.agents import analyzer as _analyzer_mod
+    from tradingagents.llm_clients import factory as _factory
+    from tradingagents.llm_clients import openai_client as _oc
+
+    # Make sure the ctx is unset (autouse fixtures don't touch it).
+    assert _analyzer_mod._OR_ROUTING_CTX.get() is None
+
+    captured: list[dict] = []
+
+    def _capture(provider, model, base_url=None, **kwargs):
+        captured.append({"provider": provider, "model": model,
+                          "kwargs": dict(kwargs)})
+        return MagicMock()
+
+    monkeypatch.setattr(_factory, "create_llm_client", _capture)
+
+    StockAnalyzer._patch_tradingagents_qwen()
+    _factory.create_llm_client(
+        provider="openrouter",
+        model="deepseek/deepseek-v4-pro",
+        base_url="https://openrouter.ai/api/v1",
+    )
+    call = captured[-1]
+    # Wrapper saw OR provider but ContextVar was None → no inject.
+    assert "extra_body" not in call["kwargs"], call
+    assert "default_headers" not in call["kwargs"], call
 
 
 @pytest.mark.integration

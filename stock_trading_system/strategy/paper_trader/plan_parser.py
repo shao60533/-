@@ -107,21 +107,30 @@ Executive Summary: 针对 NVDA 执行"克制型进攻"交易指令。初始以 1
 # ── Main entry ────────────────────────────────────────────────────────────
 
 def extract_plan(analysis: dict, advice: dict | None,
-                 qwen_provider=None) -> tuple[dict, str]:
-    """Return (plan, parse_method) where parse_method ∈ {'llm','regex','fallback'}."""
+                 qwen_provider=None,
+                 current_price: float | None = None) -> tuple[dict, str]:
+    """Return (plan, parse_method) where parse_method ∈ {'llm','regex','fallback'}.
+
+    ``current_price`` is forwarded to :func:`_normalize` so trade-semantic
+    validation (BUY exit_stop < ref < exit_target) can drop nonsensical
+    levels the LLM or regex might have surfaced — see paper-trade v1.5.
+    """
     text = _collect_text(analysis)
     signal = (analysis.get("signal") or "").upper()
 
     if qwen_provider and getattr(qwen_provider, "_enabled", False):
         plan = _extract_via_llm(qwen_provider, text, signal)
         if plan and _is_valid(plan):
-            return _normalize(plan, signal, advice), "llm"
+            return _normalize(plan, signal, advice,
+                              current_price=current_price), "llm"
 
     plan = _extract_via_regex(text, signal, advice)
     if plan and _is_valid(plan):
-        return _normalize(plan, signal, advice), "regex"
+        return _normalize(plan, signal, advice,
+                          current_price=current_price), "regex"
 
-    return _fallback_plan(signal, advice), "fallback"
+    return _normalize(_fallback_plan(signal, advice), signal, advice,
+                      current_price=current_price), "fallback"
 
 
 # ── Text collector ────────────────────────────────────────────────────────

@@ -10,8 +10,22 @@ Uses TradingAgents' built-in agents:
 - Trader (final decision)
 
 Data is fetched automatically by TradingAgents (yfinance + Alpha Vantage).
+
+v1.0.2 concurrency / state-isolation refactor (2026-05-07):
+- ``_init_graph(user_id, depth) -> graph`` returns a local graph
+  reference. Concurrent ``analyze()`` calls each hold their own graph
+  variable so user A's analysis can't see user B's mid-flight state.
+- ``self._graph`` / ``self._depth_override`` / ``self._active_user_id``
+  shared mutable per-call attrs are removed (or kept only for legacy
+  ``quick_screen`` which is single-tenant).
+- OpenRouter provider routing is stashed in a module-level
+  ``contextvars.ContextVar`` (``_OR_ROUTING_CTX``) that ``_init_graph``
+  sets before ``TradingAgentsGraph(config=...)``; the factory patch
+  reads from the ContextVar instead of calling ``get_config()`` —
+  thread-local + test-friendly.
 """
 
+import contextvars
 import os
 import threading
 import time
@@ -21,6 +35,21 @@ from typing import Any, Callable, Optional
 from stock_trading_system.utils import get_logger
 
 logger = get_logger("agents.analyzer")
+
+
+# v1.0.2 — per-call OR routing context.
+#
+# Set by ``_init_graph`` immediately before constructing
+# ``TradingAgentsGraph(config=ta_config)``; consumed by the factory
+# patch wrapper that runs synchronously inside that call. Each thread /
+# task has its own context so two concurrent ``analyze()`` calls with
+# different presets don't bleed routing parameters between each other.
+#
+# Shape: ``{"deep_model", "quick_model", "deep_provider_order",
+#         "quick_provider_order", "headers"}`` or ``None``.
+_OR_ROUTING_CTX: contextvars.ContextVar[Optional[dict]] = contextvars.ContextVar(
+    "stockai_or_routing", default=None,
+)
 
 
 # Pipeline step definitions shared between backend and frontend.
@@ -164,45 +193,37 @@ class StockAnalyzer:
                     return _oc.OpenAIClient(model, base_url, provider=p, **kwargs)
 
                 # OR: inject extra_body.provider.order matched per-model.
-                # Read config fresh so post-init preset swaps take effect.
+                # v1.0.2 — read from the per-call ContextVar set by
+                # ``_init_graph`` immediately before
+                # ``TradingAgentsGraph(config=...)``. Pre-v1.0.2 we
+                # called ``get_config()`` here, which broke under tests
+                # that pass custom configs to ``StockAnalyzer(...)`` and
+                # would silently break a future per-user preset feature
+                # (the global config singleton is one user's view).
+                #
+                # If the ContextVar is unset (legacy / non-OR caller)
+                # we just pass through unchanged.
                 if p == "openrouter":
                     try:
-                        from stock_trading_system.config import get_config
-                        from stock_trading_system.llm.router import (
-                            resolve_openrouter_model,
-                        )
-                        cfg = get_config()
-                        or_cfg = cfg.get("openrouter") or {}
-                        deep  = resolve_openrouter_model(cfg, role="deep")
-                        quick = resolve_openrouter_model(cfg, role="quick")
-                        # Match by model id — TradingAgentsGraph constructs
-                        # deep + quick clients separately so this fires twice
-                        # per graph init, once per role.
-                        if model == deep["model"]:
-                            preset = deep
-                        elif model == quick["model"]:
-                            preset = quick
-                        else:
-                            preset = None
-                        if preset and preset.get("provider_order"):
+                        routing = _OR_ROUTING_CTX.get()
+                    except LookupError:
+                        routing = None
+                    if routing:
+                        order: list[str] = []
+                        if model == routing.get("deep_model"):
+                            order = routing.get("deep_provider_order") or []
+                        elif model == routing.get("quick_model"):
+                            order = routing.get("quick_provider_order") or []
+                        if order:
                             existing_extra = dict(kwargs.get("extra_body") or {})
                             existing_extra["provider"] = {
-                                "order": list(preset["provider_order"]),
+                                "order": list(order),
                                 "allow_fallbacks": True,
                             }
                             kwargs["extra_body"] = existing_extra
-                        # Headers — once-shared between deep/quick.
-                        headers: dict = {}
-                        if or_cfg.get("http_referer"):
-                            headers["HTTP-Referer"] = or_cfg["http_referer"]
-                        if or_cfg.get("x_title"):
-                            headers["X-Title"] = or_cfg["x_title"]
-                        if headers:
-                            kwargs.setdefault("default_headers", headers)
-                    except Exception as e:  # noqa: BLE001
-                        logger.warning(
-                            "OR provider_order injection failed (continuing without): %s", e,
-                        )
+                        headers = routing.get("headers") or {}
+                        if headers and "default_headers" not in kwargs:
+                            kwargs["default_headers"] = dict(headers)
 
                 return _orig(provider, model, base_url, **kwargs)
 
@@ -214,26 +235,31 @@ class StockAnalyzer:
         except Exception as e:
             logger.warning("Failed to patch TradingAgents factory: %s", e)
 
-    def _init_graph(self):
+    def _init_graph(
+        self,
+        user_id: int | None = None,
+        depth: str = "standard",
+    ):
         """Lazy-init TradingAgents graph, cached per active provider.
 
-        Cache key strategy (v1.0.1 — per-user scope):
-        - Provider resolved with the active user_id (if set), so user A
-          on qwen and user B on openrouter never share a graph.
-        - qwen / gemini: cache key is ``"<provider>@<user_id|global>"``.
-        - openrouter: ``"openrouter:<deep_id>:<quick_id>@<user_id|global>"``
-          — swapping deep preset (e.g. deepseek-v4-pro → gemini-3.1-pro)
-          creates a fresh graph with new model bindings, scoped per user.
+        Returns the constructed graph as a **local reference**. Concurrent
+        ``analyze()`` calls each receive their own returned graph and
+        pass it through to internal helpers — no per-call state lives
+        on ``self``.
+
+        Cache key (v1.0.1 + v1.0.2):
+        - qwen / gemini: ``"<provider>@<user_id|global>"``.
+        - openrouter:    ``"openrouter:<deep_id>:<quick_id>@<user_id|global>"``.
 
         Switching providers / OR presets / users creates a fresh graph;
         switching back hits the cache.
+
+        ``self._graph`` is set to the most recently-built graph for the
+        legacy ``quick_screen`` code path (single-tenant, not concurrent),
+        but ``analyze()`` does NOT read it — it uses the local return.
         """
         from stock_trading_system.llm.router import get_active_provider
 
-        # v1.0.1: prefer the user-scoped resolution captured in
-        # ``analyze(user_id=...)``. Falls back to global when the
-        # caller didn't pass a user (tests / cron / direct callers).
-        user_id = getattr(self, "_active_user_id", None)
         provider = get_active_provider(self._config, user_id=user_id)
         scope = str(user_id) if user_id is not None else "global"
 
@@ -247,8 +273,9 @@ class StockAnalyzer:
 
         with self._graph_lock:
             if cache_key in self._graphs:
-                self._graph = self._graphs[cache_key]
-                return
+                cached = self._graphs[cache_key]
+                self._graph = cached  # legacy compat for quick_screen
+                return cached
 
             self._patch_tradingagents_qwen()
 
@@ -259,45 +286,69 @@ class StockAnalyzer:
             ta_config["output_language"] = "Chinese"
             ta_config["llm_timeout"] = 120
 
+            or_routing: dict | None = None
             if provider == "qwen":
                 self._configure_qwen(ta_config)
             elif provider == "openrouter":
-                self._configure_openrouter(ta_config)
+                or_routing = self._configure_openrouter(ta_config)
             else:
                 self._configure_gemini(ta_config)
 
-            # Inject active prompt overrides from prompt_store (iteration phase 2)
-            if self._iteration_enabled:
+            # Inject active prompt overrides from prompt_store
+            # (iteration phase 2). v1.0.2 — read iteration toggle from
+            # local depth, not self._depth_override.
+            if self._is_iteration_enabled(depth):
                 agent_prompts = self._load_active_prompts()
                 if agent_prompts:
                     ta_config["agent_prompts"] = agent_prompts
 
-            graph = TradingAgentsGraph(
-                selected_analysts=["market", "social", "news", "fundamentals"],
-                debug=True,
-                config=ta_config,
+            # v1.0.2 — set ContextVar so the patched factory wrapper
+            # reads OR routing for *this* graph init only. The token
+            # is reset in ``finally`` so concurrent analyze() calls
+            # never see each other's routing.
+            token = (
+                _OR_ROUTING_CTX.set(or_routing)
+                if or_routing is not None
+                else None
             )
+            try:
+                graph = TradingAgentsGraph(
+                    selected_analysts=["market", "social", "news", "fundamentals"],
+                    debug=True,
+                    config=ta_config,
+                )
+            finally:
+                if token is not None:
+                    _OR_ROUTING_CTX.reset(token)
+
             self._graphs[cache_key] = graph
-            self._graph = graph
-            logger.info("TradingAgents graph initialized with %s (key=%s)", provider, cache_key)
+            self._graph = graph  # legacy compat
+            logger.info(
+                "TradingAgents graph initialized with %s (key=%s)",
+                provider, cache_key,
+            )
+            return graph
 
-    @property
-    def _iteration_enabled(self) -> bool:
-        """Whether to run the iterative / Darwinian-weighted pipeline.
+    def _iteration_for(self, depth: str) -> bool:
+        """Per-call iteration toggle (replaces the v1.0.1
+        ``_iteration_enabled`` property which read ``self._depth_override``).
 
-        ``analyze(depth=...)`` sets ``self._depth_override`` for the
-        duration of one call:
+        depth:
             quick    → force off (single-pass)
             deep     → force on (when iteration code is available)
-            standard → fall back to the config flag
+            standard → fall back to ``config.iteration.enabled``
         """
         cfg_enabled = bool(self._config.get("iteration", {}).get("enabled", False))
-        depth = getattr(self, "_depth_override", None) or "standard"
         if depth == "quick":
             return False
         if depth == "deep":
             return True
         return cfg_enabled
+
+    # Back-compat alias used by ``_init_graph``. New code should call
+    # ``_iteration_for(depth)`` directly.
+    def _is_iteration_enabled(self, depth: str) -> bool:
+        return self._iteration_for(depth)
 
     def _configure_qwen(self, ta_config: dict) -> None:
         qwen_config = self._config.get("qwen", {})
@@ -314,25 +365,35 @@ class StockAnalyzer:
         ta_config["llm_deep_kwargs"] = {"extra_body": {"enable_thinking": True}, "timeout": 600}
         ta_config["llm_quick_kwargs"] = {"extra_body": {"enable_thinking": False}, "timeout": 120}
 
-    def _configure_openrouter(self, ta_config: dict) -> None:
+    def _configure_openrouter(self, ta_config: dict) -> dict:
         """Wire TradingAgents to use OpenRouter as the LLM provider.
 
-        Upstream tradingagents already registers ``openrouter`` in its
-        ``_PROVIDER_CONFIG`` (factory reads ``OPENROUTER_API_KEY`` env),
-        so the entry point is just:
-          1. resolve active deep + quick presets via the router
-          2. set ta_config llm_provider / deep_think_llm / quick_think_llm
-          3. propagate OR-specific headers + base_url
+        Sets the basic ta_config fields upstream TradingAgents reads
+        directly (``llm_provider`` / ``deep_think_llm`` / ``quick_think_llm``
+        / ``backend_url``) and **returns a per-call routing dict**
+        carrying:
 
-        v1.0 invariant: provider_order is intentionally NOT injected into
-        ta_config here — TradingAgents constructs its own ChatOpenAI
-        without honoring extra_body. Provider-fallback at the analyzer
-        layer would require monkey-patching the upstream factory; for
-        v1.0 we accept that the analyzer always hits the model OR's
-        primary endpoint serves (still the requested model_id, just
-        without the cross-vendor fallback chain). Guru screener and
-        screener-internal text client both honor provider_order via
-        their own ChatOpenAI / openai-python construction.
+        - ``deep_model`` / ``quick_model`` — model ids the factory
+          patch matches against to differentiate deep vs quick calls.
+        - ``deep_provider_order`` / ``quick_provider_order`` — vendor
+          fallback chains per role. Fed into
+          ``extra_body.provider.order`` with ``allow_fallbacks=True``.
+        - ``headers`` — HTTP-Referer / X-Title for OR analytics.
+
+        v1.0.2 (2026-05-07): ``provider_order`` IS now injected into
+        the actual TradingAgents path — pre-v1.0.2 the docstring said
+        "provider_order intentionally NOT injected" because upstream
+        ``_PASSTHROUGH_KWARGS`` didn't include ``extra_body``. v1.0.1
+        added the passthrough; v1.0.2 finishes the refactor by routing
+        the lookup through a ContextVar instead of ``get_config()``
+        so test configs / future per-user presets land on the right
+        graph.
+
+        The caller (``_init_graph``) sets ``_OR_ROUTING_CTX`` to the
+        returned dict immediately before calling
+        ``TradingAgentsGraph(config=ta_config)``; the factory patch
+        wrapper reads it during deep + quick client construction and
+        resets it on exit.
         """
         from stock_trading_system.llm.router import resolve_openrouter_model
 
@@ -366,24 +427,36 @@ class StockAnalyzer:
         if or_cfg.get("x_title"):
             headers["X-Title"] = or_cfg["x_title"]
         if headers:
-            # Upstream ChatOpenAI accepts default_headers kwarg; pass
-            # through for OR analytics dashboard tagging.
             ta_config["llm_default_headers"] = headers
 
-    def _build_quick_llm(self):
+        # Routing dict for the factory wrapper — handed back to the
+        # caller so ``_init_graph`` can stash it in the ContextVar
+        # for THIS thread / call only.
+        return {
+            "deep_model":            deep["model"],
+            "quick_model":           quick["model"],
+            "deep_provider_order":   list(deep.get("provider_order") or []),
+            "quick_provider_order":  list(quick.get("provider_order") or []),
+            "headers":               dict(headers),
+        }
+
+    def _build_quick_llm(self, user_id: int | None = None):
         """Build a quick-think LangChain chat instance for the active provider.
 
         Used by :class:`RenderingExtractor` to convert the finished reports
         into per-tab structured cards. Mirrors the model selection in
         ``_configure_qwen`` / ``_configure_openrouter`` / ``_configure_gemini``
         so structured output uses the same model that produced the
-        underlying text. v1.0.1 — uses the same per-user scope as
-        ``_init_graph`` so user A on OR and user B on qwen each get
-        their own quick LLM, not a shared global one.
+        underlying text.
+
+        v1.0.2 — ``user_id`` is an explicit param (was a hidden read of
+        ``self._active_user_id`` in v1.0.1, which was unsafe under
+        concurrent analyze() calls). Pass the same user_id you passed
+        to ``_init_graph`` so the quick LLM lands on the same provider
+        scope as the deep analysis.
         """
         from stock_trading_system.llm.router import get_active_provider
 
-        user_id = getattr(self, "_active_user_id", None)
         provider = get_active_provider(self._config, user_id=user_id)
         if provider == "qwen":
             from langchain_openai import ChatOpenAI
@@ -458,19 +531,24 @@ class StockAnalyzer:
 
     def _maybe_extract_rendering(
         self, result: "AnalysisResult", ticker: str = "",
+        user_id: int | None = None,
     ) -> None:
         """Best-effort extraction of structured per-tab cards into ``result.rendering``.
 
         Failures here MUST NOT block the analysis task — the markdown
         reports are the canonical artefact and the UI falls back to them
         when ``rendering`` is empty or partial.
+
+        v1.0.2 — ``user_id`` is an explicit param so the quick LLM
+        lands on the same per-user provider scope as the deep graph
+        that produced the reports.
         """
         try:
             from stock_trading_system.agents.rendering.extractor import (
                 RenderingExtractor,
             )
             extractor = RenderingExtractor(
-                self._build_quick_llm(),
+                self._build_quick_llm(user_id=user_id),
                 data_manager=self._get_data_manager(),
             )
             result.rendering = extractor.extract(result, ticker=ticker)
@@ -538,12 +616,14 @@ class StockAnalyzer:
             timings.
         """
         depth = depth if depth in ("quick", "standard", "deep") else "standard"
-        self._depth_override: str | None = depth
-        # v1.0.1: capture user_id so _init_graph and _build_quick_llm
-        # resolve provider with per-user scope. None preserves the
-        # legacy global-resolution path for tests / direct callers.
-        self._active_user_id: int | None = user_id
-        self._init_graph()
+        # v1.0.2 — _init_graph returns a *local* graph reference. We
+        # store it in ``graph`` and pass it into helpers; no per-call
+        # state lives on ``self`` so concurrent analyze() calls can't
+        # corrupt each other's user_id / depth / graph bindings.
+        graph = self._init_graph(user_id=user_id, depth=depth)
+        # Track per-call iteration flag locally (legacy
+        # _iteration_enabled property removed in v1.0.2).
+        iteration_enabled = self._iteration_for(depth)
 
         logger.info("Starting analysis for %s on %s", ticker, date)
         total = len(PIPELINE_STEPS)
@@ -581,8 +661,8 @@ class StockAnalyzer:
             # Iteration mode: delegate to _run_with_weights which handles
             # Darwinian weight-context injection + prompt overrides. Skips the
             # streaming progress view but still emits pipeline_done.
-            if self._iteration_enabled:
-                final_state, signal = self._run_with_weights(ticker, date)
+            if iteration_enabled:
+                final_state, signal = self._run_with_weights(ticker, date, graph)
                 # Mark all steps done in a single bulk emit so the UI gets a
                 # best-effort completion view.
                 now = time.monotonic()
@@ -614,7 +694,7 @@ class StockAnalyzer:
                     trade_decision=final_state.get("final_trade_decision", {}),
                     steps=list(step_status.values()),
                 )
-                self._maybe_extract_rendering(result, ticker=ticker)
+                self._maybe_extract_rendering(result, ticker=ticker, user_id=user_id)
                 emit({
                     "type": "pipeline_done",
                     "ticker": ticker,
@@ -626,8 +706,10 @@ class StockAnalyzer:
 
             # Replicate TradingAgents.propagate()'s streaming loop so we can
             # peek at intermediate state between chunks and push progress to
-            # the UI in real time.
-            graph = self._graph
+            # the UI in real time. v1.0.2 — ``graph`` is the local var
+            # from ``_init_graph(user_id, depth)`` above; never read
+            # ``self._graph`` here so concurrent calls can't corrupt
+            # this read.
             init_state = graph.propagator.create_initial_state(ticker, date)
             args = graph.propagator.get_graph_args()
 
@@ -733,15 +815,24 @@ class StockAnalyzer:
         return result
 
     def _run_with_weights(
-        self, ticker: str, date: str,
+        self, ticker: str, date: str, graph=None,
     ) -> tuple[dict[str, Any], Any]:
-        """Bypass propagate() to inject weight context into init_state."""
+        """Bypass propagate() to inject weight context into init_state.
+
+        v1.0.2 — ``graph`` is now passed in by ``analyze()`` so this
+        helper doesn't read ``self._graph`` (concurrent-call safety).
+        Falls back to ``self._graph`` when called without an explicit
+        graph (legacy callers / tests that haven't been migrated).
+        """
         from stock_trading_system.agents.iterative.config import load_iteration_config
 
         iter_config = load_iteration_config(self._config.get("iteration", {}))
 
+        if graph is None:
+            graph = self._graph  # legacy compat path
+
         # Build initial state via the propagator
-        init_state = self._graph.propagator.create_initial_state(ticker, date)
+        init_state = graph.propagator.create_initial_state(ticker, date)
 
         # Inject weight context if a scorer is available
         if iter_config.darwinian.enabled:
@@ -750,18 +841,18 @@ class StockAnalyzer:
                 init_state["messages"].insert(0, ("system", weight_text))
 
         # Run graph (preserve debug stream behaviour)
-        args = self._graph.propagator.get_graph_args()
-        if self._graph.debug:
+        args = graph.propagator.get_graph_args()
+        if graph.debug:
             trace: list[dict] = []
-            for chunk in self._graph.graph.stream(init_state, **args):
+            for chunk in graph.graph.stream(init_state, **args):
                 if chunk.get("messages"):
                     chunk["messages"][-1].pretty_print()
                 trace.append(chunk)
             final_state = trace[-1] if trace else {}
         else:
-            final_state = self._graph.graph.invoke(init_state, **args)
+            final_state = graph.graph.invoke(init_state, **args)
 
-        signal = self._graph.process_signal(
+        signal = graph.process_signal(
             final_state.get("final_trade_decision", "")
         )
         return final_state, signal
