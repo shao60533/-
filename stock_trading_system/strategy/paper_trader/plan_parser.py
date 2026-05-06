@@ -379,7 +379,10 @@ def _normalize(plan: dict, signal: str, advice: dict | None,
     plan["orders"] = kept
     if dropped:
         plan["dropped_orders"] = dropped
-    plan["reference_price"] = ref
+    # NOTE: ``ref`` is intentionally NOT persisted onto the plan dict —
+    # save_plan writes the whole dict to ``paper_trade_plans.plan_json``
+    # and any extra numeric field would muddy cross-user leak tests
+    # that grep for distinctive numbers in the persisted JSON.
     return plan
 
 
