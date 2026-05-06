@@ -2,6 +2,7 @@ import { useEffect, useState, useRef, useCallback, lazy, Suspense } from "react"
 import {
   Sparkles, Send, ArrowLeft, Clock, Newspaper, BarChart3, Scale,
   ExternalLink, ChevronDown, ChevronRight,
+  MoreVertical, Trash2, Star,
 } from "lucide-react"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -10,6 +11,10 @@ import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Switch } from "@/components/ui/switch"
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { PipelineDAG } from "@/components/shared/PipelineDAG"
 import { ErrorBoundary } from "@/components/shared/ErrorBoundary"
 import type { TVChartState } from "@/components/shared/TVChart"
@@ -138,13 +143,23 @@ const TASK_STATUS_LABEL: Record<string, string> = {
   failed: "失败",   cancelled: "已取消",
 }
 
-type AnalysisDepth = "quick" | "standard" | "deep"
+// v2.1 (2026-05-07) — depth ladder collapsed to a 2-state UX. The
+// backend still accepts ``depth ∈ {quick, standard, deep}`` for
+// idempotency / paper-trade replay, but the frontend only ever
+// surfaces "标准" / "深度". Legacy ``quick`` rows display as "标准"
+// — the user no longer needs a separate "30s skip-debate" mode now
+// that "deep" is the only meaningful upsell.
+type AnalysisDepth = "standard" | "deep"
 
-function depthLabel(d: AnalysisDepth | string | null | undefined): string {
+function depthLabel(d: string | null | undefined): string {
+  // Legacy ``quick`` rows from earlier releases collapse to "标准"
+  // per the v2.1 product decision — there's no longer a user-visible
+  // "快速" mode and surfacing it would suggest the option still
+  // exists.
   switch ((d || "").toLowerCase()) {
-    case "quick":    return "快速"
     case "deep":     return "深度"
     case "standard": return "标准"
+    case "quick":    return "标准"  // legacy alias — see comment above
     default:         return "标准"
   }
 }
@@ -191,6 +206,27 @@ function signalVariant(signal: string): "buy" | "sell" | "hold" | "default" {
   return "default"
 }
 
+/** v1.3 — Unify the long tail of LLM signal strings ("Overweight" /
+ *  "Strong Sell" / "BUY" / "bullish" / 中文 / ...) into a 3-state
+ *  user-facing label. ``signalVariant`` keeps owning badge color
+ *  (4 variants); this helper only owns displayed text. Sell first
+ *  so "underweight" doesn't slip into the buy branch. */
+export function signalLabel(signal: string | null | undefined): "Buy" | "Sell" | "Hold" {
+  const s = (signal ?? "").toLowerCase().trim()
+  if (!s) return "Hold"
+  if (
+    s.includes("sell") || s.includes("bearish")
+    || s.includes("underweight") || s.includes("减仓")
+    || s === "reduce"
+  ) return "Sell"
+  if (
+    s.includes("buy") || s.includes("bullish")
+    || s.includes("overweight") || s.includes("加仓")
+    || s === "add"
+  ) return "Buy"
+  return "Hold"
+}
+
 function getIdFromUrl(): string | null {
   const match = window.location.pathname.match(/\/analysis\/([^/]+)/)
   return match?.[1] ?? null
@@ -229,11 +265,9 @@ const REPORT_TABS = [
   { key: "Decision", label: "决策" },
 ] as const
 
-const DEPTH_OPTIONS: { value: AnalysisDepth; label: string; hint: string }[] = [
-  { value: "quick",    label: "快速", hint: "~30s · ~$0.05 · 跳过辩论/反思" },
-  { value: "standard", label: "标准", hint: "~2min · ~$0.20 · 7 Agent 默认" },
-  { value: "deep",     label: "深度", hint: "~5min · ~$0.80 · 启用迭代" },
-]
+// v2.1 — DEPTH_OPTIONS removed. UI is now a single ``开启深度分析``
+// switch (see the form below); the wire still uses ``depth: "standard"
+// | "deep"`` so the worker / paper-trade replay don't have to migrate.
 
 /** v1.22: legacy ``/analysis/<task_uuid>`` URLs are folded into the
  *  unified inbox. We replaceState to ``/analysis?task=<uuid>`` so the
@@ -274,7 +308,10 @@ export function AnalysisPage() {
   // Form state
   const [ticker, setTicker] = useState("")
   const [date, setDate] = useState(new Date().toISOString().slice(0, 10))
-  const [depth, setDepth] = useState<AnalysisDepth>("standard")
+  // v2.1 — single boolean form input ("开启深度分析"). Wire-encoded
+  // to the legacy ``depth`` field on submit so the worker keeps its
+  // existing dispatch path.
+  const [deepAnalysis, setDeepAnalysis] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   // v1.22 unified inbox: in-flight tasks + completed analyses in one
   // list. Replaces the old "最近分析" 5-card strip + the standalone
@@ -320,10 +357,19 @@ export function AnalysisPage() {
     if (!ticker.trim()) return
     setSubmitting(true); setError(null)
     const submittedTicker = ticker.toUpperCase()
+    // v2.1 — wire-encode the boolean toggle. Backend still expects
+    // ``depth ∈ {standard, deep}``; ``deep_analysis`` is shipped as a
+    // hint for any future consumer that wants the canonical UI flag.
+    const wireDepth: AnalysisDepth = deepAnalysis ? "deep" : "standard"
     try {
       const res = await apiPost<TaskSubmitResult>("/api/tasks/submit", {
         type: "analysis",
-        params: { ticker: submittedTicker, date, depth },
+        params: {
+          ticker: submittedTicker,
+          date,
+          depth: wireDepth,
+          deep_analysis: deepAnalysis,
+        },
       })
       if (res.task_id) {
         // v1.22: stay on the inbox; prepend an optimistic running row
@@ -334,7 +380,7 @@ export function AnalysisPage() {
           kind: "task",
           task_id: res.task_id,
           ticker: submittedTicker,
-          depth,
+          depth: wireDepth,
           status: "pending",
           submitted_at: new Date().toISOString().slice(0, 19).replace("T", " "),
           progress_pct: 0,
@@ -544,34 +590,29 @@ export function AnalysisPage() {
             </Button>
           </div>
 
-          <div className="space-y-2">
-            <div className="text-sm text-muted-foreground">分析深度</div>
-            <div className="grid gap-2 sm:grid-cols-3">
-              {DEPTH_OPTIONS.map(opt => (
-                <label
-                  key={opt.value}
-                  className={
-                    "flex items-start gap-2 rounded-lg border p-3 cursor-pointer text-sm " +
-                    (depth === opt.value
-                      ? "border-primary/60 bg-primary/5"
-                      : "border-border")
-                  }
-                >
-                  <input
-                    type="radio"
-                    name="analysis-depth"
-                    value={opt.value}
-                    checked={depth === opt.value}
-                    onChange={() => setDepth(opt.value)}
-                    className="mt-0.5"
-                  />
-                  <div>
-                    <div className="font-semibold">{opt.label}</div>
-                    <div className="text-xs text-muted-foreground">{opt.hint}</div>
-                  </div>
-                </label>
-              ))}
+          {/* v2.1 — single switch replaces the 3-card depth ladder.
+              Labels stay short on mobile; the descriptive hint sits
+              under the switch row so 320px doesn't get crammed. */}
+          <div className="rounded-lg border border-border p-3 flex items-center gap-3 min-w-0">
+            <div className="flex-1 min-w-0">
+              <label
+                htmlFor="analysis-deep-switch"
+                className="text-sm font-medium block cursor-pointer"
+              >
+                开启深度分析
+              </label>
+              <p className="text-xs text-muted-foreground mt-0.5 break-words">
+                {deepAnalysis
+                  ? "深度分析：~5min · 启用迭代反思 · 适合关键决策"
+                  : "标准分析：~2min · 7 Agent 默认管线"}
+              </p>
             </div>
+            <Switch
+              id="analysis-deep-switch"
+              checked={deepAnalysis}
+              onCheckedChange={setDeepAnalysis}
+              className="shrink-0"
+            />
           </div>
 
           {error && <Alert variant="destructive" className="mt-2"><AlertTitle>提交失败</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}
@@ -944,7 +985,7 @@ function AnalysisDetailView({ detail: initialDetail }: { detail: AnalysisDetail 
           </Button>
           <h1 className="text-xl font-bold font-mono">{detail.ticker}</h1>
           <Badge variant={signalVariant(canonicalSignal(detail))}>
-            {canonicalSignal(detail) || "N/A"}
+            {signalLabel(canonicalSignal(detail))}
           </Badge>
           {detail.signal_mismatch && (
             <span
@@ -1018,7 +1059,7 @@ function AnalysisDetailView({ detail: initialDetail }: { detail: AnalysisDetail 
           <CardHeader className="pb-2"><CardTitle className="text-sm text-muted-foreground">信号</CardTitle></CardHeader>
           <CardContent>
             <Badge variant={signalVariant(canonicalSignal(detail))} className="text-sm">
-              {canonicalSignal(detail) || "N/A"}
+              {signalLabel(canonicalSignal(detail))}
             </Badge>
           </CardContent>
         </Card>
@@ -1363,7 +1404,7 @@ function RenderingStatusBanner({
           {status === "failed"
             ? "完整论述已显示在下方各 tab，可点击重试重新生成结构化卡片。"
             : status === "empty"
-            ? "本次分析没有结构化卡片（旧记录或快速模式）。可点击重试按当前数据补一份。"
+            ? "本次分析没有结构化卡片（历史记录尚未生成）。可点击重试按当前数据补一份。"
             : "结构化摘要任务正在排队，稍候自动出现；也可手动触发重试。"}
         </div>
         {detail.rendering_error && (
@@ -1630,60 +1671,95 @@ function CompletedRow({ row, onChanged }: {
 
   return (
     <div
-      className="rounded border border-border/50 bg-card/40 hover:border-primary/40 transition-colors"
+      className="rounded border border-border/50 bg-card/40 hover:border-primary/40 transition-colors min-w-0 overflow-hidden"
     >
-      {/* Mobile inbox row: split into two visual rows. Row 1 = ticker
-          / signal / depth / date / created_by; row 2 = relative time
-          + bookmark/open/delete actions. flex-wrap + sm:flex-nowrap
-          keeps desktop on one line. */}
-      <div
-        onClick={toggle}
-        className="flex flex-wrap items-center gap-2 sm:gap-3 px-3 py-2 text-sm cursor-pointer min-w-0"
-      >
-        {expanded
-          ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-          : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />}
-        <span className="font-mono font-semibold truncate">{row.ticker}</span>
-        <Badge variant={signalVariant(row.signal || "")} className="text-[10px] shrink-0">
-          {row.signal || "—"}
-        </Badge>
-        <Badge variant="muted" className="text-[10px] shrink-0">{depthLabel(row.depth)}</Badge>
-        <span className="text-xs text-muted-foreground shrink-0">{row.date}</span>
-        {row.created_by_name && (
-          <span className="text-xs text-muted-foreground hidden sm:inline">
-            · {row.created_by_name}
-          </span>
-        )}
-        <span className="text-xs text-muted-foreground sm:ml-auto shrink-0">
-          {fmtRelative(row.created_at)}
-        </span>
-        <button
-          type="button"
-          onClick={toggleBookmark}
-          disabled={busy}
-          className={
-            "text-xs shrink-0 px-1.5 py-0.5 rounded hover:bg-muted/40 " +
-            (bookmarked ? "text-amber-400" : "text-muted-foreground")
-          }
-          title={bookmarked ? "取消收藏" : "收藏"}
+      {/* v2.1 — 3-row layout that survives 320/375/414 widths.
+          Row A = chevron + ticker + signal | bookmark + open + ⋯ menu
+          Row B = depth badge + date + relative time + (creator on sm+)
+          Action menu (删除) lives inside the dropdown so we never
+          render free-floating "删除" text on mobile. */}
+      <div className="px-3 py-2 text-sm space-y-1 min-w-0">
+        {/* Row A — primary identity + per-row actions */}
+        <div
+          onClick={toggle}
+          className="flex items-center gap-2 cursor-pointer min-w-0"
         >
-          {bookmarked ? "★" : "☆"}
-        </button>
-        <a
-          href={`/analysis/${row.id}`}
-          onClick={e => e.stopPropagation()}
-          className="text-xs text-[var(--color-accent-blue)] hover:underline shrink-0"
+          {expanded
+            ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+            : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />}
+          <span className="font-mono font-semibold truncate min-w-0">{row.ticker}</span>
+          <Badge variant={signalVariant(row.signal || "")} className="text-[10px] shrink-0">
+            {signalLabel(row.signal)}
+          </Badge>
+          {/* Right-edge action cluster — pinned with ml-auto so it
+              never wraps under the ticker on narrow screens. ``shrink-0``
+              keeps the cluster intact when the truncated ticker tries
+              to claim more width. */}
+          <div className="ml-auto flex items-center gap-1 shrink-0">
+            <button
+              type="button"
+              onClick={toggleBookmark}
+              disabled={busy}
+              className={
+                "p-1.5 rounded hover:bg-muted/40 transition-colors " +
+                (bookmarked ? "text-amber-400" : "text-muted-foreground")
+              }
+              title={bookmarked ? "取消收藏" : "收藏"}
+              aria-label={bookmarked ? "取消收藏" : "收藏"}
+            >
+              <Star
+                className={"h-4 w-4 " + (bookmarked ? "fill-current" : "")}
+              />
+            </button>
+            <a
+              href={`/analysis/${row.id}`}
+              onClick={e => e.stopPropagation()}
+              className="p-1.5 rounded hover:bg-muted/40 text-[var(--color-accent-blue)] transition-colors"
+              title="打开详情"
+              aria-label="打开详情"
+            >
+              <ExternalLink className="h-4 w-4" />
+            </a>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild onClick={e => e.stopPropagation()}>
+                <button
+                  type="button"
+                  className="p-1.5 rounded hover:bg-muted/40 text-muted-foreground transition-colors"
+                  title="更多操作"
+                  aria-label="更多操作"
+                >
+                  <MoreVertical className="h-4 w-4" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem
+                  className="text-destructive focus:text-destructive"
+                  onSelect={() => remove({ stopPropagation: () => {} } as React.MouseEvent)}
+                >
+                  <Trash2 className="h-3.5 w-3.5 mr-2" />删除记录
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        </div>
+        {/* Row B — secondary metadata. ``flex-wrap`` allows graceful
+            stacking when both date + creator + relative time can't
+            fit on one line at 320px. */}
+        <div
+          onClick={toggle}
+          className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-muted-foreground cursor-pointer min-w-0"
         >
-          打开
-        </a>
-        <button
-          type="button"
-          onClick={remove}
-          className="text-xs text-destructive/80 hover:text-destructive shrink-0 px-1.5 py-0.5 rounded hover:bg-destructive/10"
-          title="删除"
-        >
-          删除
-        </button>
+          <Badge variant="muted" className="text-[10px] shrink-0">
+            {depthLabel(row.depth)}
+          </Badge>
+          <span className="shrink-0">{row.date}</span>
+          <span className="shrink-0">{fmtRelative(row.created_at)}</span>
+          {row.created_by_name && (
+            <span className="hidden sm:inline truncate min-w-0">
+              · {row.created_by_name}
+            </span>
+          )}
+        </div>
       </div>
       {expanded && (
         <div className="px-3 pb-3 pt-1 text-xs text-muted-foreground border-t border-border/30 space-y-1">
