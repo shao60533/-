@@ -220,4 +220,48 @@ git push railway main   # 或者 GitHub auto-deploy
 
 ---
 
+## 10. 故障：langgraph.prebuilt 找不到（v1.0.4 加固）
+
+**症状**：deploy log 报 `ModuleNotFoundError: No module named 'langgraph.prebuilt'`，
+即使 `requirements.txt` 已经 pin `langgraph-prebuilt>=1.0.9,<2`。
+
+**根因**：pip wheel 有时只把 `.dist-info` 元数据写入磁盘但
+**没解压实际包目录** (`langgraph/prebuilt/*.py`)。常见触发：
+- pip 缓存层混了多个 Python 版本的 wheel
+- 之前安装中断（Railway build OOM kill）
+- conda 环境和 pip 环境混合管理 site-packages
+- Railway build cache 复用了上次失败的 layer
+
+**侦测**：每次 deploy 启动跑 `python scripts/check_langgraph_install.py`
+（已接入 `railway.toml` `startCommand`）。健康时：
+
+```
+[check_langgraph_install] OK — langgraph.prebuilt.ToolNode + tradingagents.graph.TradingAgentsGraph both import cleanly
+```
+
+异常时脚本非 0 退出 + 打印 fix 命令，gunicorn 不启动，
+Railway healthcheck fail，问题在 deploy log 暴露而不是延后到首次分析。
+
+**修复（本地 / anaconda）**：
+
+```bash
+pip install --force-reinstall --no-cache-dir \
+    "langgraph>=1.1.6,<2" \
+    "langgraph-prebuilt>=1.0.9,<2"
+
+# 验证
+python scripts/check_langgraph_install.py
+```
+
+**修复（Railway）**：
+
+1. dashboard → Service → Settings → 找 **"Clear build cache"** 按钮（或
+   redeploy 时勾上 "no cache"）
+2. 触发 fresh deploy：`git commit --allow-empty -m "trigger fresh build" && git push`
+3. fresh build 跑 `pip install -r requirements.txt` 不走缓存层，wheel 重新解压
+
+反复出现可临时把 langgraph-prebuilt 上限收紧到你验证过的具体版本（如 `==1.0.9`）。
+
+---
+
 *Have fun shipping. 部署有问题随时提 Issue。*
