@@ -6,6 +6,8 @@
 | 版本 | v1.3 |
 | 日期 | 2026-05-09 |
 | Demo 契约 | [../../demo_mobile_full_v1.html](../../demo_mobile_full_v1.html) |
+| 关联设计方案 | [../design/mobile-ui-v1.3.md](../design/mobile-ui-v1.3.md) |
+| 关联测试用例 | [../test-cases/mobile-ui-v1.3.md](../test-cases/mobile-ui-v1.3.md) |
 | 范围 | 移动端 IA / UI / 用户动线重组 |
 | 硬约束 | 不改产品功能、不改后端能力、不改技术架构 |
 

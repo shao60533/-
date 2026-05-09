@@ -2,6 +2,7 @@
 
 | 日期 | 文档 | 版本 | 用例数 | 变更内容 | 关联设计 |
 |------|------|------|--------|---------|---------|
+| 2026-05-09 | [mobile-ui-v1.3.md](mobile-ui-v1.3.md) | v1.3 | 70 | 移动端信息架构与 UI 实装测试：导航/More(8) + 首页持仓合并(10) + Analysis(9) + Screener V3(8) + Paper trade(9) + 反向删除断言(10) + 断点与可访问性(8) + 回归 smoke(8) | [mobile-ui-v1.3.md](../design/mobile-ui-v1.3.md) |
 | 2026-04-14 | [v2.0-manual-test-cases.md](v2.0-manual-test-cases.md) | v1.0 | 151 | 初版测试用例：后端 API(42) + 前端页面(47) + 移动端(12) + WebSocket(8) + 状态(10) + 图表(8) + Toast(4) + 跨页面(4) + 异常(9) + 性能(7) | PRD v2.0 + 技术方案 v1.0 |
 | 2026-04-15 | [architecture-upgrade.md](architecture-upgrade.md) | v1.0 | 204 | 架构升级测试用例：TaskManager(51) + LocalCache(18) + DataRouter(17) + Qwen 扩展(16) + TV Widget(16) + 回测(16) + 任务中心 UI(19) + WebSocket(6) + 性能(12) + 幂等(5) + 异常(10) + 回归(8) | 架构升级方案 |
 | 2026-04-15 | [screener-v2.md](screener-v2.md) | v1.0 | 110 | 选股 V2 测试用例：单元测试(56) + 集成(18) + 前端(20) + 回归(8) + 性能(8) | 选股 V2 技术方案 |
@@ -35,7 +36,8 @@
 | UI React Island 测试用例（v1.0 + v2.0）| 182 |
 | 迁移验证测试用例 | 164 |
 | 迁移回归修复测试用例（v1.0 ~ v1.3）| 102 |
-| **总计** | **1526** |
+| 移动端 IA/UI v1.3 测试用例 | 70 |
+| **总计** | **1596** |
 
 ## 覆盖状态
 

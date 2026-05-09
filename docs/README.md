@@ -12,9 +12,11 @@ docs/
 ├── README.md                            # 本文件 — 文档索引
 ├── prd/                                 # 产品需求文档
 │   ├── v2.0-stock-trading-system.md     # PRD V2.0（2026-04-12）
+│   ├── mobile-ui-v1.3.md                # 移动端 IA/UI 实装 PRD（2026-05-09）
 │   └── changelog.md                     # PRD 变更记录
 ├── design/                              # 设计方案（UI + 架构 + 技术详设）
 │   ├── ui-ux-redesign.md                # UI/UX 重设计方案
+│   ├── mobile-ui-v1.3.md                # 移动端 IA/UI 施工图
 │   ├── architecture-upgrade.md          # 架构升级方案（Qwen + TV + 异步任务）
 │   ├── technical-design.md              # Web 端重构技术方案
 │   ├── screener-v2.md                   # 智能选股 V2（8 Agent + 8 Guru）
@@ -22,6 +24,7 @@ docs/
 │   └── changelog.md                     # 设计方案变更记录
 ├── test-cases/                          # 测试用例
 │   ├── v2.0-manual-test-cases.md        # V2.0 手动测试（151 例）
+│   ├── mobile-ui-v1.3.md                # 移动端 IA/UI 验收测试（70 例）
 │   ├── architecture-upgrade.md          # 架构升级测试（204 例）
 │   ├── screener-v2.md                   # 选股 V2 测试（110 例）
 │   └── changelog.md                     # 测试用例变更记录
@@ -50,6 +53,7 @@ docs/
 | 2026-04-16 | 选股 V2 修订：NL 驱动优先 | [Screener V2 v1.1](design/screener-v2.md) | — |
 | 2026-04-18 | 一键持仓分析方案 | [Batch Analyze](design/batch-analyze-holdings.md) | — |
 | 2026-04-18 | 自我迭代 Agent 方案（美股版） | [Self-Iterating Agents](design/self-iterating-agents.md) | — |
+| 2026-05-09 | 移动端 IA/UI v1.3：严格按高保真 demo，不改功能/后端/架构 | [PRD](prd/mobile-ui-v1.3.md) / [Design](design/mobile-ui-v1.3.md) / [Tests](test-cases/mobile-ui-v1.3.md) | — |
 
 ---
 
@@ -57,11 +61,11 @@ docs/
 
 | 分类 | 文档数 | 总行数 |
 |------|--------|--------|
-| PRD | 1 | ~440 |
-| 设计方案 | 5 | ~4,880 |
-| 测试用例 | 3（465 例） | ~1,090 |
-| 部署文档 | 1 | ~224 |
-| **合计** | **10** | **~6,634** |
+| PRD | 7 | ~2,058 |
+| 设计方案 | 27 | ~20,855 |
+| 测试用例 | 14（1,596 例） | ~4,996 |
+| 部署文档 | 2 | ~272 |
+| **合计** | **50** | **~28,181** |
 
 ---
 
