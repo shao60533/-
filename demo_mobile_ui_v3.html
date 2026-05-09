@@ -1,0 +1,636 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>StockAI Mobile UI v3 Demo</title>
+  <style>
+    :root {
+      --bg: #090d12;
+      --panel: #111820;
+      --panel-2: #151f29;
+      --line: #243140;
+      --text: #eff5f8;
+      --muted: #89a0ae;
+      --soft: #5e7180;
+      --blue: #55a6ff;
+      --green: #27d17f;
+      --red: #ff5c73;
+      --yellow: #f4c54f;
+      --radius: 8px;
+      --shadow: 0 24px 70px rgba(0,0,0,.45);
+      color-scheme: dark;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background:
+        radial-gradient(circle at 20% 0%, rgba(85,166,255,.14), transparent 32%),
+        linear-gradient(145deg, #071018, #0b0c10 55%, #10151b);
+      color: var(--text);
+      font-family: Inter, "SF Pro Text", -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+    }
+    .stage {
+      width: min(100vw, 980px);
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 20px;
+      align-items: center;
+      padding: 22px;
+    }
+    .brief {
+      max-width: 440px;
+      margin: 0 auto;
+    }
+    .brief h1 {
+      margin: 0 0 10px;
+      font-size: 28px;
+      letter-spacing: 0;
+    }
+    .brief p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.7;
+      font-size: 14px;
+    }
+    .phone {
+      position: relative;
+      width: min(100%, 390px);
+      height: 844px;
+      max-height: calc(100vh - 44px);
+      margin: 0 auto;
+      border: 1px solid rgba(255,255,255,.14);
+      border-radius: 34px;
+      background: #080c11;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+    .screen {
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background: var(--bg);
+    }
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 3;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px 16px 10px;
+      background: rgba(9,13,18,.92);
+      border-bottom: 1px solid rgba(36,49,64,.72);
+      backdrop-filter: blur(16px);
+    }
+    .brand {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+    .brand strong { font-size: 15px; }
+    .brand span { color: var(--muted); font-size: 11px; }
+    .market-pill {
+      height: 32px;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 0 10px;
+      border: 1px solid rgba(39,209,127,.28);
+      border-radius: 999px;
+      color: var(--green);
+      background: rgba(39,209,127,.08);
+      font-size: 12px;
+      font-weight: 650;
+    }
+    .dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: currentColor;
+      box-shadow: 0 0 0 4px color-mix(in srgb, currentColor 18%, transparent);
+    }
+    .content {
+      flex: 1;
+      overflow-y: auto;
+      padding: 14px 14px 92px;
+    }
+    .view { display: none; }
+    .view.active { display: block; animation: fade .18s ease-out; }
+    @keyframes fade { from { opacity: .55; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+    .section-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin: 18px 2px 8px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .section-title b { color: var(--text); font-size: 14px; }
+    .card {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--panel);
+    }
+    .hero {
+      padding: 15px;
+      background:
+        linear-gradient(135deg, rgba(85,166,255,.15), transparent 56%),
+        var(--panel);
+    }
+    .hero-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 14px;
+    }
+    .label { color: var(--muted); font-size: 12px; }
+    .money {
+      margin-top: 4px;
+      font-family: "SF Mono", Menlo, monospace;
+      font-size: 30px;
+      font-weight: 750;
+      letter-spacing: 0;
+    }
+    .gain { color: var(--green); font-family: "SF Mono", Menlo, monospace; font-weight: 700; }
+    .loss { color: var(--red); font-family: "SF Mono", Menlo, monospace; font-weight: 700; }
+    .neutral { color: var(--yellow); font-family: "SF Mono", Menlo, monospace; font-weight: 700; }
+    .mini-chart {
+      height: 86px;
+      margin-top: 12px;
+      border: 1px solid rgba(255,255,255,.05);
+      border-radius: 7px;
+      background:
+        linear-gradient(to top, rgba(39,209,127,.2), transparent 46%),
+        linear-gradient(140deg, transparent 0 10%, rgba(39,209,127,.85) 10% 12%, transparent 12% 20%, rgba(39,209,127,.75) 20% 22%, transparent 22% 33%, rgba(39,209,127,.95) 33% 35%, transparent 35% 51%, rgba(39,209,127,.75) 51% 53%, transparent 53% 70%, rgba(39,209,127,.95) 70% 72%, transparent 72%),
+        repeating-linear-gradient(to right, rgba(255,255,255,.04) 0 1px, transparent 1px 42px),
+        repeating-linear-gradient(to top, rgba(255,255,255,.04) 0 1px, transparent 1px 28px);
+    }
+    .health {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .metric {
+      padding: 10px;
+      border: 1px solid rgba(255,255,255,.07);
+      border-radius: 7px;
+      background: rgba(255,255,255,.025);
+      min-height: 62px;
+    }
+    .metric span { display: block; color: var(--muted); font-size: 11px; margin-bottom: 4px; }
+    .metric strong { font-size: 14px; }
+    .queue {
+      display: grid;
+      gap: 10px;
+    }
+    .decision {
+      padding: 12px;
+      display: grid;
+      gap: 9px;
+    }
+    .decision-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .ticker {
+      font-family: "SF Mono", Menlo, monospace;
+      font-weight: 800;
+      font-size: 18px;
+    }
+    .badge {
+      min-height: 28px;
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 0 9px;
+      border: 1px solid rgba(255,255,255,.12);
+      font-size: 11px;
+      font-weight: 800;
+    }
+    .badge.buy { color: var(--green); background: rgba(39,209,127,.08); border-color: rgba(39,209,127,.24); }
+    .badge.sell { color: var(--red); background: rgba(255,92,115,.08); border-color: rgba(255,92,115,.24); }
+    .badge.watch { color: var(--yellow); background: rgba(244,197,79,.08); border-color: rgba(244,197,79,.24); }
+    .summary {
+      color: #c7d3dc;
+      font-size: 13px;
+      line-height: 1.55;
+    }
+    .kv {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+    }
+    .kv div {
+      padding: 8px;
+      border-radius: 7px;
+      background: rgba(255,255,255,.035);
+      min-width: 0;
+    }
+    .kv span { display: block; color: var(--muted); font-size: 10px; margin-bottom: 3px; }
+    .kv b { font-family: "SF Mono", Menlo, monospace; font-size: 12px; }
+    .actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    button, .button {
+      min-height: 44px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #182330;
+      color: var(--text);
+      font: inherit;
+      font-size: 13px;
+      font-weight: 720;
+      cursor: pointer;
+    }
+    .primary {
+      border-color: rgba(85,166,255,.38);
+      background: var(--blue);
+      color: #04111c;
+    }
+    .ghost { background: transparent; }
+    .command {
+      display: grid;
+      gap: 10px;
+      padding: 12px;
+    }
+    .input-row {
+      display: grid;
+      grid-template-columns: 1fr 92px;
+      gap: 8px;
+    }
+    input {
+      min-height: 44px;
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #0c131b;
+      color: var(--text);
+      padding: 0 12px;
+      font: inherit;
+      font-family: "SF Mono", Menlo, monospace;
+      text-transform: uppercase;
+    }
+    .seg {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      padding: 3px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #0c131b;
+    }
+    .seg button {
+      min-height: 36px;
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      border-radius: 6px;
+    }
+    .seg button.active {
+      background: var(--panel-2);
+      color: var(--text);
+    }
+    .list-card {
+      display: grid;
+      gap: 9px;
+      padding: 12px;
+    }
+    .row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 0;
+      border-top: 1px solid rgba(255,255,255,.07);
+    }
+    .row:first-child { border-top: 0; padding-top: 0; }
+    .row:last-child { padding-bottom: 0; }
+    .row-main { min-width: 0; }
+    .row-main strong { display: block; font-size: 14px; }
+    .row-main span { display: block; margin-top: 3px; color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .preset-grid {
+      display: grid;
+      gap: 10px;
+    }
+    .preset {
+      padding: 12px;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      align-items: center;
+      gap: 10px;
+      border-color: rgba(255,255,255,.08);
+    }
+    .preset strong { display: block; font-size: 15px; }
+    .preset span { display: block; color: var(--muted); font-size: 12px; margin-top: 4px; }
+    .score {
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      color: var(--green);
+      font-family: "SF Mono", Menlo, monospace;
+      font-weight: 800;
+      background:
+        radial-gradient(circle at center, var(--panel) 0 54%, transparent 55%),
+        conic-gradient(var(--green) 0 82%, rgba(255,255,255,.08) 82% 100%);
+    }
+    .votes {
+      height: 8px;
+      border-radius: 99px;
+      overflow: hidden;
+      display: flex;
+      background: rgba(255,255,255,.08);
+    }
+    .votes i:nth-child(1) { background: var(--green); }
+    .votes i:nth-child(2) { background: var(--yellow); }
+    .votes i:nth-child(3) { background: var(--red); }
+    .holding {
+      padding: 12px;
+    }
+    .holding-top, .holding-bottom {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+    }
+    .holding-bottom {
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .more-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+    .more-item {
+      min-height: 92px;
+      padding: 12px;
+    }
+    .more-item strong { display: block; font-size: 14px; }
+    .more-item span { display: block; color: var(--muted); font-size: 12px; margin-top: 5px; line-height: 1.45; }
+    .tabbar {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      z-index: 4;
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      padding: 7px 6px calc(7px + env(safe-area-inset-bottom, 0px));
+      background: rgba(17,24,32,.96);
+      border-top: 1px solid var(--line);
+      backdrop-filter: blur(18px);
+    }
+    .tabbar button {
+      min-height: 50px;
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      border-radius: 8px;
+      font-size: 11px;
+      display: grid;
+      gap: 3px;
+      place-items: center;
+    }
+    .tabbar b {
+      width: 22px;
+      height: 3px;
+      border-radius: 999px;
+      background: transparent;
+    }
+    .tabbar button.active { color: var(--blue); background: rgba(85,166,255,.08); }
+    .tabbar button.active b { background: var(--blue); }
+    .fab {
+      position: absolute;
+      right: 18px;
+      bottom: 82px;
+      z-index: 5;
+      width: 52px;
+      height: 52px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      border: 1px solid rgba(85,166,255,.48);
+      background: var(--blue);
+      color: #06121f;
+      font-size: 26px;
+      font-weight: 500;
+      box-shadow: 0 12px 30px rgba(85,166,255,.28);
+    }
+    @media (min-width: 860px) {
+      .stage {
+        grid-template-columns: 1fr 430px;
+        padding: 34px;
+      }
+      .brief { margin: 0; }
+    }
+    @media (max-height: 760px) {
+      .phone { height: 720px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="stage">
+    <section class="brief">
+      <h1>StockAI 移动端 v3 原型</h1>
+      <p>这个 demo 只验证信息组织和视觉方向：把桌面模块堆叠改成账户健康、决策队列、命令栏和渐进详情。没有新增产品功能，也不涉及现有架构改造。</p>
+    </section>
+
+    <section class="phone" aria-label="StockAI mobile demo">
+      <div class="screen">
+        <header class="topbar">
+          <div class="brand">
+            <strong>StockAI</strong>
+            <span id="viewName">首页 · 决策总览</span>
+          </div>
+          <div class="market-pill"><i class="dot"></i> 美股盘中</div>
+        </header>
+
+        <div class="content">
+          <section class="view active" data-view="home">
+            <div class="card hero">
+              <div class="hero-row">
+                <div>
+                  <div class="label">组合总资产</div>
+                  <div class="money">$213,322</div>
+                </div>
+                <div style="text-align:right">
+                  <div class="label">今日 P/L</div>
+                  <div class="gain">+$2,184 · +1.03%</div>
+                </div>
+              </div>
+              <div class="mini-chart" role="img" aria-label="Portfolio trend chart"></div>
+              <div class="health">
+                <div class="metric"><span>集中度</span><strong class="neutral">34%</strong></div>
+                <div class="metric"><span>活跃预警</span><strong class="loss">2</strong></div>
+                <div class="metric"><span>运行任务</span><strong>3</strong></div>
+              </div>
+            </div>
+
+            <div class="section-title"><b>今日决策队列</b><span>按风险优先</span></div>
+            <div class="queue">
+              <article class="card decision">
+                <div class="decision-head"><div class="ticker">NVDA</div><span class="badge buy">BUY · 82%</span></div>
+                <div class="summary">AI 结论继续偏多，但财报前波动升高。建议先加入纸面追踪，等待回踩区间。</div>
+                <div class="kv">
+                  <div><span>入场区间</span><b>$875-890</b></div>
+                  <div><span>止损</span><b>$842</b></div>
+                  <div><span>仓位</span><b>8%</b></div>
+                </div>
+                <div class="actions"><button class="primary">纸面追踪</button><button class="ghost">查看分析</button></div>
+              </article>
+              <article class="card decision">
+                <div class="decision-head"><div class="ticker">TSLA</div><span class="badge watch">复核风险</span></div>
+                <div class="summary">持仓亏损扩大且新闻情绪转弱，建议复核止损条件和仓位上限。</div>
+              </article>
+            </div>
+
+            <div class="section-title"><b>运行中</b><span>自动同步</span></div>
+            <div class="card list-card">
+              <div class="row"><div class="row-main"><strong>AAPL 深度分析</strong><span>市场面完成，正在进行新闻和风险辩论</span></div><span class="gain">62%</span></div>
+              <div class="row"><div class="row-main"><strong>质量价值筛选</strong><span>14 位大师评分中，预计 4 分钟</span></div><span class="neutral">41%</span></div>
+            </div>
+          </section>
+
+          <section class="view" data-view="analysis">
+            <div class="card command">
+              <div class="input-row">
+                <input value="MSFT" aria-label="Ticker">
+                <button class="primary">分析</button>
+              </div>
+              <div class="seg" role="tablist">
+                <button class="active">标准</button>
+                <button>深度</button>
+              </div>
+            </div>
+
+            <div class="section-title"><b>最新结论</b><span>2 分钟前</span></div>
+            <article class="card decision">
+              <div class="decision-head"><div class="ticker">MSFT</div><span class="badge buy">BUY · 76%</span></div>
+              <div class="summary">云业务韧性强，AI capex 压力仍可控。短期看财报指引，长期维持增持逻辑。</div>
+              <div class="kv">
+                <div><span>风险</span><b>中</b></div>
+                <div><span>模型</span><b>Gemini</b></div>
+                <div><span>耗时</span><b>11m</b></div>
+              </div>
+              <div class="actions"><button class="primary">按建议追踪</button><button class="ghost">完整报告</button></div>
+            </article>
+
+            <div class="section-title"><b>报告结构</b><span>先摘要，后原文</span></div>
+            <div class="card list-card">
+              <div class="row"><div class="row-main"><strong>市场/技术面</strong><span>趋势延续，短期 RSI 接近过热</span></div><span class="gain">强</span></div>
+              <div class="row"><div class="row-main"><strong>新闻和情绪</strong><span>AI 产品线反馈正向，但估值敏感</span></div><span class="neutral">中</span></div>
+              <div class="row"><div class="row-main"><strong>风险辩论</strong><span>主要风险来自 capex 回收周期</span></div><span>展开</span></div>
+            </div>
+          </section>
+
+          <section class="view" data-view="discover">
+            <div class="section-title" style="margin-top:0"><b>发现机会</b><span>先选目标</span></div>
+            <div class="preset-grid">
+              <article class="card preset"><div><strong>质量价值</strong><span>现金流、护城河、估值安全边际</span></div><button class="primary" style="width:72px">开始</button></article>
+              <article class="card preset"><div><strong>成长动量</strong><span>趋势、催化、相对强度和成交量</span></div><button style="width:72px">选择</button></article>
+              <article class="card preset"><div><strong>宏观防守</strong><span>低波动、现金流、行业防御性</span></div><button style="width:72px">选择</button></article>
+            </div>
+
+            <div class="section-title"><b>候选榜单</b><span>Top 3</span></div>
+            <div class="queue">
+              <article class="card decision">
+                <div class="decision-head"><div><div class="ticker">AVGO</div><div class="label">半导体 · 12/14 看多</div></div><div class="score">84</div></div>
+                <div class="votes"><i style="width:72%"></i><i style="width:18%"></i><i style="width:10%"></i></div>
+                <div class="actions"><button class="primary">发起分析</button><button class="ghost">大师解释</button></div>
+              </article>
+              <article class="card decision">
+                <div class="decision-head"><div><div class="ticker">LLY</div><div class="label">医药 · 高质量防守</div></div><div class="score">79</div></div>
+                <div class="votes"><i style="width:64%"></i><i style="width:25%"></i><i style="width:11%"></i></div>
+              </article>
+            </div>
+          </section>
+
+          <section class="view" data-view="portfolio">
+            <div class="card hero">
+              <div class="hero-row">
+                <div><div class="label">持仓健康</div><div class="money" style="font-size:26px">良好</div></div>
+                <div style="text-align:right"><div class="label">最大单票</div><div class="neutral">NVDA · 18%</div></div>
+              </div>
+              <div class="health">
+                <div class="metric"><span>持仓数</span><strong>9</strong></div>
+                <div class="metric"><span>浮盈</span><strong class="gain">+$18.4k</strong></div>
+                <div class="metric"><span>预警</span><strong class="loss">2</strong></div>
+              </div>
+            </div>
+
+            <div class="section-title"><b>需要关注</b><span>按变化排序</span></div>
+            <div class="queue">
+              <article class="card holding">
+                <div class="holding-top"><div><div class="ticker">TSLA</div><div class="label">120 shares · 观察止损</div></div><div class="loss">-$1,240</div></div>
+                <div class="holding-bottom"><span>最近 AI 信号：Hold</span><button style="min-height:34px;padding:0 10px">复核</button></div>
+              </article>
+              <article class="card holding">
+                <div class="holding-top"><div><div class="ticker">META</div><div class="label">45 shares · 趋势保持</div></div><div class="gain">+$3,820</div></div>
+                <div class="holding-bottom"><span>最近 AI 信号：Buy</span><button style="min-height:34px;padding:0 10px">详情</button></div>
+              </article>
+            </div>
+          </section>
+
+          <section class="view" data-view="more">
+            <div class="section-title" style="margin-top:0"><b>复盘</b><span>低频但重要</span></div>
+            <div class="more-grid">
+              <div class="card more-item"><strong>报告中心</strong><span>最近生成：今日 14:20</span></div>
+              <div class="card more-item"><strong>策略回测</strong><span>3 个结果可查看</span></div>
+              <div class="card more-item"><strong>纸面交易</strong><span>2 个计划待触发</span></div>
+              <div class="card more-item"><strong>任务中心</strong><span>1 个失败需要处理</span></div>
+            </div>
+            <div class="section-title"><b>系统</b><span>设置与维护</span></div>
+            <div class="card list-card">
+              <div class="row"><div class="row-main"><strong>模型设置</strong><span>Gemini · Deep 模式可用</span></div><span>进入</span></div>
+              <div class="row"><div class="row-main"><strong>预警中心</strong><span>2 条活跃预警</span></div><span class="loss">2</span></div>
+              <div class="row"><div class="row-main"><strong>账号与权限</strong><span>多用户隔离已开启</span></div><span>进入</span></div>
+            </div>
+          </section>
+        </div>
+
+        <button class="fab" aria-label="Quick action">+</button>
+
+        <nav class="tabbar" aria-label="Demo bottom navigation">
+          <button class="active" data-target="home"><b></b><span>首页</span></button>
+          <button data-target="analysis"><b></b><span>分析</span></button>
+          <button data-target="discover"><b></b><span>发现</span></button>
+          <button data-target="portfolio"><b></b><span>持仓</span></button>
+          <button data-target="more"><b></b><span>更多</span></button>
+        </nav>
+      </div>
+    </section>
+  </main>
+  <script>
+    const names = {
+      home: "首页 · 决策总览",
+      analysis: "分析 · 命令与结论",
+      discover: "发现 · 策略筛选",
+      portfolio: "持仓 · 风险视图",
+      more: "更多 · 复盘与系统"
+    };
+    document.querySelectorAll(".tabbar button").forEach((button) => {
+      button.addEventListener("click", () => {
+        const target = button.dataset.target;
+        document.querySelectorAll(".tabbar button").forEach((b) => b.classList.toggle("active", b === button));
+        document.querySelectorAll(".view").forEach((view) => view.classList.toggle("active", view.dataset.view === target));
+        document.getElementById("viewName").textContent = names[target];
+        document.querySelector(".content").scrollTop = 0;
+      });
+    });
+  </script>
+</body>
+</html>

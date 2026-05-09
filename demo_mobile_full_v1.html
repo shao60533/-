@@ -1,0 +1,1190 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>StockAI Mobile Full Demo</title>
+  <style>
+    :root {
+      --bg: #090d12;
+      --panel: #101720;
+      --panel-2: #151f2a;
+      --panel-3: #1b2733;
+      --line: #253343;
+      --line-2: #334658;
+      --text: #eff5f8;
+      --muted: #8da1af;
+      --soft: #5e7281;
+      --blue: #55a6ff;
+      --blue-2: #2e78ca;
+      --green: #27d17f;
+      --red: #ff5c73;
+      --yellow: #f4c54f;
+      --purple: #b79cff;
+      --radius: 8px;
+      --shadow: 0 28px 90px rgba(0,0,0,.46);
+      color-scheme: dark;
+    }
+    * { box-sizing: border-box; }
+    html, body { min-height: 100%; }
+    body {
+      margin: 0;
+      display: grid;
+      place-items: center;
+      background:
+        radial-gradient(circle at 18% 2%, rgba(85,166,255,.16), transparent 28%),
+        radial-gradient(circle at 92% 12%, rgba(39,209,127,.09), transparent 28%),
+        linear-gradient(145deg, #071018, #0b0c10 58%, #10151b);
+      color: var(--text);
+      font-family: Inter, "SF Pro Text", -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+    }
+    button, input, select {
+      font: inherit;
+      color: inherit;
+    }
+    button {
+      min-height: 44px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #172231;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 720;
+    }
+    button:hover { border-color: var(--line-2); }
+    input, select {
+      width: 100%;
+      min-height: 44px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #0c131b;
+      padding: 0 12px;
+      outline: none;
+    }
+    input:focus, select:focus { border-color: rgba(85,166,255,.7); }
+    .stage {
+      width: min(100vw, 1080px);
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 20px;
+      align-items: center;
+      padding: 22px;
+    }
+    .brief {
+      max-width: 500px;
+      margin: 0 auto;
+    }
+    .brief h1 {
+      margin: 0 0 12px;
+      font-size: 30px;
+      line-height: 1.15;
+      letter-spacing: 0;
+    }
+    .brief p {
+      margin: 0 0 16px;
+      color: var(--muted);
+      line-height: 1.75;
+      font-size: 14px;
+    }
+    .brief-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 10px;
+    }
+    .brief-tile {
+      min-height: 78px;
+      padding: 12px;
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: var(--radius);
+      background: rgba(255,255,255,.035);
+    }
+    .brief-tile b { display: block; font-size: 14px; }
+    .brief-tile span { display: block; color: var(--muted); font-size: 12px; margin-top: 5px; line-height: 1.45; }
+    .phone {
+      position: relative;
+      width: min(100%, 402px);
+      height: 872px;
+      max-height: calc(100vh - 44px);
+      margin: 0 auto;
+      border: 1px solid rgba(255,255,255,.14);
+      border-radius: 34px;
+      background: #070b10;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+    .screen {
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background: var(--bg);
+    }
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 4;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 16px 16px 10px;
+      border-bottom: 1px solid rgba(36,49,64,.72);
+      background: rgba(9,13,18,.94);
+      backdrop-filter: blur(16px);
+    }
+    .brand {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+    .brand strong {
+      font-size: 15px;
+      white-space: nowrap;
+    }
+    .brand span {
+      max-width: 210px;
+      color: var(--muted);
+      font-size: 11px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .provider {
+      min-height: 32px;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 0 10px;
+      border: 1px solid rgba(85,166,255,.3);
+      border-radius: 999px;
+      color: var(--blue);
+      background: rgba(85,166,255,.08);
+      font-size: 12px;
+      font-weight: 750;
+      white-space: nowrap;
+    }
+    .dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: currentColor;
+      box-shadow: 0 0 0 4px color-mix(in srgb, currentColor 18%, transparent);
+    }
+    .content {
+      flex: 1;
+      overflow-y: auto;
+      padding: 14px 14px 94px;
+    }
+    .view { display: none; }
+    .view.active { display: block; animation: fade .16s ease-out; }
+    @keyframes fade { from { opacity: .55; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+    .section-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin: 18px 2px 8px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .section-title b { color: var(--text); font-size: 14px; }
+    .section-title span { white-space: nowrap; }
+    .card {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--panel);
+      overflow: hidden;
+    }
+    .card-pad { padding: 12px; }
+    .hero {
+      padding: 15px;
+      background:
+        linear-gradient(135deg, rgba(85,166,255,.14), transparent 58%),
+        var(--panel);
+    }
+    .hero-row, .row, .split, .card-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+    }
+    .stack { display: grid; gap: 10px; }
+    .label { color: var(--muted); font-size: 12px; }
+    .money {
+      margin-top: 4px;
+      font-family: "SF Mono", Menlo, monospace;
+      font-size: 30px;
+      font-weight: 800;
+      letter-spacing: 0;
+      white-space: nowrap;
+    }
+    .mono { font-family: "SF Mono", Menlo, monospace; }
+    .gain { color: var(--green); }
+    .loss { color: var(--red); }
+    .neutral { color: var(--yellow); }
+    .blue { color: var(--blue); }
+    .muted { color: var(--muted); }
+    .mini-chart {
+      height: 88px;
+      margin-top: 12px;
+      border: 1px solid rgba(255,255,255,.05);
+      border-radius: 7px;
+      background:
+        linear-gradient(to top, rgba(39,209,127,.18), transparent 44%),
+        linear-gradient(140deg, transparent 0 8%, rgba(39,209,127,.8) 8% 10%, transparent 10% 19%, rgba(39,209,127,.65) 19% 21%, transparent 21% 32%, rgba(39,209,127,.95) 32% 34%, transparent 34% 50%, rgba(39,209,127,.75) 50% 52%, transparent 52% 72%, rgba(39,209,127,.95) 72% 74%, transparent 74%),
+        repeating-linear-gradient(to right, rgba(255,255,255,.04) 0 1px, transparent 1px 42px),
+        repeating-linear-gradient(to top, rgba(255,255,255,.04) 0 1px, transparent 1px 28px);
+    }
+    .bar-chart {
+      height: 110px;
+      border-radius: 7px;
+      border: 1px solid rgba(255,255,255,.06);
+      background:
+        linear-gradient(to top, rgba(85,166,255,.45) 0 28%, transparent 28%),
+        linear-gradient(to top, transparent 0 10%, rgba(255,255,255,.04) 10% 11%, transparent 11% 40%, rgba(255,255,255,.04) 40% 41%, transparent 41% 70%, rgba(255,255,255,.04) 70% 71%, transparent 71%),
+        repeating-linear-gradient(90deg, transparent 0 20px, rgba(85,166,255,.65) 20px 31px, transparent 31px 46px);
+      opacity: .95;
+    }
+    .health {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .metric {
+      min-height: 62px;
+      padding: 10px;
+      border: 1px solid rgba(255,255,255,.07);
+      border-radius: 7px;
+      background: rgba(255,255,255,.025);
+      min-width: 0;
+    }
+    .metric span {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      margin-bottom: 4px;
+      white-space: nowrap;
+    }
+    .metric strong {
+      display: block;
+      font-size: 14px;
+      overflow-wrap: anywhere;
+    }
+    .stats-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+    .stats-4 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+    .tile {
+      min-height: 74px;
+      padding: 11px;
+      border: 1px solid rgba(255,255,255,.07);
+      border-radius: var(--radius);
+      background: rgba(255,255,255,.028);
+    }
+    .tile span { display: block; color: var(--muted); font-size: 11px; }
+    .tile strong { display: block; margin-top: 5px; font-size: 16px; overflow-wrap: anywhere; }
+    .ticker {
+      font-family: "SF Mono", Menlo, monospace;
+      font-weight: 820;
+      font-size: 18px;
+    }
+    .summary {
+      color: #c8d4dd;
+      font-size: 13px;
+      line-height: 1.55;
+    }
+    .badge {
+      min-height: 28px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 999px;
+      padding: 0 9px;
+      border: 1px solid rgba(255,255,255,.12);
+      font-size: 11px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+    .badge.buy { color: var(--green); background: rgba(39,209,127,.08); border-color: rgba(39,209,127,.24); }
+    .badge.sell { color: var(--red); background: rgba(255,92,115,.08); border-color: rgba(255,92,115,.24); }
+    .badge.watch { color: var(--yellow); background: rgba(244,197,79,.08); border-color: rgba(244,197,79,.24); }
+    .badge.info { color: var(--blue); background: rgba(85,166,255,.08); border-color: rgba(85,166,255,.24); }
+    .badge.muted { color: var(--muted); background: rgba(255,255,255,.04); }
+    .kv {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+    }
+    .kv div {
+      min-width: 0;
+      padding: 8px;
+      border-radius: 7px;
+      background: rgba(255,255,255,.035);
+    }
+    .kv span { display: block; color: var(--muted); font-size: 10px; margin-bottom: 3px; }
+    .kv b { font-family: "SF Mono", Menlo, monospace; font-size: 12px; overflow-wrap: anywhere; }
+    .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .actions.three { grid-template-columns: 1fr 1fr 1fr; }
+    .primary {
+      border-color: rgba(85,166,255,.38);
+      background: var(--blue);
+      color: #04111c;
+    }
+    .danger {
+      border-color: rgba(255,92,115,.42);
+      background: rgba(255,92,115,.12);
+      color: var(--red);
+    }
+    .ghost { background: transparent; }
+    .input-row { display: grid; grid-template-columns: 1fr 88px; gap: 8px; }
+    .seg, .chips {
+      display: flex;
+      gap: 6px;
+      overflow-x: auto;
+      scrollbar-width: none;
+      padding-bottom: 1px;
+    }
+    .seg::-webkit-scrollbar, .chips::-webkit-scrollbar { display: none; }
+    .chip {
+      min-height: 34px;
+      flex: 0 0 auto;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #111923;
+      padding: 0 11px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 720;
+      white-space: nowrap;
+    }
+    .chip.active {
+      color: #06121f;
+      border-color: rgba(85,166,255,.55);
+      background: var(--blue);
+    }
+    .list-card { display: grid; gap: 0; }
+    .list-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 12px;
+      border-top: 1px solid rgba(255,255,255,.07);
+      min-width: 0;
+    }
+    .list-row:first-child { border-top: 0; }
+    .row-main { min-width: 0; }
+    .row-main strong {
+      display: block;
+      font-size: 14px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .row-main span {
+      display: block;
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }
+    .progress {
+      height: 7px;
+      overflow: hidden;
+      border-radius: 999px;
+      background: rgba(255,255,255,.07);
+    }
+    .progress i {
+      display: block;
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, var(--blue), var(--green));
+    }
+    .votes {
+      height: 8px;
+      min-width: 88px;
+      border-radius: 99px;
+      overflow: hidden;
+      display: flex;
+      background: rgba(255,255,255,.08);
+    }
+    .votes i:nth-child(1) { background: var(--green); }
+    .votes i:nth-child(2) { background: var(--yellow); }
+    .votes i:nth-child(3) { background: var(--red); }
+    .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .form-grid .full { grid-column: 1 / -1; }
+    .field label {
+      display: block;
+      margin-bottom: 5px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+    }
+    .table-lite {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+    .table-lite th, .table-lite td {
+      padding: 9px 8px;
+      border-bottom: 1px solid rgba(255,255,255,.07);
+      text-align: left;
+    }
+    .table-lite th { color: var(--muted); font-size: 10px; text-transform: uppercase; }
+    details {
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: var(--radius);
+      background: rgba(255,255,255,.025);
+      padding: 10px 12px;
+    }
+    summary {
+      cursor: pointer;
+      color: var(--blue);
+      font-weight: 720;
+      font-size: 13px;
+    }
+    .code {
+      padding: 10px;
+      border-radius: 7px;
+      background: #0b1118;
+      color: #c7d3dc;
+      font-family: "SF Mono", Menlo, monospace;
+      font-size: 11px;
+      line-height: 1.55;
+      overflow-wrap: anywhere;
+    }
+    .coverage-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 8px;
+    }
+    .coverage-item {
+      padding: 10px;
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: var(--radius);
+      background: rgba(255,255,255,.025);
+    }
+    .coverage-item b { display: block; font-size: 13px; }
+    .coverage-item span { display: block; color: var(--muted); font-size: 11px; line-height: 1.45; margin-top: 4px; }
+    .tabbar {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      z-index: 5;
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      padding: 7px 6px calc(7px + env(safe-area-inset-bottom, 0px));
+      border-top: 1px solid var(--line);
+      background: rgba(16,23,32,.96);
+      backdrop-filter: blur(18px);
+    }
+    .tabbar button {
+      min-height: 50px;
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      border-radius: 8px;
+      font-size: 11px;
+      display: grid;
+      place-items: center;
+      gap: 3px;
+      padding: 3px;
+    }
+    .tabbar b {
+      width: 22px;
+      height: 3px;
+      border-radius: 999px;
+      background: transparent;
+    }
+    .tabbar button.active {
+      color: var(--blue);
+      background: rgba(85,166,255,.08);
+    }
+    .tabbar button.active b { background: var(--blue); }
+    .fab {
+      position: absolute;
+      right: 18px;
+      bottom: 82px;
+      z-index: 6;
+      width: 52px;
+      height: 52px;
+      display: grid;
+      place-items: center;
+      border-radius: 50%;
+      border: 1px solid rgba(85,166,255,.48);
+      background: var(--blue);
+      color: #06121f;
+      font-size: 25px;
+      font-weight: 600;
+      box-shadow: 0 12px 30px rgba(85,166,255,.28);
+    }
+    .sheet {
+      position: absolute;
+      inset: auto 0 0 0;
+      z-index: 10;
+      max-height: 82%;
+      padding: 14px;
+      border-top: 1px solid var(--line);
+      border-radius: 18px 18px 0 0;
+      background: rgba(16,23,32,.98);
+      transform: translateY(110%);
+      transition: transform .2s ease;
+      box-shadow: 0 -22px 70px rgba(0,0,0,.5);
+      overflow-y: auto;
+    }
+    .sheet.open { transform: translateY(0); }
+    .scrim {
+      position: absolute;
+      inset: 0;
+      z-index: 9;
+      display: none;
+      background: rgba(0,0,0,.45);
+    }
+    .scrim.open { display: block; }
+    .sheet-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+    .sheet-link {
+      min-height: 82px;
+      padding: 12px;
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: var(--radius);
+      background: rgba(255,255,255,.035);
+      text-align: left;
+    }
+    .sheet-link b { display: block; font-size: 14px; }
+    .sheet-link span { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; line-height: 1.4; }
+    .modal {
+      position: absolute;
+      inset: 0;
+      z-index: 20;
+      display: none;
+      place-items: end center;
+      padding: 14px;
+      background: rgba(0,0,0,.54);
+    }
+    .modal.open { display: grid; }
+    .modal-card {
+      width: 100%;
+      max-height: 86%;
+      overflow-y: auto;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--panel);
+      padding: 14px;
+      box-shadow: 0 24px 70px rgba(0,0,0,.5);
+    }
+    .small { font-size: 12px; }
+    .truncate { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    @media (min-width: 900px) {
+      .stage { grid-template-columns: 1fr 430px; padding: 34px; }
+      .brief { margin: 0; }
+    }
+    @media (max-width: 420px) {
+      .stage { padding: 0; }
+      .brief { display: none; }
+      .phone {
+        width: 100vw;
+        height: 100vh;
+        max-height: none;
+        border-radius: 0;
+        border: 0;
+      }
+      .money { font-size: 28px; }
+      .actions.three { grid-template-columns: 1fr; }
+    }
+    @media (max-height: 760px) and (min-width: 421px) {
+      .phone { height: 730px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="stage">
+    <section class="brief">
+      <h1>StockAI 全功能移动端高保真 Demo</h1>
+      <p>这版覆盖现有产品页面与功能点：认证、仪表盘、AI 分析、智能选股 V3、持仓、预警、报告、回测、纸面交易、任务中心、设置与调度器。所有数据均为静态模拟，不连接后端。</p>
+      <div class="brief-grid">
+        <div class="brief-tile"><b>全页面</b><span>底部 4+More 入口，More 内收纳所有低频页面和详情态。</span></div>
+        <div class="brief-tile"><b>全动线</b><span>发现机会 -> 分析 -> 观察/纸面交易 -> 任务 -> 报告。</span></div>
+        <div class="brief-tile"><b>全状态</b><span>表单、运行中、结果、历史、错误、删除/重试/导出。</span></div>
+        <div class="brief-tile"><b>不动后端</b><span>纯 HTML/CSS/JS 静态 demo，便于对齐功能覆盖。</span></div>
+      </div>
+    </section>
+
+    <section class="phone" aria-label="StockAI full mobile demo">
+      <div class="screen">
+        <header class="topbar">
+          <div class="brand">
+            <strong>StockAI Terminal</strong>
+            <span id="viewName">首页 · 账户与待办</span>
+          </div>
+          <button class="provider" onclick="openModal('model')"><i class="dot"></i> Gemini</button>
+        </header>
+
+        <div class="content">
+          <section class="view active" data-view="dashboard">
+            <div class="card hero">
+              <div class="hero-row">
+                <div>
+                  <div class="label">账户总值</div>
+                  <div class="money">$213,322</div>
+                </div>
+                <div style="text-align:right">
+                  <div class="label">今日 PnL</div>
+                  <div class="mono gain">+$2,184 · +1.03%</div>
+                </div>
+              </div>
+              <div class="mini-chart" aria-label="净值曲线"></div>
+              <div class="health">
+                <div class="metric"><span>总盈亏</span><strong class="gain">+$18.4k</strong></div>
+                <div class="metric"><span>收益率</span><strong class="gain">+9.42%</strong></div>
+                <div class="metric"><span>活跃预警</span><strong class="loss">2</strong></div>
+              </div>
+            </div>
+
+            <div class="section-title"><b>今日决策队列</b><span>按风险优先</span></div>
+            <div class="stack">
+              <article class="card card-pad stack">
+                <div class="card-head"><div class="ticker">NVDA</div><span class="badge buy">BUY · 82%</span></div>
+                <div class="summary">深度分析已完成，建议按计划纸面追踪。财报前波动上升，先等待回踩区间。</div>
+                <div class="kv">
+                  <div><span>入场</span><b>$875-890</b></div>
+                  <div><span>止损</span><b>$842</b></div>
+                  <div><span>仓位</span><b>8%</b></div>
+                </div>
+                <div class="actions"><button class="primary" onclick="go('paperDetail')">纸面追踪</button><button onclick="go('analysisDetail')">查看分析</button></div>
+              </article>
+              <article class="card card-pad stack">
+                <div class="card-head"><div class="ticker">TSLA</div><span class="badge watch">复核风险</span></div>
+                <div class="summary">持仓浮亏扩大，且预警命中“跌破 -5%”。建议复核止损条件和仓位上限。</div>
+                <div class="actions"><button onclick="go('portfolio')">处理持仓</button><button onclick="go('alerts')">查看预警</button></div>
+              </article>
+            </div>
+
+            <div class="section-title"><b>净值与仓位</b><span>现有 Dashboard 功能</span></div>
+            <div class="card card-pad stack">
+              <div class="chips">
+                <button class="chip active">3M</button><button class="chip">1M</button><button class="chip">7D</button><button class="chip">ALL</button>
+                <button class="chip" onclick="toast('已提交历史净值重新计算任务')">重新计算</button>
+              </div>
+              <div class="bar-chart"></div>
+              <div class="stats-2">
+                <div class="tile"><span>仓位分布</span><strong>NVDA 18%</strong></div>
+                <div class="tile"><span>运行中任务</span><strong>3</strong></div>
+              </div>
+            </div>
+
+            <div class="section-title"><b>快捷操作</b><span>入口不遗漏</span></div>
+            <div class="actions three">
+              <button onclick="go('analysis')">AI 分析</button>
+              <button onclick="go('reports')">生成报告</button>
+              <button onclick="go('backtest')">策略回测</button>
+            </div>
+          </section>
+
+          <section class="view" data-view="analysis">
+            <div class="card card-pad stack">
+              <div class="card-head"><strong>发起分析</strong><span class="badge info">标准 / 深度</span></div>
+              <div class="input-row"><input value="MSFT" aria-label="ticker"><button class="primary" onclick="go('analysisRunning')">分析</button></div>
+              <div class="chips"><button class="chip active">标准</button><button class="chip">深度</button></div>
+            </div>
+
+            <div class="section-title"><b>分析记录 Inbox</b><span>含运行中</span></div>
+            <div class="card list-card">
+              <div class="list-row" onclick="go('analysisRunning')">
+                <div class="row-main"><strong>AAPL 深度分析</strong><span>运行中 · 市场面完成，新闻和风险辩论中</span></div><span class="mono blue">62%</span>
+              </div>
+              <div class="list-row" onclick="go('analysisDetail')">
+                <div class="row-main"><strong>NVDA · Buy</strong><span>Gemini · 深度 · 11 分钟 · 已收藏</span></div><span class="badge buy">76%</span>
+              </div>
+              <div class="list-row">
+                <div class="row-main"><strong>TSLA · Hold</strong><span>共享研究 · 可取消收藏 / 删除历史</span></div><span class="badge watch">风险中</span>
+              </div>
+            </div>
+
+            <div class="section-title"><b>Inbox 工具</b><span>搜索/刷新/任务</span></div>
+            <div class="actions three">
+              <button onclick="toast('已刷新分析记录')">刷新</button>
+              <button onclick="toast('筛选 ticker: NVDA')">筛选</button>
+              <button onclick="go('tasks')">看任务</button>
+            </div>
+          </section>
+
+          <section class="view" data-view="analysisRunning">
+            <button class="ghost" onclick="go('analysis')">返回分析</button>
+            <div class="section-title"><b>AAPL 分析运行中</b><span>同页进度</span></div>
+            <div class="card card-pad stack">
+              <div class="progress"><i style="width:62%"></i></div>
+              <div class="stats-2">
+                <div class="tile"><span>当前阶段</span><strong>新闻 / 风险</strong></div>
+                <div class="tile"><span>预计剩余</span><strong>4m 20s</strong></div>
+              </div>
+              <div class="list-card">
+                <div class="list-row"><div class="row-main"><strong>市场面</strong><span>趋势、量价、K 线已完成</span></div><span class="gain">done</span></div>
+                <div class="list-row"><div class="row-main"><strong>新闻面</strong><span>正在抽取催化与负面事件</span></div><span class="blue">run</span></div>
+                <div class="list-row"><div class="row-main"><strong>辩论与交易决策</strong><span>等待上游报告</span></div><span class="muted">wait</span></div>
+              </div>
+              <div class="actions"><button class="danger" onclick="toast('已取消任务')">取消任务</button><button onclick="go('tasksDetail')">任务详情</button></div>
+            </div>
+          </section>
+
+          <section class="view" data-view="analysisDetail">
+            <button class="ghost" onclick="go('analysis')">返回分析</button>
+            <div class="section-title"><b>NVDA 分析详情</b><span>完整功能态</span></div>
+            <article class="card card-pad stack">
+              <div class="card-head"><div class="ticker">NVDA</div><span class="badge buy">BUY · 已校正</span></div>
+              <div class="summary">最终交易建议为 Buy。短期估值偏高但基本面和技术趋势仍强，建议分批入场并设置硬性止损。</div>
+              <div class="kv">
+                <div><span>日期</span><b>2026-05-09</b></div>
+                <div><span>风险</span><b>中高</b></div>
+                <div><span>深度</span><b>深度</b></div>
+              </div>
+              <div class="actions three">
+                <button onclick="go('analysisRunning')">再次分析</button>
+                <button onclick="toast('已加入观察列表，不会自动下单')">加入观察</button>
+                <button class="primary" onclick="go('paperDetail')">纸面交易</button>
+              </div>
+            </article>
+            <div class="section-title"><b>Quick Info</b><span>新闻/基本面/多空</span></div>
+            <div class="stats-2">
+              <div class="tile"><span>新闻</span><strong>AI 订单扩张</strong></div>
+              <div class="tile"><span>基本面</span><strong>ROE 64%</strong></div>
+              <div class="tile"><span>多空比</span><strong class="gain">Bull 72%</strong></div>
+              <div class="tile"><span>K 线</span><strong>近 3 个月</strong></div>
+            </div>
+            <div class="section-title"><b>结构化报告 Tabs</b><span>7 类报告</span></div>
+            <div class="card card-pad stack">
+              <div class="chips">
+                <button class="chip active">概览</button><button class="chip">技术</button><button class="chip">情绪</button><button class="chip">新闻</button><button class="chip">基本面</button><button class="chip">辩论</button><button class="chip">风险</button><button class="chip">原文</button>
+              </div>
+              <div class="code">Market: upward trend intact. News: demand visibility high. Risk: valuation compression and earnings-event volatility.</div>
+              <details><summary>渲染状态 / 重试结构化摘要</summary><div class="summary" style="margin-top:8px">rendering_status=success；如果失败可调用重试。</div></details>
+              <div class="actions three">
+                <button onclick="toast('Markdown 导出已开始')">导出 MD</button>
+                <button onclick="toast('PDF 导出已开始')">导出 PDF</button>
+                <button onclick="toast('分享链接已复制')">分享链接</button>
+              </div>
+              <div class="actions"><button onclick="toast('已收藏')">收藏</button><button class="danger" onclick="toast('分析记录已删除')">删除</button></div>
+            </div>
+          </section>
+
+          <section class="view" data-view="discover">
+            <div class="card card-pad stack">
+              <div class="card-head"><strong>智能选股 V3</strong><span class="badge info">14 大师</span></div>
+              <div class="field"><label>自然语言描述</label><input value="AI 龙头，ROE > 15%，市值 500 亿以上"></div>
+              <div class="chips"><button class="chip active">美股</button><button class="chip">A股</button><button class="chip">港股</button></div>
+              <details open>
+                <summary>高级配置：大师 / 深度 / 候选数 / 成本</summary>
+                <div class="stack" style="margin-top:10px">
+                  <div class="chips"><button class="chip active">全选</button><button class="chip">推荐 4</button><button class="chip">全不选</button></div>
+                  <div class="chips"><button class="chip">经典阈值</button><button class="chip active">Agent 深度</button><button class="chip">圆桌辩论</button></div>
+                  <div class="kv"><div><span>LLM 调用</span><b>56</b></div><div><span>时长</span><b>4m</b></div><div><span>成本</span><b>¥1.82</b></div></div>
+                </div>
+              </details>
+              <div class="actions"><button onclick="go('dashboard')">取消</button><button class="primary" onclick="go('screenerRunning')">开始筛选</button></div>
+            </div>
+
+            <div class="section-title"><b>最近选股</b><span>历史入口</span></div>
+            <div class="card list-card">
+              <div class="list-row" onclick="go('screenerResults')"><div class="row-main"><strong>AI 质量成长 · 24 候选</strong><span>圆桌辩论 · 共识率 68%</span></div><span class="badge buy">结果</span></div>
+              <div class="list-row" onclick="go('screenerHistory')"><div class="row-main"><strong>宏观防守 · 12 候选</strong><span>可复制配置 / 查看结果</span></div><span class="badge muted">历史</span></div>
+            </div>
+          </section>
+
+          <section class="view" data-view="screenerRunning">
+            <button class="ghost" onclick="go('discover')">返回选股</button>
+            <div class="section-title"><b>选股运行中</b><span>Guru 并行进度</span></div>
+            <div class="card card-pad stack">
+              <div class="progress"><i style="width:47%"></i></div>
+              <div class="list-card">
+                <div class="list-row"><div class="row-main"><strong>Buffett x AVGO</strong><span>quality/value 完成</span></div><span class="badge buy">bullish</span></div>
+                <div class="list-row"><div class="row-main"><strong>O'Neil x NVDA</strong><span>momentum 进行中</span></div><span class="badge info">running</span></div>
+                <div class="list-row"><div class="row-main"><strong>Round-table</strong><span>等待 Top 5 候选</span></div><span class="badge muted">wait</span></div>
+              </div>
+              <div class="actions"><button onclick="go('tasksDetail')">任务详情</button><button class="primary" onclick="go('screenerResults')">查看结果态</button></div>
+            </div>
+          </section>
+
+          <section class="view" data-view="screenerResults">
+            <button class="ghost" onclick="go('discover')">返回选股</button>
+            <div class="section-title"><b>选股结果</b><span>结果/透明度/圆桌</span></div>
+            <div class="stats-4">
+              <div class="tile"><span>候选数</span><strong>24</strong></div>
+              <div class="tile"><span>平均分</span><strong>78.6</strong></div>
+              <div class="tile"><span>看多</span><strong class="gain">16</strong></div>
+              <div class="tile"><span>共识率</span><strong>68%</strong></div>
+            </div>
+            <div class="card card-pad stack" style="margin-top:10px">
+              <div class="summary">输入“AI 龙头”被解析为 AI infrastructure / semiconductor；剔除 off-theme 3 只；候选来源 dynamic_llm；缓存命中 42%。</div>
+              <div class="chips"><button class="chip active">Agent 深度</button><button class="chip">14 大师</button><button class="chip">56 LLM call</button><button class="chip">4m12s</button></div>
+            </div>
+            <div class="section-title"><b>候选股票排名</b><span>可展开</span></div>
+            <div class="stack">
+              <article class="card card-pad stack">
+                <div class="card-head"><div><div class="ticker">AVGO</div><div class="label">#1 · 综合分 84.2</div></div><span class="badge buy">BUY</span></div>
+                <div class="votes"><i style="width:72%"></i><i style="width:18%"></i><i style="width:10%"></i></div>
+                <div class="kv"><div><span>现价</span><b>$1342</b></div><div><span>PE</span><b>36.8</b></div><div><span>共识</span><b>高</b></div></div>
+                <details><summary>大师解释 / 圆桌辩论</summary><div class="summary" style="margin-top:8px">多方认为 AI 网络芯片需求明确；空方担心估值和周期。裁判：保留 Top 1，但建议等待回撤。</div></details>
+                <div class="actions"><button class="primary" onclick="go('analysis')">发起分析</button><button onclick="toast('已加入观察列表')">加入观察</button></div>
+              </article>
+              <article class="card card-pad stack">
+                <div class="card-head"><div><div class="ticker">LLY</div><div class="label">#2 · 综合分 79.1</div></div><span class="badge buy">BUY</span></div>
+                <div class="votes"><i style="width:64%"></i><i style="width:25%"></i><i style="width:11%"></i></div>
+              </article>
+            </div>
+          </section>
+
+          <section class="view" data-view="screenerHistory">
+            <button class="ghost" onclick="go('discover')">返回选股</button>
+            <div class="section-title"><b>选股历史</b><span>筛选 / 复制 / 结果</span></div>
+            <div class="card list-card">
+              <div class="list-row"><div class="row-main"><strong>AI 质量成长</strong><span>2026-05-09 · 24 候选 · 圆桌</span></div><button onclick="go('screenerResults')">结果</button></div>
+              <div class="list-row"><div class="row-main"><strong>红利防守</strong><span>2026-05-07 · 可复制配置</span></div><button onclick="go('discover')">复制</button></div>
+            </div>
+          </section>
+
+          <section class="view" data-view="portfolio">
+            <div class="card hero">
+              <div class="hero-row">
+                <div><div class="label">持仓总值</div><div class="money">$213,322</div></div>
+                <div style="text-align:right"><div class="label">总盈亏</div><div class="mono gain">+$18,422</div></div>
+              </div>
+              <div class="health">
+                <div class="metric"><span>持仓数</span><strong>9</strong></div>
+                <div class="metric"><span>收益率</span><strong class="gain">+9.42%</strong></div>
+                <div class="metric"><span>今日/总</span><strong>自动降级</strong></div>
+              </div>
+            </div>
+            <div class="section-title"><b>持仓管理</b><span>买卖/修正/移除</span></div>
+            <div class="card card-pad stack">
+              <div class="input-row"><input placeholder="搜索股票..." value="NVDA"><button onclick="openModal('buy')">买入</button></div>
+              <div class="chips"><button class="chip active">持仓 9</button><button class="chip" onclick="go('transactions')">交易记录 18</button></div>
+              <article class="card card-pad stack">
+                <div class="card-head"><div><div class="ticker">NVDA</div><div class="label">32 股 · NASDAQ</div></div><span class="mono gain">+12.4%</span></div>
+                <div class="kv"><div><span>成本</span><b>$842</b></div><div><span>现价</span><b>$946</b></div><div><span>盈亏</span><b class="gain">+$3,328</b></div></div>
+                <div class="actions three"><button onclick="openModal('sell')">卖出</button><button onclick="openModal('cost')">修正成本</button><button class="danger" onclick="toast('已移除 NVDA')">移除</button></div>
+              </article>
+              <article class="card card-pad"><div class="card-head"><div><div class="ticker">TSLA</div><div class="label">120 股 · 命中止损预警</div></div><span class="mono loss">-5.8%</span></div></article>
+            </div>
+          </section>
+
+          <section class="view" data-view="transactions">
+            <button class="ghost" onclick="go('portfolio')">返回持仓</button>
+            <div class="section-title"><b>交易记录</b><span>BUY/SELL 契约</span></div>
+            <div class="card list-card">
+              <div class="list-row"><div class="row-main"><strong>NVDA</strong><span>BUY 12 @ $875.00 · 2026-05-09 10:31</span></div><span class="gain">BUY</span></div>
+              <div class="list-row"><div class="row-main"><strong>TSLA</strong><span>SELL 30 @ $180.40 · 止损复核</span></div><span class="loss">SELL</span></div>
+            </div>
+          </section>
+
+          <section class="view" data-view="more">
+            <div class="section-title" style="margin-top:0"><b>所有页面</b><span>功能地图</span></div>
+            <div class="sheet-grid" style="margin-bottom:14px">
+              <button class="sheet-link" onclick="go('reports')"><b>报告中心</b><span>日报/周报/月报/个股研报</span></button>
+              <button class="sheet-link" onclick="go('backtest')"><b>策略回测</b><span>表单、任务、结果详情</span></button>
+              <button class="sheet-link" onclick="go('paperList')"><b>纸面交易</b><span>前向追踪/历史回放/详情</span></button>
+              <button class="sheet-link" onclick="go('alerts')"><b>预警中心</b><span>模板、新建、历史、删除</span></button>
+              <button class="sheet-link" onclick="go('tasks')"><b>任务中心</b><span>筛选、详情、重试、取消</span></button>
+              <button class="sheet-link" onclick="go('settings')"><b>系统设置</b><span>模型、通知、调度器</span></button>
+              <button class="sheet-link" onclick="go('auth')"><b>登录注册</b><span>账号、邀请码、多租户</span></button>
+              <button class="sheet-link" onclick="go('coverage')"><b>覆盖矩阵</b><span>核对功能是否遗漏</span></button>
+            </div>
+            <div class="section-title"><b>复盘与运营</b><span>带状态信息</span></div>
+            <div class="card list-card">
+              <div class="list-row"><div class="row-main"><strong>任务失败</strong><span>OpenRouter 超时，支持重试</span></div><span class="badge sell">1</span></div>
+              <div class="list-row"><div class="row-main"><strong>报告生成</strong><span>今日 14:20 已生成日报</span></div><span class="badge info">new</span></div>
+            </div>
+          </section>
+
+          <section class="view" data-view="reports">
+            <button class="ghost" onclick="go('more')">返回更多</button>
+            <div class="section-title"><b>报告生成</b><span>现有类型</span></div>
+            <div class="card card-pad stack">
+              <div class="form-grid">
+                <div class="field"><label>报告类型</label><select><option>日报</option><option>周报</option><option>月报</option><option>个股研报</option></select></div>
+                <div class="field"><label>股票代码</label><input value="NVDA"></div>
+              </div>
+              <button class="primary" onclick="toast('报告任务已提交，可在任务中心查看')">生成报告</button>
+            </div>
+            <div class="section-title"><b>报告预览</b><span>Markdown / sections</span></div>
+            <div class="card card-pad stack">
+              <div class="card-head"><strong>NVDA 个股研报</strong><span class="badge muted">2026-05-09</span></div>
+              <div class="summary">摘要、持仓建议、风险提示、新闻催化和技术面结论均可在报告中渲染。</div>
+              <details open><summary>Markdown 内容</summary><div class="code" style="margin-top:8px"># NVDA Research\n- Signal: Buy\n- Risk: Medium High\n- Action: staged entry</div></details>
+            </div>
+          </section>
+
+          <section class="view" data-view="backtest">
+            <button class="ghost" onclick="go('more')">返回更多</button>
+            <div class="section-title"><b>策略回测</b><span>表单</span></div>
+            <div class="card card-pad stack">
+              <div class="form-grid">
+                <div class="field"><label>股票代码</label><input value="AAPL"></div>
+                <div class="field"><label>策略</label><select><option>均线交叉</option><option>RSI 反转</option></select></div>
+                <div class="field"><label>开始日期</label><input value="2024-01-01"></div>
+                <div class="field"><label>结束日期</label><input value="2026-05-09"></div>
+                <div class="field full"><label>初始资金</label><input value="100000"></div>
+              </div>
+              <button class="primary" onclick="go('backtestResult')">开始回测</button>
+            </div>
+          </section>
+
+          <section class="view" data-view="backtestResult">
+            <button class="ghost" onclick="go('backtest')">返回回测</button>
+            <div class="section-title"><b>回测结果</b><span>AAPL · MA Cross</span></div>
+            <div class="stats-4">
+              <div class="tile"><span>Sharpe</span><strong>1.42</strong></div>
+              <div class="tile"><span>胜率</span><strong>61.8%</strong></div>
+              <div class="tile"><span>总收益</span><strong class="gain">+22.4%</strong></div>
+              <div class="tile"><span>最大回撤</span><strong class="loss">-8.7%</strong></div>
+            </div>
+            <div class="card card-pad stack" style="margin-top:10px">
+              <div class="bar-chart"></div>
+              <div class="card-head"><strong>交易明细</strong><button onclick="go('backtest')">再次运行</button></div>
+              <table class="table-lite"><tr><th>日期</th><th>动作</th><th>PnL</th></tr><tr><td>2026-04-15</td><td class="gain">BUY</td><td>--</td></tr><tr><td>2026-05-02</td><td class="loss">SELL</td><td class="gain">+$1,240</td></tr></table>
+            </div>
+          </section>
+
+          <section class="view" data-view="alerts">
+            <button class="ghost" onclick="go('more')">返回更多</button>
+            <div class="section-title"><b>警报管理</b><span>模板 / 活跃 / 历史</span></div>
+            <div class="chips"><button class="chip" onclick="openModal('alert')">向上突破 +5%</button><button class="chip" onclick="openModal('alert')">止损 -10%</button><button class="chip" onclick="openModal('alert')">日内 ±3%</button></div>
+            <div class="card card-pad stack" style="margin-top:10px">
+              <button class="primary" onclick="openModal('alert')">新建警报</button>
+              <div class="chips"><button class="chip active">活跃 3</button><button class="chip">触发历史 5</button></div>
+              <div class="list-card">
+                <div class="list-row"><div class="row-main"><strong>TSLA</strong><span>跌幅超过 5% · 启用</span></div><button class="danger" onclick="toast('警报已删除')">删除</button></div>
+                <div class="list-row"><div class="row-main"><strong>NVDA</strong><span>价格高于 980 · 启用</span></div><span class="badge buy">on</span></div>
+                <div class="list-row"><div class="row-main"><strong>触发历史</strong><span>TSLA 2026-05-09 触发止损</span></div><span class="badge muted">history</span></div>
+              </div>
+            </div>
+          </section>
+
+          <section class="view" data-view="paperList">
+            <button class="ghost" onclick="go('more')">返回更多</button>
+            <div class="section-title"><b>纸面交易</b><span>前向 / 回放</span></div>
+            <div class="card card-pad stack">
+              <div class="input-row"><input placeholder="搜索代码..." value="NVDA"><button onclick="toast('已刷新')">刷新</button></div>
+              <div class="chips"><button class="chip active">前向追踪</button><button class="chip">历史回放</button></div>
+              <article class="card card-pad stack" onclick="go('paperDetail')">
+                <div class="card-head"><div class="ticker">NVDA</div><span class="badge info">running</span></div>
+                <div class="summary">历史分析 4 次 · Plan 1 active · Orders 2 pending / 1 triggered · Pos 12 shares</div>
+                <div class="mono gain">$102,420 · +2.42%</div>
+              </article>
+            </div>
+          </section>
+
+          <section class="view" data-view="paperDetail">
+            <button class="ghost" onclick="go('paperList')">返回纸面交易</button>
+            <div class="section-title"><b>NVDA 纸面交易</b><span>策略/日度</span></div>
+            <div class="chips"><button class="chip active">策略</button><button class="chip">日度数据</button></div>
+            <div class="card card-pad stack" style="margin-top:10px">
+              <div class="card-head"><strong>当前策略</strong><span class="badge buy">BUY</span></div>
+              <div class="summary">分批建仓，若跌破 $842 硬性止损；若突破 $980 后跟踪止盈。</div>
+              <div class="kv"><div><span>初始资金</span><b>$100k</b></div><div><span>触发</span><b>1</b></div><div><span>待触发</span><b>2</b></div></div>
+              <div class="list-card">
+                <div class="list-row"><div class="row-main"><strong>初始建仓</strong><span>12% target · triggered 2026-05-08 @ $876</span></div><span class="gain">done</span></div>
+                <div class="list-row"><div class="row-main"><strong>加仓档</strong><span>回踩 $850-860</span></div><span class="muted">pending</span></div>
+                <div class="list-row"><div class="row-main"><strong>硬性止损</strong><span>跌破 $842</span></div><span class="loss">armed</span></div>
+              </div>
+            </div>
+            <div class="section-title"><b>日度数据</b><span>EOD / 权益 / 回撤</span></div>
+            <div class="card card-pad stack">
+              <div class="actions"><button onclick="toast('EOD 已刷新 1 条数据')">刷新日度数据</button><button onclick="toast('已切换按 Event')">按 Event</button></div>
+              <div class="bar-chart"></div>
+              <details><summary>AI 最终决策原文 / 执行记录</summary><div class="summary" style="margin-top:8px">FINAL TRANSACTION PROPOSAL: BUY. Plan #28 当前有效，可按 Plan 或 Event 查看。</div></details>
+            </div>
+          </section>
+
+          <section class="view" data-view="tasks">
+            <button class="ghost" onclick="go('more')">返回更多</button>
+            <div class="section-title"><b>任务中心</b><span>范围/状态/类型</span></div>
+            <div class="chips"><button class="chip active">我的任务</button><button class="chip">共享研究</button><button class="chip">全部</button></div>
+            <div class="chips" style="margin-top:8px"><button class="chip active">全部状态</button><button class="chip">运行中</button><button class="chip">失败</button><button class="chip">已完成</button></div>
+            <div class="chips" style="margin-top:8px"><button class="chip active">全部类型</button><button class="chip">AI 分析</button><button class="chip">选股 V3</button><button class="chip">回测</button><button class="chip">报告</button></div>
+            <div class="card list-card" style="margin-top:10px">
+              <div class="list-row" onclick="go('tasksDetail')"><div class="row-main"><strong>AAPL 深度分析</strong><span>analysis · 运行中 · 62%</span><div class="progress" style="margin-top:6px"><i style="width:62%"></i></div></div><span class="badge info">运行中</span></div>
+              <div class="list-row"><div class="row-main"><strong>周报生成</strong><span>report · 成功 · 可查看结果</span></div><button onclick="go('reports')">结果</button></div>
+              <div class="list-row"><div class="row-main"><strong>选股任务</strong><span>screen_v3 · 失败 · 可重试</span></div><span class="badge sell">失败</span></div>
+            </div>
+          </section>
+
+          <section class="view" data-view="tasksDetail">
+            <button class="ghost" onclick="go('tasks')">返回任务</button>
+            <div class="section-title"><b>任务详情</b><span>事件流</span></div>
+            <div class="card card-pad stack">
+              <div class="card-head"><strong>AAPL 深度分析</strong><span class="badge info">streaming</span></div>
+              <div class="progress"><i style="width:62%"></i></div>
+              <div class="code">step_done market 12.4s\nstep_done fundamentals 35.1s\nagent_stage_done sentiment\nstep_start debate</div>
+              <div class="actions three"><button onclick="go('analysisRunning')">查看结果</button><button class="danger" onclick="toast('任务已取消')">取消</button><button onclick="toast('任务已重试')">重试</button></div>
+              <button class="danger" onclick="toast('任务已删除')">删除任务</button>
+            </div>
+          </section>
+
+          <section class="view" data-view="settings">
+            <button class="ghost" onclick="go('more')">返回更多</button>
+            <div class="section-title"><b>系统设置</b><span>保存 / 清空 Key</span></div>
+            <div class="card card-pad stack">
+              <div class="card-head"><strong>AI 模型</strong><button onclick="toast('已切换密钥显示')">显示/隐藏</button></div>
+              <div class="form-grid">
+                <div class="field"><label>Gemini API Key</label><input value="留空保留现有密钥"></div>
+                <div class="field"><label>Gemini 模型</label><input value="gemini-2.5-flash"></div>
+                <div class="field"><label>Qwen 启用</label><select><option>启用</option><option>关闭</option></select></div>
+                <div class="field"><label>Qwen Base URL</label><input value="dashscope compatible"></div>
+              </div>
+              <details open><summary>OpenRouter 聚合层</summary><div class="stack" style="margin-top:10px"><input value="https://openrouter.ai/api/v1"><input value="StockAI Terminal"><div class="chips"><button class="chip active">deep preset</button><button class="chip">quick preset</button><button class="chip">只读 presets</button></div></div></details>
+              <button class="primary" onclick="toast('设置已保存')">保存设置</button>
+            </div>
+            <div class="section-title"><b>通知与调度器</b><span>Email / Telegram / Snapshot</span></div>
+            <div class="card card-pad stack">
+              <div class="form-grid"><div class="field"><label>邮件</label><input value="alerts@example.com"></div><div class="field"><label>Telegram Chat ID</label><input value="123456789"></div></div>
+              <div class="list-card"><div class="list-row"><div class="row-main"><strong>调度器 Running</strong><span>每日 16:30 America/New_York 自动快照 · primary pid=8421</span></div><button onclick="toast('已触发一次快照')">立即跑一次</button></div></div>
+            </div>
+          </section>
+
+          <section class="view" data-view="auth">
+            <button class="ghost" onclick="go('more')">返回更多</button>
+            <div class="section-title"><b>登录 / 注册</b><span>多租户入口</span></div>
+            <div class="card card-pad stack">
+              <div class="card-head"><strong>登录</strong><span class="badge info">session</span></div>
+              <input value="alice@example.com"><input type="password" value="password">
+              <button class="primary" onclick="go('dashboard')">登录</button>
+            </div>
+            <div class="card card-pad stack" style="margin-top:10px">
+              <div class="card-head"><strong>注册</strong><span class="badge muted">邀请码</span></div>
+              <div class="chips"><button class="chip">INVITE-2026</button><button class="chip">TEAM-ALPHA</button></div>
+              <input value="INVITE-2026"><input value="new@example.com"><input value="显示名称"><input type="password" value="password123">
+              <button onclick="toast('注册成功')">注册</button>
+            </div>
+          </section>
+
+          <section class="view" data-view="coverage">
+            <button class="ghost" onclick="go('more')">返回更多</button>
+            <div class="section-title"><b>功能覆盖矩阵</b><span>核对无遗漏</span></div>
+            <div class="coverage-grid">
+              <div class="coverage-item"><b>认证</b><span>登录、注册、邀请码、会话、用户角色入口。</span></div>
+              <div class="coverage-item"><b>仪表盘</b><span>资产、PnL、收益率、预警数、净值曲线 range、重新计算、仓位分布、持仓概览、运行任务、快捷操作。</span></div>
+              <div class="coverage-item"><b>AI 分析</b><span>发起分析、深度切换、Inbox、运行态 Pipeline、详情、Quick Info、K 线、7 tabs、再次分析、观察列表、纸面交易、导出、分享、收藏、删除、渲染重试。</span></div>
+              <div class="coverage-item"><b>智能选股 V3</b><span>自然语言、市场、大师选择、全选/推荐/全不选、经典/Agent/圆桌、候选数、成本估算、运行态、结果、透明度、圆桌、候选展开、历史、复制配置。</span></div>
+              <div class="coverage-item"><b>持仓</b><span>买入、卖出、修正成本、移除、搜索、交易记录、今日/总 PnL 降级。</span></div>
+              <div class="coverage-item"><b>预警</b><span>预警模板、新建、条件选择、活跃警报、触发历史、删除。</span></div>
+              <div class="coverage-item"><b>报告</b><span>日报、周报、月报、个股研报、ticker、任务提交、Markdown/section 预览。</span></div>
+              <div class="coverage-item"><b>回测</b><span>ticker、策略、日期、初始资金、任务提交、结果指标、权益曲线、交易明细、再次运行。</span></div>
+              <div class="coverage-item"><b>纸面交易</b><span>前向追踪、历史回放、搜索、ticker 聚合卡、策略页、计划档位、AI 最终决策、执行记录、日度数据、EOD 刷新、权益和回撤。</span></div>
+              <div class="coverage-item"><b>任务中心</b><span>scope、状态筛选、类型筛选、加载更多、详情事件流、查看结果、取消、重试、删除。</span></div>
+              <div class="coverage-item"><b>设置</b><span>Gemini/Qwen/OpenRouter、显示密钥、清空 Key、预设池、Email、Telegram、调度器状态、立即快照。</span></div>
+            </div>
+          </section>
+        </div>
+
+        <button class="fab" aria-label="快速操作" onclick="openSheet()">+</button>
+        <nav class="tabbar" aria-label="主要导航">
+          <button class="active" data-target="dashboard"><b></b><span>首页</span></button>
+          <button data-target="analysis"><b></b><span>分析</span></button>
+          <button data-target="discover"><b></b><span>发现</span></button>
+          <button data-target="portfolio"><b></b><span>持仓</span></button>
+          <button data-target="more"><b></b><span>更多</span></button>
+        </nav>
+
+        <div class="scrim" id="scrim" onclick="closeSheet()"></div>
+        <div class="sheet" id="sheet">
+          <div class="card-head" style="margin-bottom:12px"><strong>快速操作</strong><button class="ghost" onclick="closeSheet()">关闭</button></div>
+          <div class="sheet-grid">
+            <button class="sheet-link" onclick="goSheet('analysis')"><b>分析股票</b><span>输入 ticker，标准/深度分析</span></button>
+            <button class="sheet-link" onclick="goSheet('discover')"><b>开始选股</b><span>自然语言 + 大师 Agent</span></button>
+            <button class="sheet-link" onclick="openModal('buy')"><b>记录买入</b><span>ticker、数量、价格、备注</span></button>
+            <button class="sheet-link" onclick="openModal('alert')"><b>新建预警</b><span>价格、成交量、涨跌幅</span></button>
+            <button class="sheet-link" onclick="goSheet('reports')"><b>生成报告</b><span>日报/周报/月报/个股</span></button>
+            <button class="sheet-link" onclick="goSheet('tasks')"><b>查看任务</b><span>进度、事件、重试</span></button>
+          </div>
+        </div>
+
+        <div class="modal" id="modal">
+          <div class="modal-card" id="modalCard"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const viewNames = {
+      dashboard: "首页 · 账户与待办",
+      analysis: "分析 · Inbox 与命令",
+      analysisRunning: "分析 · 运行态",
+      analysisDetail: "分析 · 详情",
+      discover: "发现 · 智能选股 V3",
+      screenerRunning: "发现 · 选股运行态",
+      screenerResults: "发现 · 选股结果",
+      screenerHistory: "发现 · 选股历史",
+      portfolio: "持仓 · 管理",
+      transactions: "持仓 · 交易记录",
+      more: "更多 · 全部页面",
+      reports: "报告中心",
+      backtest: "策略回测",
+      backtestResult: "回测结果",
+      alerts: "预警中心",
+      paperList: "纸面交易",
+      paperDetail: "纸面交易详情",
+      tasks: "任务中心",
+      tasksDetail: "任务详情",
+      settings: "系统设置",
+      auth: "登录注册",
+      coverage: "覆盖矩阵"
+    };
+    const primary = new Set(["dashboard", "analysis", "discover", "portfolio", "more"]);
+    function go(view) {
+      document.querySelectorAll(".view").forEach(v => v.classList.toggle("active", v.dataset.view === view));
+      document.querySelectorAll(".tabbar button").forEach(b => {
+        const t = b.dataset.target;
+        b.classList.toggle("active", t === view || (!primary.has(view) && t === "more"));
+      });
+      document.getElementById("viewName").textContent = viewNames[view] || view;
+      document.querySelector(".content").scrollTop = 0;
+      closeSheet();
+      closeModal();
+    }
+    document.querySelectorAll(".tabbar button").forEach(button => {
+      button.addEventListener("click", () => go(button.dataset.target));
+    });
+    function openSheet() {
+      document.getElementById("scrim").classList.add("open");
+      document.getElementById("sheet").classList.add("open");
+    }
+    function closeSheet() {
+      document.getElementById("scrim").classList.remove("open");
+      document.getElementById("sheet").classList.remove("open");
+    }
+    function goSheet(view) { closeSheet(); go(view); }
+    function toast(text) {
+      openModal("toast", text);
+      window.clearTimeout(window.__toastTimer);
+      window.__toastTimer = window.setTimeout(closeModal, 1500);
+    }
+    function closeModal() {
+      document.getElementById("modal").classList.remove("open");
+    }
+    function openModal(type, message) {
+      const card = document.getElementById("modalCard");
+      const forms = {
+        buy: `<div class="card-head"><strong>买入股票</strong><button class="ghost" onclick="closeModal()">关闭</button></div><div class="stack" style="margin-top:12px"><input value="NVDA"><div class="form-grid"><input value="12"><input value="875.00"></div><input value="AI 建议分批入场"><div class="actions"><button onclick="closeModal()">取消</button><button class="primary" onclick="toast('买入记录已保存')">买入</button></div></div>`,
+        sell: `<div class="card-head"><strong>卖出 TSLA</strong><button class="ghost" onclick="closeModal()">关闭</button></div><div class="stack" style="margin-top:12px"><div class="summary">当前持有 120 股</div><div class="form-grid"><input value="30"><input value="180.40"></div><input value="止损复核"><div class="actions"><button onclick="closeModal()">取消</button><button class="danger" onclick="toast('卖出记录已保存')">确认卖出</button></div></div>`,
+        cost: `<div class="card-head"><strong>修正成本价</strong><button class="ghost" onclick="closeModal()">关闭</button></div><div class="stack" style="margin-top:12px"><div class="summary">当前成本 $842.00</div><input value="838.50"><div class="actions"><button onclick="closeModal()">取消</button><button class="primary" onclick="toast('成本价已更新')">保存</button></div></div>`,
+        alert: `<div class="card-head"><strong>新建警报</strong><button class="ghost" onclick="closeModal()">关闭</button></div><div class="stack" style="margin-top:12px"><input value="TSLA"><select><option>价格高于</option><option selected>跌幅超过 (%)</option><option>成交量高于</option></select><input value="5"><div class="actions"><button onclick="closeModal()">取消</button><button class="primary" onclick="toast('警报已创建')">创建</button></div></div>`,
+        model: `<div class="card-head"><strong>模型切换</strong><button class="ghost" onclick="closeModal()">关闭</button></div><div class="stack" style="margin-top:12px"><button class="primary">Gemini · deep</button><button>OpenRouter · Claude</button><button>Qwen · quick</button><div class="summary">切换 active provider/model，不改变页面功能。</div></div>`,
+        toast: `<div class="card-head"><strong>已完成</strong><button class="ghost" onclick="closeModal()">关闭</button></div><div class="summary" style="margin-top:12px">${message || "操作完成"}</div>`
+      };
+      card.innerHTML = forms[type] || forms.toast;
+      document.getElementById("modal").classList.add("open");
+    }
+    document.getElementById("modal").addEventListener("click", (e) => {
+      if (e.target.id === "modal") closeModal();
+    });
+  </script>
+</body>
+</html>
