@@ -249,6 +249,51 @@
         repeating-linear-gradient(90deg, transparent 0 20px, rgba(85,166,255,.65) 20px 31px, transparent 31px 46px);
       opacity: .95;
     }
+    .kline-chart {
+      height: 180px;
+      position: relative;
+      display: grid;
+      grid-template-columns: repeat(18, 1fr);
+      align-items: end;
+      gap: 4px;
+      padding: 14px 10px 18px;
+      border-radius: 7px;
+      border: 1px solid rgba(255,255,255,.06);
+      background:
+        repeating-linear-gradient(to top, rgba(255,255,255,.045) 0 1px, transparent 1px 34px),
+        repeating-linear-gradient(to right, rgba(255,255,255,.035) 0 1px, transparent 1px 42px),
+        #0b1118;
+      overflow: hidden;
+    }
+    .kline-chart::after {
+      content: "TradingView lightweight-charts · OHLCV 90D";
+      position: absolute;
+      left: 10px;
+      bottom: 5px;
+      color: var(--soft);
+      font-size: 10px;
+      font-family: "SF Mono", Menlo, monospace;
+    }
+    .candle {
+      position: relative;
+      width: 100%;
+      min-width: 5px;
+      justify-self: center;
+      border-radius: 2px;
+    }
+    .candle::before {
+      content: "";
+      position: absolute;
+      left: 50%;
+      top: -12px;
+      bottom: -12px;
+      width: 1px;
+      transform: translateX(-50%);
+      background: currentColor;
+      opacity: .75;
+    }
+    .candle.up { color: var(--green); background: var(--green); }
+    .candle.down { color: var(--red); background: var(--red); }
     .health {
       display: grid;
       grid-template-columns: repeat(3, 1fr);
@@ -473,6 +518,27 @@
     }
     .coverage-item b { display: block; font-size: 13px; }
     .coverage-item span { display: block; color: var(--muted); font-size: 11px; line-height: 1.45; margin-top: 4px; }
+    .event-stream {
+      display: grid;
+      gap: 7px;
+    }
+    .event-line {
+      display: grid;
+      grid-template-columns: 24px 1fr auto;
+      gap: 8px;
+      align-items: start;
+      padding: 9px;
+      border: 1px solid rgba(255,255,255,.07);
+      border-radius: 7px;
+      background: rgba(255,255,255,.025);
+      font-size: 12px;
+    }
+    .event-line b { display: block; font-size: 12px; }
+    .event-line span { color: var(--muted); font-size: 11px; line-height: 1.35; }
+    .gap-note {
+      border-color: rgba(244,197,79,.32);
+      background: rgba(244,197,79,.07);
+    }
     .tabbar {
       position: absolute;
       left: 0;
@@ -658,12 +724,12 @@
                   <div><span>止损</span><b>$842</b></div>
                   <div><span>仓位</span><b>8%</b></div>
                 </div>
-                <div class="actions"><button class="primary" onclick="go('paperDetail')">纸面追踪</button><button onclick="go('analysisDetail')">查看分析</button></div>
+                <div class="actions"><button class="primary" onclick="go('paperDetail')">按建议生成纸面计划</button><button onclick="go('analysisDetail')">查看完整分析</button></div>
               </article>
               <article class="card card-pad stack">
                 <div class="card-head"><div class="ticker">TSLA</div><span class="badge watch">复核风险</span></div>
                 <div class="summary">持仓浮亏扩大，且预警命中“跌破 -5%”。建议复核止损条件和仓位上限。</div>
-                <div class="actions"><button onclick="go('portfolio')">处理持仓</button><button onclick="go('alerts')">查看预警</button></div>
+                <div class="actions"><button onclick="go('portfolio')">复核 TSLA 持仓</button><button onclick="go('alerts')">查看止损预警</button></div>
               </article>
             </div>
 
@@ -758,6 +824,12 @@
               <div class="tile"><span>多空比</span><strong class="gain">Bull 72%</strong></div>
               <div class="tile"><span>K 线</span><strong>近 3 个月</strong></div>
             </div>
+            <div class="section-title"><b>K 线走势</b><span>OHLCV · 90D</span></div>
+            <div class="card card-pad">
+              <div class="kline-chart" aria-label="NVDA 90 day candlestick chart">
+                <i class="candle up" style="height:46px"></i><i class="candle down" style="height:32px"></i><i class="candle up" style="height:55px"></i><i class="candle up" style="height:68px"></i><i class="candle down" style="height:38px"></i><i class="candle up" style="height:74px"></i><i class="candle down" style="height:42px"></i><i class="candle up" style="height:88px"></i><i class="candle up" style="height:80px"></i><i class="candle down" style="height:50px"></i><i class="candle up" style="height:92px"></i><i class="candle down" style="height:58px"></i><i class="candle up" style="height:105px"></i><i class="candle up" style="height:96px"></i><i class="candle down" style="height:62px"></i><i class="candle up" style="height:118px"></i><i class="candle up" style="height:126px"></i><i class="candle down" style="height:74px"></i>
+              </div>
+            </div>
             <div class="section-title"><b>结构化报告 Tabs</b><span>7 类报告</span></div>
             <div class="card card-pad stack">
               <div class="chips">
@@ -794,6 +866,7 @@
             <div class="card list-card">
               <div class="list-row" onclick="go('screenerResults')"><div class="row-main"><strong>AI 质量成长 · 24 候选</strong><span>圆桌辩论 · 共识率 68%</span></div><span class="badge buy">结果</span></div>
               <div class="list-row" onclick="go('screenerHistory')"><div class="row-main"><strong>宏观防守 · 12 候选</strong><span>可复制配置 / 查看结果</span></div><span class="badge muted">历史</span></div>
+              <div class="list-row gap-note"><div class="row-main"><strong>产品缺口：running 行</strong><span>当前真实实现 RecentScreensCard 只取 success-only history；include_running 尚未实装。</span></div><span class="badge watch">gap</span></div>
             </div>
           </section>
 
@@ -821,8 +894,16 @@
               <div class="tile"><span>共识率</span><strong>68%</strong></div>
             </div>
             <div class="card card-pad stack" style="margin-top:10px">
-              <div class="summary">输入“AI 龙头”被解析为 AI infrastructure / semiconductor；剔除 off-theme 3 只；候选来源 dynamic_llm；缓存命中 42%。</div>
-              <div class="chips"><button class="chip active">Agent 深度</button><button class="chip">14 大师</button><button class="chip">56 LLM call</button><button class="chip">4m12s</button></div>
+              <div class="card-head"><strong>透明度链路</strong><span class="badge buy">dynamic_llm</span></div>
+              <div class="summary">原始查询：「AI 龙头，ROE > 15%，市值 500 亿以上」 → 核心意图：AI infrastructure / semiconductor quality growth。</div>
+              <div class="chips">
+                <button class="chip active">候选来源 dynamic_llm</button>
+                <button class="chip">行业 semiconductor / software</button>
+                <button class="chip">主题 AI infra / datacenter</button>
+                <button class="chip">关键词 ROE, market cap</button>
+              </div>
+              <div class="summary">剔除 off-theme 3：XOM · Energy，KO · Consumer defensive，JNJ · Healthcare。on-theme 24 / cache hit 42%。</div>
+              <div class="chips"><button class="chip active">Agent 深度</button><button class="chip">14 大师</button><button class="chip">56 LLM call</button><button class="chip">4m12s</button><button class="chip">无降级警告</button></div>
             </div>
             <div class="section-title"><b>候选股票排名</b><span>可展开</span></div>
             <div class="stack">
@@ -865,6 +946,11 @@
             <div class="card card-pad stack">
               <div class="input-row"><input placeholder="搜索股票..." value="NVDA"><button onclick="openModal('buy')">买入</button></div>
               <div class="chips"><button class="chip active">持仓 9</button><button class="chip" onclick="go('transactions')">交易记录 18</button></div>
+              <div class="card card-pad gap-note">
+                <div class="card-head"><strong>建议补齐入口：批量分析持仓</strong><span class="badge watch">产品缺口</span></div>
+                <div class="summary" style="margin-top:8px">后端 batch_analysis worker 与任务类型已存在，但 Dashboard / Portfolio 真实前端暂无触发按钮。demo 在这里显式标注为优先补齐项，不伪装成已实装 UI。</div>
+                <div class="actions" style="margin-top:10px"><button onclick="toast('设计建议：提交 batch_analysis 任务')">批量分析持仓</button><button onclick="go('tasks')">查看任务类型</button></div>
+              </div>
               <article class="card card-pad stack">
                 <div class="card-head"><div><div class="ticker">NVDA</div><div class="label">32 股 · NASDAQ</div></div><span class="mono gain">+12.4%</span></div>
                 <div class="kv"><div><span>成本</span><b>$842</b></div><div><span>现价</span><b>$946</b></div><div><span>盈亏</span><b class="gain">+$3,328</b></div></div>
@@ -892,8 +978,8 @@
               <button class="sheet-link" onclick="go('alerts')"><b>预警中心</b><span>模板、新建、历史、删除</span></button>
               <button class="sheet-link" onclick="go('tasks')"><b>任务中心</b><span>筛选、详情、重试、取消</span></button>
               <button class="sheet-link" onclick="go('settings')"><b>系统设置</b><span>模型、通知、调度器</span></button>
-              <button class="sheet-link" onclick="go('auth')"><b>登录注册</b><span>账号、邀请码、多租户</span></button>
-              <button class="sheet-link" onclick="go('coverage')"><b>覆盖矩阵</b><span>核对功能是否遗漏</span></button>
+              <button class="sheet-link" onclick="toast('账号菜单：显示当前用户、退出登录、角色信息')"><b>账号</b><span>登录/注册属于进入应用前流程</span></button>
+              <button class="sheet-link" onclick="go('settings')"><b>调度器</b><span>每日快照、立即运行</span></button>
             </div>
             <div class="section-title"><b>复盘与运营</b><span>带状态信息</span></div>
             <div class="card list-card">
@@ -996,9 +1082,19 @@
             </div>
             <div class="section-title"><b>日度数据</b><span>EOD / 权益 / 回撤</span></div>
             <div class="card card-pad stack">
-              <div class="actions"><button onclick="toast('EOD 已刷新 1 条数据')">刷新日度数据</button><button onclick="toast('已切换按 Event')">按 Event</button></div>
+              <div class="actions"><button onclick="toast('EOD 已刷新 1 条数据')">刷新日度数据</button><button onclick="toast('已切换日度数据')">日度数据</button></div>
               <div class="bar-chart"></div>
-              <details><summary>AI 最终决策原文 / 执行记录</summary><div class="summary" style="margin-top:8px">FINAL TRANSACTION PROPOSAL: BUY. Plan #28 当前有效，可按 Plan 或 Event 查看。</div></details>
+              <details open>
+                <summary>AI 最终决策原文 / 执行记录</summary>
+                <div class="stack" style="margin-top:10px">
+                  <div class="summary">FINAL TRANSACTION PROPOSAL: BUY. Plan #28 当前有效，可按 Plan 或 Event 查看。</div>
+                  <div class="chips"><button class="chip active">按 Plan</button><button class="chip">按 Event</button></div>
+                  <div class="list-card">
+                    <div class="list-row"><div class="row-main"><strong>Plan #28 · 当前</strong><span>BUY · 指纹去重 · reconfirmed 2 次</span></div><span class="badge buy">active</span></div>
+                    <div class="list-row"><div class="row-main"><strong>Event · analysis #146</strong><span>生成 3 档订单，1 单立即触发，2 单待触发</span></div><span class="badge info">event</span></div>
+                  </div>
+                </div>
+              </details>
             </div>
           </section>
 
@@ -1017,12 +1113,17 @@
 
           <section class="view" data-view="tasksDetail">
             <button class="ghost" onclick="go('tasks')">返回任务</button>
-            <div class="section-title"><b>任务详情</b><span>事件流</span></div>
+            <div class="section-title"><b>任务详情</b><span>SocketIO + catch-up</span></div>
             <div class="card card-pad stack">
               <div class="card-head"><strong>AAPL 深度分析</strong><span class="badge info">streaming</span></div>
               <div class="progress"><i style="width:62%"></i></div>
-              <div class="code">step_done market 12.4s\nstep_done fundamentals 35.1s\nagent_stage_done sentiment\nstep_start debate</div>
-              <div class="actions three"><button onclick="go('analysisRunning')">查看结果</button><button class="danger" onclick="toast('任务已取消')">取消</button><button onclick="toast('任务已重试')">重试</button></div>
+              <div class="event-stream">
+                <div class="event-line"><span>✓</span><div><b>step_done · market</b><span>per-user room 收到市场面完成事件 · 12.4s</span></div><span class="gain">done</span></div>
+                <div class="event-line"><span>✓</span><div><b>step_done · fundamentals</b><span>断线后通过 /api/tasks/events?since=seq catch-up 补齐</span></div><span class="gain">catch</span></div>
+                <div class="event-line"><span>✓</span><div><b>agent_stage_done · sentiment</b><span>情绪代理完成，写入 task_events</span></div><span class="gain">done</span></div>
+                <div class="event-line"><span>↻</span><div><b>step_start · debate</b><span>当前正在多空辩论，前端持续订阅 unified-progress</span></div><span class="blue">live</span></div>
+              </div>
+              <div class="actions three"><button onclick="go('analysisDetail')">按类型查看结果</button><button class="danger" onclick="toast('任务已取消')">取消</button><button onclick="toast('任务已重试')">重试</button></div>
               <button class="danger" onclick="toast('任务已删除')">删除任务</button>
             </div>
           </section>
@@ -1066,7 +1167,7 @@
 
           <section class="view" data-view="coverage">
             <button class="ghost" onclick="go('more')">返回更多</button>
-            <div class="section-title"><b>功能覆盖矩阵</b><span>核对无遗漏</span></div>
+            <div class="section-title"><b>审计覆盖矩阵</b><span>非用户入口</span></div>
             <div class="coverage-grid">
               <div class="coverage-item"><b>认证</b><span>登录、注册、邀请码、会话、用户角色入口。</span></div>
               <div class="coverage-item"><b>仪表盘</b><span>资产、PnL、收益率、预警数、净值曲线 range、重新计算、仓位分布、持仓概览、运行任务、快捷操作。</span></div>
@@ -1080,10 +1181,29 @@
               <div class="coverage-item"><b>任务中心</b><span>scope、状态筛选、类型筛选、加载更多、详情事件流、查看结果、取消、重试、删除。</span></div>
               <div class="coverage-item"><b>设置</b><span>Gemini/Qwen/OpenRouter、显示密钥、清空 Key、预设池、Email、Telegram、调度器状态、立即快照。</span></div>
             </div>
+            <div class="section-title"><b>demo 已按 P0 修正</b><span>相比上一版</span></div>
+            <div class="coverage-grid">
+              <div class="coverage-item"><b>Paper-trade Plan/Event</b><span>已补 chip-row 式“按 Plan / 按 Event”双视图，不再只有单个按 Event 按钮。</span></div>
+              <div class="coverage-item"><b>任务事件流</b><span>已从静态 code block 改为 unified-progress 事件列表：per-user room、catch-up、streaming 状态。</span></div>
+              <div class="coverage-item"><b>K 线图</b><span>已补 TradingView lightweight-charts 风格 OHLCV 90D 视觉区。</span></div>
+              <div class="coverage-item"><b>选股透明度 banner</b><span>已展开原始查询、核心意图、候选来源色码、解析行业/主题/关键词、off-theme 剔除、缓存命中。</span></div>
+              <div class="coverage-item"><b>模型切换</b><span>demo 已从简化 modal 改为 provider + deep/quick preset 两段式，并标注“新任务生效”。</span></div>
+            </div>
+            <div class="section-title"><b>产品真实缺口</b><span>demo 不伪装</span></div>
+            <div class="coverage-grid">
+              <div class="coverage-item gap-note"><b>批量分析持仓入口</b><span>后端 batch_analysis worker 与 task type 存在，但 Dashboard / Portfolio 前端缺触发按钮。demo 在 Portfolio 中以“建议补齐入口”呈现。</span></div>
+              <div class="coverage-item gap-note"><b>Reports / Backtest 历史列表</b><span>真实页面目前只有表单与单次结果/预览，没有历史列表。</span></div>
+              <div class="coverage-item gap-note"><b>持仓/预警反向跳分析</b><span>Portfolio 与 Alerts 行内暂无“查看/发起分析”闭环入口。</span></div>
+              <div class="coverage-item gap-note"><b>Analysis Inbox scope 三态</b><span>尚未与 Tasks 的 mine / shared_research / all 对齐。</span></div>
+              <div class="coverage-item gap-note"><b>Diagnostics / Schwab OAuth 面板</b><span>后端/设计存在相关能力，但 Settings 前端暂无健康诊断与 Schwab 配置入口。</span></div>
+              <div class="coverage-item gap-note"><b>Screener running history 行</b><span>最近选股目前 success-only，无 include_running=true。</span></div>
+              <div class="coverage-item gap-note"><b>Ticker 聚合页</b><span>/ticker/&lt;symbol&gt; 是产品建议，项目未设计/未实装，demo 不作为既有能力展示。</span></div>
+            </div>
           </section>
         </div>
 
-        <button class="fab" aria-label="快速操作" onclick="openSheet()">+</button>
+        <!-- v1.1: remove global FAB from the user flow. Bottom tabs + More
+             are enough; page-level CTAs carry creation actions in context. -->
         <nav class="tabbar" aria-label="主要导航">
           <button class="active" data-target="dashboard"><b></b><span>首页</span></button>
           <button data-target="analysis"><b></b><span>分析</span></button>
@@ -1176,7 +1296,7 @@
         sell: `<div class="card-head"><strong>卖出 TSLA</strong><button class="ghost" onclick="closeModal()">关闭</button></div><div class="stack" style="margin-top:12px"><div class="summary">当前持有 120 股</div><div class="form-grid"><input value="30"><input value="180.40"></div><input value="止损复核"><div class="actions"><button onclick="closeModal()">取消</button><button class="danger" onclick="toast('卖出记录已保存')">确认卖出</button></div></div>`,
         cost: `<div class="card-head"><strong>修正成本价</strong><button class="ghost" onclick="closeModal()">关闭</button></div><div class="stack" style="margin-top:12px"><div class="summary">当前成本 $842.00</div><input value="838.50"><div class="actions"><button onclick="closeModal()">取消</button><button class="primary" onclick="toast('成本价已更新')">保存</button></div></div>`,
         alert: `<div class="card-head"><strong>新建警报</strong><button class="ghost" onclick="closeModal()">关闭</button></div><div class="stack" style="margin-top:12px"><input value="TSLA"><select><option>价格高于</option><option selected>跌幅超过 (%)</option><option>成交量高于</option></select><input value="5"><div class="actions"><button onclick="closeModal()">取消</button><button class="primary" onclick="toast('警报已创建')">创建</button></div></div>`,
-        model: `<div class="card-head"><strong>模型切换</strong><button class="ghost" onclick="closeModal()">关闭</button></div><div class="stack" style="margin-top:12px"><button class="primary">Gemini · deep</button><button>OpenRouter · Claude</button><button>Qwen · quick</button><div class="summary">切换 active provider/model，不改变页面功能。</div></div>`,
+        model: `<div class="card-head"><strong>模型切换</strong><button class="ghost" onclick="closeModal()">关闭</button></div><div class="stack" style="margin-top:12px"><div class="section-title" style="margin:0"><b>1. Provider</b><span>当前 Gemini</span></div><div class="chips"><button class="chip active">Gemini</button><button class="chip">OpenRouter</button><button class="chip">Qwen</button></div><div class="section-title" style="margin:4px 0 0"><b>2. Role preset</b><span>deep / quick</span></div><div class="form-grid"><select><option>deep · gemini-2.5-pro</option><option>deep · claude-sonnet</option></select><select><option>quick · gemini-2.5-flash</option><option>quick · qwen-plus</option></select></div><div class="summary">与项目 LLMSwitcher 一致：先选 provider，再分别选择 deep / quick 角色预设。保存后新任务生效，已运行任务不受影响。</div><button class="primary" onclick="toast('模型配置已保存，新任务生效')">保存模型选择</button></div>`,
         toast: `<div class="card-head"><strong>已完成</strong><button class="ghost" onclick="closeModal()">关闭</button></div><div class="summary" style="margin-top:12px">${message || "操作完成"}</div>`
       };
       card.innerHTML = forms[type] || forms.toast;
