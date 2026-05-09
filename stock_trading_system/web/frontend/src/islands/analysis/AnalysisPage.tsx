@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useCallback, lazy, Suspense } from "react"
 import {
-  Sparkles, Send, ArrowLeft, Clock, Newspaper, BarChart3, Scale,
+  Sparkles, Send, ArrowLeft, Clock,
   ExternalLink, ChevronDown, ChevronRight,
   MoreVertical, Trash2, Star,
 } from "lucide-react"
@@ -178,23 +178,9 @@ interface NewsItem {
   url?: string
 }
 
-/** Read a numeric fundamentals field into a typed value, returning ``null``
- * for anything we can't safely cast — guards against akshare returning
- * "—" / "N/A" strings for missing metrics. */
-function fundNum(fund: Record<string, unknown> | null,
-                  key: string): number | null {
-  if (!fund) return null
-  const raw = fund[key]
-  if (typeof raw === "number" && Number.isFinite(raw)) return raw
-  if (typeof raw === "string") {
-    const n = Number(raw)
-    if (Number.isFinite(n)) return n
-  }
-  return null
-}
-
-const fmtNum = (v: number, d: number) => v.toFixed(d)
-const fmtPct = (v: number) => `${(v * 100).toFixed(1)}%`
+// mobile-ui-v1.3: fundNum/fmtNum/fmtPct were used by the now-deleted
+// QuickInfoCard fundamentals tile. Numeric fundamentals continue to
+// render inside the structured "基本面" tab via the cards barrel.
 
 interface TaskSubmitResult { task_id: string; status: string }
 
@@ -839,36 +825,9 @@ function AnalysisDetailView({ detail: initialDetail }: { detail: AnalysisDetail 
     }
   } catch { /* ignore malformed advice payloads */ }
 
-  // v1.19.1: quick-info cards now hit the same data APIs the analyzer
-  // uses (yfinance/Polygon) instead of heuristic-parsing the LLM markdown.
-  // News is fetched per-detail-mount; Fundamentals same. Debate reuses
-  // the structured rendering already on the detail.
-  const [news, setNews] = useState<NewsItem[]>([])
-  const [fund, setFund] = useState<Record<string, unknown> | null>(null)
-  useEffect(() => {
-    if (!detail.id) return
-    // v1.16: one aggregated request instead of two parallel XHRs.
-    // Backend handles upstream failures and returns partial results,
-    // so we don't need to retry on individual sub-fetches here.
-    interface QuickInfoResp {
-      news?: NewsItem[]
-      fundamentals?: Record<string, unknown> | null
-    }
-    apiGet<QuickInfoResp>(`/api/analysis/${detail.id}/quick-info`)
-      .then(r => {
-        setNews((r?.news ?? []).slice(0, 3))
-        setFund(r?.fundamentals ?? null)
-      })
-      .catch(() => {
-        setNews([])
-        setFund(null)
-      })
-  }, [detail.id])
-
-  const scrollToTab = (tabKey: string) => {
-    setActiveTab(tabKey)
-    tabsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
-  }
+  // mobile-ui-v1.3: Quick Info cards (news / fundamentals / debate)
+  // were removed. News + fundamentals continue to render inside the
+  // structured "新闻" / "基本面" tabs via the cards barrel.
 
   // Detect if analysis is still running (created < 5 min ago, no summary)
   const isRecent = detail.created_at && (Date.now() - new Date(detail.created_at).getTime()) < 5 * 60 * 1000
@@ -1159,7 +1118,149 @@ function AnalysisDetailView({ detail: initialDetail }: { detail: AnalysisDetail 
           </Tabs>
         </CardContent>
       </Card>
+
+      {/* K-line chart — placed AFTER the structured core per the demo
+          IA. Viewport-gated: TVChart is lazy-loaded only after the
+          section scrolls into view, and the OHLCV fetch fires from
+          the same observer. */}
+      <Card ref={klineSectionRef}>
+        <CardHeader><CardTitle className="text-sm">K 线走势（近 3 个月）</CardTitle></CardHeader>
+        <CardContent>
+          {klineVisible ? (
+            <Suspense fallback={<Skeleton className="w-full" style={{ height: kChartHeight }} />}>
+              <TVChart data={klineData} state={klineState} onRetry={refetchKline} height={kChartHeight} />
+            </Suspense>
+          ) : (
+            <Skeleton className="w-full" style={{ height: kChartHeight }} />
+          )}
+        </CardContent>
+      </Card>
+
+      {/* 记录与操作 — metadata + secondary actions. Sits AFTER K线
+          per mobile-ui-v1.3 §4.3, replacing the old top action row. */}
+      <Card data-section="records">
+        <CardHeader><CardTitle className="text-sm">记录与操作</CardTitle></CardHeader>
+        <CardContent className="space-y-3">
+          <div className="grid grid-cols-3 gap-x-3 gap-y-1 text-xs min-w-0">
+            <div className="min-w-0">
+              <span className="text-muted-foreground">日期</span>
+              <div className="font-mono truncate">{detail.date || "—"}</div>
+            </div>
+            <div className="min-w-0">
+              <span className="text-muted-foreground">风险</span>
+              <div className="truncate">{detail.risk_level || "—"}</div>
+            </div>
+            <div className="min-w-0">
+              <span className="text-muted-foreground">深度</span>
+              <div className="truncate">{depthLabel(detail.depth)}</div>
+            </div>
+          </div>
+          {(detail.created_by_name || detail.provider || detail.duration_sec != null || detail.created_at) && (
+            <div className="text-[11px] text-muted-foreground flex flex-wrap gap-x-4 gap-y-1">
+              {detail.created_by_name && <span>创建者：{detail.created_by_name}</span>}
+              {detail.provider && (
+                <span>Provider：{detail.provider}{detail.model ? ` / ${detail.model}` : ""}</span>
+              )}
+              {detail.duration_sec != null && (
+                <span>耗时：{Number(detail.duration_sec).toFixed(1)}s</span>
+              )}
+              {detail.created_at && <span>创建于：{detail.created_at}</span>}
+            </div>
+          )}
+          <div className="flex flex-wrap gap-2 pt-1">
+            <Button variant="outline" size="sm" onClick={handleReanalyze}>再次分析</Button>
+            <Button variant="outline" size="sm" onClick={handleTrack}>加入观察</Button>
+            <Button
+              size="sm"
+              onClick={handlePaperTrack}
+              disabled={paperBusy}
+            >
+              {paperBusy ? "提交中…" : "纸面交易"}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* 原始报告 fallback / debug — chip switcher exposes the raw
+          analyst markdown panels (Markdown / 市场原文 / 新闻原文 /
+          风险原文) for cases where the structured cards above are
+          missing or the user wants the source text. */}
+      <RawReportFallback detail={detail} />
     </div>
+  )
+}
+
+/* ── Raw report fallback ─────────────────────────────────── */
+
+const RAW_TABS = [
+  { key: "markdown",      label: "Markdown" },
+  { key: "market",        label: "市场原文" },
+  { key: "news",          label: "新闻原文" },
+  { key: "risk",          label: "风险原文" },
+] as const
+
+type RawTabKey = typeof RAW_TABS[number]["key"]
+
+function RawReportFallback({ detail }: { detail: AnalysisDetail }) {
+  const [tab, setTab] = useState<RawTabKey>("markdown")
+
+  const content = (() => {
+    switch (tab) {
+      case "market": return detail.market_report || ""
+      case "news":   return detail.news_report || ""
+      case "risk":   return detail.risk_assessment || ""
+      case "markdown":
+      default: {
+        // Concatenate the analyst sections so the Markdown chip shows
+        // a single readable document; falls back to the summary when
+        // analyst-level reports are absent.
+        const parts = [
+          detail.summary,
+          detail.market_report,
+          detail.sentiment_report,
+          detail.news_report,
+          detail.fundamentals_report,
+          detail.investment_debate,
+          detail.risk_assessment,
+          detail.trade_decision,
+        ].filter(Boolean) as string[]
+        return parts.join("\n\n---\n\n")
+      }
+    }
+  })()
+
+  return (
+    <Card data-section="raw-report">
+      <CardHeader>
+        <CardTitle className="text-sm">原始报告 <span className="text-xs text-muted-foreground ml-2">fallback / debug</span></CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="flex gap-2 flex-wrap">
+          {RAW_TABS.map(t => (
+            <button
+              key={t.key}
+              onClick={() => setTab(t.key)}
+              className={`px-3 py-1 rounded text-xs border transition-colors ${
+                tab === t.key
+                  ? "bg-primary/10 text-primary border-primary/40"
+                  : "border-border text-muted-foreground hover:border-border/80"
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+        {content ? (
+          <div className="prose prose-invert prose-sm max-w-none text-[var(--color-text-secondary)] max-h-[400px] overflow-y-auto">
+            <Suspense fallback={<Skeleton className="h-24 w-full" />}>
+              <MarkdownBody>{content}</MarkdownBody>
+            </Suspense>
+          </div>
+        ) : (
+          <p className="text-xs text-muted-foreground py-4 text-center">该面无原始内容</p>
+        )}
+      </CardContent>
+    </Card>
   )
 }
 
