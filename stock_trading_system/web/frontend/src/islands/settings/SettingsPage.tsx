@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useState } from "react"
-import { Settings, Save, RefreshCw, Eye, EyeOff, Trash2, Clock, PlayCircle } from "lucide-react"
+import { Settings, Save, RefreshCw, Eye, EyeOff, Trash2, Clock, PlayCircle, CheckCircle2, Link2, KeyRound } from "lucide-react"
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert"
 import { Switch } from "@/components/ui/switch"
-import { apiGet, apiPost } from "@/lib/api"
+import { apiGet, apiPost, ApiError } from "@/lib/api"
+import { toast } from "@/components/ui/toaster"
 
 // Backend response shape from GET /api/settings (see web/app.py::api_settings).
 interface SettingsResponse {
@@ -636,6 +637,8 @@ export function SettingsPage() {
         </CardContent>
       </Card>
 
+      <LoginMethodsSection />
+
       <SchedulerStatusCard />
     </div>
   )
@@ -770,6 +773,165 @@ function SchedulerStatusCard() {
             )}
           </div>
         )}
+      </CardContent>
+    </Card>
+  )
+}
+
+// ─── OAuth quick sign-in: linked-providers + link/unlink controls ─────
+// Mirrors GET /api/auth/oauth/linked + the per-provider unlink endpoint.
+// Always includes a "邮箱密码" row to make the placeholder password fact
+// visible — matches the v1.0 backend invariant that every user has a
+// fallback password_hash.
+
+interface LinkedProviderRow {
+  provider: string
+  email: string | null
+  email_verified: boolean
+  linked_at: string
+  last_login_at: string | null
+}
+
+interface LinkedProvidersResponse {
+  providers: LinkedProviderRow[]
+  has_password: boolean
+}
+
+interface AvailableProvider {
+  name: string
+  label: string
+  icon: string
+}
+
+interface AvailableProvidersResponse {
+  providers: AvailableProvider[]
+}
+
+const PROVIDER_LABELS: Record<string, string> = {
+  google: "Google",
+  github: "GitHub",
+}
+
+function formatProviderLabel(name: string): string {
+  return PROVIDER_LABELS[name] ?? name
+}
+
+function LoginMethodsSection() {
+  const [linked, setLinked] = useState<LinkedProvidersResponse | null>(null)
+  const [available, setAvailable] = useState<AvailableProvider[]>([])
+  const [busyProvider, setBusyProvider] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
+
+  const refresh = useCallback(async () => {
+    try {
+      const [l, a] = await Promise.all([
+        apiGet<LinkedProvidersResponse>("/api/auth/oauth/linked"),
+        apiGet<AvailableProvidersResponse>("/api/auth/providers"),
+      ])
+      setLinked(l)
+      setAvailable(a.providers ?? [])
+    } catch {
+      // 401 or network failure → keep section hidden by leaving linked=null.
+      setLinked(null)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    refresh()
+  }, [refresh])
+
+  const unlink = useCallback(async (provider: string) => {
+    if (!window.confirm(`确定解绑 ${formatProviderLabel(provider)}?`)) return
+    setBusyProvider(provider)
+    try {
+      await apiPost(`/api/auth/oauth/${encodeURIComponent(provider)}/unlink`, {})
+      await refresh()
+      toast.success(`已解绑 ${formatProviderLabel(provider)}`)
+    } catch (err: unknown) {
+      if (err instanceof ApiError && (err.body as { error?: string })?.error === "last_method") {
+        toast.error("不能解绑：这是您唯一的登录方式")
+      } else {
+        toast.error("解绑失败")
+      }
+    } finally {
+      setBusyProvider(null)
+    }
+  }, [refresh])
+
+  if (loading) {
+    return null
+  }
+  if (linked === null) {
+    // /api/auth/oauth/linked failed (likely 401) — section hidden.
+    return null
+  }
+
+  const linkedNames = new Set(linked.providers.map((p) => p.provider))
+  const unlinkedAvailable = available.filter((p) => !linkedNames.has(p.name))
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <KeyRound className="h-4 w-4" /> 登录方式
+        </CardTitle>
+        <CardDescription>
+          已绑定的登录方式可独立用于下次登录；至少保留一种以避免锁死账号。
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-1.5">
+        <div className="flex items-center justify-between text-sm py-1.5 px-1">
+          <span className="flex items-center gap-2">
+            <CheckCircle2 className="h-4 w-4 text-green-500" />
+            邮箱密码
+          </span>
+          <span className="text-xs text-muted-foreground">默认</span>
+        </div>
+
+        {linked.providers.map((p) => (
+          <div
+            key={p.provider}
+            className="flex items-center justify-between text-sm py-1.5 px-1"
+          >
+            <span className="flex items-center gap-2 min-w-0">
+              <CheckCircle2 className="h-4 w-4 text-green-500 shrink-0" />
+              <span className="truncate">
+                {formatProviderLabel(p.provider)}
+                {p.email ? ` · ${p.email}` : ""}
+              </span>
+            </span>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-[var(--color-accent-red)] hover:text-[var(--color-accent-red)]"
+              disabled={busyProvider !== null}
+              onClick={() => unlink(p.provider)}
+              aria-label={`解绑 ${formatProviderLabel(p.provider)}`}
+            >
+              {busyProvider === p.provider ? (
+                <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                "解绑"
+              )}
+            </Button>
+          </div>
+        ))}
+
+        {unlinkedAvailable.map((p) => (
+          <a
+            key={p.name}
+            href={`/auth/oauth/${encodeURIComponent(p.name)}/start?intent=link&next=/settings`}
+            className="flex items-center justify-between text-sm py-1.5 px-1 rounded hover:bg-accent transition-colors"
+          >
+            <span className="flex items-center gap-2 text-muted-foreground">
+              <Link2 className="h-4 w-4" />
+              关联 {p.label}
+            </span>
+            <span className="text-xs text-[var(--color-accent-blue)]">前往</span>
+          </a>
+        ))}
       </CardContent>
     </Card>
   )
