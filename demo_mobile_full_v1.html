@@ -539,6 +539,111 @@
       border-color: rgba(244,197,79,.32);
       background: rgba(244,197,79,.07);
     }
+    .structured-card {
+      display: grid;
+      gap: 10px;
+      padding: 12px;
+      border: 1px solid rgba(85,166,255,.18);
+      border-radius: var(--radius);
+      background:
+        linear-gradient(135deg, rgba(85,166,255,.08), transparent 48%),
+        rgba(255,255,255,.025);
+    }
+    .score-row {
+      display: grid;
+      grid-template-columns: 76px 1fr;
+      gap: 12px;
+      align-items: center;
+    }
+    .score-ring {
+      width: 68px;
+      height: 68px;
+      display: grid;
+      place-items: center;
+      border-radius: 50%;
+      color: var(--green);
+      font-family: "SF Mono", Menlo, monospace;
+      font-size: 18px;
+      font-weight: 850;
+      background:
+        radial-gradient(circle at center, var(--panel) 0 55%, transparent 56%),
+        conic-gradient(var(--green) 0 76%, rgba(255,255,255,.08) 76% 100%);
+    }
+    .evidence-list {
+      display: grid;
+      gap: 8px;
+    }
+    .evidence {
+      padding: 9px;
+      border-radius: 7px;
+      background: rgba(255,255,255,.035);
+      color: #c8d4dd;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    .evidence b { color: var(--text); }
+    .guru-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 8px;
+    }
+    .guru-pill {
+      min-height: 58px;
+      display: grid;
+      grid-template-columns: 34px 1fr;
+      gap: 8px;
+      align-items: center;
+      padding: 9px;
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: 8px;
+      background: rgba(255,255,255,.025);
+      min-width: 0;
+    }
+    .avatar {
+      width: 34px;
+      height: 34px;
+      display: grid;
+      place-items: center;
+      border-radius: 50%;
+      background: linear-gradient(135deg, rgba(85,166,255,.85), rgba(39,209,127,.55));
+      color: #06121f;
+      font-family: "SF Mono", Menlo, monospace;
+      font-size: 11px;
+      font-weight: 850;
+    }
+    .guru-pill b,
+    .guru-result b {
+      display: block;
+      font-size: 12px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .guru-pill span,
+    .guru-result span {
+      display: block;
+      margin-top: 2px;
+      color: var(--muted);
+      font-size: 10px;
+      line-height: 1.3;
+    }
+    .guru-result {
+      display: grid;
+      gap: 8px;
+      padding: 10px;
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: 8px;
+      background: rgba(255,255,255,.025);
+    }
+    .confidence {
+      display: grid;
+      grid-template-columns: 1fr 34px;
+      gap: 8px;
+      align-items: center;
+      font-family: "SF Mono", Menlo, monospace;
+      font-size: 10px;
+      color: var(--muted);
+    }
     .tabbar {
       position: absolute;
       left: 0;
@@ -674,9 +779,9 @@
   <main class="stage">
     <section class="brief">
       <h1>StockAI 全功能移动端高保真 Demo</h1>
-      <p>这版覆盖现有产品页面与功能点：认证、仪表盘、AI 分析、智能选股 V3、持仓、预警、报告、回测、纸面交易、任务中心、设置与调度器。所有数据均为静态模拟，不连接后端。</p>
+      <p>这版覆盖现有产品页面与功能点：认证、首页资产与持仓、AI 分析、智能选股 V3、预警、报告、回测、纸面交易、任务中心、设置与调度器。所有数据均为静态模拟，不连接后端。</p>
       <div class="brief-grid">
-        <div class="brief-tile"><b>全页面</b><span>底部 4+More 入口，More 内收纳所有低频页面和详情态。</span></div>
+        <div class="brief-tile"><b>全页面</b><span>首页合并持仓，纸面交易升为一级入口，More 收纳低频页面和详情态。</span></div>
         <div class="brief-tile"><b>全动线</b><span>发现机会 -> 分析 -> 观察/纸面交易 -> 任务 -> 报告。</span></div>
         <div class="brief-tile"><b>全状态</b><span>表单、运行中、结果、历史、错误、删除/重试/导出。</span></div>
         <div class="brief-tile"><b>不动后端</b><span>纯 HTML/CSS/JS 静态 demo，便于对齐功能覆盖。</span></div>
@@ -688,7 +793,7 @@
         <header class="topbar">
           <div class="brand">
             <strong>StockAI Terminal</strong>
-            <span id="viewName">首页 · 账户与待办</span>
+            <span id="viewName">首页 · 资产与持仓</span>
           </div>
           <button class="provider" onclick="openModal('model')"><i class="dot"></i> Gemini</button>
         </header>
@@ -714,22 +819,72 @@
               </div>
             </div>
 
-            <div class="section-title"><b>今日决策队列</b><span>按风险优先</span></div>
+            <div class="section-title"><b>持仓明细</b><span>首页合并持仓管理</span></div>
             <div class="stack">
+              <div class="card card-pad stack">
+                <div class="input-row"><input placeholder="搜索股票..." value="NVDA"><button onclick="openModal('buy')">买入</button></div>
+                <div class="chips"><button class="chip active">持仓 9</button><button class="chip" onclick="go('transactions')">交易记录 18</button><button class="chip" onclick="go('paperList')">纸面计划</button></div>
+              </div>
+              <div class="card card-pad gap-note">
+                <div class="card-head"><strong>建议补齐入口：批量分析持仓</strong><span class="badge watch">产品缺口</span></div>
+                <div class="summary" style="margin-top:8px">后端 batch_analysis worker 与任务类型已存在，但 Dashboard / Portfolio 真实前端暂无触发按钮。合并后应放在首页持仓明细上方，作为批量复核的主入口。</div>
+                <div class="actions" style="margin-top:10px"><button onclick="toast('设计建议：提交 batch_analysis 任务')">批量分析持仓</button><button onclick="go('tasks')">查看任务类型</button></div>
+              </div>
+
               <article class="card card-pad stack">
-                <div class="card-head"><div class="ticker">NVDA</div><span class="badge buy">BUY · 82%</span></div>
-                <div class="summary">深度分析已完成，建议按计划纸面追踪。财报前波动上升，先等待回踩区间。</div>
-                <div class="kv">
-                  <div><span>入场</span><b>$875-890</b></div>
-                  <div><span>止损</span><b>$842</b></div>
-                  <div><span>仓位</span><b>8%</b></div>
-                </div>
-                <div class="actions"><button class="primary" onclick="go('paperDetail')">按建议生成纸面计划</button><button onclick="go('analysisDetail')">查看完整分析</button></div>
+                <div class="card-head"><div><div class="ticker">NVDA</div><div class="label">32 股 · NASDAQ · AI 芯片</div></div><span class="mono gain">+12.4%</span></div>
+                <div class="kv"><div><span>成本</span><b>$842</b></div><div><span>现价</span><b>$946</b></div><div><span>盈亏</span><b class="gain">+$3,328</b></div></div>
+                <div class="kv"><div><span>市值</span><b>$30,272</b></div><div><span>仓位</span><b>14.2%</b></div><div><span>计划</span><b>等回踩</b></div></div>
+                <div class="actions three"><button onclick="openModal('sell')">卖出</button><button onclick="openModal('cost')">修正成本</button><button class="danger" onclick="toast('已移除 NVDA')">移除</button></div>
               </article>
+
               <article class="card card-pad stack">
-                <div class="card-head"><div class="ticker">TSLA</div><span class="badge watch">复核风险</span></div>
-                <div class="summary">持仓浮亏扩大，且预警命中“跌破 -5%”。建议复核止损条件和仓位上限。</div>
-                <div class="actions"><button onclick="go('portfolio')">复核 TSLA 持仓</button><button onclick="go('alerts')">查看止损预警</button></div>
+                <div class="card-head"><div><div class="ticker">TSLA</div><div class="label">120 股 · 命中止损预警</div></div><span class="mono loss">-5.8%</span></div>
+                <div class="kv"><div><span>成本</span><b>$191</b></div><div><span>现价</span><b>$180</b></div><div><span>盈亏</span><b class="loss">-$1,320</b></div></div>
+                <div class="kv"><div><span>市值</span><b>$21,648</b></div><div><span>仓位</span><b>10.1%</b></div><div><span>风险</span><b>止损复核</b></div></div>
+                <div class="actions three"><button onclick="openModal('sell')">卖出</button><button onclick="openModal('cost')">修正成本</button><button class="danger" onclick="toast('已移除 TSLA')">移除</button></div>
+              </article>
+
+              <article class="card card-pad stack">
+                <div class="card-head"><div><div class="ticker">AAPL</div><div class="label">48 股 · NASDAQ · 消费电子</div></div><span class="mono gain">+4.6%</span></div>
+                <div class="kv"><div><span>成本</span><b>$182</b></div><div><span>现价</span><b>$190</b></div><div><span>盈亏</span><b class="gain">+$384</b></div></div>
+                <div class="kv"><div><span>市值</span><b>$9,120</b></div><div><span>仓位</span><b>4.3%</b></div><div><span>状态</span><b>持有</b></div></div>
+              </article>
+
+              <article class="card card-pad stack">
+                <div class="card-head"><div><div class="ticker">MSFT</div><div class="label">28 股 · NASDAQ · 云与 AI</div></div><span class="mono gain">+8.1%</span></div>
+                <div class="kv"><div><span>成本</span><b>$408</b></div><div><span>现价</span><b>$441</b></div><div><span>盈亏</span><b class="gain">+$924</b></div></div>
+                <div class="kv"><div><span>市值</span><b>$12,348</b></div><div><span>仓位</span><b>5.8%</b></div><div><span>状态</span><b>加仓候选</b></div></div>
+              </article>
+
+              <article class="card card-pad stack">
+                <div class="card-head"><div><div class="ticker">AVGO</div><div class="label">10 股 · NASDAQ · 半导体</div></div><span class="mono gain">+15.2%</span></div>
+                <div class="kv"><div><span>成本</span><b>$1,165</b></div><div><span>现价</span><b>$1,342</b></div><div><span>盈亏</span><b class="gain">+$1,770</b></div></div>
+                <div class="kv"><div><span>市值</span><b>$13,420</b></div><div><span>仓位</span><b>6.3%</b></div><div><span>来源</span><b>选股 Top 1</b></div></div>
+              </article>
+
+              <article class="card card-pad stack">
+                <div class="card-head"><div><div class="ticker">LLY</div><div class="label">8 股 · NYSE · 医药</div></div><span class="mono gain">+6.9%</span></div>
+                <div class="kv"><div><span>成本</span><b>$724</b></div><div><span>现价</span><b>$774</b></div><div><span>盈亏</span><b class="gain">+$400</b></div></div>
+                <div class="kv"><div><span>市值</span><b>$6,192</b></div><div><span>仓位</span><b>2.9%</b></div><div><span>状态</span><b>观察</b></div></div>
+              </article>
+
+              <article class="card card-pad stack">
+                <div class="card-head"><div><div class="ticker">META</div><div class="label">18 股 · NASDAQ · 广告平台</div></div><span class="mono gain">+3.2%</span></div>
+                <div class="kv"><div><span>成本</span><b>$486</b></div><div><span>现价</span><b>$502</b></div><div><span>盈亏</span><b class="gain">+$288</b></div></div>
+                <div class="kv"><div><span>市值</span><b>$9,036</b></div><div><span>仓位</span><b>4.2%</b></div><div><span>状态</span><b>持有</b></div></div>
+              </article>
+
+              <article class="card card-pad stack">
+                <div class="card-head"><div><div class="ticker">AMD</div><div class="label">70 股 · NASDAQ · GPU 供应链</div></div><span class="mono loss">-2.4%</span></div>
+                <div class="kv"><div><span>成本</span><b>$166</b></div><div><span>现价</span><b>$162</b></div><div><span>盈亏</span><b class="loss">-$280</b></div></div>
+                <div class="kv"><div><span>市值</span><b>$11,340</b></div><div><span>仓位</span><b>5.3%</b></div><div><span>状态</span><b>等待确认</b></div></div>
+              </article>
+
+              <article class="card card-pad stack">
+                <div class="card-head"><div><div class="ticker">TSM</div><div class="label">36 股 · NYSE · 晶圆代工</div></div><span class="mono gain">+7.7%</span></div>
+                <div class="kv"><div><span>成本</span><b>$142</b></div><div><span>现价</span><b>$153</b></div><div><span>盈亏</span><b class="gain">+$396</b></div></div>
+                <div class="kv"><div><span>市值</span><b>$5,508</b></div><div><span>仓位</span><b>2.6%</b></div><div><span>状态</span><b>核心跟踪</b></div></div>
               </article>
             </div>
 
@@ -817,6 +972,39 @@
                 <button class="primary" onclick="go('paperDetail')">纸面交易</button>
               </div>
             </article>
+            <div class="section-title"><b>结构化分析核心</b><span>置顶 · 8 tabs</span></div>
+            <div class="card card-pad stack">
+              <div class="chips">
+                <button class="chip active">概览</button><button class="chip">市场</button><button class="chip">情绪</button><button class="chip">新闻</button><button class="chip">基本面</button><button class="chip">辩论</button><button class="chip">风险</button><button class="chip">决策</button><button class="chip">原文</button>
+              </div>
+              <div class="structured-card">
+                <div class="score-row">
+                  <div class="score-ring">76</div>
+                  <div class="stack">
+                    <div class="card-head"><strong>综合结论</strong><span class="badge buy">BUY</span></div>
+                    <div class="summary">趋势与基本面共振偏多，但估值压缩风险升高。建议采用分批入场 + 明确止损，而非一次性满仓。</div>
+                  </div>
+                </div>
+                <div class="kv">
+                  <div><span>置信度</span><b class="gain">76%</b></div>
+                  <div><span>风险等级</span><b class="neutral">中高</b></div>
+                  <div><span>行动</span><b>分批买入</b></div>
+                </div>
+                <div class="evidence-list">
+                  <div class="evidence"><b>市场/技术面：</b>价格保持上升通道，量能未显著背离；短线 RSI 接近过热。</div>
+                  <div class="evidence"><b>基本面：</b>AI 数据中心需求持续，毛利率与现金流仍优于同业。</div>
+                  <div class="evidence"><b>新闻/情绪：</b>订单能见度提升，但财报前波动和估值敏感度上升。</div>
+                  <div class="evidence"><b>风险辩论：</b>空方重点担心估值压缩；多方认为 EPS 上修可部分吸收估值压力。</div>
+                </div>
+                <details><summary>渲染状态 / 重试结构化摘要</summary><div class="summary" style="margin-top:8px">rendering_status=success；如果 failed/partial，可调用 retry 重新生成结构化卡片。</div></details>
+              </div>
+              <div class="actions three">
+                <button onclick="toast('Markdown 导出已开始')">导出 MD</button>
+                <button onclick="toast('PDF 导出已开始')">导出 PDF</button>
+                <button onclick="toast('分享链接已复制')">分享链接</button>
+              </div>
+              <div class="actions"><button onclick="toast('已收藏')">收藏</button><button class="danger" onclick="toast('分析记录已删除')">删除</button></div>
+            </div>
             <div class="section-title"><b>Quick Info</b><span>新闻/基本面/多空</span></div>
             <div class="stats-2">
               <div class="tile"><span>新闻</span><strong>AI 订单扩张</strong></div>
@@ -830,19 +1018,12 @@
                 <i class="candle up" style="height:46px"></i><i class="candle down" style="height:32px"></i><i class="candle up" style="height:55px"></i><i class="candle up" style="height:68px"></i><i class="candle down" style="height:38px"></i><i class="candle up" style="height:74px"></i><i class="candle down" style="height:42px"></i><i class="candle up" style="height:88px"></i><i class="candle up" style="height:80px"></i><i class="candle down" style="height:50px"></i><i class="candle up" style="height:92px"></i><i class="candle down" style="height:58px"></i><i class="candle up" style="height:105px"></i><i class="candle up" style="height:96px"></i><i class="candle down" style="height:62px"></i><i class="candle up" style="height:118px"></i><i class="candle up" style="height:126px"></i><i class="candle down" style="height:74px"></i>
               </div>
             </div>
-            <div class="section-title"><b>结构化报告 Tabs</b><span>7 类报告</span></div>
+            <div class="section-title"><b>原始报告</b><span>fallback / debug</span></div>
             <div class="card card-pad stack">
               <div class="chips">
-                <button class="chip active">概览</button><button class="chip">技术</button><button class="chip">情绪</button><button class="chip">新闻</button><button class="chip">基本面</button><button class="chip">辩论</button><button class="chip">风险</button><button class="chip">原文</button>
+                <button class="chip active">Markdown</button><button class="chip">市场原文</button><button class="chip">新闻原文</button><button class="chip">风险原文</button>
               </div>
               <div class="code">Market: upward trend intact. News: demand visibility high. Risk: valuation compression and earnings-event volatility.</div>
-              <details><summary>渲染状态 / 重试结构化摘要</summary><div class="summary" style="margin-top:8px">rendering_status=success；如果失败可调用重试。</div></details>
-              <div class="actions three">
-                <button onclick="toast('Markdown 导出已开始')">导出 MD</button>
-                <button onclick="toast('PDF 导出已开始')">导出 PDF</button>
-                <button onclick="toast('分享链接已复制')">分享链接</button>
-              </div>
-              <div class="actions"><button onclick="toast('已收藏')">收藏</button><button class="danger" onclick="toast('分析记录已删除')">删除</button></div>
             </div>
           </section>
 
@@ -855,6 +1036,22 @@
                 <summary>高级配置：大师 / 深度 / 候选数 / 成本</summary>
                 <div class="stack" style="margin-top:10px">
                   <div class="chips"><button class="chip active">全选</button><button class="chip">推荐 4</button><button class="chip">全不选</button></div>
+                  <div class="guru-grid">
+                    <div class="guru-pill"><i class="avatar">WB</i><div><b>Warren Buffett</b><span>价值 / 护城河 · ON</span></div></div>
+                    <div class="guru-pill"><i class="avatar">BG</i><div><b>Benjamin Graham</b><span>安全边际 · ON</span></div></div>
+                    <div class="guru-pill"><i class="avatar">CM</i><div><b>Charlie Munger</b><span>质量 / 多元模型 · ON</span></div></div>
+                    <div class="guru-pill"><i class="avatar">PL</i><div><b>Peter Lynch</b><span>成长价值 PEG · ON</span></div></div>
+                    <div class="guru-pill"><i class="avatar">PF</i><div><b>Philip Fisher</b><span>科学成长 · ON</span></div></div>
+                    <div class="guru-pill"><i class="avatar">MB</i><div><b>Michael Burry</b><span>反共识价值 · ON</span></div></div>
+                    <div class="guru-pill"><i class="avatar">BA</i><div><b>Bill Ackman</b><span>催化剂 / 集中 · ON</span></div></div>
+                    <div class="guru-pill"><i class="avatar">CW</i><div><b>Cathie Wood</b><span>颠覆创新 · ON</span></div></div>
+                    <div class="guru-pill"><i class="avatar">SD</i><div><b>Druckenmiller</b><span>宏观流动性 · ON</span></div></div>
+                    <div class="guru-pill"><i class="avatar">AD</i><div><b>Damodaran</b><span>DCF 估值 · ON</span></div></div>
+                    <div class="guru-pill"><i class="avatar">MP</i><div><b>Mohnish Pabrai</b><span>Dhandho / Kelly · ON</span></div></div>
+                    <div class="guru-pill"><i class="avatar">NT</i><div><b>Nassim Taleb</b><span>反脆弱 / 尾部 · ON</span></div></div>
+                    <div class="guru-pill"><i class="avatar">HM</i><div><b>Howard Marks</b><span>周期 / 二阶思考 · ON</span></div></div>
+                    <div class="guru-pill"><i class="avatar">RD</i><div><b>Ray Dalio</b><span>全天候 / 周期 · ON</span></div></div>
+                  </div>
                   <div class="chips"><button class="chip">经典阈值</button><button class="chip active">Agent 深度</button><button class="chip">圆桌辩论</button></div>
                   <div class="kv"><div><span>LLM 调用</span><b>56</b></div><div><span>时长</span><b>4m</b></div><div><span>成本</span><b>¥1.82</b></div></div>
                 </div>
@@ -893,25 +1090,47 @@
               <div class="tile"><span>看多</span><strong class="gain">16</strong></div>
               <div class="tile"><span>共识率</span><strong>68%</strong></div>
             </div>
-            <div class="card card-pad stack" style="margin-top:10px">
-              <div class="card-head"><strong>透明度链路</strong><span class="badge buy">dynamic_llm</span></div>
-              <div class="summary">原始查询：「AI 龙头，ROE > 15%，市值 500 亿以上」 → 核心意图：AI infrastructure / semiconductor quality growth。</div>
-              <div class="chips">
-                <button class="chip active">候选来源 dynamic_llm</button>
-                <button class="chip">行业 semiconductor / software</button>
-                <button class="chip">主题 AI infra / datacenter</button>
-                <button class="chip">关键词 ROE, market cap</button>
+            <details class="gap-note" style="margin-top:10px">
+              <summary>透明度链路 / 审计信息</summary>
+              <div class="stack" style="margin-top:10px">
+                <div class="card-head"><strong>候选生成链路</strong><span class="badge buy">dynamic_llm</span></div>
+                <div class="summary">原始查询：「AI 龙头，ROE > 15%，市值 500 亿以上」 → 核心意图：AI infrastructure / semiconductor quality growth。</div>
+                <div class="chips">
+                  <button class="chip active">候选来源 dynamic_llm</button>
+                  <button class="chip">行业 semiconductor / software</button>
+                  <button class="chip">主题 AI infra / datacenter</button>
+                  <button class="chip">关键词 ROE, market cap</button>
+                </div>
+                <div class="summary">剔除 off-theme 3：XOM · Energy，KO · Consumer defensive，JNJ · Healthcare。on-theme 24 / cache hit 42%。</div>
+                <div class="chips"><button class="chip active">Agent 深度</button><button class="chip">14 大师</button><button class="chip">56 LLM call</button><button class="chip">4m12s</button><button class="chip">无降级警告</button></div>
               </div>
-              <div class="summary">剔除 off-theme 3：XOM · Energy，KO · Consumer defensive，JNJ · Healthcare。on-theme 24 / cache hit 42%。</div>
-              <div class="chips"><button class="chip active">Agent 深度</button><button class="chip">14 大师</button><button class="chip">56 LLM call</button><button class="chip">4m12s</button><button class="chip">无降级警告</button></div>
-            </div>
+            </details>
             <div class="section-title"><b>候选股票排名</b><span>可展开</span></div>
             <div class="stack">
               <article class="card card-pad stack">
                 <div class="card-head"><div><div class="ticker">AVGO</div><div class="label">#1 · 综合分 84.2</div></div><span class="badge buy">BUY</span></div>
                 <div class="votes"><i style="width:72%"></i><i style="width:18%"></i><i style="width:10%"></i></div>
                 <div class="kv"><div><span>现价</span><b>$1342</b></div><div><span>PE</span><b>36.8</b></div><div><span>共识</span><b>高</b></div></div>
-                <details><summary>大师解释 / 圆桌辩论</summary><div class="summary" style="margin-top:8px">多方认为 AI 网络芯片需求明确；空方担心估值和周期。裁判：保留 Top 1，但建议等待回撤。</div></details>
+                <details open>
+                  <summary>14 位大师评分详情</summary>
+                  <div class="guru-grid" style="margin-top:10px">
+                    <div class="guru-result"><div class="card-head"><b>Buffett</b><span class="badge buy">BUY</span></div><div class="confidence"><div class="progress"><i style="width:82%"></i></div><em>82%</em></div><span>护城河强，现金流质量高，价格略贵但可等待回撤。</span></div>
+                    <div class="guru-result"><div class="card-head"><b>Graham</b><span class="badge watch">HOLD</span></div><div class="confidence"><div class="progress"><i style="width:54%"></i></div><em>54%</em></div><span>安全边际不足，估值不符合深度价值标准。</span></div>
+                    <div class="guru-result"><div class="card-head"><b>Munger</b><span class="badge buy">BUY</span></div><div class="confidence"><div class="progress"><i style="width:78%"></i></div><em>78%</em></div><span>优秀生意优先，长期复利质量高于短期估值噪音。</span></div>
+                    <div class="guru-result"><div class="card-head"><b>Lynch</b><span class="badge buy">BUY</span></div><div class="confidence"><div class="progress"><i style="width:74%"></i></div><em>74%</em></div><span>成长故事清晰，AI 网络需求与盈利增长匹配。</span></div>
+                    <div class="guru-result"><div class="card-head"><b>Fisher</b><span class="badge buy">BUY</span></div><div class="confidence"><div class="progress"><i style="width:80%"></i></div><em>80%</em></div><span>研发和客户粘性支持长期成长。</span></div>
+                    <div class="guru-result"><div class="card-head"><b>Burry</b><span class="badge sell">SELL</span></div><div class="confidence"><div class="progress"><i style="width:61%"></i></div><em>61%</em></div><span>估值和周期过热，反共识角度要求更大折价。</span></div>
+                    <div class="guru-result"><div class="card-head"><b>Ackman</b><span class="badge buy">BUY</span></div><div class="confidence"><div class="progress"><i style="width:70%"></i></div><em>70%</em></div><span>高质量集中持仓可接受，但需要催化继续兑现。</span></div>
+                    <div class="guru-result"><div class="card-head"><b>Wood</b><span class="badge buy">BUY</span></div><div class="confidence"><div class="progress"><i style="width:86%"></i></div><em>86%</em></div><span>AI 基础设施是长期指数级主题。</span></div>
+                    <div class="guru-result"><div class="card-head"><b>Druckenmiller</b><span class="badge buy">BUY</span></div><div class="confidence"><div class="progress"><i style="width:72%"></i></div><em>72%</em></div><span>动量和宏观资金偏好仍支持龙头。</span></div>
+                    <div class="guru-result"><div class="card-head"><b>Damodaran</b><span class="badge watch">HOLD</span></div><div class="confidence"><div class="progress"><i style="width:58%"></i></div><em>58%</em></div><span>DCF 需更高增长假设，估值容错一般。</span></div>
+                    <div class="guru-result"><div class="card-head"><b>Pabrai</b><span class="badge buy">BUY</span></div><div class="confidence"><div class="progress"><i style="width:69%"></i></div><em>69%</em></div><span>低风险高不确定不完全满足，但赔率仍偏正。</span></div>
+                    <div class="guru-result"><div class="card-head"><b>Taleb</b><span class="badge sell">SELL</span></div><div class="confidence"><div class="progress"><i style="width:63%"></i></div><em>63%</em></div><span>尾部风险来自估值压缩和供应链冲击。</span></div>
+                    <div class="guru-result"><div class="card-head"><b>Marks</b><span class="badge watch">HOLD</span></div><div class="confidence"><div class="progress"><i style="width:60%"></i></div><em>60%</em></div><span>共识过热，二阶思考要求降低预期收益。</span></div>
+                    <div class="guru-result"><div class="card-head"><b>Dalio</b><span class="badge buy">BUY</span></div><div class="confidence"><div class="progress"><i style="width:66%"></i></div><em>66%</em></div><span>经济机器和资本开支周期仍偏支持。</span></div>
+                  </div>
+                </details>
+                <details><summary>圆桌辩论摘要</summary><div class="summary" style="margin-top:8px">多方认为 AI 网络芯片需求明确；空方担心估值和周期。裁判：保留 Top 1，但建议等待回撤。</div></details>
                 <div class="actions"><button class="primary" onclick="go('analysis')">发起分析</button><button onclick="toast('已加入观察列表')">加入观察</button></div>
               </article>
               <article class="card card-pad stack">
@@ -961,7 +1180,7 @@
           </section>
 
           <section class="view" data-view="transactions">
-            <button class="ghost" onclick="go('portfolio')">返回持仓</button>
+            <button class="ghost" onclick="go('dashboard')">返回首页</button>
             <div class="section-title"><b>交易记录</b><span>BUY/SELL 契约</span></div>
             <div class="card list-card">
               <div class="list-row"><div class="row-main"><strong>NVDA</strong><span>BUY 12 @ $875.00 · 2026-05-09 10:31</span></div><span class="gain">BUY</span></div>
@@ -974,7 +1193,7 @@
             <div class="sheet-grid" style="margin-bottom:14px">
               <button class="sheet-link" onclick="go('reports')"><b>报告中心</b><span>日报/周报/月报/个股研报</span></button>
               <button class="sheet-link" onclick="go('backtest')"><b>策略回测</b><span>表单、任务、结果详情</span></button>
-              <button class="sheet-link" onclick="go('paperList')"><b>纸面交易</b><span>前向追踪/历史回放/详情</span></button>
+              <button class="sheet-link" onclick="go('transactions')"><b>交易记录</b><span>买入/卖出流水</span></button>
               <button class="sheet-link" onclick="go('alerts')"><b>预警中心</b><span>模板、新建、历史、删除</span></button>
               <button class="sheet-link" onclick="go('tasks')"><b>任务中心</b><span>筛选、详情、重试、取消</span></button>
               <button class="sheet-link" onclick="go('settings')"><b>系统设置</b><span>模型、通知、调度器</span></button>
@@ -1170,10 +1389,10 @@
             <div class="section-title"><b>审计覆盖矩阵</b><span>非用户入口</span></div>
             <div class="coverage-grid">
               <div class="coverage-item"><b>认证</b><span>登录、注册、邀请码、会话、用户角色入口。</span></div>
-              <div class="coverage-item"><b>仪表盘</b><span>资产、PnL、收益率、预警数、净值曲线 range、重新计算、仓位分布、持仓概览、运行任务、快捷操作。</span></div>
+              <div class="coverage-item"><b>首页</b><span>资产、PnL、收益率、预警数、净值曲线 range、重新计算、仓位分布、9 个持仓明细、买入/卖出/修正成本/交易记录、运行任务、快捷操作。</span></div>
               <div class="coverage-item"><b>AI 分析</b><span>发起分析、深度切换、Inbox、运行态 Pipeline、详情、Quick Info、K 线、7 tabs、再次分析、观察列表、纸面交易、导出、分享、收藏、删除、渲染重试。</span></div>
               <div class="coverage-item"><b>智能选股 V3</b><span>自然语言、市场、大师选择、全选/推荐/全不选、经典/Agent/圆桌、候选数、成本估算、运行态、结果、透明度、圆桌、候选展开、历史、复制配置。</span></div>
-              <div class="coverage-item"><b>持仓</b><span>买入、卖出、修正成本、移除、搜索、交易记录、今日/总 PnL 降级。</span></div>
+              <div class="coverage-item"><b>持仓</b><span>已并入首页，不再占用一级 tab；能力仍覆盖买入、卖出、修正成本、移除、搜索、交易记录、今日/总 PnL 降级。</span></div>
               <div class="coverage-item"><b>预警</b><span>预警模板、新建、条件选择、活跃警报、触发历史、删除。</span></div>
               <div class="coverage-item"><b>报告</b><span>日报、周报、月报、个股研报、ticker、任务提交、Markdown/section 预览。</span></div>
               <div class="coverage-item"><b>回测</b><span>ticker、策略、日期、初始资金、任务提交、结果指标、权益曲线、交易明细、再次运行。</span></div>
@@ -1191,7 +1410,7 @@
             </div>
             <div class="section-title"><b>产品真实缺口</b><span>demo 不伪装</span></div>
             <div class="coverage-grid">
-              <div class="coverage-item gap-note"><b>批量分析持仓入口</b><span>后端 batch_analysis worker 与 task type 存在，但 Dashboard / Portfolio 前端缺触发按钮。demo 在 Portfolio 中以“建议补齐入口”呈现。</span></div>
+              <div class="coverage-item gap-note"><b>批量分析持仓入口</b><span>后端 batch_analysis worker 与 task type 存在，但 Dashboard / Portfolio 前端缺触发按钮。demo 在首页持仓明细中以“建议补齐入口”呈现。</span></div>
               <div class="coverage-item gap-note"><b>Reports / Backtest 历史列表</b><span>真实页面目前只有表单与单次结果/预览，没有历史列表。</span></div>
               <div class="coverage-item gap-note"><b>持仓/预警反向跳分析</b><span>Portfolio 与 Alerts 行内暂无“查看/发起分析”闭环入口。</span></div>
               <div class="coverage-item gap-note"><b>Analysis Inbox scope 三态</b><span>尚未与 Tasks 的 mine / shared_research / all 对齐。</span></div>
@@ -1208,7 +1427,7 @@
           <button class="active" data-target="dashboard"><b></b><span>首页</span></button>
           <button data-target="analysis"><b></b><span>分析</span></button>
           <button data-target="discover"><b></b><span>发现</span></button>
-          <button data-target="portfolio"><b></b><span>持仓</span></button>
+          <button data-target="paperList"><b></b><span>纸面</span></button>
           <button data-target="more"><b></b><span>更多</span></button>
         </nav>
 
@@ -1234,7 +1453,7 @@
 
   <script>
     const viewNames = {
-      dashboard: "首页 · 账户与待办",
+      dashboard: "首页 · 资产与持仓",
       analysis: "分析 · Inbox 与命令",
       analysisRunning: "分析 · 运行态",
       analysisDetail: "分析 · 详情",
@@ -1257,7 +1476,7 @@
       auth: "登录注册",
       coverage: "覆盖矩阵"
     };
-    const primary = new Set(["dashboard", "analysis", "discover", "portfolio", "more"]);
+    const primary = new Set(["dashboard", "analysis", "discover", "paperList", "more"]);
     function go(view) {
       document.querySelectorAll(".view").forEach(v => v.classList.toggle("active", v.dataset.view === view));
       document.querySelectorAll(".tabbar button").forEach(b => {
