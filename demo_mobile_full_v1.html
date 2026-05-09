@@ -213,6 +213,21 @@
       min-width: 0;
     }
     .stack { display: grid; gap: 10px; }
+    .head-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+    .mini-action {
+      min-height: 30px;
+      padding: 6px 9px;
+      border-radius: 999px;
+      font-size: 11px;
+      line-height: 1;
+    }
+    .holding-extra.collapsed { display: none; }
     .label { color: var(--muted); font-size: 12px; }
     .money {
       margin-top: 4px;
@@ -823,66 +838,66 @@
             <div class="stack">
               <div class="card card-pad stack">
                 <div class="input-row"><input placeholder="搜索股票..." value="NVDA"><button onclick="openModal('buy')">买入</button></div>
-                <div class="chips"><button class="chip active">持仓 9</button><button class="chip" onclick="go('transactions')">交易记录 18</button><button class="chip" onclick="go('paperList')">纸面计划</button></div>
+                <div class="chips"><button class="chip active" id="holdingsFive" onclick="toggleHoldings(false)">显示 5</button><button class="chip" id="holdingsAll" onclick="toggleHoldings(true)">全部 9</button><button class="chip" onclick="go('transactions')">交易记录 18</button><button class="chip" onclick="go('paperList')">纸面计划</button></div>
               </div>
               <div class="card card-pad gap-note">
                 <div class="card-head"><strong>建议补齐入口：批量分析持仓</strong><span class="badge watch">产品缺口</span></div>
-                <div class="summary" style="margin-top:8px">后端 batch_analysis worker 与任务类型已存在，但 Dashboard / Portfolio 真实前端暂无触发按钮。合并后应放在首页持仓明细上方，作为批量复核的主入口。</div>
+                <div class="summary" style="margin-top:8px">后端 batch_analysis worker 与任务类型已存在，但真实前端暂无触发按钮。合并后应放在首页持仓明细上方，作为批量复核的主入口。</div>
                 <div class="actions" style="margin-top:10px"><button onclick="toast('设计建议：提交 batch_analysis 任务')">批量分析持仓</button><button onclick="go('tasks')">查看任务类型</button></div>
               </div>
 
               <article class="card card-pad stack">
-                <div class="card-head"><div><div class="ticker">NVDA</div><div class="label">32 股 · NASDAQ · AI 芯片</div></div><span class="mono gain">+12.4%</span></div>
+                <div class="card-head"><div><div class="ticker">NVDA</div><div class="label">32 股 · NASDAQ · AI 芯片</div></div><div class="head-actions"><span class="mono gain">+12.4%</span><button class="mini-action" onclick="go('analysisDetail')">看分析</button></div></div>
                 <div class="kv"><div><span>成本</span><b>$842</b></div><div><span>现价</span><b>$946</b></div><div><span>盈亏</span><b class="gain">+$3,328</b></div></div>
                 <div class="kv"><div><span>市值</span><b>$30,272</b></div><div><span>仓位</span><b>14.2%</b></div><div><span>计划</span><b>等回踩</b></div></div>
                 <div class="actions three"><button onclick="openModal('sell')">卖出</button><button onclick="openModal('cost')">修正成本</button><button class="danger" onclick="toast('已移除 NVDA')">移除</button></div>
               </article>
 
               <article class="card card-pad stack">
-                <div class="card-head"><div><div class="ticker">TSLA</div><div class="label">120 股 · 命中止损预警</div></div><span class="mono loss">-5.8%</span></div>
+                <div class="card-head"><div><div class="ticker">TSLA</div><div class="label">120 股 · 命中止损预警</div></div><div class="head-actions"><span class="mono loss">-5.8%</span><button class="mini-action" onclick="go('analysisDetail')">看分析</button></div></div>
                 <div class="kv"><div><span>成本</span><b>$191</b></div><div><span>现价</span><b>$180</b></div><div><span>盈亏</span><b class="loss">-$1,320</b></div></div>
                 <div class="kv"><div><span>市值</span><b>$21,648</b></div><div><span>仓位</span><b>10.1%</b></div><div><span>风险</span><b>止损复核</b></div></div>
                 <div class="actions three"><button onclick="openModal('sell')">卖出</button><button onclick="openModal('cost')">修正成本</button><button class="danger" onclick="toast('已移除 TSLA')">移除</button></div>
               </article>
 
               <article class="card card-pad stack">
-                <div class="card-head"><div><div class="ticker">AAPL</div><div class="label">48 股 · NASDAQ · 消费电子</div></div><span class="mono gain">+4.6%</span></div>
+                <div class="card-head"><div><div class="ticker">AAPL</div><div class="label">48 股 · NASDAQ · 消费电子</div></div><div class="head-actions"><span class="mono gain">+4.6%</span><button class="mini-action" onclick="go('analysisDetail')">看分析</button></div></div>
                 <div class="kv"><div><span>成本</span><b>$182</b></div><div><span>现价</span><b>$190</b></div><div><span>盈亏</span><b class="gain">+$384</b></div></div>
                 <div class="kv"><div><span>市值</span><b>$9,120</b></div><div><span>仓位</span><b>4.3%</b></div><div><span>状态</span><b>持有</b></div></div>
               </article>
 
               <article class="card card-pad stack">
-                <div class="card-head"><div><div class="ticker">MSFT</div><div class="label">28 股 · NASDAQ · 云与 AI</div></div><span class="mono gain">+8.1%</span></div>
+                <div class="card-head"><div><div class="ticker">MSFT</div><div class="label">28 股 · NASDAQ · 云与 AI</div></div><div class="head-actions"><span class="mono gain">+8.1%</span><button class="mini-action" onclick="go('analysisDetail')">看分析</button></div></div>
                 <div class="kv"><div><span>成本</span><b>$408</b></div><div><span>现价</span><b>$441</b></div><div><span>盈亏</span><b class="gain">+$924</b></div></div>
                 <div class="kv"><div><span>市值</span><b>$12,348</b></div><div><span>仓位</span><b>5.8%</b></div><div><span>状态</span><b>加仓候选</b></div></div>
               </article>
 
               <article class="card card-pad stack">
-                <div class="card-head"><div><div class="ticker">AVGO</div><div class="label">10 股 · NASDAQ · 半导体</div></div><span class="mono gain">+15.2%</span></div>
+                <div class="card-head"><div><div class="ticker">AVGO</div><div class="label">10 股 · NASDAQ · 半导体</div></div><div class="head-actions"><span class="mono gain">+15.2%</span><button class="mini-action" onclick="go('analysisDetail')">看分析</button></div></div>
                 <div class="kv"><div><span>成本</span><b>$1,165</b></div><div><span>现价</span><b>$1,342</b></div><div><span>盈亏</span><b class="gain">+$1,770</b></div></div>
                 <div class="kv"><div><span>市值</span><b>$13,420</b></div><div><span>仓位</span><b>6.3%</b></div><div><span>来源</span><b>选股 Top 1</b></div></div>
               </article>
 
-              <article class="card card-pad stack">
-                <div class="card-head"><div><div class="ticker">LLY</div><div class="label">8 股 · NYSE · 医药</div></div><span class="mono gain">+6.9%</span></div>
+              <article class="card card-pad stack holding-extra collapsed">
+                <div class="card-head"><div><div class="ticker">LLY</div><div class="label">8 股 · NYSE · 医药</div></div><div class="head-actions"><span class="mono gain">+6.9%</span><button class="mini-action" onclick="go('analysisDetail')">看分析</button></div></div>
                 <div class="kv"><div><span>成本</span><b>$724</b></div><div><span>现价</span><b>$774</b></div><div><span>盈亏</span><b class="gain">+$400</b></div></div>
                 <div class="kv"><div><span>市值</span><b>$6,192</b></div><div><span>仓位</span><b>2.9%</b></div><div><span>状态</span><b>观察</b></div></div>
               </article>
 
-              <article class="card card-pad stack">
-                <div class="card-head"><div><div class="ticker">META</div><div class="label">18 股 · NASDAQ · 广告平台</div></div><span class="mono gain">+3.2%</span></div>
+              <article class="card card-pad stack holding-extra collapsed">
+                <div class="card-head"><div><div class="ticker">META</div><div class="label">18 股 · NASDAQ · 广告平台</div></div><div class="head-actions"><span class="mono gain">+3.2%</span><button class="mini-action" onclick="go('analysisDetail')">看分析</button></div></div>
                 <div class="kv"><div><span>成本</span><b>$486</b></div><div><span>现价</span><b>$502</b></div><div><span>盈亏</span><b class="gain">+$288</b></div></div>
                 <div class="kv"><div><span>市值</span><b>$9,036</b></div><div><span>仓位</span><b>4.2%</b></div><div><span>状态</span><b>持有</b></div></div>
               </article>
 
-              <article class="card card-pad stack">
-                <div class="card-head"><div><div class="ticker">AMD</div><div class="label">70 股 · NASDAQ · GPU 供应链</div></div><span class="mono loss">-2.4%</span></div>
+              <article class="card card-pad stack holding-extra collapsed">
+                <div class="card-head"><div><div class="ticker">AMD</div><div class="label">70 股 · NASDAQ · GPU 供应链</div></div><div class="head-actions"><span class="mono loss">-2.4%</span><button class="mini-action" onclick="go('analysisDetail')">看分析</button></div></div>
                 <div class="kv"><div><span>成本</span><b>$166</b></div><div><span>现价</span><b>$162</b></div><div><span>盈亏</span><b class="loss">-$280</b></div></div>
                 <div class="kv"><div><span>市值</span><b>$11,340</b></div><div><span>仓位</span><b>5.3%</b></div><div><span>状态</span><b>等待确认</b></div></div>
               </article>
 
-              <article class="card card-pad stack">
-                <div class="card-head"><div><div class="ticker">TSM</div><div class="label">36 股 · NYSE · 晶圆代工</div></div><span class="mono gain">+7.7%</span></div>
+              <article class="card card-pad stack holding-extra collapsed">
+                <div class="card-head"><div><div class="ticker">TSM</div><div class="label">36 股 · NYSE · 晶圆代工</div></div><div class="head-actions"><span class="mono gain">+7.7%</span><button class="mini-action" onclick="go('analysisDetail')">看分析</button></div></div>
                 <div class="kv"><div><span>成本</span><b>$142</b></div><div><span>现价</span><b>$153</b></div><div><span>盈亏</span><b class="gain">+$396</b></div></div>
                 <div class="kv"><div><span>市值</span><b>$5,508</b></div><div><span>仓位</span><b>2.6%</b></div><div><span>状态</span><b>核心跟踪</b></div></div>
               </article>
@@ -929,12 +944,6 @@
               </div>
             </div>
 
-            <div class="section-title"><b>Inbox 工具</b><span>搜索/刷新/任务</span></div>
-            <div class="actions three">
-              <button onclick="toast('已刷新分析记录')">刷新</button>
-              <button onclick="toast('筛选 ticker: NVDA')">筛选</button>
-              <button onclick="go('tasks')">看任务</button>
-            </div>
           </section>
 
           <section class="view" data-view="analysisRunning">
@@ -957,25 +966,10 @@
 
           <section class="view" data-view="analysisDetail">
             <button class="ghost" onclick="go('analysis')">返回分析</button>
-            <div class="section-title"><b>NVDA 分析详情</b><span>完整功能态</span></div>
-            <article class="card card-pad stack">
-              <div class="card-head"><div class="ticker">NVDA</div><span class="badge buy">BUY · 已校正</span></div>
-              <div class="summary">最终交易建议为 Buy。短期估值偏高但基本面和技术趋势仍强，建议分批入场并设置硬性止损。</div>
-              <div class="kv">
-                <div><span>日期</span><b>2026-05-09</b></div>
-                <div><span>风险</span><b>中高</b></div>
-                <div><span>深度</span><b>深度</b></div>
-              </div>
-              <div class="actions three">
-                <button onclick="go('analysisRunning')">再次分析</button>
-                <button onclick="toast('已加入观察列表，不会自动下单')">加入观察</button>
-                <button class="primary" onclick="go('paperDetail')">纸面交易</button>
-              </div>
-            </article>
-            <div class="section-title"><b>结构化分析核心</b><span>置顶 · 8 tabs</span></div>
+            <div class="section-title"><b>结构化分析核心</b><span>NVDA · 8 tabs</span></div>
             <div class="card card-pad stack">
               <div class="chips">
-                <button class="chip active">概览</button><button class="chip">市场</button><button class="chip">情绪</button><button class="chip">新闻</button><button class="chip">基本面</button><button class="chip">辩论</button><button class="chip">风险</button><button class="chip">决策</button><button class="chip">原文</button>
+                <button class="chip active">概览</button><button class="chip">市场</button><button class="chip">情绪</button><button class="chip">新闻</button><button class="chip">基本面</button><button class="chip">辩论</button><button class="chip">风险</button><button class="chip">决策</button>
               </div>
               <div class="structured-card">
                 <div class="score-row">
@@ -1005,19 +999,26 @@
               </div>
               <div class="actions"><button onclick="toast('已收藏')">收藏</button><button class="danger" onclick="toast('分析记录已删除')">删除</button></div>
             </div>
-            <div class="section-title"><b>Quick Info</b><span>新闻/基本面/多空</span></div>
-            <div class="stats-2">
-              <div class="tile"><span>新闻</span><strong>AI 订单扩张</strong></div>
-              <div class="tile"><span>基本面</span><strong>ROE 64%</strong></div>
-              <div class="tile"><span>多空比</span><strong class="gain">Bull 72%</strong></div>
-              <div class="tile"><span>K 线</span><strong>近 3 个月</strong></div>
-            </div>
             <div class="section-title"><b>K 线走势</b><span>OHLCV · 90D</span></div>
             <div class="card card-pad">
               <div class="kline-chart" aria-label="NVDA 90 day candlestick chart">
                 <i class="candle up" style="height:46px"></i><i class="candle down" style="height:32px"></i><i class="candle up" style="height:55px"></i><i class="candle up" style="height:68px"></i><i class="candle down" style="height:38px"></i><i class="candle up" style="height:74px"></i><i class="candle down" style="height:42px"></i><i class="candle up" style="height:88px"></i><i class="candle up" style="height:80px"></i><i class="candle down" style="height:50px"></i><i class="candle up" style="height:92px"></i><i class="candle down" style="height:58px"></i><i class="candle up" style="height:105px"></i><i class="candle up" style="height:96px"></i><i class="candle down" style="height:62px"></i><i class="candle up" style="height:118px"></i><i class="candle up" style="height:126px"></i><i class="candle down" style="height:74px"></i>
               </div>
             </div>
+            <div class="section-title"><b>记录与操作</b><span>元信息 / 次级动作</span></div>
+            <article class="card card-pad stack">
+              <div class="card-head"><div class="ticker">NVDA</div><span class="badge buy">BUY · 已校正</span></div>
+              <div class="kv">
+                <div><span>日期</span><b>2026-05-09</b></div>
+                <div><span>风险</span><b>中高</b></div>
+                <div><span>深度</span><b>深度</b></div>
+              </div>
+              <div class="actions three">
+                <button onclick="go('analysisRunning')">再次分析</button>
+                <button onclick="toast('已加入观察列表，不会自动下单')">加入观察</button>
+                <button class="primary" onclick="go('paperDetail')">纸面交易</button>
+              </div>
+            </article>
             <div class="section-title"><b>原始报告</b><span>fallback / debug</span></div>
             <div class="card card-pad stack">
               <div class="chips">
@@ -1056,7 +1057,7 @@
                   <div class="kv"><div><span>LLM 调用</span><b>56</b></div><div><span>时长</span><b>4m</b></div><div><span>成本</span><b>¥1.82</b></div></div>
                 </div>
               </details>
-              <div class="actions"><button onclick="go('dashboard')">取消</button><button class="primary" onclick="go('screenerRunning')">开始筛选</button></div>
+              <button class="primary" onclick="go('screenerRunning')">开始筛选</button>
             </div>
 
             <div class="section-title"><b>最近选股</b><span>历史入口</span></div>
@@ -1083,36 +1084,21 @@
 
           <section class="view" data-view="screenerResults">
             <button class="ghost" onclick="go('discover')">返回选股</button>
-            <div class="section-title"><b>选股结果</b><span>结果/透明度/圆桌</span></div>
+            <div class="section-title"><b>选股结果</b><span>结果/圆桌</span></div>
             <div class="stats-4">
               <div class="tile"><span>候选数</span><strong>24</strong></div>
               <div class="tile"><span>平均分</span><strong>78.6</strong></div>
               <div class="tile"><span>看多</span><strong class="gain">16</strong></div>
               <div class="tile"><span>共识率</span><strong>68%</strong></div>
             </div>
-            <details class="gap-note" style="margin-top:10px">
-              <summary>透明度链路 / 审计信息</summary>
-              <div class="stack" style="margin-top:10px">
-                <div class="card-head"><strong>候选生成链路</strong><span class="badge buy">dynamic_llm</span></div>
-                <div class="summary">原始查询：「AI 龙头，ROE > 15%，市值 500 亿以上」 → 核心意图：AI infrastructure / semiconductor quality growth。</div>
-                <div class="chips">
-                  <button class="chip active">候选来源 dynamic_llm</button>
-                  <button class="chip">行业 semiconductor / software</button>
-                  <button class="chip">主题 AI infra / datacenter</button>
-                  <button class="chip">关键词 ROE, market cap</button>
-                </div>
-                <div class="summary">剔除 off-theme 3：XOM · Energy，KO · Consumer defensive，JNJ · Healthcare。on-theme 24 / cache hit 42%。</div>
-                <div class="chips"><button class="chip active">Agent 深度</button><button class="chip">14 大师</button><button class="chip">56 LLM call</button><button class="chip">4m12s</button><button class="chip">无降级警告</button></div>
-              </div>
-            </details>
             <div class="section-title"><b>候选股票排名</b><span>可展开</span></div>
             <div class="stack">
               <article class="card card-pad stack">
                 <div class="card-head"><div><div class="ticker">AVGO</div><div class="label">#1 · 综合分 84.2</div></div><span class="badge buy">BUY</span></div>
                 <div class="votes"><i style="width:72%"></i><i style="width:18%"></i><i style="width:10%"></i></div>
                 <div class="kv"><div><span>现价</span><b>$1342</b></div><div><span>PE</span><b>36.8</b></div><div><span>共识</span><b>高</b></div></div>
-                <details open>
-                  <summary>14 位大师评分详情</summary>
+                <details>
+                  <summary>查看 14 位大师评分（共识 64% / 看多 9 / 看空 2 / 中性 3）</summary>
                   <div class="guru-grid" style="margin-top:10px">
                     <div class="guru-result"><div class="card-head"><b>Buffett</b><span class="badge buy">BUY</span></div><div class="confidence"><div class="progress"><i style="width:82%"></i></div><em>82%</em></div><span>护城河强，现金流质量高，价格略贵但可等待回撤。</span></div>
                     <div class="guru-result"><div class="card-head"><b>Graham</b><span class="badge watch">HOLD</span></div><div class="confidence"><div class="progress"><i style="width:54%"></i></div><em>54%</em></div><span>安全边际不足，估值不符合深度价值标准。</span></div>
@@ -1149,36 +1135,6 @@
             </div>
           </section>
 
-          <section class="view" data-view="portfolio">
-            <div class="card hero">
-              <div class="hero-row">
-                <div><div class="label">持仓总值</div><div class="money">$213,322</div></div>
-                <div style="text-align:right"><div class="label">总盈亏</div><div class="mono gain">+$18,422</div></div>
-              </div>
-              <div class="health">
-                <div class="metric"><span>持仓数</span><strong>9</strong></div>
-                <div class="metric"><span>收益率</span><strong class="gain">+9.42%</strong></div>
-                <div class="metric"><span>今日/总</span><strong>自动降级</strong></div>
-              </div>
-            </div>
-            <div class="section-title"><b>持仓管理</b><span>买卖/修正/移除</span></div>
-            <div class="card card-pad stack">
-              <div class="input-row"><input placeholder="搜索股票..." value="NVDA"><button onclick="openModal('buy')">买入</button></div>
-              <div class="chips"><button class="chip active">持仓 9</button><button class="chip" onclick="go('transactions')">交易记录 18</button></div>
-              <div class="card card-pad gap-note">
-                <div class="card-head"><strong>建议补齐入口：批量分析持仓</strong><span class="badge watch">产品缺口</span></div>
-                <div class="summary" style="margin-top:8px">后端 batch_analysis worker 与任务类型已存在，但 Dashboard / Portfolio 真实前端暂无触发按钮。demo 在这里显式标注为优先补齐项，不伪装成已实装 UI。</div>
-                <div class="actions" style="margin-top:10px"><button onclick="toast('设计建议：提交 batch_analysis 任务')">批量分析持仓</button><button onclick="go('tasks')">查看任务类型</button></div>
-              </div>
-              <article class="card card-pad stack">
-                <div class="card-head"><div><div class="ticker">NVDA</div><div class="label">32 股 · NASDAQ</div></div><span class="mono gain">+12.4%</span></div>
-                <div class="kv"><div><span>成本</span><b>$842</b></div><div><span>现价</span><b>$946</b></div><div><span>盈亏</span><b class="gain">+$3,328</b></div></div>
-                <div class="actions three"><button onclick="openModal('sell')">卖出</button><button onclick="openModal('cost')">修正成本</button><button class="danger" onclick="toast('已移除 NVDA')">移除</button></div>
-              </article>
-              <article class="card card-pad"><div class="card-head"><div><div class="ticker">TSLA</div><div class="label">120 股 · 命中止损预警</div></div><span class="mono loss">-5.8%</span></div></article>
-            </div>
-          </section>
-
           <section class="view" data-view="transactions">
             <button class="ghost" onclick="go('dashboard')">返回首页</button>
             <div class="section-title"><b>交易记录</b><span>BUY/SELL 契约</span></div>
@@ -1196,14 +1152,8 @@
               <button class="sheet-link" onclick="go('transactions')"><b>交易记录</b><span>买入/卖出流水</span></button>
               <button class="sheet-link" onclick="go('alerts')"><b>预警中心</b><span>模板、新建、历史、删除</span></button>
               <button class="sheet-link" onclick="go('tasks')"><b>任务中心</b><span>筛选、详情、重试、取消</span></button>
-              <button class="sheet-link" onclick="go('settings')"><b>系统设置</b><span>模型、通知、调度器</span></button>
+              <button class="sheet-link" onclick="go('settings')"><b>系统设置</b><span>模型与通知</span></button>
               <button class="sheet-link" onclick="toast('账号菜单：显示当前用户、退出登录、角色信息')"><b>账号</b><span>登录/注册属于进入应用前流程</span></button>
-              <button class="sheet-link" onclick="go('settings')"><b>调度器</b><span>每日快照、立即运行</span></button>
-            </div>
-            <div class="section-title"><b>复盘与运营</b><span>带状态信息</span></div>
-            <div class="card list-card">
-              <div class="list-row"><div class="row-main"><strong>任务失败</strong><span>OpenRouter 超时，支持重试</span></div><span class="badge sell">1</span></div>
-              <div class="list-row"><div class="row-main"><strong>报告生成</strong><span>今日 14:20 已生成日报</span></div><span class="badge info">new</span></div>
             </div>
           </section>
 
@@ -1272,7 +1222,6 @@
           </section>
 
           <section class="view" data-view="paperList">
-            <button class="ghost" onclick="go('more')">返回更多</button>
             <div class="section-title"><b>纸面交易</b><span>前向 / 回放</span></div>
             <div class="card card-pad stack">
               <div class="input-row"><input placeholder="搜索代码..." value="NVDA"><button onclick="toast('已刷新')">刷新</button></div>
@@ -1287,9 +1236,8 @@
 
           <section class="view" data-view="paperDetail">
             <button class="ghost" onclick="go('paperList')">返回纸面交易</button>
-            <div class="section-title"><b>NVDA 纸面交易</b><span>策略/日度</span></div>
-            <div class="chips"><button class="chip active">策略</button><button class="chip">日度数据</button></div>
-            <div class="card card-pad stack" style="margin-top:10px">
+            <div class="section-title"><b>NVDA 纸面交易</b><span>详情</span></div>
+            <div class="card card-pad stack">
               <div class="card-head"><strong>当前策略</strong><span class="badge buy">BUY</span></div>
               <div class="summary">分批建仓，若跌破 $842 硬性止损；若突破 $980 后跟踪止盈。</div>
               <div class="kv"><div><span>初始资金</span><b>$100k</b></div><div><span>触发</span><b>1</b></div><div><span>待触发</span><b>2</b></div></div>
@@ -1301,12 +1249,30 @@
             </div>
             <div class="section-title"><b>日度数据</b><span>EOD / 权益 / 回撤</span></div>
             <div class="card card-pad stack">
-              <div class="actions"><button onclick="toast('EOD 已刷新 1 条数据')">刷新日度数据</button><button onclick="toast('已切换日度数据')">日度数据</button></div>
+              <button onclick="toast('EOD 已刷新 1 条数据')">刷新日度数据</button>
               <div class="bar-chart"></div>
               <details open>
-                <summary>AI 最终决策原文 / 执行记录</summary>
+                <summary>AI 决策核心 / 执行记录</summary>
                 <div class="stack" style="margin-top:10px">
-                  <div class="summary">FINAL TRANSACTION PROPOSAL: BUY. Plan #28 当前有效，可按 Plan 或 Event 查看。</div>
+                  <div class="structured-card">
+                    <div class="score-row">
+                      <div class="score-ring">76</div>
+                      <div class="stack">
+                        <div class="card-head"><strong>交易决策</strong><span class="badge buy">BUY</span></div>
+                        <div class="summary">趋势与基本面共振偏多，但估值压缩风险升高。纸面计划采用分批入场，并保留 $842 硬性止损。</div>
+                      </div>
+                    </div>
+                    <div class="kv">
+                      <div><span>置信度</span><b class="gain">76%</b></div>
+                      <div><span>风险等级</span><b class="neutral">中高</b></div>
+                      <div><span>执行方式</span><b>Plan #28</b></div>
+                    </div>
+                    <div class="evidence-list">
+                      <div class="evidence"><b>市场/技术面：</b>价格保持上升通道，量能未显著背离；短线 RSI 接近过热。</div>
+                      <div class="evidence"><b>基本面：</b>AI 数据中心需求持续，毛利率与现金流仍优于同业。</div>
+                      <div class="evidence"><b>风险约束：</b>空方重点担心估值压缩，因此执行层必须保留止损和分批触发。</div>
+                    </div>
+                  </div>
                   <div class="chips"><button class="chip active">按 Plan</button><button class="chip">按 Event</button></div>
                   <div class="list-card">
                     <div class="list-row"><div class="row-main"><strong>Plan #28 · 当前</strong><span>BUY · 指纹去重 · reconfirmed 2 次</span></div><span class="badge buy">active</span></div>
@@ -1389,14 +1355,14 @@
             <div class="section-title"><b>审计覆盖矩阵</b><span>非用户入口</span></div>
             <div class="coverage-grid">
               <div class="coverage-item"><b>认证</b><span>登录、注册、邀请码、会话、用户角色入口。</span></div>
-              <div class="coverage-item"><b>首页</b><span>资产、PnL、收益率、预警数、净值曲线 range、重新计算、仓位分布、9 个持仓明细、买入/卖出/修正成本/交易记录、运行任务、快捷操作。</span></div>
-              <div class="coverage-item"><b>AI 分析</b><span>发起分析、深度切换、Inbox、运行态 Pipeline、详情、Quick Info、K 线、7 tabs、再次分析、观察列表、纸面交易、导出、分享、收藏、删除、渲染重试。</span></div>
-              <div class="coverage-item"><b>智能选股 V3</b><span>自然语言、市场、大师选择、全选/推荐/全不选、经典/Agent/圆桌、候选数、成本估算、运行态、结果、透明度、圆桌、候选展开、历史、复制配置。</span></div>
-              <div class="coverage-item"><b>持仓</b><span>已并入首页，不再占用一级 tab；能力仍覆盖买入、卖出、修正成本、移除、搜索、交易记录、今日/总 PnL 降级。</span></div>
+              <div class="coverage-item"><b>首页</b><span>资产、PnL、收益率、预警数、净值曲线 range、重新计算、仓位分布、持仓明细默认 5 / 全部 9、持仓看分析、买入/卖出/修正成本/交易记录、运行任务、快捷操作。</span></div>
+              <div class="coverage-item"><b>AI 分析</b><span>发起分析、深度切换、Inbox、运行态 Pipeline、详情、结构化核心报告、K 线、8 tabs、再次分析、观察列表、纸面交易、导出、分享、收藏、删除、渲染重试。</span></div>
+              <div class="coverage-item"><b>智能选股 V3</b><span>自然语言、市场、大师选择、全选/推荐/全不选、经典/Agent/圆桌、候选数、成本估算、运行态、结果、圆桌、大师评分折叠、历史、复制配置。</span></div>
+              <div class="coverage-item"><b>持仓</b><span>已并入首页，不再占用一级 tab；能力仍覆盖买入、卖出、修正成本、移除、搜索、交易记录、看分析、今日/总 PnL 降级。</span></div>
               <div class="coverage-item"><b>预警</b><span>预警模板、新建、条件选择、活跃警报、触发历史、删除。</span></div>
               <div class="coverage-item"><b>报告</b><span>日报、周报、月报、个股研报、ticker、任务提交、Markdown/section 预览。</span></div>
               <div class="coverage-item"><b>回测</b><span>ticker、策略、日期、初始资金、任务提交、结果指标、权益曲线、交易明细、再次运行。</span></div>
-              <div class="coverage-item"><b>纸面交易</b><span>前向追踪、历史回放、搜索、ticker 聚合卡、策略页、计划档位、AI 最终决策、执行记录、日度数据、EOD 刷新、权益和回撤。</span></div>
+              <div class="coverage-item"><b>纸面交易</b><span>前向追踪、历史回放、搜索、ticker 聚合卡、策略页、计划档位、AI 决策核心、执行记录、日度数据、EOD 刷新、权益和回撤。</span></div>
               <div class="coverage-item"><b>任务中心</b><span>scope、状态筛选、类型筛选、加载更多、详情事件流、查看结果、取消、重试、删除。</span></div>
               <div class="coverage-item"><b>设置</b><span>Gemini/Qwen/OpenRouter、显示密钥、清空 Key、预设池、Email、Telegram、调度器状态、立即快照。</span></div>
             </div>
@@ -1405,14 +1371,13 @@
               <div class="coverage-item"><b>Paper-trade Plan/Event</b><span>已补 chip-row 式“按 Plan / 按 Event”双视图，不再只有单个按 Event 按钮。</span></div>
               <div class="coverage-item"><b>任务事件流</b><span>已从静态 code block 改为 unified-progress 事件列表：per-user room、catch-up、streaming 状态。</span></div>
               <div class="coverage-item"><b>K 线图</b><span>已补 TradingView lightweight-charts 风格 OHLCV 90D 视觉区。</span></div>
-              <div class="coverage-item"><b>选股透明度 banner</b><span>已展开原始查询、核心意图、候选来源色码、解析行业/主题/关键词、off-theme 剔除、缓存命中。</span></div>
               <div class="coverage-item"><b>模型切换</b><span>demo 已从简化 modal 改为 provider + deep/quick preset 两段式，并标注“新任务生效”。</span></div>
             </div>
             <div class="section-title"><b>产品真实缺口</b><span>demo 不伪装</span></div>
             <div class="coverage-grid">
-              <div class="coverage-item gap-note"><b>批量分析持仓入口</b><span>后端 batch_analysis worker 与 task type 存在，但 Dashboard / Portfolio 前端缺触发按钮。demo 在首页持仓明细中以“建议补齐入口”呈现。</span></div>
+              <div class="coverage-item gap-note"><b>批量分析持仓入口</b><span>后端 batch_analysis worker 与 task type 存在，但真实前端缺触发按钮。demo 在首页持仓明细中以“建议补齐入口”呈现。</span></div>
               <div class="coverage-item gap-note"><b>Reports / Backtest 历史列表</b><span>真实页面目前只有表单与单次结果/预览，没有历史列表。</span></div>
-              <div class="coverage-item gap-note"><b>持仓/预警反向跳分析</b><span>Portfolio 与 Alerts 行内暂无“查看/发起分析”闭环入口。</span></div>
+              <div class="coverage-item gap-note"><b>预警反向跳分析</b><span>Alerts 行内暂无“查看/发起分析”闭环入口；持仓卡已在 demo 补充“看分析”。</span></div>
               <div class="coverage-item gap-note"><b>Analysis Inbox scope 三态</b><span>尚未与 Tasks 的 mine / shared_research / all 对齐。</span></div>
               <div class="coverage-item gap-note"><b>Diagnostics / Schwab OAuth 面板</b><span>后端/设计存在相关能力，但 Settings 前端暂无健康诊断与 Schwab 配置入口。</span></div>
               <div class="coverage-item gap-note"><b>Screener running history 行</b><span>最近选股目前 success-only，无 include_running=true。</span></div>
@@ -1461,7 +1426,6 @@
       screenerRunning: "发现 · 选股运行态",
       screenerResults: "发现 · 选股结果",
       screenerHistory: "发现 · 选股历史",
-      portfolio: "持仓 · 管理",
       transactions: "持仓 · 交易记录",
       more: "更多 · 全部页面",
       reports: "报告中心",
@@ -1477,6 +1441,11 @@
       coverage: "覆盖矩阵"
     };
     const primary = new Set(["dashboard", "analysis", "discover", "paperList", "more"]);
+    function toggleHoldings(showAll) {
+      document.querySelectorAll(".holding-extra").forEach(card => card.classList.toggle("collapsed", !showAll));
+      document.getElementById("holdingsFive")?.classList.toggle("active", !showAll);
+      document.getElementById("holdingsAll")?.classList.toggle("active", showAll);
+    }
     function go(view) {
       document.querySelectorAll(".view").forEach(v => v.classList.toggle("active", v.dataset.view === view));
       document.querySelectorAll(".tabbar button").forEach(b => {

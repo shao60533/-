@@ -8,6 +8,7 @@
 | 2026-04-19 | v1.0 | 智能选股 V3：14 大师 agent 深度评估（6-10 子分析/位 + LLM 结构化推理）替换 v2 硬阈值 + 用户预选配置面板（大师/深度模式/候选数）+ 成本预估 + Round-table 辩论 + 流式回显 + 可中断恢复 + 缓存 + 经典模式兼容保留 | [screener-v3.md](screener-v3.md) | — |
 | 2026-04-21 | v1.0 | UI React Island：Flask 外壳不动 + 4 高价值页（screener-v3 / tasks / paper-trade detail / dashboard）迁 React + Vite + Tailwind v4 + shadcn 风格组件，7 简单页保留 Jinja；POC 已验证（/tmp/stock-ui-demo/） | [ui-react-island.md](ui-react-island.md) | — |
 | 2026-04-21 | v2.0 | UI React Island 完整迁移：剩余 11 页全部迁 React（Portfolio / History / Alerts / Reports / Backtest / Paper list / Analysis 列表+详情 / Settings / Login / Register / Reset）+ Phase 18 废弃旧 index.html / app.js / Bootstrap，总工期 ~75h | [ui-react-island.md](ui-react-island.md) | — |
+| 2026-05-09 | v1.3 | 移动端信息架构与 UI 实装：严格按高保真 demo，不改产品功能/后端/架构；首页+持仓合并、纸面交易升一级、Analysis 8 结构化 tabs、Screener 大师评分默认折叠、Paper detail 去冗余、More 减噪 + 分阶段任务拆解 | [mobile-ui-v1.3.md](mobile-ui-v1.3.md) | — |
 
 ## 待跟进
 - P2 需求（R-2.1 ~ R-2.8）尚未排期
