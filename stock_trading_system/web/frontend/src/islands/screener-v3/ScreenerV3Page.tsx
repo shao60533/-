@@ -308,7 +308,9 @@ function ScreenerForm({ prefillTaskId = null }: ScreenerFormProps) {
             <p className="text-xs text-[var(--color-accent-red)]">{submitError}</p>
           )}
           <div className="flex items-center justify-end gap-2">
-            <Button variant="outline" onClick={() => window.location.href = "/"}>取消</Button>
+            {/* mobile-ui-v1.3: form bottom keeps only the primary
+                ``开始筛选`` action. Cancel was a redundant exit since
+                navigating back uses the bottom tabbar / back button. */}
             <Button
               variant="default" size="lg"
               disabled={selected.size === 0 || submitting}
@@ -680,163 +682,11 @@ function ResultsView({ resultId }: { resultId: string }) {
         <Stat label="共识率" value={`${consensusRate}%`} />
       </div>
 
-      {/* v1.4 — input-driven transparency banner. Renders the full
-          chain: 用户输入 → 解析约束 → 候选来源 → off-theme 过滤。
-          Hidden when there's literally nothing meaningful to show
-          (no theme parsed, no excluded, no source label). */}
-      {result.run_metadata && (
-        result.run_metadata.parsed_theme ||
-        (result.run_metadata.excluded_off_theme?.length ?? 0) > 0 ||
-        result.run_metadata.universe_source ||
-        (result.run_metadata.parsed_sectors?.length ?? 0) > 0 ||
-        (result.run_metadata.parsed_themes?.length ?? 0) > 0
-      ) && (
-        <Card>
-          <CardContent className="py-3 space-y-2 text-xs">
-            {/* Row 1: 用户原始输入 + 候选池来源 + 警告 */}
-            <div className="flex flex-wrap items-center gap-2">
-              {result.run_metadata.raw_query && (
-                <Badge variant="muted" className="font-mono">
-                  「{result.run_metadata.raw_query}」
-                </Badge>
-              )}
-              {result.run_metadata.intent_summary && (
-                <span className="text-muted-foreground">
-                  → {result.run_metadata.intent_summary}
-                </span>
-              )}
-              {result.run_metadata.universe_source && (
-                <>
-                  <span className="text-muted-foreground">·</span>
-                  <span>
-                    候选来源：
-                    <span className={cn(
-                      "font-medium",
-                      result.run_metadata.universe_source === "dynamic_llm" && "text-emerald-500",
-                      result.run_metadata.universe_source === "theme_fallback" && "text-amber-500",
-                      result.run_metadata.universe_source === "default" && "text-orange-500",
-                    )}>
-                      {sourceLabel(result.run_metadata.universe_source)}
-                    </span>
-                  </span>
-                </>
-              )}
-              {result.run_metadata.universe_source === "theme_fallback" && (
-                <Badge variant="sell" className="w-full sm:w-auto sm:ml-auto justify-center">
-                  ⚠️ 主候选生成失败，使用保守降级候选
-                </Badge>
-              )}
-              {result.run_metadata.universe_source === "default" && (
-                <Badge variant="sell" className="w-full sm:w-auto sm:ml-auto justify-center">
-                  ⚠️ 未命中主题，使用大盘默认池
-                </Badge>
-              )}
-            </div>
-
-            {/* Row 2: 解析出的主题 / 行业 / 关键词 */}
-            {(result.run_metadata.parsed_theme ||
-              (result.run_metadata.parsed_sectors?.length ?? 0) > 0 ||
-              (result.run_metadata.parsed_themes?.length ?? 0) > 0 ||
-              (result.run_metadata.parsed_keywords?.length ?? 0) > 0) && (
-              <div className="flex flex-wrap items-center gap-2">
-                {result.run_metadata.parsed_theme && (
-                  <Badge variant="default">🎯 {result.run_metadata.parsed_theme}</Badge>
-                )}
-                {(result.run_metadata.parsed_sectors?.length ?? 0) > 0 && (
-                  <span className="text-muted-foreground">
-                    行业：
-                    <span className="text-foreground/80">
-                      {result.run_metadata.parsed_sectors!.join(" / ")}
-                    </span>
-                  </span>
-                )}
-                {(result.run_metadata.parsed_themes?.length ?? 0) > 0 && (
-                  <span className="text-muted-foreground">
-                    主题：
-                    <span className="text-foreground/80">
-                      {result.run_metadata.parsed_themes!.join(" / ")}
-                    </span>
-                  </span>
-                )}
-                {(result.run_metadata.parsed_keywords?.length ?? 0) > 0 && (
-                  <span className="text-muted-foreground">
-                    关键词：
-                    <span className="text-foreground/80">
-                      {result.run_metadata.parsed_keywords!.join(", ")}
-                    </span>
-                  </span>
-                )}
-                {typeof result.run_metadata.on_theme_count === "number" &&
-                 result.run_metadata.on_theme_count > 0 && (
-                  <span className="text-muted-foreground sm:ml-auto">
-                    on-theme {result.run_metadata.on_theme_count}
-                  </span>
-                )}
-              </div>
-            )}
-
-            {/* Row 3: 被剔除的 off-theme 列表（含原因） */}
-            {(result.run_metadata.excluded_off_theme?.length ?? 0) > 0 && (
-              <div className="flex flex-wrap items-start gap-2 pt-1 border-t border-border/40">
-                <span className="text-muted-foreground shrink-0">
-                  剔除 off-theme {result.run_metadata.excluded_off_theme!.length}：
-                </span>
-                <div className="flex flex-wrap gap-1.5">
-                  {result.run_metadata.excluded_off_theme!.slice(0, 12).map((ex, i) => {
-                    const obj = typeof ex === "string"
-                      ? { ticker: ex, sector: "", reason: "" }
-                      : ex
-                    return (
-                      <span key={`${obj.ticker}-${i}`}
-                            title={obj.reason || obj.sector || ""}
-                            className="font-mono px-1.5 py-0.5 rounded bg-muted text-foreground/80">
-                        {obj.ticker}
-                        {obj.sector && (
-                          <span className="ml-1 text-muted-foreground">· {obj.sector}</span>
-                        )}
-                      </span>
-                    )
-                  })}
-                  {result.run_metadata.excluded_off_theme!.length > 12 && (
-                    <span className="text-muted-foreground">
-                      … +{result.run_metadata.excluded_off_theme!.length - 12}
-                    </span>
-                  )}
-                </div>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      )}
-
-      {/* v1.2 — run-mode banner. Hidden for legacy rows that have no
-          metadata (DTO emits zeros + empty list, which we read as
-          "nothing meaningful to show"). */}
-      {result.run_metadata && result.run_metadata.gurus_used.length + result.run_metadata.llm_calls > 0 && (
-        <Card>
-          <CardContent className="py-3 flex flex-wrap items-center gap-3 text-xs">
-            <Badge variant="default">⚡ {modeLabel(result.run_metadata.mode)}</Badge>
-            <span>{result.run_metadata.gurus_used.length} 大师</span>
-            {result.run_metadata.gurus_used.length > 0 && (
-              <div className="flex -space-x-1">
-                {result.run_metadata.gurus_used.slice(0, 6).map(g => (
-                  <Avatar key={g} initials={g.slice(0, 2).toUpperCase()} size="sm"
-                          className="border-2 border-background" />
-                ))}
-              </div>
-            )}
-            <span className="text-muted-foreground">·</span>
-            <span>{result.run_metadata.llm_calls} LLM call</span>
-            <span className="text-muted-foreground">·</span>
-            <span>命中缓存 {result.run_metadata.cache_hit_pct}%</span>
-            <span className="text-muted-foreground">·</span>
-            <span>耗时 {fmtDuration(result.run_metadata.duration_sec)}</span>
-            {!result.run_metadata.roundtable_enabled && (
-              <Badge variant="muted" className="sm:ml-auto">无圆桌</Badge>
-            )}
-          </CardContent>
-        </Card>
-      )}
+      {/* mobile-ui-v1.3: transparency / audit banner removed. Inputs
+          → parsed-theme → universe-source → off-theme exclusions and
+          the run-mode tile (dynamic_llm / cache_hit_pct / llm_calls /
+          duration) are no longer surfaced on the user-facing results
+          page. Coverage page still records them as a debug surface. */}
 
       {/* v1.2 — Top-5 圆桌辩论 grid (one card per ticker). */}
       {roundtableItems && roundtableItems.length > 0 && (
@@ -966,21 +816,17 @@ function ResultsView({ resultId }: { resultId: string }) {
                 </table>
               </div>
 
-              {/* Mobile cards — slimmer info per row, expand to full
-                  CandidateExpanded for parity with desktop. */}
+              {/* Mobile cards — mobile-ui-v1.3: 14-guru detail collapses
+                  into a <details> element with consensus summary. The
+                  legacy chevron-expand pattern stays available on the
+                  desktop table; phones land on a scannable list and
+                  drill into guru reasoning only on demand. */}
               <div className="md:hidden space-y-2">
                 {candidates.map((c, i) => {
                   const sig = candidateSignal(c)
-                  const isOpen = expanded === c.ticker
                   return (
-                    <div key={c.ticker} className="border rounded-lg p-3 min-w-0">
-                      {/* Mobile candidate row — split into two visual
-                          rows so ticker / score / signal / consensus
-                          never crowd into one 320px line. Row 1 shows
-                          rank + ticker + score + signal; row 2 shows
-                          votes bar + consensus pill. */}
-                      <div className="flex flex-wrap items-center gap-2 cursor-pointer"
-                           onClick={() => setExpanded(isOpen ? null : c.ticker)}>
+                    <div key={c.ticker} className="border rounded-lg p-3 min-w-0 space-y-2">
+                      <div className="flex flex-wrap items-center gap-2">
                         <div className="flex items-center gap-2 min-w-0 flex-1">
                           <span className="text-xs text-muted-foreground shrink-0">#{i + 1}</span>
                           <span className="font-mono font-semibold truncate">{c.ticker}</span>
@@ -990,18 +836,14 @@ function ResultsView({ resultId }: { resultId: string }) {
                           <Badge variant={signalBadge(sig)}>{sig.toUpperCase()}</Badge>
                         </div>
                       </div>
-                      <div className="flex flex-wrap items-center gap-2 mt-2 min-w-0">
+                      <div className="flex flex-wrap items-center gap-2 min-w-0">
                         <VotesBar votes={c.votes} />
                         <Badge variant={consensusBadge(c.consensus ?? "")}
                                className="text-[10px] sm:ml-auto">
                           {consensusLabel(c.consensus ?? "")}
                         </Badge>
                       </div>
-                      {isOpen && (
-                        <div className="mt-3 pt-3 border-t border-border/40">
-                          <CandidateExpanded c={c} f={funds[c.ticker]} />
-                        </div>
-                      )}
+                      <GuruScoreDetails c={c} f={funds[c.ticker]} />
                     </div>
                   )
                 })}
@@ -1033,6 +875,33 @@ function VotesBar({ votes }: { votes?: Votes }) {
         <span className="text-red-400">{bearish}✗</span>
       </span>
     </div>
+  )
+}
+
+/** mobile-ui-v1.3: <details>-wrapped guru breakdown. Renders inside
+ *  each candidate card on mobile; closed by default with summary text
+ *  exposing consensus % and bullish / bearish / neutral counts so the
+ *  user can decide whether to expand. The expanded body reuses the
+ *  same per-guru card grid as the desktop expansion. */
+function GuruScoreDetails({ c, f }: {
+  c: Candidate; f: Record<string, unknown> | null | undefined
+}) {
+  const v = c.votes
+  const bullish = v?.bullish ?? 0
+  const bearish = v?.bearish ?? 0
+  const neutral = v?.neutral ?? 0
+  const total = v?.total ?? (bullish + bearish + neutral)
+  const dominant = Math.max(bullish, bearish, neutral)
+  const consensusPct = total > 0 ? Math.round((dominant / total) * 100) : 0
+  return (
+    <details className="rounded border border-border/40">
+      <summary className="cursor-pointer px-3 py-2 text-xs text-foreground/80 hover:bg-muted/30">
+        查看 14 位大师评分（共识 {consensusPct}% / 看多 {bullish} / 看空 {bearish} / 中性 {neutral}）
+      </summary>
+      <div className="px-3 pb-3 pt-2">
+        <CandidateExpanded c={c} f={f} />
+      </div>
+    </details>
   )
 }
 

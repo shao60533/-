@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useMemo } from "react"
 import {
   CheckCircle2, Clock4, AlertCircle,
-  Sparkles, XCircle, BarChart3,
+  Sparkles, XCircle,
 } from "lucide-react"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -99,11 +99,9 @@ function PaperTradeContent() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")
   const [recordView, setRecordView] = useState<"plan" | "event">("plan")
-  // mainTab MUST be declared before any conditional return — otherwise React
-  // re-renders this component with a different number of hooks, throws
-  // "Rendered more hooks than during the previous render", and the
-  // ErrorBoundary upstream shows "页面渲染异常" instead of the real UI.
-  const [mainTab, setMainTab] = useState<"strategy" | "daily">("strategy")
+  // mobile-ui-v1.3: top-level 策略 / 日度数据 inner tabs are removed.
+  // The detail page renders strategy + daily content stacked so users
+  // never have to switch tabs to see plan + EOD on the same screen.
 
   // paper-trade v1.5: extracted into a function so the EOD refresh
   // button on the daily tab can re-pull after triggering /api/paper/
@@ -138,34 +136,20 @@ function PaperTradeContent() {
 
   return (
     <div className="p-4 md:p-6 space-y-6 max-w-5xl mx-auto min-w-0">
+      <Button variant="ghost" size="sm" onClick={() => window.location.href = "/paper-trade"}
+              className="-ml-2 self-start">
+        ← 返回纸面交易
+      </Button>
       <div className="mobile-card-header">
-        <h1 className="mc-title text-xl font-bold truncate">{ticker} 纸面交易</h1>
+        <h1 className="mc-title text-xl font-bold truncate">{ticker} 纸面交易 · 详情</h1>
         <div className="mc-actions">
           <Badge variant={sess.status === "running" ? "default" : "muted"}>{sess.status}</Badge>
         </div>
       </div>
 
-      {/* Main tab switch */}
-      <ChipRow>
-        <Chip active={mainTab === "strategy"} onClick={() => setMainTab("strategy")}>
-          <Sparkles className="w-3.5 h-3.5 mr-1" />策略
-        </Chip>
-        <Chip active={mainTab === "daily"} onClick={() => setMainTab("daily")}>
-          <BarChart3 className="w-3.5 h-3.5 mr-1" />日度数据
-        </Chip>
-      </ChipRow>
-
-      {mainTab === "daily" && (
-        <DailyDataTab
-          ticker={ticker}
-          dailies={data.dailies ?? []}
-          startCapital={sess.start_capital ?? 0}
-          hasActivePlan={!!data.active_plan}
-          onRefresh={() => refresh()}
-        />
-      )}
-      {mainTab === "strategy" && (<>
-      {/* BEGIN strategy tab */}
+      {/* mobile-ui-v1.3: 策略 / 日度数据 inner tabs removed. Strategy
+          + position + plan tiers + daily-data + AI decision + execution
+          records render stacked in document order. */}
 
       {/* Strategy + Position */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -268,47 +252,127 @@ function PaperTradeContent() {
       </Card>
 
       {/* AI 最终决策 */}
+      {/* 日度数据 — chart + EOD refresh + stat row + table. */}
+      <DailyDataTab
+        ticker={ticker}
+        dailies={data.dailies ?? []}
+        startCapital={sess.start_capital ?? 0}
+        hasActivePlan={!!data.active_plan}
+        onRefresh={() => refresh()}
+      />
+
+      {/* AI 决策核心 / 执行记录 — structured panel replaces the raw
+          English ``FINAL TRANSACTION PROPOSAL`` blob. Falls back to a
+          placeholder when the parsed advice payload is missing. */}
       <Card>
         <CardHeader>
           <div className="flex items-center gap-2">
             <Sparkles className="w-4 h-4 text-blue-500" />
-            <CardTitle className="text-sm">AI 最终决策</CardTitle>
+            <CardTitle className="text-sm">AI 决策核心 / 执行记录</CardTitle>
           </div>
         </CardHeader>
-        <CardContent>
-          {data.latest_trade_decision ? (
-            <div className="text-sm leading-relaxed whitespace-pre-wrap max-h-96 overflow-y-auto">
-              {data.latest_trade_decision}
-            </div>
-          ) : (
-            <p className="text-sm text-muted-foreground">暂无决策原文</p>
-          )}
-        </CardContent>
-      </Card>
+        <CardContent className="space-y-4">
+          <StructuredDecisionPanel data={data} />
 
-      {/* 执行记录（按 Plan / 按 Event） */}
-      <Card>
-        <CardHeader>
-          <div className="mobile-card-header">
-            <CardTitle className="mc-title text-sm truncate">执行记录</CardTitle>
-            <div className="mc-actions">
-              <ChipRow>
-                <Chip active={recordView === "plan"} onClick={() => setRecordView("plan")}>按 Plan</Chip>
-                <Chip active={recordView === "event"} onClick={() => setRecordView("event")}>按 Event</Chip>
-              </ChipRow>
-            </div>
+          <div className="space-y-2">
+            <ChipRow>
+              <Chip active={recordView === "plan"} onClick={() => setRecordView("plan")}>按 Plan</Chip>
+              <Chip active={recordView === "event"} onClick={() => setRecordView("event")}>按 Event</Chip>
+            </ChipRow>
+            {recordView === "plan" ? (
+              <PlanHistory plans={data.plan_history || []} />
+            ) : (
+              <EventTimeline events={data.events || []} />
+            )}
           </div>
-        </CardHeader>
-        <CardContent>
-          {recordView === "plan" ? (
-            <PlanHistory plans={data.plan_history || []} />
-          ) : (
-            <EventTimeline events={data.events || []} />
-          )}
         </CardContent>
       </Card>
-      {/* END strategy tab */}
-      </>)}
+    </div>
+  )
+}
+
+/* ── Structured AI decision panel ──────────────────────────────
+   Renders score / action / confidence / risk / execution method +
+   evidence list, sourced from the parsed ``advice`` payload on the
+   active plan. We never render ``latest_trade_decision`` raw text —
+   that's English boilerplate from the trader prompt. */
+
+interface StructuredAdvice {
+  action?: string
+  rating?: string
+  confidence?: number
+  risk_level?: string
+  reasoning?: string
+  evidence?: string[]
+  thesis?: string
+  score?: number
+}
+
+function StructuredDecisionPanel({ data }: { data: PaperPayload }) {
+  const plan = data.active_plan
+  const advice = data.latest_advice as StructuredAdvice | null
+  const action = (advice?.action || plan?.rating || "—").toUpperCase()
+  const confidence = typeof advice?.confidence === "number" ? advice.confidence : null
+  const risk = advice?.risk_level || "—"
+  const planRef = plan ? `Plan #${plan.id}` : "—"
+  const reasoning = advice?.reasoning || plan?.thesis || ""
+  const evidence = Array.isArray(advice?.evidence) ? advice!.evidence! : []
+  const score = typeof advice?.score === "number"
+    ? Math.round(advice.score)
+    : (typeof confidence === "number" ? Math.round(confidence * 100) : null)
+
+  if (!plan && !advice) {
+    return <p className="text-sm text-muted-foreground">暂无 AI 决策数据</p>
+  }
+
+  const actionVariant =
+    action.includes("BUY") ? "buy" :
+    action.includes("SELL") ? "sell" :
+    "muted" as const
+
+  return (
+    <div className="rounded-lg border border-border p-3 space-y-3">
+      <div className="flex items-start gap-3">
+        {score != null && (
+          <div className="shrink-0 w-12 h-12 rounded-full border-2 border-primary/40 flex items-center justify-center font-mono text-sm font-semibold">
+            {score}
+          </div>
+        )}
+        <div className="flex-1 min-w-0 space-y-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <strong className="text-sm">交易决策</strong>
+            <Badge variant={actionVariant}>{action}</Badge>
+          </div>
+          {reasoning && (
+            <p className="text-xs text-muted-foreground break-words">{reasoning}</p>
+          )}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-3 gap-x-3 gap-y-1 text-xs">
+        <div className="min-w-0">
+          <span className="text-muted-foreground">置信度</span>
+          <div className="font-mono truncate">
+            {confidence != null ? `${Math.round(confidence * 100)}%` : "—"}
+          </div>
+        </div>
+        <div className="min-w-0">
+          <span className="text-muted-foreground">风险等级</span>
+          <div className="truncate">{risk}</div>
+        </div>
+        <div className="min-w-0">
+          <span className="text-muted-foreground">执行方式</span>
+          <div className="font-mono truncate">{planRef}</div>
+        </div>
+      </div>
+
+      {evidence.length > 0 && (
+        <ul className="space-y-1 text-xs">
+          {evidence.slice(0, 6).map((e, i) => (
+            <li key={i} className="pl-2 border-l-2 border-primary/40 break-words">{e}</li>
+          ))}
+        </ul>
+      )}
     </div>
   )
 }

@@ -25,24 +25,27 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 // Order matches the user's original verification list so the run-log
 // reads top-to-bottom in the same shape as the spec.
 const PAGES = [
-  { key: "dashboard",        url: "/e2e/dev/dashboard.html"        },
-  { key: "analysis",         url: "/e2e/dev/analysis.html"         },
-  { key: "reports",          url: "/e2e/dev/reports.html"          },
-  { key: "screener-v3",      url: "/e2e/dev/screener-v3.html"      },
-  { key: "portfolio",        url: "/e2e/dev/portfolio.html"        },
-  { key: "alerts",           url: "/e2e/dev/alerts.html"           },
-  { key: "paper-trade-list", url: "/e2e/dev/paper-trade-list.html" },
-  { key: "paper-trade",      url: "/e2e/dev/paper-trade.html"      },
-  { key: "tasks",            url: "/e2e/dev/tasks.html"            },
-  { key: "backtest",         url: "/e2e/dev/backtest.html"         },
-  { key: "settings",         url: "/e2e/dev/settings.html"         },
-  { key: "history",          url: "/e2e/dev/history.html"          },
+  { key: "dashboard",        url: "/static/dist/e2e/dev/dashboard.html"        },
+  { key: "analysis",         url: "/static/dist/e2e/dev/analysis.html"         },
+  { key: "reports",          url: "/static/dist/e2e/dev/reports.html"          },
+  { key: "screener-v3",      url: "/static/dist/e2e/dev/screener-v3.html"      },
+  { key: "portfolio",        url: "/static/dist/e2e/dev/portfolio.html"        },
+  { key: "alerts",           url: "/static/dist/e2e/dev/alerts.html"           },
+  { key: "paper-trade-list", url: "/static/dist/e2e/dev/paper-trade-list.html" },
+  { key: "paper-trade",      url: "/static/dist/e2e/dev/paper-trade.html"      },
+  { key: "tasks",            url: "/static/dist/e2e/dev/tasks.html"            },
+  { key: "backtest",         url: "/static/dist/e2e/dev/backtest.html"         },
+  { key: "settings",         url: "/static/dist/e2e/dev/settings.html"         },
+  { key: "history",          url: "/static/dist/e2e/dev/history.html"          },
 ]
 
-const WIDTHS = [320, 375, 414]
+// mobile-ui-v1.3: viewport sweep updated to PRD §9.3 — 375 / 390 / 430
+// / 768. The 320 width was a pre-v1.3 carry-over; 768 catches tablet
+// breakpoints that were never asserted on before.
+const WIDTHS = [375, 390, 430, 768]
 
 const SCREENSHOT_DIR = path.resolve(
-  __dirname, "../../../../../docs/qa/mobile-2026-05-05-phase2",
+  __dirname, "../../../../../docs/qa/mobile-ui-v1.3",
 )
 
 test.beforeAll(async () => {

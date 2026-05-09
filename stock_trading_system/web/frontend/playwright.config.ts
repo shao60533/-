@@ -39,7 +39,7 @@ export default defineConfig({
   // a developer running `npm run dev` in another terminal reuse it.
   webServer: {
     command: "npm run dev -- --host 127.0.0.1 --port 5173",
-    url: "http://127.0.0.1:5173/e2e/dev/screener-v3.html",
+    url: "http://127.0.0.1:5173/static/dist/e2e/dev/screener-v3.html",
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
   },

@@ -603,6 +603,19 @@ def create_app(config_path=None):
     from stock_trading_system.tasks.event_emitter import ensure_task_events_table
     ensure_task_events_table(db_path)
 
+    # OAuth quick sign-in (v1.0). Idempotent — only creates oauth_accounts
+    # when missing; subsequent boots are no-ops. Skipped silently when the
+    # DB hasn't been initialized yet (single-user fallback / first run).
+    from stock_trading_system.migrations.add_oauth_accounts import add_oauth_accounts
+    add_oauth_accounts(db_path)
+
+    # Fail-fast on missing/malformed OAUTH_ENCRYPT_KEY *only when* an OAuth
+    # provider is enabled. Without a provider configured, the rest of the
+    # app must still boot (deployments that don't use OAuth at all).
+    if os.environ.get("GOOGLE_OAUTH_CLIENT_ID") or os.environ.get("GITHUB_OAUTH_CLIENT_ID"):
+        from stock_trading_system.auth.oauth_crypto import assert_key_configured
+        assert_key_configured()
+
     # ── Daily-snapshot scheduler ───────────────────────────────────────
     # Auto-starts once per deployment (worker-0 / single-process wins the
     # filesystem lock; the rest stay inert). Runs at 16:30 America/New_York
@@ -640,6 +653,14 @@ def create_app(config_path=None):
     PUBLIC_PREFIXES = ("/static/", "/login", "/register", "/reset",
                        "/api/auth/login", "/api/auth/register", "/api/auth/reset",
                        "/api/auth/invites-available",
+                       # OAuth quick sign-in (v1.0): provider listing + flow
+                       # entry/return + new-user register handoff are all
+                       # reachable pre-login. The post-login surfaces
+                       # (/api/auth/oauth/linked, .../<provider>/unlink)
+                       # remain session-guarded.
+                       "/auth/oauth/",
+                       "/api/auth/providers",
+                       "/api/auth/oauth/register",
                        "/health", "/api/health", "/api/seed",
                        # Schwab OAuth — guarded by magic-link secret instead of session
                        "/oauth/schwab/", "/api/schwab/")
@@ -1028,6 +1049,311 @@ def create_app(config_path=None):
         result["history_latency_ms"] = int((_t.perf_counter() - t0) * 1000)
 
         return jsonify(result)
+
+    # ── OAuth quick sign-in (Google + GitHub, v1.0) ─────────────────────
+    # /auth/oauth/<p>/start            → redirect to provider authorize URL
+    # /auth/oauth/<p>/callback         → 5-branch dispatch: state/PKCE check,
+    #                                    intent=link binding, intent=login
+    #                                    [bound | auto-merge | unverified hint
+    #                                    | new-email register handoff]
+    # /api/auth/oauth/register         → finalize signup with invite code
+    # /api/auth/oauth/linked           → list a user's bound providers
+    # /api/auth/oauth/<p>/unlink       → unbind a provider for current user
+    # /api/auth/providers              → list providers configured at boot
+
+    from stock_trading_system.auth.oauth_providers import (
+        get_enabled_providers as _get_oauth_providers,
+        OAuthExchangeError as _OAuthExchangeError,
+        OAuthProfile as _OAuthProfile,
+        OAuthTokens as _OAuthTokens,
+    )
+    from stock_trading_system.auth.oauth_repository import (
+        OAuthAccountRepository as _OAuthAccountRepo,
+        OAuthProfileRecord as _OAuthProfileRec,
+        OAuthTokenRecord as _OAuthTokenRec,
+    )
+    from stock_trading_system.auth.oauth_session import (
+        generate_pkce_pair as _gen_pkce,
+        safe_next as _safe_next,
+        make_pending_token as _mk_pending,
+        verify_pending_token as _verify_pending,
+    )
+    from stock_trading_system.auth.session import login_user as _login_user
+    from flask import url_for as _url_for, session as _session
+    import secrets as _oauth_secrets
+
+    _oauth_repo = _OAuthAccountRepo(db_path)
+
+    def _profile_to_record(profile: _OAuthProfile) -> _OAuthProfileRec:
+        return _OAuthProfileRec(
+            sub=profile.sub,
+            email=profile.email,
+            email_verified=profile.email_verified,
+            raw=profile.raw,
+        )
+
+    def _tokens_to_record(tokens: _OAuthTokens) -> _OAuthTokenRec:
+        return _OAuthTokenRec(
+            access_token=tokens.access_token,
+            refresh_token=tokens.refresh_token,
+            expires_at=tokens.expires_at,
+        )
+
+    @app.route("/auth/oauth/<provider_name>/start")
+    def oauth_start(provider_name):
+        providers = _get_oauth_providers(get_config())
+        provider = providers.get(provider_name)
+        if provider is None:
+            return redirect("/login?error=unknown_provider")
+
+        intent = request.args.get("intent", "login")
+        if intent not in ("login", "link"):
+            intent = "login"
+        next_url = _safe_next(request.args.get("next"), default="/")
+
+        state = _oauth_secrets.token_urlsafe(32)
+        verifier, challenge = _gen_pkce()
+
+        _session["oauth_state"] = state
+        _session["oauth_code_verifier"] = verifier
+        _session["oauth_intent"] = intent
+        _session["oauth_next"] = next_url
+        _session["oauth_provider"] = provider_name
+
+        redirect_uri = _url_for(
+            "oauth_callback", provider_name=provider_name, _external=True,
+        )
+        return redirect(provider.build_authorize_url(
+            state=state, code_challenge=challenge, redirect_uri=redirect_uri,
+        ))
+
+    @app.route("/auth/oauth/<provider_name>/callback")
+    def oauth_callback(provider_name):
+        # ── 1. state + PKCE check (any failure → /login?error=) ──
+        state_in = request.args.get("state", "")
+        state_saved = _session.pop("oauth_state", None)
+        code_verifier = _session.pop("oauth_code_verifier", None)
+        intent = _session.pop("oauth_intent", "login")
+        next_url = _safe_next(_session.pop("oauth_next", "/"), default="/")
+        _session.pop("oauth_provider", None)
+
+        if not state_saved or state_in != state_saved:
+            logger.warning("oauth state mismatch provider=%s", provider_name)
+            return redirect("/login?error=state_mismatch")
+
+        if not code_verifier:
+            return redirect("/login?error=missing_verifier")
+
+        code = request.args.get("code", "")
+        if not code:
+            return redirect("/login?error=no_code")
+
+        providers = _get_oauth_providers(get_config())
+        provider = providers.get(provider_name)
+        if provider is None:
+            return redirect("/login?error=unknown_provider")
+
+        redirect_uri = _url_for(
+            "oauth_callback", provider_name=provider_name, _external=True,
+        )
+        try:
+            profile, tokens = provider.exchange_code(
+                code=code, code_verifier=code_verifier, redirect_uri=redirect_uri,
+            )
+        except _OAuthExchangeError as exc:
+            logger.warning("oauth exchange failed provider=%s err=%s",
+                           provider_name, exc)
+            return redirect("/login?error=exchange_failed")
+
+        profile_rec = _profile_to_record(profile)
+        tokens_rec = _tokens_to_record(tokens)
+
+        # ── 2. intent=link: already-logged-in user binding a new provider ──
+        if intent == "link":
+            if g.get("user") is None:
+                return redirect("/login?error=link_requires_login")
+            existing = _oauth_repo.find_by_provider_id(provider_name, profile.sub)
+            if existing is not None and existing.user_id != g.user.id:
+                # Provider account is already bound to a different internal user.
+                return redirect("/settings?error=oauth_taken")
+            _oauth_repo.upsert(
+                user_id=g.user.id, provider=provider_name,
+                profile=profile_rec, tokens=tokens_rec,
+            )
+            logger.info("oauth linked user_id=%d provider=%s",
+                        g.user.id, provider_name)
+            sep = "&" if "?" in next_url else "?"
+            return redirect(f"{next_url}{sep}linked={provider_name}")
+
+        # ── 3. intent=login: provider already bound → direct login ──
+        existing_oauth = _oauth_repo.find_by_provider_id(provider_name, profile.sub)
+        if existing_oauth is not None:
+            _oauth_repo.upsert(
+                user_id=existing_oauth.user_id, provider=provider_name,
+                profile=profile_rec, tokens=tokens_rec,
+            )
+            _login_user(existing_oauth.user_id)
+            _user_repo.update_last_login(existing_oauth.user_id)
+            return redirect(next_url)
+
+        # ── 4. intent=login + email already exists in users ──
+        if profile.email:
+            existing_user = _user_repo.find_by_email(profile.email)
+            if existing_user is not None:
+                if profile.email_verified:
+                    # 4a. Auto-merge — only when provider verified the email.
+                    _oauth_repo.upsert(
+                        user_id=existing_user.id, provider=provider_name,
+                        profile=profile_rec, tokens=tokens_rec,
+                    )
+                    _login_user(existing_user.id)
+                    _user_repo.update_last_login(existing_user.id)
+                    logger.info("oauth auto-link user_id=%d provider=%s",
+                                existing_user.id, provider_name)
+                    return redirect(next_url)
+                # 4b. Email exists but provider did not verify it — refuse
+                # auto-merge to avoid trivial account takeover. Direct user
+                # to login with password first, then bind in /settings.
+                from urllib.parse import quote
+                return redirect(
+                    "/login?notice=email_unverified_link"
+                    f"&provider={provider_name}"
+                    f"&email={quote(profile.email)}"
+                )
+
+        # ── 5. brand-new email → /register with signed pending payload ──
+        pending = _mk_pending(app.config["SECRET_KEY"], {
+            "provider": provider_name,
+            "sub": profile.sub,
+            "email": profile.email or "",
+            "name": profile.name or "",
+            "tokens": {
+                "access_token": tokens.access_token,
+                "refresh_token": tokens.refresh_token,
+                "expires_at": tokens.expires_at,
+            },
+        })
+        from urllib.parse import quote
+        return redirect(
+            f"/register?provider={provider_name}&pending={pending}"
+            f"&email={quote(profile.email or '')}"
+            f"&name={quote(profile.name or '')}"
+        )
+
+    @app.route("/api/auth/oauth/register", methods=["POST"])
+    def oauth_register():
+        body = request.get_json(silent=True) or {}
+        pending = body.get("pending", "")
+        invite_code = (body.get("invite_code") or "").strip()
+        display_name = (body.get("display_name") or "").strip()
+
+        payload = _verify_pending(app.config["SECRET_KEY"], pending)
+        if payload is None:
+            return jsonify({"error": "pending_invalid",
+                            "message": "OAuth 会话已过期，请重新登录"}), 400
+
+        # Invite-code gate — same single source of truth as /api/auth/register.
+        err = _invite_mgr.validate(invite_code)
+        if err:
+            return jsonify({"error": err,
+                            "message": f"邀请码无效: {err}"}), 400
+
+        # Email comes from the signed payload (provider-verified or trusted
+        # by the caller during /register UI). The body.email override is a
+        # rescue path for providers that returned no email.
+        email = (payload.get("email") or "").strip().lower()
+        if not email:
+            email = (body.get("email") or "").strip().lower()
+        if not email or "@" not in email:
+            return jsonify({"error": "email_required",
+                            "message": "请输入有效邮箱"}), 400
+
+        if _user_repo.find_by_email(email):
+            return jsonify({"error": "email_exists",
+                            "message": "该邮箱已注册，请直接登录"}), 400
+
+        # Create user with a placeholder password — never used because the
+        # OAuth path is the auth surface. Multi-tenant invariant preserved:
+        # _user_repo.create() is the only path that mints rows in users.
+        new_user = _user_repo.create(
+            email=email,
+            password=_oauth_secrets.token_urlsafe(32),
+            display_name=display_name or payload.get("name") or email.split("@")[0],
+        )
+        profile_rec = _OAuthProfileRec(
+            sub=payload["sub"], email=email,
+            email_verified=True,  # they just authorized the linkage
+            raw={},
+        )
+        tk = payload.get("tokens", {}) or {}
+        tokens_rec = _OAuthTokenRec(
+            access_token=tk.get("access_token", ""),
+            refresh_token=tk.get("refresh_token"),
+            expires_at=tk.get("expires_at"),
+        )
+        _oauth_repo.upsert(
+            user_id=new_user.id, provider=payload["provider"],
+            profile=profile_rec, tokens=tokens_rec,
+        )
+        _invite_mgr.redeem(invite_code, new_user.id)
+        _login_user(new_user.id)
+        _user_repo.update_last_login(new_user.id)
+        return jsonify({"ok": True, "user_id": new_user.id})
+
+    @app.route("/api/auth/oauth/linked")
+    def oauth_linked():
+        if g.get("user") is None:
+            return jsonify({"error": "unauthorized"}), 401
+        rows = _oauth_repo.list_by_user(g.user.id)
+        return jsonify({
+            "providers": [
+                {
+                    "provider": r.provider,
+                    "email": r.email,
+                    "email_verified": r.email_verified,
+                    "linked_at": r.created_at,
+                    "last_login_at": r.last_login_at,
+                }
+                for r in rows
+            ],
+            # v1.0: every user has a placeholder password_hash on the users
+            # row, so password remains a fallback login method even for
+            # OAuth-only signups. Future versions may surface a real flag.
+            "has_password": True,
+        })
+
+    @app.route("/api/auth/oauth/<provider_name>/unlink", methods=["POST"])
+    def oauth_unlink(provider_name):
+        if g.get("user") is None:
+            return jsonify({"error": "unauthorized"}), 401
+        rows = _oauth_repo.list_by_user(g.user.id)
+        other_oauth = [r for r in rows if r.provider != provider_name]
+        # Never let the user lock themselves out: at least one auth method
+        # must remain. v1.0 always has password_hash so this is mostly a
+        # placeholder; the check still protects against future "no password"
+        # variants without a code change in this branch.
+        has_password = True
+        if not has_password and not other_oauth:
+            return jsonify({"error": "last_method",
+                            "message": "无法解绑：这是您唯一的登录方式"}), 400
+        if not _oauth_repo.delete_by_user_provider(g.user.id, provider_name):
+            return jsonify({"error": "not_linked",
+                            "message": "未绑定该 OAuth 提供方"}), 404
+        return jsonify({"ok": True})
+
+    @app.route("/api/auth/providers")
+    def oauth_providers_list():
+        enabled = _get_oauth_providers(get_config())
+        return jsonify({
+            "providers": [
+                {
+                    "name": p.name,
+                    "label": p.label,
+                    "icon": f"/static/icons/{p.name}.svg",
+                }
+                for p in enabled.values()
+            ],
+        })
 
     # ── Dashboard API ───────────────────────────────────────────────────
 

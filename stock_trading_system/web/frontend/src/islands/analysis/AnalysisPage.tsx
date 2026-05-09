@@ -168,19 +168,10 @@ interface OHLCVRow {
   date: string; open: number; high: number; low: number; close: number; volume: number
 }
 
-/** Real-news item from /api/news/<ticker>. yfinance shape — fields are
- * optional because alternate providers (Polygon, akshare) populate
- * different subsets. */
-interface NewsItem {
-  title: string
-  source?: string
-  published?: string
-  url?: string
-}
-
-// mobile-ui-v1.3: fundNum/fmtNum/fmtPct were used by the now-deleted
-// QuickInfoCard fundamentals tile. Numeric fundamentals continue to
-// render inside the structured "基本面" tab via the cards barrel.
+// mobile-ui-v1.3: NewsItem + fundNum/fmtNum/fmtPct used to power the
+// QuickInfoCard tiles (news / fundamentals / debate). Cards were
+// removed; news + fundamentals continue to render inside the
+// structured "新闻" / "基本面" tabs via the cards barrel.
 
 interface TaskSubmitResult { task_id: string; status: string }
 
@@ -1372,47 +1363,6 @@ function RenderingStatusBanner({
       >
         {retrying ? "提交中…" : "重新生成结构化摘要"}
       </Button>
-    </div>
-  )
-}
-
-/* ── Quick-info card ─────────────────────────────────────── */
-
-function QuickInfoCard({ icon, title, onClick, children }: {
-  icon: React.ReactNode
-  title: string
-  onClick: () => void
-  children: React.ReactNode
-}) {
-  return (
-    <Card
-      className="cursor-pointer hover:border-primary/30 transition-colors"
-      onClick={onClick}
-    >
-      <CardContent className="pt-4">
-        <div className="flex items-center gap-2 mb-2">
-          <span className="text-[var(--color-accent-blue)]">{icon}</span>
-          <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-            {title}
-          </span>
-        </div>
-        {children}
-        <span className="text-[10px] text-[var(--color-accent-blue)] mt-2 inline-block">
-          查看详情 →
-        </span>
-      </CardContent>
-    </Card>
-  )
-}
-
-/** Two-column key/value row used by the Fundamentals quick-info grid. */
-function KV({ k, v }: { k: string; v: string }) {
-  // 2026-05-04: long values (e.g. enterprise valuation strings) need
-  // to wrap rather than push the label off-screen at 320px.
-  return (
-    <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 min-w-0">
-      <span className="text-muted-foreground shrink-0">{k}</span>
-      <span className="text-safe text-safe--wrap text-right">{v}</span>
     </div>
   )
 }
