@@ -254,14 +254,17 @@ function isTaskId(id: string): boolean {
   return UUID_RE.test(id)
 }
 
+// mobile-ui-v1.3: structured tabs labels collapse to 1-2 chars so the
+// strict 8-tab assertion (TC-MUI-A5) reads cleanly on 375px without the
+// chip row going multi-line.
 const REPORT_TABS = [
   { key: "summary", label: "概览" },
-  { key: "Market", label: "市场/技术面" },
-  { key: "Sentiment", label: "情绪面" },
+  { key: "Market", label: "市场" },
+  { key: "Sentiment", label: "情绪" },
   { key: "News", label: "新闻" },
   { key: "Fundamentals", label: "基本面" },
-  { key: "Investment Debate", label: "多空辩论" },
-  { key: "Risk Assessment", label: "风险评估" },
+  { key: "Investment Debate", label: "辩论" },
+  { key: "Risk Assessment", label: "风险" },
   { key: "Decision", label: "决策" },
 ] as const
 
@@ -520,6 +523,9 @@ export function AnalysisPage() {
         <CardHeader className="pb-2">
           <div className="mobile-card-header">
             <CardTitle className="mc-title text-sm truncate">分析记录</CardTitle>
+            {/* mobile-ui-v1.3: standalone "Inbox 工具" tray (refresh /
+                filter / 看任务) removed. Inbox auto-refreshes via the
+                websocket subscription whenever a tracked task settles. */}
             <div className="mc-actions">
               {runningTotal > 0 && (
                 <Badge variant="default" className="text-[10px]">
@@ -527,9 +533,6 @@ export function AnalysisPage() {
                   {runningTotal} 运行中
                 </Badge>
               )}
-              <Button variant="ghost" size="sm" onClick={refreshInbox}>
-                刷新
-              </Button>
             </div>
           </div>
         </CardHeader>
@@ -977,221 +980,38 @@ function AnalysisDetailView({ detail: initialDetail }: { detail: AnalysisDetail 
 
   return (
     <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-6">
-      {/* Header */}
-      <div className="flex items-start justify-between gap-3 flex-wrap">
-        <div className="flex items-center gap-3 flex-wrap">
-          <Button variant="ghost" size="sm" onClick={() => window.location.href = "/analysis"}>
-            <ArrowLeft className="h-4 w-4" />
-          </Button>
-          <h1 className="text-xl font-bold font-mono">{detail.ticker}</h1>
-          <Badge variant={signalVariant(canonicalSignal(detail))}>
-            {signalLabel(canonicalSignal(detail))}
-          </Badge>
-          {detail.signal_mismatch && (
-            <span
-              className="text-[10px] text-amber-400"
-              title={`原存储信号: ${detail.signal} · 决策正文: ${detail.decision_action}`}
-            >
-              信号已按最终决策校正
-            </span>
-          )}
-          {detail.confidence != null && (
-            <span className="text-sm text-muted-foreground">置信度 {(detail.confidence * 100).toFixed(0)}%</span>
-          )}
-        </div>
-        {/* Action buttons (right-aligned on desktop, wraps below on mobile) */}
-        <div className="flex flex-wrap gap-2">
-          <Button variant="outline" size="sm" onClick={handleReanalyze}>再次分析</Button>
-          <Button variant="outline" size="sm" onClick={handleTrack}>加入观察列表</Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handlePaperTrack}
-            disabled={paperBusy}
+      {/* Header — mobile-ui-v1.3: no top conclusion card, no Quick Info,
+          no stats grid. The structured 8-tab core IS the first business
+          section. The header keeps just the back button + ticker badge. */}
+      <div className="flex items-center gap-3 flex-wrap">
+        <Button variant="ghost" size="sm" onClick={() => window.location.href = "/analysis"}>
+          <ArrowLeft className="h-4 w-4" />
+        </Button>
+        <h1 className="text-xl font-bold font-mono">{detail.ticker}</h1>
+        <Badge variant={signalVariant(canonicalSignal(detail))}>
+          {signalLabel(canonicalSignal(detail))}
+        </Badge>
+        {detail.signal_mismatch && (
+          <span
+            className="text-[10px] text-amber-400"
+            title={`原存储信号: ${detail.signal} · 决策正文: ${detail.decision_action}`}
           >
-            {paperBusy ? "提交中…" : "按此建议纸面交易"}
-          </Button>
-          <Button variant="outline" size="sm" onClick={() => handleExport("md")}>导出 Markdown</Button>
-          <Button variant="outline" size="sm" onClick={() => handleExport("pdf")}>导出 PDF</Button>
-          <Button variant="outline" size="sm" onClick={handleShare}>分享链接</Button>
-          <Button
-            variant={bookmarked ? "default" : "outline"}
-            size="sm"
-            onClick={handleBookmark}
-            disabled={bookmarkBusy}
-          >
-            {bookmarked ? "★ 已收藏" : "☆ 收藏"}
-          </Button>
-        </div>
-      </div>
-
-      {/* Provenance / metadata row */}
-      <div className="text-xs text-muted-foreground flex flex-wrap gap-x-4 gap-y-1">
-        {detail.created_by_name && <span>创建者：{detail.created_by_name}</span>}
-        {detail.provider && (
-          <span>Provider：{detail.provider}{detail.model ? ` / ${detail.model}` : ""}</span>
+            信号已按最终决策校正
+          </span>
         )}
-        {detail.depth && (
-          <span>深度：{depthLabel(detail.depth)}</span>
+        {detail.confidence != null && (
+          <span className="text-sm text-muted-foreground">置信度 {(detail.confidence * 100).toFixed(0)}%</span>
         )}
-        {detail.duration_sec != null && (
-          <span>耗时：{Number(detail.duration_sec).toFixed(1)}s</span>
-        )}
-        {detail.created_at && <span>创建于：{detail.created_at}</span>}
       </div>
 
       {actionMsg && (
         <div className="text-xs text-muted-foreground">{actionMsg}</div>
       )}
 
-      {/* Pipeline DAG (shown for running tasks or as completed timeline) */}
+      {/* Pipeline DAG (shown only for live running tasks). */}
       {isRunning && detail.task_id && (
         <PipelineDAG taskId={detail.task_id} onAllDone={() => window.location.reload()} />
       )}
-
-      {/* Stats row */}
-      <div className="grid gap-4 md:grid-cols-3 grid-collapse-mobile">
-        <Card>
-          <CardHeader className="pb-2"><CardTitle className="text-sm text-muted-foreground">分析日期</CardTitle></CardHeader>
-          <CardContent className="text-lg font-mono">{detail.date}</CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2"><CardTitle className="text-sm text-muted-foreground">信号</CardTitle></CardHeader>
-          <CardContent>
-            <Badge variant={signalVariant(canonicalSignal(detail))} className="text-sm">
-              {signalLabel(canonicalSignal(detail))}
-            </Badge>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2"><CardTitle className="text-sm text-muted-foreground">风险等级</CardTitle></CardHeader>
-          <CardContent className="text-lg">{detail.risk_level || "-"}</CardContent>
-        </Card>
-      </div>
-
-      {/* Quick-info cards (news / fundamentals / debate) — v1.19.1 hits
-          the same data APIs the analyzer uses so users see real headlines
-          + real PE/ROE/D-E instead of regex extracts of LLM markdown. */}
-      <div className="grid gap-4 md:grid-cols-3 grid-collapse-mobile">
-        <QuickInfoCard
-          icon={<Newspaper className="h-4 w-4" />}
-          title="最近新闻"
-          onClick={() => scrollToTab("News")}
-        >
-          {news.length === 0 ? (
-            <p className="text-xs text-muted-foreground">暂无新闻数据</p>
-          ) : (
-            <ul className="space-y-1.5">
-              {news.map((n, i) => (
-                <li key={i} className="text-xs leading-snug">
-                  <span className="line-clamp-2">{n.title}</span>
-                  {(n.source || n.published) && (
-                    <div className="text-[10px] text-muted-foreground mt-0.5">
-                      {n.source}{n.source && n.published ? " · " : ""}{n.published}
-                    </div>
-                  )}
-                </li>
-              ))}
-            </ul>
-          )}
-        </QuickInfoCard>
-
-        <QuickInfoCard
-          icon={<BarChart3 className="h-4 w-4" />}
-          title="基本面指标"
-          onClick={() => scrollToTab("Fundamentals")}
-        >
-          {!fund ? (
-            <p className="text-xs text-muted-foreground">暂无基本面数据</p>
-          ) : (
-            <div className="grid grid-cols-2 gap-x-3 gap-y-1 font-mono text-xs">
-              {(() => {
-                const pe   = fundNum(fund, "trailingPE")
-                const pb   = fundNum(fund, "priceToBook")
-                const roe  = fundNum(fund, "returnOnEquity")
-                const de   = fundNum(fund, "debtToEquity")
-                const pm   = fundNum(fund, "profitMargins")
-                const rg   = fundNum(fund, "revenueGrowth")
-                const rows = [
-                  pe   != null && <KV key="pe"  k="PE"     v={fmtNum(pe, 1)} />,
-                  pb   != null && <KV key="pb"  k="P/B"    v={fmtNum(pb, 1)} />,
-                  roe  != null && <KV key="roe" k="ROE"    v={fmtPct(roe)} />,
-                  de   != null && <KV key="de"  k="D/E"    v={fmtNum(de, 0)} />,
-                  pm   != null && <KV key="pm"  k="净利率"  v={fmtPct(pm)} />,
-                  rg   != null && <KV key="rg"  k="营收增长" v={fmtPct(rg)} />,
-                ].filter(Boolean)
-                return rows.length > 0 ? rows : (
-                  <p className="text-xs text-muted-foreground col-span-2">
-                    指标暂不可用
-                  </p>
-                )
-              })()}
-            </div>
-          )}
-        </QuickInfoCard>
-
-        <QuickInfoCard
-          icon={<Scale className="h-4 w-4" />}
-          title="多空辩论"
-          onClick={() => scrollToTab("Investment Debate")}
-        >
-          {(() => {
-            const debate = detail.rendering?.["Investment Debate"]
-            const synthesis = detail.rendering?.summary?.debate_synthesis
-            if (debate) {
-              const bull = debate.bull_arguments?.length ?? 0
-              const bear = debate.bear_arguments?.length ?? 0
-              return (
-                <div className="space-y-1.5">
-                  <div className="text-xs">
-                    看多 <b>{bull}</b> · 看空 <b>{bear}</b>
-                    {debate.verdict && (
-                      <>
-                        {" "}·{" "}
-                        <Badge variant="muted" className="text-[10px]">
-                          {debate.verdict}
-                        </Badge>
-                      </>
-                    )}
-                  </div>
-                  <p className="text-xs text-muted-foreground line-clamp-3">
-                    {debate.key_disagreement || debate.neutral_synthesis}
-                  </p>
-                </div>
-              )
-            }
-            if (synthesis) {
-              return (
-                <p className="text-xs text-muted-foreground line-clamp-3">
-                  {synthesis.verdict}
-                </p>
-              )
-            }
-            return <p className="text-xs text-muted-foreground">暂无辩论数据</p>
-          })()}
-        </QuickInfoCard>
-      </div>
-
-      {/* K-line chart — viewport-gated. The container always mounts so
-          IntersectionObserver has something to watch; TVChart itself is
-          lazy-loaded only after the section scrolls into view, and the
-          /api/quote/history fetch fires from the same observer.
-          2026-05-04 mobile: use a media-query-driven height (260 on
-          ≤575.98px, 380 otherwise) so the chart doesn't push the 8 tabs
-          below the fold on small screens. ``useMobileChartHeight`` lives
-          alongside the TVChart import so other pages can reuse it. */}
-      <Card ref={klineSectionRef}>
-        <CardHeader><CardTitle className="text-sm">K 线走势（近 3 个月）</CardTitle></CardHeader>
-        <CardContent>
-          {klineVisible ? (
-            <Suspense fallback={<Skeleton className="w-full" style={{ height: kChartHeight }} />}>
-              <TVChart data={klineData} state={klineState} onRetry={refetchKline} height={kChartHeight} />
-            </Suspense>
-          ) : (
-            <Skeleton className="w-full" style={{ height: kChartHeight }} />
-          )}
-        </CardContent>
-      </Card>
 
       {/* v1.7 — structured-summary status banner. Shows up between the
           actions row and the tabs when extraction failed/empty/pending
@@ -1206,14 +1026,35 @@ function AnalysisDetailView({ detail: initialDetail }: { detail: AnalysisDetail 
         apiGet<AnalysisDetail>(`/api/history/${detail.id}`).then(setDetail).catch(() => {})
       }} />
 
-      {/* 7-tab report */}
-      <Card ref={tabsRef}>
-        <CardContent className="pt-6">
+      {/* Structured analysis core — first business section of the
+          detail view per mobile-ui-v1.3 §4.3. Strict 8 tabs, no "原文"
+          tab. The Markdown body still appears as a per-tab <details>
+          fallback inside each tab when a structured card is available. */}
+      <Card ref={tabsRef} data-section="structured-core">
+        <CardHeader>
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <CardTitle className="text-sm">结构化分析核心</CardTitle>
+            <div className="flex flex-wrap gap-2">
+              <Button variant="outline" size="sm" onClick={() => handleExport("md")}>导出 MD</Button>
+              <Button variant="outline" size="sm" onClick={() => handleExport("pdf")}>导出 PDF</Button>
+              <Button variant="outline" size="sm" onClick={handleShare}>分享链接</Button>
+              <Button
+                variant={bookmarked ? "default" : "outline"}
+                size="sm"
+                onClick={handleBookmark}
+                disabled={bookmarkBusy}
+              >
+                {bookmarked ? "★ 已收藏" : "☆ 收藏"}
+              </Button>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="pt-2">
           <Tabs value={activeTab} onValueChange={setActiveTab}>
-            {/* TabsList ships its own `mobile-tabs-scroll` wrapper now,
-                so the legacy `tabs-scrollable` class is dropped — keeping
-                both stacks two scroll containers on mobile. */}
-            <TabsList className="w-full justify-start bg-transparent border-b rounded-none pb-0 gap-0">
+            <TabsList
+              data-analysis-structured-tabs=""
+              className="w-full justify-start bg-transparent border-b rounded-none pb-0 gap-0"
+            >
               {REPORT_TABS.map(tab => (
                 <TabsTrigger key={tab.key} value={tab.key}
                   className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent px-3 pb-2">

@@ -1,9 +1,9 @@
-import { useEffect, useState, useMemo } from "react"
+import { useEffect, useState, useMemo, useCallback } from "react"
 import {
   TrendingUp, Wallet, Target, Bell,
   Sparkles, Activity, FileText, BarChart3, RefreshCw,
 } from "lucide-react"
-import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card"
+import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
 import { Stat } from "@/components/ui/stat"
@@ -13,6 +13,7 @@ import type { EChartsOption } from "@/lib/echarts"
 import { apiGet, apiPost } from "@/lib/api"
 import { subscribeTaskStream } from "@/lib/socket"
 import { cn } from "@/lib/utils"
+import { HoldingsSection } from "./HoldingsSection"
 
 interface DashData {
   pnl: { total_value: number; total_pnl: number; total_pnl_pct: number }
@@ -71,6 +72,7 @@ export function DashboardPage() {
   const [data, setData] = useState<DashData | null>(null)
   const [tasks, setTasks] = useState<TaskRow[]>([])
   const [alloc, setAlloc] = useState<AllocItem[]>([])
+  const [transactionsCount, setTransactionsCount] = useState(0)
   const [loading, setLoading] = useState(true)
   const [range, setRange] = useState<Range>("3M")
   // Track the server window we already fetched so we don't re-hit
@@ -83,12 +85,26 @@ export function DashboardPage() {
 
   // Pull /api/dashboard separately so the ↻ button can refresh it without
   // re-fetching the whole bundle.
-  const reloadDashboard = async (window: string = loadedHistoryWindow) => {
+  const reloadDashboard = useCallback(async (window: string = loadedHistoryWindow) => {
     const d = await apiGet<DashData>(`/api/dashboard?history_days=${window}`)
       .catch(() => null)
     setData(d)
     setLoadedHistoryWindow(window)
-  }
+  }, [loadedHistoryWindow])
+
+  // Mobile-ui-v1.3: dashboard now hosts holdings management. After
+  // a buy/sell/cost edit we re-pull dashboard (holdings + pnl), the
+  // allocation pie, and transactions count so the chips stay accurate.
+  const reloadHoldings = useCallback(async () => {
+    const [d, a, tx] = await Promise.all([
+      apiGet<DashData>(`/api/dashboard?history_days=${loadedHistoryWindow}`).catch(() => null),
+      apiGet<AllocItem[]>("/api/portfolio/allocation").catch(() => []),
+      apiGet<unknown[]>("/api/portfolio/transactions").catch(() => []),
+    ])
+    if (d) setData(d)
+    setAlloc(Array.isArray(a) ? a : [])
+    setTransactionsCount(Array.isArray(tx) ? tx.length : 0)
+  }, [loadedHistoryWindow])
 
   useEffect(() => {
     // First-paint default: 90 days (covers the default 3M chip plus the
@@ -99,10 +115,12 @@ export function DashboardPage() {
       apiGet<DashData>(`/api/dashboard?history_days=${DEFAULT_HISTORY_DAYS}`).catch(() => null),
       apiGet<TaskRow[]>("/api/tasks?limit=10&offset=0").catch(() => []),
       apiGet<AllocItem[]>("/api/portfolio/allocation").catch(() => []),
-    ]).then(([d, t, a]) => {
+      apiGet<unknown[]>("/api/portfolio/transactions").catch(() => []),
+    ]).then(([d, t, a, tx]) => {
       setData(d)
       setTasks(Array.isArray(t) ? t : (t as any)?.tasks || [])
       setAlloc(Array.isArray(a) ? a : [])
+      setTransactionsCount(Array.isArray(tx) ? tx.length : 0)
       setLoading(false)
     })
   }, [])
@@ -317,7 +335,7 @@ export function DashboardPage() {
 
   return (
     <div className="p-4 md:p-6 space-y-6 max-w-6xl mx-auto">
-      <h1 className="text-xl font-bold">仪表盘</h1>
+      <h1 className="text-xl font-bold">首页</h1>
 
       {/* Stats */}
       <div className="grid grid-cols-2 gap-4 md:grid-cols-4 grid-collapse-mobile">
@@ -331,6 +349,14 @@ export function DashboardPage() {
         <Stat label="活跃预警" value={String(data?.alerts_count || 0)}
               icon={<Bell className="h-4 w-4" />} />
       </div>
+
+      {/* Holdings — merged into the home page per mobile-ui-v1.3.
+          Default 5 visible, 全部 N expands the full list. */}
+      <HoldingsSection
+        holdings={holdings}
+        transactionsCount={transactionsCount}
+        onChange={reloadHoldings}
+      />
 
       {/* Charts row */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
@@ -393,108 +419,55 @@ export function DashboardPage() {
         </Card>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        {/* Holdings */}
-        <Card className="lg:col-span-2">
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        {/* Running tasks — kept for the operator surface; not a
+            cross-page todo aggregator. */}
+        <Card>
           <CardHeader>
-            <CardTitle>当前持仓</CardTitle>
-            <CardDescription>{holdings.length} 只股票</CardDescription>
+            <div className="flex items-center gap-2">
+              <Activity className="h-4 w-4 text-[var(--color-accent-green)]" />
+              <CardTitle>运行中任务</CardTitle>
+            </div>
           </CardHeader>
-          <CardContent>
-            {holdings.length === 0 ? (
-              <p className="text-muted-foreground text-sm py-4 text-center">暂无持仓</p>
-            ) : (
-              <div className="space-y-2">
-                {holdings.map(h => {
-                  const pnlAbs = h.pnl ?? 0
-                  const pnlClass = pnlAbs > 0
-                    ? "text-[var(--color-accent-green)]"
-                    : pnlAbs < 0
-                      ? "text-[var(--color-accent-red)]"
-                      : "text-muted-foreground"
-                  return (
-                    // Holdings row wraps on mobile: ticker + market +
-                    // shares on row 1, PnL on row 2 (desktop keeps a
-                    // single line via flex-nowrap at sm+).
-                    <div key={h.ticker} className="flex flex-wrap sm:flex-nowrap items-center gap-x-3 gap-y-1 justify-between text-sm border border-border rounded-lg px-4 py-2.5 min-w-0">
-                      <div className="flex items-center gap-3 min-w-0 flex-1">
-                        <span className="font-mono font-semibold truncate">{h.ticker}</span>
-                        <span className="text-xs text-muted-foreground shrink-0">{h.market?.toUpperCase()}</span>
-                        <span className="text-xs text-muted-foreground shrink-0">{h.shares} 股</span>
-                      </div>
-                      <div className="flex items-center gap-4 text-xs shrink-0">
-                        <span className="text-muted-foreground font-mono hidden md:inline">成本 ${fmt(h.avg_cost || 0)}</span>
-                        <span className="text-muted-foreground font-mono hidden md:inline">现价 ${fmt(h.current_price || 0)}</span>
-                        <span className={cn("font-mono tabular-nums", pnlClass)}>
-                          {pnlAbs >= 0 ? "+" : ""}${fmt(pnlAbs)}
-                        </span>
-                        <span className={cn("font-mono tabular-nums",
-                          h.pnl_pct >= 0 ? "text-[var(--color-accent-green)]" : "text-[var(--color-accent-red)]")}>
-                          {fmtPct(h.pnl_pct)}
-                        </span>
-                      </div>
-                    </div>
-                  )
-                })}
+          <CardContent className="space-y-3">
+            {runningTasks.length === 0 ? (
+              <p className="text-muted-foreground text-sm text-center py-2">无运行中任务</p>
+            ) : runningTasks.map(t => (
+              <div key={t.id} className="space-y-1.5 cursor-pointer min-w-0"
+                   onClick={() => window.location.href = `/tasks/${t.id}`}>
+                <div className="flex items-center justify-between gap-2 min-w-0">
+                  <span className="text-xs font-medium truncate min-w-0 flex-1">{t.title || t.type}</span>
+                  <span className="font-mono text-xs text-muted-foreground shrink-0">{t.progress}%</span>
+                </div>
+                <Progress value={t.progress} />
               </div>
-            )}
-            <div className="mt-3 text-right">
-              <Button variant="ghost" size="sm" onClick={() => window.location.href = "/portfolio"}>
-                管理持仓 →
+            ))}
+            <div className="text-right">
+              <Button variant="ghost" size="sm" onClick={() => window.location.href = "/tasks"}>
+                全部任务 →
               </Button>
             </div>
           </CardContent>
         </Card>
 
-        {/* Running tasks + Quick actions */}
-        <div className="space-y-4">
-          <Card>
-            <CardHeader>
-              <div className="flex items-center gap-2">
-                <Activity className="h-4 w-4 text-[var(--color-accent-green)]" />
-                <CardTitle>运行中任务</CardTitle>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              {runningTasks.length === 0 ? (
-                <p className="text-muted-foreground text-sm text-center py-2">无运行中任务</p>
-              ) : runningTasks.map(t => (
-                <div key={t.id} className="space-y-1.5 cursor-pointer min-w-0"
-                     onClick={() => window.location.href = `/tasks/${t.id}`}>
-                  <div className="flex items-center justify-between gap-2 min-w-0">
-                    <span className="text-xs font-medium truncate min-w-0 flex-1">{t.title || t.type}</span>
-                    <span className="font-mono text-xs text-muted-foreground shrink-0">{t.progress}%</span>
-                  </div>
-                  <Progress value={t.progress} />
-                </div>
-              ))}
-              <div className="text-right">
-                <Button variant="ghost" size="sm" onClick={() => window.location.href = "/tasks"}>
-                  全部任务 →
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Quick actions — 4 buttons */}
-          <Card>
-            <CardHeader><CardTitle>快捷操作</CardTitle></CardHeader>
-            <CardContent className="grid grid-cols-2 gap-2">
-              <Button variant="outline" size="sm" className="w-full" onClick={() => window.location.href = "/reports"}>
-                <FileText className="w-3.5 h-3.5 mr-1" /> 生成报告
-              </Button>
-              <Button variant="outline" size="sm" className="w-full" onClick={() => window.location.href = "/analysis"}>
-                <Sparkles className="w-3.5 h-3.5 mr-1" /> AI 分析
-              </Button>
-              <Button variant="outline" size="sm" className="w-full" onClick={() => window.location.href = "/alerts"}>
-                <Bell className="w-3.5 h-3.5 mr-1" /> 预警中心
-              </Button>
-              <Button variant="outline" size="sm" className="w-full" onClick={() => window.location.href = "/backtest"}>
-                <BarChart3 className="w-3.5 h-3.5 mr-1" /> 策略回测
-              </Button>
-            </CardContent>
-          </Card>
-        </div>
+        {/* Quick actions */}
+        <Card>
+          <CardHeader><CardTitle>快捷操作</CardTitle></CardHeader>
+          <CardContent className="grid grid-cols-2 gap-2">
+            <Button variant="outline" size="sm" className="w-full" onClick={() => window.location.href = "/reports"}>
+              <FileText className="w-3.5 h-3.5 mr-1" /> 生成报告
+            </Button>
+            <Button variant="outline" size="sm" className="w-full" onClick={() => window.location.href = "/analysis"}>
+              <Sparkles className="w-3.5 h-3.5 mr-1" /> AI 分析
+            </Button>
+            <Button variant="outline" size="sm" className="w-full" onClick={() => window.location.href = "/alerts"}>
+              <Bell className="w-3.5 h-3.5 mr-1" /> 预警中心
+            </Button>
+            <Button variant="outline" size="sm" className="w-full" onClick={() => window.location.href = "/backtest"}>
+              <BarChart3 className="w-3.5 h-3.5 mr-1" /> 策略回测
+            </Button>
+          </CardContent>
+        </Card>
       </div>
     </div>
   )

@@ -3,6 +3,7 @@ import {
   LayoutDashboard, Brain, Crosshair,
   Wallet, FlaskConical, TestTube, Bell,
   FileText, Settings, ListChecks, MoreHorizontal,
+  Receipt, UserCircle,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { getCurrentUser } from "@/lib/auth"
@@ -131,26 +132,45 @@ function SidebarLink({ item, active }: { item: NavItem; active: boolean }) {
 }
 
 /* ── Mobile bottom tabbar ─────────────────────────────────── */
+// mobile-ui-v1.3: bottom tabs collapse to 5 — 首页/分析/发现/纸面/更多.
+// "持仓" is no longer a primary tab; holdings live on the home page.
+// "纸面" is promoted to a primary tab so the analysis -> 纸面追踪 flow
+// stays one tap away.
 
 const MOBILE_PRIMARY: NavItem[] = [
-  { label: "仪表盘", href: "/",             icon: <LayoutDashboard className="w-5 h-5" /> },
-  { label: "分析",   href: "/analysis",     icon: <Brain className="w-5 h-5" /> },
-  { label: "选股",   href: "/screener-v3",  icon: <Crosshair className="w-5 h-5" /> },
-  { label: "持仓",   href: "/portfolio",    icon: <Wallet className="w-5 h-5" /> },
+  { label: "首页", href: "/",             icon: <LayoutDashboard className="w-5 h-5" /> },
+  { label: "分析", href: "/analysis",     icon: <Brain className="w-5 h-5" /> },
+  { label: "发现", href: "/screener-v3",  icon: <Crosshair className="w-5 h-5" /> },
+  { label: "纸面", href: "/paper-trade",  icon: <TestTube className="w-5 h-5" /> },
 ]
 
-const MOBILE_MORE: NavItem[] = [
-  // v1.22: 分析记录 merged into ``/analysis`` inbox. See note above.
-  { label: "报告中心", href: "/reports",      icon: <FileText className="w-5 h-5" /> },
-  { label: "策略回测", href: "/backtest",  icon: <FlaskConical className="w-5 h-5" /> },
-  { label: "纸面交易", href: "/paper-trade",  icon: <TestTube className="w-5 h-5" /> },
-  { label: "预警中心", href: "/alerts",       icon: <Bell className="w-5 h-5" /> },
-  { label: "任务中心", href: "/tasks",        icon: <ListChecks className="w-5 h-5" /> },
-  { label: "设置",     href: "/settings",     icon: <Settings className="w-5 h-5" /> },
+interface MoreEntry extends NavItem { description?: string }
+
+// mobile-ui-v1.3: More carries low-frequency pages only. No 复盘与运营
+// status cards, no 调度器 shortcut, no 纸面交易 (now primary tab).
+// 系统设置 副标题 = "模型与通知".
+const MOBILE_MORE: MoreEntry[] = [
+  { label: "报告中心", description: "日报/周报/月报",       href: "/reports",   icon: <FileText className="w-5 h-5" /> },
+  { label: "策略回测", description: "表单 / 任务 / 结果",    href: "/backtest",  icon: <FlaskConical className="w-5 h-5" /> },
+  { label: "交易记录", description: "买入 / 卖出流水",       href: "/portfolio", icon: <Receipt className="w-5 h-5" /> },
+  { label: "预警中心", description: "模板 / 新建 / 历史",    href: "/alerts",    icon: <Bell className="w-5 h-5" /> },
+  { label: "任务中心", description: "筛选 / 详情 / 重试",    href: "/tasks",     icon: <ListChecks className="w-5 h-5" /> },
+  { label: "系统设置", description: "模型与通知",           href: "/settings",  icon: <Settings className="w-5 h-5" /> },
+  { label: "账号",     description: "当前用户 / 退出登录",    href: "/settings#account", icon: <UserCircle className="w-5 h-5" /> },
 ]
+
+function isMoreRouteActive(): boolean {
+  const p = window.location.pathname
+  return MOBILE_MORE.some((m) => {
+    const href = m.href.split("#")[0]
+    if (!href || href === "/") return false
+    return p.startsWith(href)
+  })
+}
 
 export function MobileTabbar() {
   const [moreOpen, setMoreOpen] = useState(false)
+  const moreActive = moreOpen || isMoreRouteActive()
 
   return (
     <>
@@ -161,47 +181,45 @@ export function MobileTabbar() {
         {MOBILE_PRIMARY.map((tab) => (
           <TabItem key={tab.href} item={tab} />
         ))}
-        {/* More button */}
+        {/* More button — opens a sheet listing low-frequency pages. */}
         <button
+          data-mobile-tab="more"
           onClick={() => setMoreOpen(true)}
           className={cn(
-            "flex-1 flex flex-col items-center py-2 text-[10px]",
-            moreOpen ? "text-primary" : "text-muted-foreground",
+            "flex-1 flex flex-col items-center py-2 text-[10px] min-h-[44px]",
+            moreActive ? "text-primary" : "text-muted-foreground",
           )}
         >
           <MoreHorizontal className="w-5 h-5" />
-          <span className="mt-0.5">更多</span>
+          <span className="mt-0.5 whitespace-nowrap">更多</span>
         </button>
       </nav>
 
-      {/* More sheet */}
+      {/* More sheet — function map for low-frequency pages. */}
       <Sheet open={moreOpen} onOpenChange={setMoreOpen}>
         <SheetContent side="bottom" className="pb-8">
           <SheetHeader>
-            <SheetTitle>更多功能</SheetTitle>
-            <SheetDescription>导航到其他页面</SheetDescription>
+            <SheetTitle>所有页面</SheetTitle>
+            <SheetDescription>功能地图</SheetDescription>
           </SheetHeader>
           <div className="mb-3 border-b border-border pb-3">
             <LLMSwitcher />
           </div>
-          {/* v1.6 mobile fix: 4-col grid on 320px squashes long Chinese
-              labels (e.g. "纸面交易记录") into 2-line wraps that touch
-              the next cell. Drop to 3-col under sm + truncate per cell
-              so labels stay one line; tooltips via ``title`` keep the
-              full text accessible. ``min-w-0`` on both icon wrapper
-              and label prevents flex overflow inside the cell. */}
-          <div className="grid grid-cols-3 sm:grid-cols-4 gap-3 mt-2">
+          <div className="grid grid-cols-1 gap-2 mt-2">
             {MOBILE_MORE.map((item) => (
               <a
                 key={item.href}
                 href={item.href}
                 title={item.label}
-                className="flex flex-col items-center gap-1.5 p-3 rounded-lg hover:bg-muted/50 transition-colors text-muted-foreground hover:text-foreground min-w-0"
+                className="flex items-center gap-3 p-3 rounded-lg hover:bg-muted/50 transition-colors text-muted-foreground hover:text-foreground min-w-0 min-h-[44px]"
               >
-                <span className="min-w-0 shrink-0">{item.icon}</span>
-                <span className="text-[11px] truncate max-w-full text-center">
-                  {item.label}
-                </span>
+                <span className="shrink-0">{item.icon}</span>
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-medium text-foreground truncate">{item.label}</div>
+                  {item.description && (
+                    <div className="text-[11px] text-muted-foreground truncate">{item.description}</div>
+                  )}
+                </div>
               </a>
             ))}
           </div>
@@ -215,14 +233,15 @@ function TabItem({ item }: { item: NavItem }) {
   const active = isActive(item.href)
   return (
     <a
+      data-mobile-tab={item.href}
       href={item.href}
       className={cn(
-        "flex-1 flex flex-col items-center py-2 text-[10px]",
+        "flex-1 flex flex-col items-center py-2 text-[10px] min-h-[44px]",
         active ? "text-primary" : "text-muted-foreground",
       )}
     >
       {item.icon}
-      <span className="mt-0.5">{item.label}</span>
+      <span className="mt-0.5 whitespace-nowrap">{item.label}</span>
     </a>
   )
 }

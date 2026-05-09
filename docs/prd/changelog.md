@@ -9,6 +9,7 @@
 | 2026-04-21 | v1.0 | UI React Island：Flask 外壳不动 + 4 高价值页（screener-v3 / tasks / paper-trade detail / dashboard）迁 React + Vite + Tailwind v4 + shadcn 风格组件，7 简单页保留 Jinja；POC 已验证（/tmp/stock-ui-demo/） | [ui-react-island.md](ui-react-island.md) | — |
 | 2026-04-21 | v2.0 | UI React Island 完整迁移：剩余 11 页全部迁 React（Portfolio / History / Alerts / Reports / Backtest / Paper list / Analysis 列表+详情 / Settings / Login / Register / Reset）+ Phase 18 废弃旧 index.html / app.js / Bootstrap，总工期 ~75h | [ui-react-island.md](ui-react-island.md) | — |
 | 2026-05-09 | v1.3 | 移动端信息架构与 UI 实装：严格按高保真 demo，不改产品功能/后端/架构；首页+持仓合并、纸面交易升一级、Analysis 8 结构化 tabs、Screener 大师评分默认折叠、Paper detail 去冗余、More 减噪 + 分阶段任务拆解 | [mobile-ui-v1.3.md](mobile-ui-v1.3.md) | — |
+| 2026-05-09 | v1.0 | 第三方快捷登录（Google + GitHub）：Authlib + OAuth 2.0/OIDC + PKCE + 邀请码门保留（多租户红线）；同邮箱已验证 provider（Google）首次登录自动合并到现有账户、未验证（GitHub primary verified=false）走二次确认；新增 `oauth_accounts` 表（不动 users schema，OAuth 用户用占位 password_hash）；6 新路由 `/auth/oauth/<p>/start`/`/callback`/`/api/auth/oauth/register`/`/linked`/`/<p>/unlink`/`/api/auth/providers`；access/refresh_token fernet 加密存（`OAUTH_ENCRYPT_KEY` env 启动时 fail-fast）；前端 login/register 加 OAuth 按钮 + Settings "登录方式" section（绑定/解绑，解绑前置检查至少保留一种登录方式）；Apple/微信 v1.1/v1.2 排期，邮箱密码登录路径永久保留作 fallback；~5h 实装 ~1240 LOC | [oauth-quick-signin.md](oauth-quick-signin.md) | — |
 
 ## 待跟进
 - P2 需求（R-2.1 ~ R-2.8）尚未排期
