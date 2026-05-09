@@ -1,12 +1,11 @@
 import { useEffect, useState, useMemo, useCallback } from "react"
 import {
-  TrendingUp, Wallet, Target, Bell,
+  TrendingUp, Target, Bell,
   Sparkles, Activity, FileText, BarChart3, RefreshCw,
 } from "lucide-react"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
-import { Stat } from "@/components/ui/stat"
 import { Chip, ChipRow } from "@/components/ui/chip"
 import { ChartPanel } from "@/components/shared/ChartPanel"
 import type { EChartsOption } from "@/lib/echarts"
@@ -68,10 +67,20 @@ const FULL_HISTORY = "all"
 const rangeToHistoryParam = (r: Range): string =>
   r === "ALL" || r === "1Y" || r === "6M" ? FULL_HISTORY : String(DEFAULT_HISTORY_DAYS)
 
+interface PortfolioSummary {
+  total_value: number
+  total_pnl: number
+  total_pnl_pct: number
+  today_pnl: number | null
+  today_pnl_pct: number | null
+  holdings_count: number
+}
+
 export function DashboardPage() {
   const [data, setData] = useState<DashData | null>(null)
   const [tasks, setTasks] = useState<TaskRow[]>([])
   const [alloc, setAlloc] = useState<AllocItem[]>([])
+  const [summary, setSummary] = useState<PortfolioSummary | null>(null)
   const [transactionsCount, setTransactionsCount] = useState(0)
   const [loading, setLoading] = useState(true)
   const [range, setRange] = useState<Range>("3M")
@@ -96,14 +105,16 @@ export function DashboardPage() {
   // a buy/sell/cost edit we re-pull dashboard (holdings + pnl), the
   // allocation pie, and transactions count so the chips stay accurate.
   const reloadHoldings = useCallback(async () => {
-    const [d, a, tx] = await Promise.all([
+    const [d, a, tx, s] = await Promise.all([
       apiGet<DashData>(`/api/dashboard?history_days=${loadedHistoryWindow}`).catch(() => null),
       apiGet<AllocItem[]>("/api/portfolio/allocation").catch(() => []),
       apiGet<unknown[]>("/api/portfolio/transactions").catch(() => []),
+      apiGet<PortfolioSummary>("/api/portfolio/summary").catch(() => null),
     ])
     if (d) setData(d)
     setAlloc(Array.isArray(a) ? a : [])
     setTransactionsCount(Array.isArray(tx) ? tx.length : 0)
+    if (s) setSummary(s)
   }, [loadedHistoryWindow])
 
   useEffect(() => {
@@ -116,11 +127,13 @@ export function DashboardPage() {
       apiGet<TaskRow[]>("/api/tasks?limit=10&offset=0").catch(() => []),
       apiGet<AllocItem[]>("/api/portfolio/allocation").catch(() => []),
       apiGet<unknown[]>("/api/portfolio/transactions").catch(() => []),
-    ]).then(([d, t, a, tx]) => {
+      apiGet<PortfolioSummary>("/api/portfolio/summary").catch(() => null),
+    ]).then(([d, t, a, tx, s]) => {
       setData(d)
       setTasks(Array.isArray(t) ? t : (t as any)?.tasks || [])
       setAlloc(Array.isArray(a) ? a : [])
       setTransactionsCount(Array.isArray(tx) ? tx.length : 0)
+      setSummary(s)
       setLoading(false)
     })
   }, [])
@@ -337,18 +350,11 @@ export function DashboardPage() {
     <div className="p-4 md:p-6 space-y-6 max-w-6xl mx-auto">
       <h1 className="text-xl font-bold">首页</h1>
 
-      {/* Stats */}
-      <div className="grid grid-cols-2 gap-4 md:grid-cols-4 grid-collapse-mobile">
-        <Stat label="账户总值" value={`$${fmt(pnl.total_value)}`}
-              icon={<Wallet className="h-4 w-4" />} />
-        <Stat label="总盈亏" value={`$${fmt(pnl.total_pnl)}`}
-              delta={pnl.total_pnl_pct}
-              icon={<TrendingUp className="h-4 w-4" />} />
-        <Stat label="收益率" value={fmtPct(pnl.total_pnl_pct)}
-              icon={<Target className="h-4 w-4" />} />
-        <Stat label="活跃预警" value={String(data?.alerts_count || 0)}
-              icon={<Bell className="h-4 w-4" />} />
-      </div>
+      {/* mobile-ui-v1.3: account overview — 1 compact card per demo:
+          头部 账户总值 + 今日 PnL，下方 总盈亏 / 收益率 / 活跃预警 三栏。
+          替换原来 4 个 Stat 卡的整列叠放（grid-collapse-mobile 在 ≤575px
+          下会让每张 Stat 卡占满一行）。 */}
+      <AccountOverviewCard pnl={pnl} summary={summary} alertsCount={data?.alerts_count ?? 0} />
 
       {/* Holdings — merged into the home page per mobile-ui-v1.3.
           Default 5 visible, 全部 N expands the full list. */}
@@ -468,6 +474,90 @@ export function DashboardPage() {
             </Button>
           </CardContent>
         </Card>
+      </div>
+    </div>
+  )
+}
+
+/* ── Account overview card ────────────────────────────────────
+   mobile-ui-v1.3 §4.2: account stats render as ONE compact card
+   matching the demo, not four full-width Stat tiles. Layout:
+   row 1 — 账户总值 (left) + 今日 PnL (right);
+   row 2 — 三栏 metric strip 总盈亏 / 收益率 / 活跃预警. */
+
+interface AccountOverviewProps {
+  pnl: { total_value: number; total_pnl: number; total_pnl_pct: number }
+  summary: PortfolioSummary | null
+  alertsCount: number
+}
+
+function AccountOverviewCard({ pnl, summary, alertsCount }: AccountOverviewProps) {
+  // /api/portfolio/summary owns today_pnl; fall back to "—" when the
+  // backend has no prior snapshot yet (first day of a fresh DB) so we
+  // never show a misleading 0.
+  const hasToday = summary?.today_pnl != null && summary?.today_pnl_pct != null
+  const todayAbs = hasToday ? (summary!.today_pnl as number) : 0
+  const todayPct = hasToday ? (summary!.today_pnl_pct as number) : 0
+  const todayClass = !hasToday
+    ? "text-muted-foreground"
+    : todayAbs >= 0
+      ? "text-[var(--color-accent-green)]"
+      : "text-[var(--color-accent-red)]"
+  const totalPnlClass = pnl.total_pnl >= 0
+    ? "text-[var(--color-accent-green)]"
+    : "text-[var(--color-accent-red)]"
+  const returnClass = pnl.total_pnl_pct >= 0
+    ? "text-[var(--color-accent-green)]"
+    : "text-[var(--color-accent-red)]"
+
+  return (
+    <Card>
+      <CardContent className="pt-4 space-y-4">
+        <div className="flex items-start justify-between gap-3 min-w-0">
+          <div className="min-w-0">
+            <div className="text-xs text-muted-foreground">账户总值</div>
+            <div className="font-mono text-2xl font-semibold tabular-nums truncate">
+              ${fmt(pnl.total_value)}
+            </div>
+          </div>
+          <div className="min-w-0 text-right">
+            <div className="text-xs text-muted-foreground">今日 PnL</div>
+            <div className={cn("font-mono text-sm tabular-nums truncate", todayClass)}>
+              {hasToday
+                ? `${todayAbs >= 0 ? "+" : ""}$${fmt(todayAbs)} · ${fmtPct(todayPct)}`
+                : "—"}
+            </div>
+          </div>
+        </div>
+        <div className="grid grid-cols-3 gap-2 pt-1 border-t border-border/40">
+          <Metric label="总盈亏"
+                  value={`${pnl.total_pnl >= 0 ? "+" : ""}$${fmt(pnl.total_pnl)}`}
+                  valueClass={totalPnlClass}
+                  icon={<TrendingUp className="h-3 w-3" />} />
+          <Metric label="收益率"
+                  value={fmtPct(pnl.total_pnl_pct)}
+                  valueClass={returnClass}
+                  icon={<Target className="h-3 w-3" />} />
+          <Metric label="活跃预警"
+                  value={String(alertsCount)}
+                  valueClass={alertsCount > 0 ? "text-[var(--color-accent-red)]" : "text-foreground"}
+                  icon={<Bell className="h-3 w-3" />} />
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+function Metric({ label, value, valueClass, icon }: {
+  label: string; value: string; valueClass?: string; icon?: React.ReactNode
+}) {
+  return (
+    <div className="min-w-0 space-y-0.5">
+      <div className="flex items-center gap-1 text-[11px] text-muted-foreground">
+        {icon}<span className="truncate">{label}</span>
+      </div>
+      <div className={cn("font-mono text-sm font-semibold tabular-nums truncate", valueClass)}>
+        {value}
       </div>
     </div>
   )
