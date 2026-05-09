@@ -3836,10 +3836,27 @@ def create_app(config_path=None):
             routing = _get_data_router().routing_summary()
         except Exception:
             routing = {}
+        # OAuth quick sign-in surface (v1.0). Reported alongside data
+        # providers so the diagnostics dashboard can show "Google/GitHub
+        # button visible: yes/no" + "encrypt key present: yes/no" without
+        # a second round-trip. The HTTP 207 partial-failure semantics
+        # remain driven by data-provider results only.
+        oauth_block = {
+            "google": {
+                "configured": bool(os.environ.get("GOOGLE_OAUTH_CLIENT_ID")
+                                   and os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET")),
+            },
+            "github": {
+                "configured": bool(os.environ.get("GITHUB_OAUTH_CLIENT_ID")
+                                   and os.environ.get("GITHUB_OAUTH_CLIENT_SECRET")),
+            },
+            "encrypt_key_set": bool(os.environ.get("OAUTH_ENCRYPT_KEY")),
+        }
         return jsonify({
             "ok": ok,
             "providers": results,
             "routing": routing,
+            "oauth": oauth_block,
         }), (200 if ok else 207)
 
     # ── Iteration / Agent Evolution ─────────────────────────────────────

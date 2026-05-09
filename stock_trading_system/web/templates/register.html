@@ -11,6 +11,7 @@
         .auth-title { font-size:24px; font-weight:700; text-align:center; margin-bottom:24px; color:var(--accent-blue); }
         .auth-input { width:100%; padding:12px 16px; margin-bottom:16px; background:var(--bg-secondary); color:var(--text-primary); border:1px solid var(--border); border-radius:8px; font-size:14px; }
         .auth-input:focus { outline:none; border-color:var(--accent-blue); }
+        .auth-input[readonly] { color:var(--text-secondary); cursor:not-allowed; }
         .auth-btn { width:100%; padding:14px; background:var(--accent-blue); color:#fff; border:none; border-radius:8px; font-size:16px; font-weight:600; cursor:pointer; }
         .auth-btn:hover { opacity:0.9; }
         .auth-link { text-align:center; margin-top:16px; font-size:13px; color:var(--text-secondary); }
@@ -18,67 +19,110 @@
         .auth-error { color:var(--accent-red); font-size:13px; text-align:center; margin-bottom:12px; display:none; }
         .invite-pool { margin-bottom:16px; padding:12px; background:var(--bg-secondary); border:1px solid var(--border); border-radius:8px; }
         .invite-pool-head { font-size:12px; color:var(--text-secondary); margin-bottom:8px; }
-        .invite-chips { display:flex; flex-wrap:wrap; gap:6px; }
-        .invite-chip { padding:4px 10px; background:var(--bg-card); border:1px solid var(--border); border-radius:12px; font-family:var(--font-mono,ui-monospace); font-size:12px; color:var(--accent-blue); cursor:pointer; transition:all 0.15s; }
-        .invite-chip:hover { background:var(--accent-blue); color:#fff; border-color:var(--accent-blue); }
         .invite-empty { font-size:12px; color:var(--text-secondary); font-style:italic; }
+        .oauth-banner { margin-bottom:16px; padding:12px 14px; background:var(--bg-secondary); border:1px solid var(--accent-blue); border-radius:8px; font-size:13px; color:var(--text-primary); }
+        .oauth-banner strong { color:var(--accent-blue); }
+        .oauth-banner-sub { display:block; margin-top:4px; color:var(--text-secondary); font-size:11px; }
     </style>
 </head>
 <body>
     <div class="auth-card">
         <div class="auth-title"><i class="fas fa-bolt"></i> StockAI 注册</div>
-        <div class="auth-error" id="reg-error"></div>
-        <div class="invite-pool" id="invite-pool" style="display:none;">
-            <div class="invite-pool-head">可用邀请码（点击选择，<span id="invite-count">0</span> 个剩余）</div>
-            <div class="invite-chips" id="invite-chips"></div>
+
+        {% set oauth_provider = request.args.get('provider', '') %}
+        {% set oauth_pending = request.args.get('pending', '') %}
+        {% set oauth_email = request.args.get('email', '') %}
+        {% set oauth_name = request.args.get('name', '') %}
+        {% set is_oauth = oauth_provider and oauth_pending %}
+
+        {% if is_oauth %}
+        <div class="oauth-banner">
+            已通过 <strong>{{ oauth_provider | title }}</strong> 验证身份
+            <span class="oauth-banner-sub">邮箱：{{ oauth_email or '(无)' }} · 请填写邀请码完成注册</span>
         </div>
+        {% endif %}
+
+        <div class="auth-error" id="reg-error"></div>
+
+        {% if not is_oauth %}
+        <div class="invite-pool" id="invite-pool" style="display:none;">
+            <div class="invite-pool-head">邀请码状态：<span id="invite-count">…</span></div>
+        </div>
+        {% endif %}
+
         <input type="text" class="auth-input" id="reg-invite" placeholder="邀请码">
-        <input type="email" class="auth-input" id="reg-email" placeholder="邮箱" autocomplete="email">
-        <input type="text" class="auth-input" id="reg-name" placeholder="显示名称（选填）">
-        <input type="password" class="auth-input" id="reg-password" placeholder="密码（至少8位，含字母和数字）" autocomplete="new-password">
+        <input type="email" class="auth-input" id="reg-email"
+               value="{{ oauth_email }}" placeholder="邮箱"
+               autocomplete="email"{% if is_oauth and oauth_email %} readonly{% endif %}>
+        <input type="text" class="auth-input" id="reg-name"
+               value="{{ oauth_name }}" placeholder="显示名称（选填）">
+        {% if not is_oauth %}
+        <input type="password" class="auth-input" id="reg-password"
+               placeholder="密码（至少8位，含字母和数字）"
+               autocomplete="new-password">
+        {% endif %}
+        {% if is_oauth %}
+        <input type="hidden" id="reg-pending" value="{{ oauth_pending }}">
+        <input type="hidden" id="reg-provider" value="{{ oauth_provider }}">
+        {% endif %}
         <button class="auth-btn" onclick="doRegister()">注册</button>
         <div class="auth-link">已有账号？<a href="/login">登录</a></div>
     </div>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" rel="stylesheet">
     <script>
-    async function loadAvailableInvites() {
+    const IS_OAUTH = {{ 'true' if is_oauth else 'false' }};
+
+    async function loadInviteStatus() {
+        if (IS_OAUTH) return;
         try {
             const resp = await fetch('/api/auth/invites-available');
             if (!resp.ok) return;
             const data = await resp.json();
-            const codes = data.codes || [];
             const pool = document.getElementById('invite-pool');
-            const chips = document.getElementById('invite-chips');
-            document.getElementById('invite-count').textContent = codes.length;
-            if (codes.length === 0) {
-                pool.style.display = 'block';
-                chips.innerHTML = '<span class="invite-empty">暂无可用邀请码，请联系管理员</span>';
-                return;
-            }
+            const countEl = document.getElementById('invite-count');
+            if (!pool) return;
             pool.style.display = 'block';
-            chips.innerHTML = codes.map(c =>
-                `<span class="invite-chip" onclick="document.getElementById('reg-invite').value='${c}'">${c}</span>`
-            ).join('');
-        } catch (e) { /* silent — user can still type the code manually */ }
+            if (data.available) {
+                countEl.textContent = `${data.count} 个可用 — 请向管理员索取`;
+            } else {
+                countEl.innerHTML = '<span class="invite-empty">暂无可用邀请码，请联系管理员生成</span>';
+            }
+        } catch (_) { /* silent — user can still type */ }
     }
-    loadAvailableInvites();
+    loadInviteStatus();
 
     async function doRegister() {
-        const invite_code = document.getElementById('reg-invite').value.trim();
-        const email = document.getElementById('reg-email').value.trim();
-        const display_name = document.getElementById('reg-name').value.trim() || undefined;
-        const password = document.getElementById('reg-password').value;
         const errEl = document.getElementById('reg-error');
         errEl.style.display = 'none';
+
+        const invite_code = document.getElementById('reg-invite').value.trim();
+        const display_name = document.getElementById('reg-name').value.trim() || undefined;
+        const email = document.getElementById('reg-email').value.trim();
+
+        let url, body;
+        if (IS_OAUTH) {
+            url = '/api/auth/oauth/register';
+            body = {
+                pending: document.getElementById('reg-pending').value,
+                invite_code,
+                display_name,
+                email,  // rescue path when provider returned no email
+            };
+        } else {
+            url = '/api/auth/register';
+            const password = document.getElementById('reg-password').value;
+            body = { invite_code, email, display_name, password };
+        }
+
         try {
-            const resp = await fetch('/api/auth/register', {
+            const resp = await fetch(url, {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({invite_code, email, password, display_name}),
+                body: JSON.stringify(body),
             });
             const data = await resp.json();
             if (!resp.ok) {
-                errEl.textContent = data.message || '注册失败';
+                errEl.textContent = data.message || ('注册失败: ' + (data.error || data.reason || 'unknown'));
                 errEl.style.display = 'block';
                 return;
             }

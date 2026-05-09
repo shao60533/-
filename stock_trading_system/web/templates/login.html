@@ -16,12 +16,21 @@
         .auth-link { text-align:center; margin-top:16px; font-size:13px; color:var(--text-secondary); }
         .auth-link a { color:var(--accent-blue); text-decoration:none; }
         .auth-error { color:var(--accent-red); font-size:13px; text-align:center; margin-bottom:12px; display:none; }
+        .auth-notice { color:var(--text-secondary); font-size:12px; text-align:center; margin-bottom:12px; padding:8px; background:var(--bg-secondary); border-radius:6px; display:none; }
+        .oauth-list { display:flex; flex-direction:column; gap:8px; margin-bottom:16px; }
+        .oauth-btn { display:flex; align-items:center; justify-content:center; gap:10px; padding:11px 14px; background:var(--bg-secondary); color:var(--text-primary); border:1px solid var(--border); border-radius:8px; text-decoration:none; font-size:14px; font-weight:500; transition:background 0.15s; }
+        .oauth-btn:hover { background:var(--bg-card); border-color:var(--accent-blue); }
+        .oauth-divider { display:none; align-items:center; gap:12px; margin:8px 0 16px 0; color:var(--text-secondary); font-size:12px; }
+        .oauth-divider::before, .oauth-divider::after { content:''; flex:1; height:1px; background:var(--border); }
     </style>
 </head>
 <body>
     <div class="auth-card">
         <div class="auth-title"><i class="fas fa-bolt"></i> StockAI 登录</div>
+        <div class="auth-notice" id="login-notice"></div>
         <div class="auth-error" id="login-error"></div>
+        <div class="oauth-list" id="oauth-list"></div>
+        <div class="oauth-divider" id="oauth-divider">或使用邮箱密码</div>
         <input type="email" class="auth-input" id="login-email" placeholder="邮箱" autocomplete="email">
         <input type="password" class="auth-input" id="login-password" placeholder="密码" autocomplete="current-password">
         <button class="auth-btn" onclick="doLogin()">登录</button>
@@ -29,6 +38,55 @@
     </div>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" rel="stylesheet">
     <script>
+    // ── Surface OAuth callback errors / notices via querystring ─────────
+    (function showOAuthMessages() {
+        const params = new URLSearchParams(location.search);
+        const err = params.get('error');
+        const notice = params.get('notice');
+        const errEl = document.getElementById('login-error');
+        const noticeEl = document.getElementById('login-notice');
+        const ERROR_MESSAGES = {
+            state_mismatch: 'OAuth state 校验失败，请重试',
+            missing_verifier: 'PKCE verifier 丢失，请重新登录',
+            no_code: '授权未完成',
+            unknown_provider: '未知的 OAuth 提供方',
+            exchange_failed: '与 OAuth 提供方通信失败',
+            link_requires_login: '请先登录后再绑定 OAuth',
+        };
+        if (err) {
+            errEl.textContent = ERROR_MESSAGES[err] || ('登录失败: ' + err);
+            errEl.style.display = 'block';
+        }
+        if (notice === 'email_unverified_link') {
+            const provider = params.get('provider') || '';
+            const email = params.get('email') || '';
+            noticeEl.textContent = `${provider} 账户的邮箱 ${email} 未验证，请先用邮箱密码登录后到设置中绑定`;
+            noticeEl.style.display = 'block';
+        }
+    })();
+
+    // ── Render configured OAuth provider buttons ────────────────────────
+    (async function renderOAuthButtons() {
+        try {
+            const res = await fetch('/api/auth/providers', { credentials: 'same-origin' });
+            if (!res.ok) return;
+            const { providers } = await res.json();
+            if (!providers || providers.length === 0) return;
+            const list = document.getElementById('oauth-list');
+            const divider = document.getElementById('oauth-divider');
+            const params = new URLSearchParams(location.search);
+            const next = params.get('next') || '/';
+            list.innerHTML = providers.map(function(p) {
+                const startUrl = '/auth/oauth/' + encodeURIComponent(p.name) +
+                                 '/start?next=' + encodeURIComponent(next);
+                return '<a class="oauth-btn" href="' + startUrl + '">' +
+                       '<img src="' + p.icon + '" width="20" height="20" alt="" />' +
+                       '<span>' + p.label + '</span></a>';
+            }).join('');
+            divider.style.display = 'flex';
+        } catch (_) { /* network failure: silently fall back to email/password */ }
+    })();
+
     async function doLogin() {
         const email = document.getElementById('login-email').value.trim();
         const password = document.getElementById('login-password').value;
