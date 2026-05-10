@@ -476,67 +476,10 @@ export function AnalysisPage() {
         <h1 className="text-xl font-bold">AI 分析</h1>
       </div>
 
-      {/* v1.22 unified inbox: running tasks + completed analyses in
-          one list. Replaces the standalone /history page; /history now
-          301-redirects here. Inline ``PipelineDAG`` for running rows
-          gives users live progress without leaving the page. */}
-      <Card>
-        <CardHeader className="pb-2">
-          <div className="mobile-card-header">
-            <CardTitle className="mc-title text-sm truncate">分析记录</CardTitle>
-            {/* mobile-ui-v1.3: standalone "Inbox 工具" tray (refresh /
-                filter / 看任务) removed. Inbox auto-refreshes via the
-                websocket subscription whenever a tracked task settles. */}
-            <div className="mc-actions">
-              {runningTotal > 0 && (
-                <Badge variant="default" className="text-[10px]">
-                  <Clock className="h-3 w-3 mr-1 animate-spin" />
-                  {runningTotal} 运行中
-                </Badge>
-              )}
-            </div>
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-2">
-          <InboxToolbar
-            ticker={inboxTickerQ}
-            onTicker={setInboxTickerQ}
-            total={inbox.length}
-          />
-          {inbox.length === 0 ? (
-            <p className="text-sm text-muted-foreground py-6 text-center">
-              暂无分析记录，下方提交一个新分析开始
-            </p>
-          ) : (() => {
-              const filterUpper = inboxTickerQ.trim().toUpperCase()
-              const visible = filterUpper
-                ? inbox.filter(it => it.ticker.includes(filterUpper))
-                : inbox
-              if (visible.length === 0) {
-                return (
-                  <p className="text-sm text-muted-foreground py-6 text-center">
-                    无匹配记录
-                  </p>
-                )
-              }
-              return visible.map(it => it.kind === "task" ? (
-                <RunningRow
-                  key={it.task_id}
-                  row={it}
-                  highlight={taskAnchor === it.task_id}
-                  onSettled={refreshInbox}
-                />
-              ) : (
-                <CompletedRow
-                  key={it.id}
-                  row={it}
-                  onChanged={refreshInbox}
-                />
-              ))
-            })()}
-        </CardContent>
-      </Card>
-
+      {/* v1.3.1 R-MUI-22: 发起分析 form is the high-frequency entry
+          point on mobile, so it sits ABOVE the inbox. Submit-then-
+          watch flow stays intact — the optimistic running row still
+          shows up in the inbox below as soon as the user submits. */}
       <Card>
         <CardHeader><CardTitle>发起分析</CardTitle></CardHeader>
         <CardContent className="space-y-4">
@@ -580,6 +523,67 @@ export function AnalysisPage() {
           </div>
 
           {error && <Alert variant="destructive" className="mt-2"><AlertTitle>提交失败</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}
+        </CardContent>
+      </Card>
+
+      {/* v1.22 unified inbox: running tasks + completed analyses in
+          one list. Replaces the standalone /history page; /history now
+          301-redirects here. Inline ``PipelineDAG`` for running rows
+          gives users live progress without leaving the page. */}
+      <Card>
+        <CardHeader className="pb-2">
+          <div className="mobile-card-header">
+            <CardTitle className="mc-title text-sm truncate">分析记录</CardTitle>
+            {/* mobile-ui-v1.3: standalone "Inbox 工具" tray (refresh /
+                filter / 看任务) removed. Inbox auto-refreshes via the
+                websocket subscription whenever a tracked task settles. */}
+            <div className="mc-actions">
+              {runningTotal > 0 && (
+                <Badge variant="default" className="text-[10px]">
+                  <Clock className="h-3 w-3 mr-1 animate-spin" />
+                  {runningTotal} 运行中
+                </Badge>
+              )}
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          <InboxToolbar
+            ticker={inboxTickerQ}
+            onTicker={setInboxTickerQ}
+            total={inbox.length}
+          />
+          {inbox.length === 0 ? (
+            <p className="text-sm text-muted-foreground py-6 text-center">
+              暂无分析记录，提交上方的新分析开始
+            </p>
+          ) : (() => {
+              const filterUpper = inboxTickerQ.trim().toUpperCase()
+              const visible = filterUpper
+                ? inbox.filter(it => it.ticker.includes(filterUpper))
+                : inbox
+              if (visible.length === 0) {
+                return (
+                  <p className="text-sm text-muted-foreground py-6 text-center">
+                    无匹配记录
+                  </p>
+                )
+              }
+              return visible.map(it => it.kind === "task" ? (
+                <RunningRow
+                  key={it.task_id}
+                  row={it}
+                  highlight={taskAnchor === it.task_id}
+                  onSettled={refreshInbox}
+                />
+              ) : (
+                <CompletedRow
+                  key={it.id}
+                  row={it}
+                  onChanged={refreshInbox}
+                />
+              ))
+            })()}
         </CardContent>
       </Card>
     </div>

@@ -1,4 +1,5 @@
 import { useMemo } from "react"
+import { cn } from "@/lib/utils"
 
 interface SparklineProps {
   values: number[]
@@ -47,7 +48,7 @@ export function Sparkline({
   return (
     <svg
       viewBox={`0 0 ${width} ${height}`}
-      className={className}
+      className={cn("block", className)}
       preserveAspectRatio="none"
       style={{ width: "100%", height }}
       aria-hidden="true"

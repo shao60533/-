@@ -499,14 +499,18 @@ export function DashboardPage() {
    row 1 — 账户总值 (left) + 今日 PnL (right);
    row 2 — 三栏 metric strip 总盈亏 / 收益率 / 活跃预警. */
 
-interface AccountOverviewProps {
+export interface AccountOverviewProps {
   pnl: { total_value: number; total_pnl: number; total_pnl_pct: number }
   summary: PortfolioSummary | null
   alertsCount: number
   sparklineValues: number[]
 }
 
-function AccountOverviewCard({ pnl, summary, alertsCount, sparklineValues }: AccountOverviewProps) {
+// Exported for v1.3.1 R-MUI-21 unit tests; the dashboard page is the
+// only production consumer.
+export function AccountOverviewCard({
+  pnl, summary, alertsCount, sparklineValues,
+}: AccountOverviewProps) {
   // /api/portfolio/summary owns today_pnl; fall back to "—" when the
   // backend has no prior snapshot yet (first day of a fresh DB) so we
   // never show a misleading 0.

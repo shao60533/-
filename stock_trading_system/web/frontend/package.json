@@ -7,7 +7,9 @@
     "lint:ux": "node scripts/test/check-no-quick-mode.mjs && node scripts/test/check-v131-components.mjs",
     "build": "npm run lint:ux && tsc -b && vite build",
     "preview": "vite preview",
-    "test": "npm run lint:ux",
+    "test": "npm run lint:ux && vitest run",
+    "test:unit": "vitest run",
+    "test:watch": "vitest",
     "test:guards": "node scripts/test/check-no-quick-mode.mjs && node scripts/test/check-v131-components.mjs"
   },
   "dependencies": {
