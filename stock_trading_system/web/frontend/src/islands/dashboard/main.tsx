@@ -7,5 +7,5 @@ import { DashboardPage } from "./DashboardPage"
 document.documentElement.classList.add("dark")
 
 createRoot(document.getElementById("react-root")!).render(
-  <StrictMode><AppShell><DashboardPage /></AppShell></StrictMode>,
+  <StrictMode><AppShell pageTitle="首页 · 资产与持仓"><DashboardPage /></AppShell></StrictMode>,
 )

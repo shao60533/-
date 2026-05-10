@@ -7,5 +7,5 @@ import { ReportsPage } from "./ReportsPage"
 document.documentElement.classList.add("dark")
 
 createRoot(document.getElementById("react-root")!).render(
-  <StrictMode><AppShell><ReportsPage /></AppShell></StrictMode>,
+  <StrictMode><AppShell pageTitle="报告中心"><ReportsPage /></AppShell></StrictMode>,
 )

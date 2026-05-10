@@ -11,6 +11,7 @@ export const Chip = React.forwardRef<HTMLButtonElement, ChipProps>(
     <button
       ref={ref}
       type="button"
+      data-ui-chip=""
       aria-pressed={active}
       className={cn(
         "inline-flex items-center gap-1.5 rounded-full border transition-all whitespace-nowrap",

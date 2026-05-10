@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
 import { Chip, ChipRow } from "@/components/ui/chip"
 import { ChartPanel } from "@/components/shared/ChartPanel"
+import { Sparkline } from "@/components/shared/Sparkline"
 import type { EChartsOption } from "@/lib/echarts"
 import { apiGet, apiPost } from "@/lib/api"
 import { subscribeTaskStream } from "@/lib/socket"
@@ -217,6 +218,10 @@ export function DashboardPage() {
     const days = RANGE_DAYS[range]
     return history.slice(-days)
   }, [history, range])
+  const sparklineValues = useMemo(
+    () => history.map(h => h.total_value).filter(Number.isFinite),
+    [history],
+  )
 
   // Equity chart option
   const equityOption = useMemo((): EChartsOption | null => {
@@ -354,7 +359,12 @@ export function DashboardPage() {
           头部 账户总值 + 今日 PnL，下方 总盈亏 / 收益率 / 活跃预警 三栏。
           替换原来 4 个 Stat 卡的整列叠放（grid-collapse-mobile 在 ≤575px
           下会让每张 Stat 卡占满一行）。 */}
-      <AccountOverviewCard pnl={pnl} summary={summary} alertsCount={data?.alerts_count ?? 0} />
+      <AccountOverviewCard
+        pnl={pnl}
+        summary={summary}
+        alertsCount={data?.alerts_count ?? 0}
+        sparklineValues={sparklineValues}
+      />
 
       {/* Holdings — merged into the home page per mobile-ui-v1.3.
           Default 5 visible, 全部 N expands the full list. */}
@@ -489,9 +499,10 @@ interface AccountOverviewProps {
   pnl: { total_value: number; total_pnl: number; total_pnl_pct: number }
   summary: PortfolioSummary | null
   alertsCount: number
+  sparklineValues: number[]
 }
 
-function AccountOverviewCard({ pnl, summary, alertsCount }: AccountOverviewProps) {
+function AccountOverviewCard({ pnl, summary, alertsCount, sparklineValues }: AccountOverviewProps) {
   // /api/portfolio/summary owns today_pnl; fall back to "—" when the
   // backend has no prior snapshot yet (first day of a fresh DB) so we
   // never show a misleading 0.
@@ -511,8 +522,8 @@ function AccountOverviewCard({ pnl, summary, alertsCount }: AccountOverviewProps
     : "text-[var(--color-accent-red)]"
 
   return (
-    <Card>
-      <CardContent className="pt-4 space-y-4">
+    <Card className="bg-card/95 ring-1 ring-primary/10 shadow-sm">
+      <CardContent className="pt-5 pb-4 px-4 space-y-3">
         <div className="flex items-start justify-between gap-3 min-w-0">
           <div className="min-w-0">
             <div className="text-xs text-muted-foreground">账户总值</div>
@@ -529,6 +540,15 @@ function AccountOverviewCard({ pnl, summary, alertsCount }: AccountOverviewProps
             </div>
           </div>
         </div>
+        {sparklineValues.length >= 5 && (
+          <div className="-mx-2" data-account-sparkline="">
+            <Sparkline
+              values={sparklineValues}
+              positive={pnl.total_pnl >= 0}
+              height={44}
+            />
+          </div>
+        )}
         <div className="grid grid-cols-3 gap-2 pt-1 border-t border-border/40">
           <Metric label="总盈亏"
                   value={`${pnl.total_pnl >= 0 ? "+" : ""}$${fmt(pnl.total_pnl)}`}

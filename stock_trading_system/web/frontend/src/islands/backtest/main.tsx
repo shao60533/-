@@ -7,5 +7,5 @@ import { BacktestPage } from "./BacktestPage"
 document.documentElement.classList.add("dark")
 
 createRoot(document.getElementById("react-root")!).render(
-  <StrictMode><AppShell><BacktestPage /></AppShell></StrictMode>,
+  <StrictMode><AppShell pageTitle="策略回测"><BacktestPage /></AppShell></StrictMode>,
 )

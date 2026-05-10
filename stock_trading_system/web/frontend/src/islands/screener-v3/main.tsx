@@ -7,5 +7,5 @@ import { ScreenerV3Page } from "./ScreenerV3Page"
 document.documentElement.classList.add("dark")
 
 createRoot(document.getElementById("react-root")!).render(
-  <StrictMode><AppShell><ScreenerV3Page /></AppShell></StrictMode>,
+  <StrictMode><AppShell pageTitle="发现 · 智能选股 V3"><ScreenerV3Page /></AppShell></StrictMode>,
 )

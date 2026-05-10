@@ -7,5 +7,5 @@ import { SettingsPage } from "./SettingsPage"
 document.documentElement.classList.add("dark")
 
 createRoot(document.getElementById("react-root")!).render(
-  <StrictMode><AppShell><SettingsPage /></AppShell></StrictMode>,
+  <StrictMode><AppShell pageTitle="系统设置"><SettingsPage /></AppShell></StrictMode>,
 )

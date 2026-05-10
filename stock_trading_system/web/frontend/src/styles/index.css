@@ -316,11 +316,49 @@ body { margin: 0; font-size: var(--text-base); }
   word-break: break-word;
 }
 
+/* ═══ Mobile visual density — v1.3.1 demo alignment ═══ */
+@media (max-width: 767.98px) {
+  [data-ui-card] {
+    border-radius: 8px !important;
+    box-shadow:
+      0 1px 0 rgba(255,255,255,0.02) inset,
+      0 8px 20px -18px rgba(0,0,0,0.7) !important;
+  }
+
+  [data-ui-button] {
+    border-radius: 8px !important;
+    gap: 0.375rem !important;
+  }
+
+  [data-ui-chip] {
+    border-radius: 8px !important;
+    min-height: 30px;
+    padding-left: 0.625rem !important;
+    padding-right: 0.625rem !important;
+  }
+
+  [data-ui-tabs-list] {
+    border-radius: 8px !important;
+    padding: 0.1875rem !important;
+  }
+
+  [data-ui-tabs-trigger] {
+    border-radius: 6px !important;
+    padding: 0.375rem 0.625rem !important;
+    font-size: 0.75rem !important;
+  }
+
+  [data-mobile-tab] svg {
+    width: 1.125rem;
+    height: 1.125rem;
+  }
+}
+
 /* ═══ CardHeader / CardContent mobile padding (12px instead of 20px) ═══ */
 @media (max-width: 575.98px) {
   [data-card-header],
   [data-card-content] {
-    padding-left: 1rem !important;
-    padding-right: 1rem !important;
+    padding-left: 0.75rem !important;
+    padding-right: 0.75rem !important;
   }
 }

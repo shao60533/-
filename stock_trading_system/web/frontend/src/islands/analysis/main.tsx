@@ -44,7 +44,7 @@ function PageFallback({ error }: { error: Error }) {
 createRoot(document.getElementById("react-root")!).render(
   <StrictMode>
     <ErrorBoundary fallback={({ error }) => <PageFallback error={error} />}>
-      <AppShell>
+      <AppShell pageTitle="分析 · Inbox 与命令">
         <AnalysisPage />
       </AppShell>
     </ErrorBoundary>

@@ -5,6 +5,7 @@ export const Card = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDi
   ({ className, ...props }, ref) => (
     <div
       ref={ref}
+      data-ui-card=""
       className={cn(
         "rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-bg-card)] text-[var(--color-card-foreground)] shadow-[0_1px_0_rgba(255,255,255,0.02)_inset,0_8px_24px_-16px_rgba(0,0,0,0.5)] transition-colors hover:border-[var(--color-border-bright)]",
         // Mobile: prevent the card itself from forcing horizontal

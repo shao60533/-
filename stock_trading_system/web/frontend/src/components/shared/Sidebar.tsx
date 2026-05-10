@@ -152,7 +152,7 @@ interface MoreEntry extends NavItem { description?: string }
 const MOBILE_MORE: MoreEntry[] = [
   { label: "报告中心", description: "日报/周报/月报",       href: "/reports",   icon: <FileText className="w-5 h-5" /> },
   { label: "策略回测", description: "表单 / 任务 / 结果",    href: "/backtest",  icon: <FlaskConical className="w-5 h-5" /> },
-  { label: "交易记录", description: "买入 / 卖出流水",       href: "/portfolio", icon: <Receipt className="w-5 h-5" /> },
+  { label: "交易记录", description: "买入 / 卖出流水",       href: "/portfolio?tab=transactions", icon: <Receipt className="w-5 h-5" /> },
   { label: "预警中心", description: "模板 / 新建 / 历史",    href: "/alerts",    icon: <Bell className="w-5 h-5" /> },
   { label: "任务中心", description: "筛选 / 详情 / 重试",    href: "/tasks",     icon: <ListChecks className="w-5 h-5" /> },
   { label: "系统设置", description: "模型与通知",           href: "/settings",  icon: <Settings className="w-5 h-5" /> },
@@ -162,7 +162,7 @@ const MOBILE_MORE: MoreEntry[] = [
 function isMoreRouteActive(): boolean {
   const p = window.location.pathname
   return MOBILE_MORE.some((m) => {
-    const href = m.href.split("#")[0]
+    const href = m.href.split("#")[0].split("?")[0]
     if (!href || href === "/") return false
     return p.startsWith(href)
   })
@@ -175,7 +175,7 @@ export function MobileTabbar() {
   return (
     <>
       <nav
-        className="md:hidden fixed bottom-0 left-0 right-0 bg-card border-t border-border flex z-50"
+        className="md:hidden fixed bottom-0 left-0 right-0 bg-card/95 backdrop-blur border-t border-border flex z-50 shadow-[0_-10px_30px_-24px_rgba(0,0,0,0.9)]"
         style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}
       >
         {MOBILE_PRIMARY.map((tab) => (
@@ -186,7 +186,7 @@ export function MobileTabbar() {
           data-mobile-tab="more"
           onClick={() => setMoreOpen(true)}
           className={cn(
-            "flex-1 flex flex-col items-center py-2 text-[10px] min-h-[44px]",
+            "flex-1 flex flex-col items-center justify-center gap-0.5 py-1.5 text-[10px] min-h-[44px]",
             moreActive ? "text-primary" : "text-muted-foreground",
           )}
         >
@@ -236,7 +236,7 @@ function TabItem({ item }: { item: NavItem }) {
       data-mobile-tab={item.href}
       href={item.href}
       className={cn(
-        "flex-1 flex flex-col items-center py-2 text-[10px] min-h-[44px]",
+        "flex-1 flex flex-col items-center justify-center gap-0.5 py-1.5 text-[10px] min-h-[44px]",
         active ? "text-primary" : "text-muted-foreground",
       )}
     >

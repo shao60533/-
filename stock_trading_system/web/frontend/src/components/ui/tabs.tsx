@@ -19,6 +19,7 @@ export const TabsList = React.forwardRef<
   <div className="mobile-tabs-scroll">
     <TabsPrimitive.List
       ref={ref}
+      data-ui-tabs-list=""
       className={cn(
         "inline-flex items-center gap-1 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] p-1 text-[var(--color-text-secondary)]",
         className
@@ -35,6 +36,7 @@ export const TabsTrigger = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <TabsPrimitive.Trigger
     ref={ref}
+    data-ui-tabs-trigger=""
     className={cn(
       "inline-flex items-center justify-center whitespace-nowrap rounded-md px-3 py-1.5 text-sm font-medium transition-all",
       "hover:text-[var(--color-text-primary)]",

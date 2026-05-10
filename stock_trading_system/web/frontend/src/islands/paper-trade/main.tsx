@@ -7,5 +7,5 @@ import { PaperTradePage } from "./PaperTradePage"
 document.documentElement.classList.add("dark")
 
 createRoot(document.getElementById("react-root")!).render(
-  <StrictMode><AppShell><PaperTradePage /></AppShell></StrictMode>,
+  <StrictMode><AppShell pageTitle="纸面交易"><PaperTradePage /></AppShell></StrictMode>,
 )

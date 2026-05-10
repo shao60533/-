@@ -209,22 +209,6 @@ function getIdFromUrl(): string | null {
   return match?.[1] ?? null
 }
 
-/** Heuristic: does this text look like a Python dict repr or raw JSON
- *  blob that escaped the v1.20 normalizer (legacy rows or pre-fix data)?
- *  Triggers a short banner on the raw-output panel so the user knows the
- *  structured cards above are the canonical view. */
-function looksLikeRawDict(content: string): boolean {
-  const t = content.trim()
-  if (!t) return false
-  if (t.length > 8000) return false  // skip Markdown-with-fenced-JSON noise
-  // Python dict repr signature: starts with `{'…':` (single-quote keys)
-  // or `{"…":` and never sees a Markdown heading or paragraph.
-  const startsLikeRepr = /^\{['"][\w_]+['"]\s*:/.test(t)
-  if (!startsLikeRepr) return false
-  const hasMarkdown = /(^|\n)#{1,6}\s|\n\n[一-鿿]/.test(t)
-  return !hasMarkdown
-}
-
 /** UUID = task ID (running state); pure digits or "analysis_history:N" = completed history ID */
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 function isTaskId(id: string): boolean {
@@ -795,18 +779,6 @@ function AnalysisDetailView({ detail: initialDetail }: { detail: AnalysisDetail 
     return () => io.disconnect()
   }, [klineVisible, refetchKline])
 
-  // Build report content map (8 tabs)
-  const reportContent: Record<string, string> = {}
-  if (detail.summary) reportContent["summary"] = detail.summary
-  if (detail.analysts) {
-    for (const [key, val] of Object.entries(detail.analysts)) {
-      reportContent[key] = typeof val === "string" ? val : JSON.stringify(val, null, 2)
-    }
-  }
-  // The "决策" tab is sourced from analysis_history.trade_decision rather
-  // than analysts.* — the worker stores it as a top-level column.
-  if (detail.trade_decision) reportContent["Decision"] = detail.trade_decision
-
   // Parse advice_json so the catch suppresses bad rows. We only need the
   // side effect of validating it parses; the rendered UI reads structured
   // fields directly, not this blob.
@@ -1013,95 +985,38 @@ function AnalysisDetailView({ detail: initialDetail }: { detail: AnalysisDetail 
               ))}
             </TabsList>
             {REPORT_TABS.map(tab => {
-              const content = reportContent[tab.key] || ""
               const rawStruct = detail.rendering?.[tab.key as keyof RenderingDict]
               const struct = rawStruct
                 ? normalizeCardForClient(tab.key, rawStruct)
                 : null
               const hasStruct = !!struct
-              // v1.7 — when the per-tab card didn't render (rendering
-              // status failed/empty/pending or this specific tab is
-              // missing), the markdown body becomes the PRIMARY view
-              // instead of being folded into a debug ``<details>``.
-              // The user reported "原始模型输出 折叠" was making
-              // legitimate analysis content look hidden — fix is to
-              // promote markdown to the main render slot whenever
-              // there's no structured card.
               return (
                 <TabsContent key={tab.key} value={tab.key} className="mt-4 space-y-4">
                   {hasStruct ? (
-                    <>
-                      <ErrorBoundary
-                        resetKey={`${detail.id}:${tab.key}`}
-                        onError={(err) => {
-                          // eslint-disable-next-line no-console
-                          console.error("[analysis card] render failed", {
-                            analysis_id: detail.id,
-                            tab_key: tab.key,
-                            error_name: err.name,
-                            error_message: err.message,
-                            struct_shape: describeShape(struct),
-                          })
-                        }}
-                        fallback={({ error }) => (
-                          <CardFallback error={error} />
-                        )}
-                      >
-                        <Suspense fallback={<Skeleton className="h-32 w-full" />}>
-                          <AnalysisCards tabKey={tab.key} data={struct} />
-                        </Suspense>
-                      </ErrorBoundary>
-                      {/* Markdown body stays available behind a details
-                          summary on success, since the structured card
-                          already covers the main view. */}
-                      {content && (
-                        <details className="rounded border border-border/50">
-                          <summary className="cursor-pointer px-4 py-2 text-xs text-muted-foreground hover:bg-muted/30">
-                            原始模型输出（点击展开 · 仅供调试参考）
-                          </summary>
-                          <div className="prose prose-invert prose-sm max-w-none px-4 py-3 max-h-[600px] overflow-y-auto text-[var(--color-text-secondary)]">
-                            {looksLikeRawDict(content) && (
-                              <div className="mb-3 rounded border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs text-amber-300 not-prose">
-                                原始输出格式异常（疑似 Python dict / JSON），已优先展示结构化摘要。
-                              </div>
-                            )}
-                            <ErrorBoundary
-                              resetKey={`${detail.id}:${tab.key}:md`}
-                              fallback={
-                                <pre className="text-xs whitespace-pre-wrap">{content}</pre>
-                              }
-                            >
-                              <Suspense fallback={<Skeleton className="h-24 w-full" />}>
-                                <MarkdownBody>{content}</MarkdownBody>
-                              </Suspense>
-                            </ErrorBoundary>
-                          </div>
-                        </details>
+                    <ErrorBoundary
+                      resetKey={`${detail.id}:${tab.key}`}
+                      onError={(err) => {
+                        // eslint-disable-next-line no-console
+                        console.error("[analysis card] render failed", {
+                          analysis_id: detail.id,
+                          tab_key: tab.key,
+                          error_name: err.name,
+                          error_message: err.message,
+                          struct_shape: describeShape(struct),
+                        })
+                      }}
+                      fallback={({ error }) => (
+                        <CardFallback error={error} />
                       )}
-                    </>
-                  ) : content ? (
-                    /* No structured card → render markdown DIRECTLY
-                       as the main view. The "原始模型输出" framing is
-                       wrong when the markdown IS the primary output. */
-                    <div className="prose prose-invert prose-sm max-w-none text-[var(--color-text-secondary)]">
-                      {looksLikeRawDict(content) && (
-                        <div className="mb-3 rounded border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs text-amber-300 not-prose">
-                          原始输出格式异常（疑似 Python dict / JSON），结构化摘要待补齐。
-                        </div>
-                      )}
-                      <ErrorBoundary
-                        resetKey={`${detail.id}:${tab.key}:md-primary`}
-                        fallback={
-                          <pre className="text-xs whitespace-pre-wrap">{content}</pre>
-                        }
-                      >
-                        <Suspense fallback={<Skeleton className="h-24 w-full" />}>
-                          <MarkdownBody>{content}</MarkdownBody>
-                        </Suspense>
-                      </ErrorBoundary>
-                    </div>
+                    >
+                      <Suspense fallback={<Skeleton className="h-32 w-full" />}>
+                        <AnalysisCards tabKey={tab.key} data={struct} />
+                      </Suspense>
+                    </ErrorBoundary>
                   ) : (
-                    <p className="text-sm text-muted-foreground py-8 text-center">暂无数据</p>
+                    <p className="text-sm text-muted-foreground py-8 text-center">
+                      暂无结构化数据，底部原始报告可作为 fallback 查看。
+                    </p>
                   )}
                 </TabsContent>
               )

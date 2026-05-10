@@ -623,14 +623,6 @@ function PlanHistory({ plans }: { plans: Plan[] }) {
             <span className="text-xs text-muted-foreground sm:ml-auto">{p.created_at}</span>
           </div>
           {p.thesis && <p className="text-xs text-muted-foreground mb-1">{p.thesis}</p>}
-          {p.trade_decision && (
-            <details className="mt-2">
-              <summary className="text-xs text-primary cursor-pointer">AI 最终决策原文</summary>
-              <div className="text-xs text-muted-foreground mt-1 whitespace-pre-wrap max-h-40 overflow-y-auto">
-                {p.trade_decision}
-              </div>
-            </details>
-          )}
         </div>
       ))}
     </div>

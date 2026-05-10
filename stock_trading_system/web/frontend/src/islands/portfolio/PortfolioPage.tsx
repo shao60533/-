@@ -78,6 +78,11 @@ export function PortfolioPage() {
   const filtered = search
     ? holdings.filter(h => h.ticker.toLowerCase().includes(search.toLowerCase()))
     : holdings
+  const initialTab =
+    new URLSearchParams(window.location.search).get("tab") === "transactions" ||
+    window.location.hash === "#transactions"
+      ? "transactions"
+      : "holdings"
 
   const handleRemove = async (ticker: string) => {
     if (!confirm(`确定移除 ${ticker}？`)) return
@@ -123,7 +128,7 @@ export function PortfolioPage() {
       })()}
 
       {/* Holdings + Transactions tabs */}
-      <Tabs defaultValue="holdings">
+      <Tabs defaultValue={initialTab}>
         <TabsList>
           <TabsTrigger value="holdings">持仓 ({holdings.length})</TabsTrigger>
           <TabsTrigger value="transactions">交易记录 ({transactions.length})</TabsTrigger>
