@@ -181,15 +181,30 @@ export function MobileTabbar() {
         {MOBILE_PRIMARY.map((tab) => (
           <TabItem key={tab.href} item={tab} />
         ))}
-        {/* More button — opens a sheet listing low-frequency pages. */}
+        {/* More button — opens a sheet listing low-frequency pages.
+            Active styling matches the primary tabs (top accent + tinted
+            background) so the user can tell which tab "owns" the
+            current page even when it's one of the More entries. */}
         <button
           data-mobile-tab="more"
+          data-active={moreActive ? "true" : undefined}
           onClick={() => setMoreOpen(true)}
           className={cn(
-            "flex-1 flex flex-col items-center justify-center gap-0.5 py-1.5 text-[10px] min-h-[44px]",
-            moreActive ? "text-primary" : "text-muted-foreground",
+            "relative flex-1 flex flex-col items-center justify-center gap-0.5 py-1.5 mx-0.5 my-1 rounded-lg",
+            "text-[10px] min-h-[44px] transition-colors",
+            moreActive
+              ? "text-primary bg-[color-mix(in_srgb,var(--color-accent-blue)_10%,transparent)]"
+              : "text-muted-foreground",
           )}
         >
+          <span
+            aria-hidden="true"
+            data-tab-accent={moreActive ? "active" : undefined}
+            className={cn(
+              "absolute top-0 left-1/2 -translate-x-1/2 h-[3px] w-[22px] rounded-b-full",
+              moreActive ? "bg-[var(--color-accent-blue)]" : "bg-transparent",
+            )}
+          />
           <MoreHorizontal className="w-5 h-5" />
           <span className="mt-0.5 whitespace-nowrap">更多</span>
         </button>
@@ -234,12 +249,28 @@ function TabItem({ item }: { item: NavItem }) {
   return (
     <a
       data-mobile-tab={item.href}
+      data-active={active ? "true" : undefined}
       href={item.href}
       className={cn(
-        "flex-1 flex flex-col items-center justify-center gap-0.5 py-1.5 text-[10px] min-h-[44px]",
-        active ? "text-primary" : "text-muted-foreground",
+        "relative flex-1 flex flex-col items-center justify-center gap-0.5 py-1.5 mx-0.5 my-1 rounded-lg",
+        "text-[10px] min-h-[44px] transition-colors",
+        active
+          ? "text-primary bg-[color-mix(in_srgb,var(--color-accent-blue)_10%,transparent)]"
+          : "text-muted-foreground",
       )}
     >
+      {/* mobile-ui-v1.3.1 fixup #2: top accent bar matches demo
+          `.tabbar b` — 22×3px pill, transparent when inactive,
+          blue when active. Provides a strong visual anchor on top
+          of the tab in addition to the subtle text/bg color shift. */}
+      <span
+        aria-hidden="true"
+        data-tab-accent={active ? "active" : undefined}
+        className={cn(
+          "absolute top-0 left-1/2 -translate-x-1/2 h-[3px] w-[22px] rounded-b-full",
+          active ? "bg-[var(--color-accent-blue)]" : "bg-transparent",
+        )}
+      />
       {item.icon}
       <span className="mt-0.5 whitespace-nowrap">{item.label}</span>
     </a>

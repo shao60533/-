@@ -89,12 +89,23 @@ v1.3 实装方按 PRD §3.1 严格执行，R-MUI-01..14 功能层面 100% 通过
 | R-MUI-20a | mini-chart 数据不足降级 | 同上 | ≤1 个快照时 sparkline 不渲染，卡退化两段不破布局 |
 | R-MUI-21 | 账户卡 hero 视觉容器 | `<AccountOverviewCard>` className | 视觉与下方持仓卡明显不同（背景 / 圆角 / 内边距任一维度）|
 
-### 4.2 P1 可并行
+### 4.2 P0 布局顺序（用户 2026-05-11 二次反馈）
+
+实测当前 [`AnalysisPage.tsx:486+`](../../stock_trading_system/web/frontend/src/islands/analysis/AnalysisPage.tsx) 是 `分析记录 Inbox` 在上 / `发起分析` 在下；[`ScreenerV3Page.tsx:69-73`](../../stock_trading_system/web/frontend/src/islands/screener-v3/ScreenerV3Page.tsx) `<ScreenerHomeView>` 是 `<RecentScreensCard>` 在上 / `<ScreenerForm>` 在下。两处都与 demo 「主要功能在上、历史记录在下」相反。
+
+| ID | 需求 | 目标文件 | 验收 |
+|---|---|---|---|
+| R-MUI-22 | AI 分析页：`发起分析` 表单卡置顶，`分析记录 Inbox` 移到下方 | `AnalysisPage.tsx` `<AnalysisHomeInbox>` | 移动端首屏首先看到表单，下方是 Inbox 列表 |
+| R-MUI-23 | 智能选股 V3 页：`<ScreenerForm>` 置顶，`<RecentScreensCard>` 移到下方 | `ScreenerV3Page.tsx` `<ScreenerHomeView>` | 移动端首屏首先看到选股表单，下方是最近选股 |
+| R-MUI-22a | 不改变 Inbox / RecentScreensCard 内部行为 | 同上 | 提交、刷新、点击行为完全一致 |
+| R-MUI-22b | 桌面端布局同步调整（不再保留旧顺序） | 同上 | 桌面 ≥md 与移动端同序 |
+
+### 4.3 P1 可并行
 
 | ID | 需求 | 验收 |
 |---|---|---|
-| R-MUI-22 | 顶栏副标随页面切换实时更新 | 5 个一级页面切换时副标文案与 demo 一致 |
-| R-MUI-23 | 顶栏在长文页面 sticky 滚动不遮挡内容 | 滚动测试 |
+| R-MUI-24 | 顶栏副标随页面切换实时更新 | 5 个一级页面切换时副标文案与 demo 一致 |
+| R-MUI-25 | 顶栏在长文页面 sticky 滚动不遮挡内容 | 滚动测试 |
 
 ## 5. 用户故事与验收
 
@@ -115,6 +126,25 @@ v1.3 实装方按 PRD §3.1 严格执行，R-MUI-01..14 功能层面 100% 通过
 - 375px viewport 下首屏（无滚动）可见：账户总值 + 今日 PnL + sparkline + 三栏 metric。
 - sparkline 占账户卡内宽度 100%，高度 ~48px。
 - 账户卡视觉作为 hero，与持仓卡 / gap-note 卡明显不同。
+
+### US-MUI-9：分析页主要功能优先（form 在上、Inbox 在下）
+
+> 作为移动端用户，我希望打开 AI 分析页第一眼看到"发起分析"表单（高频写动作），而不是先看一长串历史记录。
+
+**验收**：
+- `/analysis` 顶部第一个业务区是 `发起分析` 表单卡（含 ticker 输入 + 深度 Switch）。
+- 表单卡下方才是 `分析记录 Inbox`（含运行中 + 已完成）。
+- 桌面端 ≥md 同序。
+
+### US-MUI-10：选股页主要功能优先（form 在上、最近选股在下）
+
+> 作为移动端用户，我希望打开发现页第一眼看到"开始选股"表单，而不是先翻最近选股历史。
+
+**验收**：
+- `/screener-v3` 顶部第一个业务区是 `<ScreenerForm>`（自然语言输入 + 大师选择 + 模式 + 成本估算）。
+- 表单下方才是 `<RecentScreensCard>` 最近选股 3 卡 + 查看全部链接。
+- 桌面端 ≥md 同序。
+- prefill 模式（`?prefill=<task_id>`）形态不变，只是 banner 提示位置随 form 上移。
 
 ### US-MUI-8：数据不足时账户卡不破布局
 

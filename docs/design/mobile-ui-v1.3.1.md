@@ -366,6 +366,53 @@ const isUp = pnl.total_pnl >= 0
 
 ---
 
+## 6.5 布局顺序调整（R-MUI-22 / R-MUI-23）
+
+### 6.5.1 现状
+
+**Analysis 页**（[`AnalysisPage.tsx:486+`](../../stock_trading_system/web/frontend/src/islands/analysis/AnalysisPage.tsx)）当前顺序：
+```
+<AnalysisHomeInbox>
+  <Card>分析记录 Inbox</Card>      ← 在上(line 486)
+  <Card>发起分析</Card>             ← 在下(line 541)
+```
+
+**Screener-v3 页**（[`ScreenerV3Page.tsx:69-73`](../../stock_trading_system/web/frontend/src/islands/screener-v3/ScreenerV3Page.tsx)）当前顺序：
+```tsx
+function ScreenerHomeView({ prefillId }) {
+  return (
+    <RecentScreensCard />          ← 在上(line 72)
+    <ScreenerForm ... />           ← 在下(line 73)
+  )
+}
+```
+
+### 6.5.2 修法（仅 JSX 顺序交换）
+
+**Analysis 页**：在 `<AnalysisHomeInbox>` 内把两个 `<Card>` 顺序对调——`发起分析` 卡放第一个、`分析记录 Inbox` 卡放第二个。section title 顺序同步对调。
+
+**Screener-v3 页**：在 `ScreenerHomeView` JSX return 里把 `<RecentScreensCard />` 与 `<ScreenerForm prefillTaskId={prefillId} />` 顺序对调——`<ScreenerForm>` 在前、`<RecentScreensCard>` 在后。
+
+### 6.5.3 不动
+
+- `<RunningRow>` / `<CompletedRow>` 内部渲染
+- `<RecentScreenCard>` 内部渲染
+- 表单字段、提交逻辑、prefill 流程
+- Tasks 列表（不在本期范围）
+- 桌面端布局也跟着改（保持桌面与移动同序）
+
+### 6.5.4 测试
+
+`tests/frontend/analysis/AnalysisPage.layout.test.tsx`（2 case）：
+- DOM 顺序断言 `getByText("发起分析")` 在 `getByText("分析记录")` 前
+- 提交分析后乐观插入仍在 Inbox 顶部（行为不变）
+
+`tests/frontend/screener-v3/ScreenerV3Page.layout.test.tsx`（2 case）：
+- DOM 顺序断言 `<ScreenerForm>` 在 `<RecentScreensCard>` 前
+- prefill 模式 banner 在 form 内（位置随 form 上移）
+
+---
+
 ## 7. 实施顺序
 
 | 步骤 | 工作 | 文件 | LOC |
@@ -375,8 +422,11 @@ const isUp = pnl.total_pnl >= 0
 | 3 | `<AppShell>` 加 `pageTitle` prop + 集成 MobileTopbar | `components/shared/AppShell.tsx` | ~15 |
 | 4 | 11 个 island main entry 加 `pageTitle` | `islands/*/main.tsx` | ~30 |
 | 5 | `<AccountOverviewCard>` 加 sparkline + hero className + props 扩展 + 单测 | `islands/dashboard/DashboardPage.tsx`, tests | ~40 |
-| 6 | Playwright 回归 + 手动回归 | — | — |
-| **合计** | | | **~245 LOC** |
+| 6 | Analysis 页 `<AnalysisHomeInbox>` JSX 顺序对调（发起分析 → 分析记录） | `islands/analysis/AnalysisPage.tsx` | ~10 |
+| 7 | Screener-v3 `<ScreenerHomeView>` JSX 顺序对调（form → recent） | `islands/screener-v3/ScreenerV3Page.tsx` | ~5 |
+| 8 | 2 个 layout DOM 顺序单测 | tests | ~40 |
+| 9 | Playwright 回归 + 手动回归 | — | — |
+| **合计** | | | **~300 LOC** |
 
 每步独立 commit。预估总工时 **~4h**。
 

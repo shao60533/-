@@ -8,6 +8,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { toast } from "@/components/ui/toaster"
 import { apiGet, apiPost } from "@/lib/api"
+import { cn } from "@/lib/utils"
 
 /**
  * LLM provider switch — three-state (qwen / gemini / openrouter) with
@@ -68,7 +69,19 @@ const PROVIDER_LABEL: Record<string, string> = {
   openrouter: "OpenRouter",
 }
 
-export function LLMSwitcher() {
+/**
+ * Trigger style. ``full`` = legacy ghost button used in the desktop
+ * sidebar + the More sheet (full-width text trigger). ``pill`` =
+ * mobile-ui-v1.3.1 demo-style blue pill with a glowing dot, used in
+ * the MobileTopbar where horizontal real estate is tight.
+ */
+export type LLMSwitcherVariant = "full" | "pill"
+
+export interface LLMSwitcherProps {
+  variant?: LLMSwitcherVariant
+}
+
+export function LLMSwitcher({ variant = "full" }: LLMSwitcherProps = {}) {
   const [state, setState] = useState<LLMState | null>(null)
   const [or, setOr] = useState<OpenRouterActive | null>(null)
   const [switching, setSwitching] = useState(false)
@@ -158,16 +171,44 @@ export function LLMSwitcher() {
   const deepPresets  = or?.presets.filter(p => p.role === "deep"  || p.role === "both") ?? []
   const quickPresets = or?.presets.filter(p => p.role === "quick" || p.role === "both") ?? []
 
+  // mobile-ui-v1.3.1 fixup #2: pill variant matches demo `.provider`
+  // — rounded-full button, blue dot with soft halo, blue text on a
+  // 8% blue tint background. Single trigger element so the dropdown
+  // contents stay identical in both variants.
+  const trigger = variant === "pill" ? (
+    <button
+      type="button"
+      data-llm-pill=""
+      className={cn(
+        "inline-flex items-center gap-1.5 h-8 px-2.5 rounded-full",
+        "border border-[color-mix(in_srgb,var(--color-accent-blue)_30%,transparent)]",
+        "bg-[color-mix(in_srgb,var(--color-accent-blue)_10%,transparent)]",
+        "text-[var(--color-accent-blue)] text-xs font-semibold whitespace-nowrap",
+        "hover:bg-[color-mix(in_srgb,var(--color-accent-blue)_18%,transparent)]",
+        "transition-colors disabled:opacity-50",
+      )}
+      disabled={switching}
+    >
+      <span
+        aria-hidden="true"
+        className="w-1.5 h-1.5 rounded-full bg-[var(--color-accent-blue)] shadow-[0_0_0_4px_color-mix(in_srgb,var(--color-accent-blue)_18%,transparent)]"
+      />
+      <span className="truncate max-w-[90px]">{displayName}</span>
+      {state.locked_by_env && <Lock className="h-3 w-3 text-amber-500 shrink-0" />}
+      <ChevronDown className="h-3 w-3 shrink-0 opacity-70" />
+    </button>
+  ) : (
+    <Button variant="ghost" size="sm" className="gap-1.5 w-full justify-start text-xs px-2 h-8">
+      <Sparkles className="h-3.5 w-3.5 shrink-0" />
+      <span className="truncate">模型: {displayName}</span>
+      {state.locked_by_env && <Lock className="h-3 w-3 text-amber-500 shrink-0" />}
+      <ChevronDown className="h-3 w-3 ml-auto shrink-0 opacity-50" />
+    </Button>
+  )
+
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="sm" className="gap-1.5 w-full justify-start text-xs px-2 h-8">
-          <Sparkles className="h-3.5 w-3.5 shrink-0" />
-          <span className="truncate">模型: {displayName}</span>
-          {state.locked_by_env && <Lock className="h-3 w-3 text-amber-500 shrink-0" />}
-          <ChevronDown className="h-3 w-3 ml-auto shrink-0 opacity-50" />
-        </Button>
-      </DropdownMenuTrigger>
+      <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="w-72">
         <DropdownMenuLabel>切换 AI 模型</DropdownMenuLabel>
         <DropdownMenuSeparator />

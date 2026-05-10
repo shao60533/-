@@ -353,7 +353,11 @@ export function DashboardPage() {
 
   return (
     <div className="p-4 md:p-6 space-y-6 max-w-6xl mx-auto">
-      <h1 className="text-xl font-bold">首页</h1>
+      {/* mobile-ui-v1.3.1 fixup #2: MobileTopbar already shows the
+          pageTitle "首页 · 资产与持仓"; on mobile the in-content h1
+          duplicates that surface and pushes the account hero below
+          the fold. Keep h1 for desktop where the topbar is hidden. */}
+      <h1 className="hidden md:block text-xl font-bold">首页</h1>
 
       {/* mobile-ui-v1.3: account overview — 1 compact card per demo:
           头部 账户总值 + 今日 PnL，下方 总盈亏 / 收益率 / 活跃预警 三栏。
@@ -524,16 +528,30 @@ function AccountOverviewCard({ pnl, summary, alertsCount, sparklineValues }: Acc
   return (
     <Card className="bg-card/95 ring-1 ring-primary/10 shadow-sm">
       <CardContent className="pt-5 pb-4 px-4 space-y-3">
-        <div className="flex items-start justify-between gap-3 min-w-0">
-          <div className="min-w-0">
+        {/* mobile-ui-v1.3.1 fixup #2: 账户总值 takes full width as
+            the dominant hero number; 今日 PnL sits on its own
+            baseline-aligned row below so neither value ever truncates
+            at 390px. ``flex-wrap`` + ``ml-auto`` keeps the desktop
+            side-by-side feel when the card is wider than ~520px. */}
+        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 min-w-0">
+          <div className="min-w-0 flex-shrink-0">
             <div className="text-xs text-muted-foreground">账户总值</div>
-            <div className="font-mono text-2xl font-semibold tabular-nums truncate">
+            <div
+              data-account-value=""
+              className="font-mono text-2xl font-semibold tabular-nums leading-tight"
+            >
               ${fmt(pnl.total_value)}
             </div>
           </div>
-          <div className="min-w-0 text-right">
+          <div className="min-w-0 sm:ml-auto sm:text-right">
             <div className="text-xs text-muted-foreground">今日 PnL</div>
-            <div className={cn("font-mono text-sm tabular-nums truncate", todayClass)}>
+            <div
+              data-account-today-pnl=""
+              className={cn(
+                "font-mono text-sm tabular-nums leading-tight whitespace-nowrap",
+                todayClass,
+              )}
+            >
               {hasToday
                 ? `${todayAbs >= 0 ? "+" : ""}$${fmt(todayAbs)} · ${fmtPct(todayPct)}`
                 : "—"}
