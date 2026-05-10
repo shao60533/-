@@ -457,31 +457,77 @@ print(Fernet.generate_key().decode())
 
 ### 8.1 `/login` 页（[`templates/login.html`](../../stock_trading_system/web/templates/login.html)）
 
-加 OAuth 按钮区（位于邮箱密码 form 上方）：
+**v1.0 修订（用户 2026-05-11 反馈 R-OAUTH-11a/11b）**：
+- OAuth 按钮区放在邮箱密码 form **下方**（不是上方）。理由：邮箱密码是当前用户主登录路径（已注册用户高频复用），OAuth 是次选；DOM 顺序：邮箱密码 form → divider「或使用」→ OAuth 按钮区。
+- 按钮带品牌 logo（Google 多色 G + GitHub 黑色 mark），不用通用占位图。Logo 资产位于 `/static/icons/google.svg` + `/static/icons/github.svg`。
 
 ```html
-<div id="oauth-buttons" style="display: none">
-  <!-- JS 根据 /api/auth/providers 渲染 -->
+<!-- 现有邮箱密码 form 在前,完全不动 -->
+
+<div id="oauth-divider" style="display:none; text-align:center; margin:24px 0 16px; color:#888; font-size:12px">
+  或使用
 </div>
-<div class="divider">或使用邮箱密码</div>
-<!-- 现有 form 不动 -->
+<div id="oauth-buttons-container"></div>
 
 <script>
-  fetch("/api/auth/providers").then(r => r.json()).then(({providers}) => {
-    if (providers.length === 0) return;
-    const root = document.getElementById("oauth-buttons");
-    root.style.display = "block";
+(async () => {
+  try {
+    const res = await fetch("/api/auth/providers");
+    const { providers } = await res.json();
+    if (!providers || providers.length === 0) return;
+    const root = document.getElementById("oauth-buttons-container");
+    document.getElementById("oauth-divider").style.display = "block";
+    const next = new URLSearchParams(location.search).get("next") || "/";
     root.innerHTML = providers.map(p => `
-      <a href="/auth/oauth/${p.name}/start?next=/" class="oauth-btn">
-        <img src="${p.icon}" /> ${p.label}
+      <a href="/auth/oauth/${p.name}/start?next=${encodeURIComponent(next)}"
+         class="oauth-btn"
+         style="display:flex;align-items:center;justify-content:center;gap:10px;padding:11px 14px;border:1px solid #d0d7de;border-radius:6px;margin-bottom:8px;text-decoration:none;color:#24292f;background:#fff;font-weight:500;font-size:14px">
+        <img src="${p.icon}" width="18" height="18" alt="${p.label}" style="display:block"/>
+        <span>${p.label}</span>
       </a>
     `).join("");
-  });
+  } catch (_) {}
+})();
 
-  // 大陆访问探测(可选 v1.0):Google 探测,5xx/timeout 隐藏 Google 按钮
-  // 实装放在 R-OAUTH-16 P1
+// callback 错误/提示展示
+const params = new URLSearchParams(location.search);
+const err = params.get("error"), notice = params.get("notice");
+if (err) alert(`登录失败: ${err}`);
+if (notice === "email_unverified_link") {
+  alert(`${params.get("provider")} 账户的邮箱 ${params.get("email")} 未验证，请先用邮箱密码登录后到设置中绑定`);
+}
+
+// 大陆访问探测(可选 v1.0):Google 探测,5xx/timeout 隐藏 Google 按钮
+// 实装放在 R-OAUTH-16 P1
 </script>
 ```
+
+### 8.1.1 Logo 资产（R-OAUTH-11b）
+
+新增两个 SVG 文件，位于 [`stock_trading_system/web/static/icons/`](../../stock_trading_system/web/static/icons/)：
+
+**`google.svg`** —— 官方多色 G mark（Google Identity 品牌合规版本）：
+
+```svg
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48" aria-label="Google">
+  <path fill="#4285F4" d="M45.12 24.5c0-1.56-.14-3.06-.4-4.5H24v8.51h11.84c-.51 2.75-2.06 5.08-4.39 6.64v5.52h7.11c4.16-3.83 6.56-9.47 6.56-16.17z"/>
+  <path fill="#34A853" d="M24 46c5.94 0 10.92-1.97 14.56-5.33l-7.11-5.52c-1.97 1.32-4.49 2.1-7.45 2.1-5.73 0-10.58-3.87-12.31-9.07H4.34v5.7C7.96 41.07 15.4 46 24 46z"/>
+  <path fill="#FBBC05" d="M11.69 28.18c-.44-1.32-.69-2.73-.69-4.18s.25-2.86.69-4.18v-5.7H4.34A21.99 21.99 0 002 24c0 3.55.85 6.91 2.34 9.88l7.35-5.7z"/>
+  <path fill="#EA4335" d="M24 10.75c3.23 0 6.13 1.11 8.41 3.29l6.31-6.31C34.91 4.18 29.93 2 24 2 15.4 2 7.96 6.93 4.34 14.12l7.35 5.7c1.73-5.2 6.58-9.07 12.31-9.07z"/>
+</svg>
+```
+
+**`github.svg`** —— 官方 octocat mark 单色版（深灰）：
+
+```svg
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" aria-label="GitHub">
+  <path fill="#24292f" fill-rule="evenodd" d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.11.79-.25.79-.56 0-.27-.01-1-.02-1.96-3.2.7-3.87-1.54-3.87-1.54-.52-1.32-1.27-1.67-1.27-1.67-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.18 1.76 1.18 1.02 1.75 2.69 1.24 3.34.95.1-.74.4-1.24.73-1.53-2.55-.29-5.24-1.28-5.24-5.69 0-1.26.45-2.29 1.18-3.1-.12-.29-.51-1.46.11-3.04 0 0 .96-.31 3.16 1.18a10.97 10.97 0 015.75 0c2.2-1.49 3.16-1.18 3.16-1.18.62 1.58.23 2.75.11 3.04.74.81 1.18 1.84 1.18 3.1 0 4.42-2.69 5.39-5.26 5.68.41.36.78 1.06.78 2.13 0 1.54-.01 2.78-.01 3.16 0 .31.21.68.8.56C20.21 21.39 23.5 17.08 23.5 12 23.5 5.65 18.35.5 12 .5z" clip-rule="evenodd"/>
+</svg>
+```
+
+GitHub 黑底版（用户偏好黑色主按钮的话用这个）：把 `fill="#24292f"` 改 `fill="#fff"` + 按钮 `background:#24292f; color:#fff`。**v1.0 默认浅色背景 + 深色 mark**（与 Google 按钮风格一致）。
+
+资产引用通过 `/api/auth/providers` 返回的 `icon` 字段（已在 §5.6 配置 `f"/static/icons/{p.name}.svg"`）。
 
 ### 8.2 `/register` 页（[`templates/register.html`](../../stock_trading_system/web/templates/register.html)）
 
