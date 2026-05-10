@@ -1,3 +1,4 @@
+/// <reference types="vitest" />
 import path from "node:path"
 import { defineConfig } from "vite"
 import react from "@vitejs/plugin-react"
@@ -26,6 +27,14 @@ export default defineConfig({
     strictPort: true,
     cors: true,
     origin: "http://localhost:5173",
+  },
+  test: {
+    globals: true,
+    environment: "jsdom",
+    setupFiles: ["./test/setup.ts"],
+    css: true,
+    include: ["src/**/*.{test,spec}.{ts,tsx}"],
+    exclude: ["e2e/**", "node_modules/**", "../static/dist/**"],
   },
   build: {
     outDir: DIST,
