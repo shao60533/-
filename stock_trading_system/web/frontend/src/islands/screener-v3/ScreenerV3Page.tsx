@@ -67,10 +67,14 @@ export function ScreenerV3Page() {
 }
 
 function ScreenerHomeView({ prefillId }: { prefillId: string | null }) {
+  // v1.3.1 R-MUI-23: ScreenerForm sits ABOVE RecentScreensCard so the
+  // primary "run a new screen" CTA is always above the fold on mobile.
+  // The prefill banner inside <ScreenerForm> moves with it; recent
+  // screens fall to the secondary row below.
   return (
     <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-6">
-      <RecentScreensCard />
       <ScreenerForm prefillTaskId={prefillId} />
+      <RecentScreensCard />
     </div>
   )
 }

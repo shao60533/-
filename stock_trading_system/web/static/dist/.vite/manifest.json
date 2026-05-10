@@ -161,7 +161,7 @@
     ]
   },
   "src/components/analysis/lazy-bundle.tsx": {
-    "file": "assets/lazy-bundle-DoaCYV_H.js",
+    "file": "assets/lazy-bundle-BawXs_fU.js",
     "name": "lazy-bundle",
     "src": "src/components/analysis/lazy-bundle.tsx",
     "isDynamicEntry": true,
@@ -226,7 +226,7 @@
     ]
   },
   "src/islands/analysis/main.tsx": {
-    "file": "assets/analysis-CgONHgix.js",
+    "file": "assets/analysis-Diu-t5Na.js",
     "name": "analysis",
     "src": "src/islands/analysis/main.tsx",
     "isEntry": true,
@@ -274,7 +274,7 @@
     ]
   },
   "src/islands/dashboard/main.tsx": {
-    "file": "assets/dashboard-CqwnmtDa.js",
+    "file": "assets/dashboard-DWkX6Qwq.js",
     "name": "dashboard",
     "src": "src/islands/dashboard/main.tsx",
     "isEntry": true,
@@ -376,7 +376,7 @@
     ]
   },
   "src/islands/screener-v3/main.tsx": {
-    "file": "assets/screener-v3-Cm2k0fPZ.js",
+    "file": "assets/screener-v3-Bk2YVOSd.js",
     "name": "screener-v3",
     "src": "src/islands/screener-v3/main.tsx",
     "isEntry": true,
