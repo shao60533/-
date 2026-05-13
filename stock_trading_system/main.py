@@ -327,13 +327,36 @@ def alert_list():
 @alert.command("remove")
 @click.argument("alert_id", type=int)
 def alert_remove(alert_id):
-    """Remove an alert by ID."""
-    from stock_trading_system.alerts.monitor import AlertMonitor
+    """Remove an alert by ID (admin/operator path — bypasses tenant check)."""
+    from stock_trading_system.portfolio.database import PortfolioDatabase
 
     config = get_config()
-    monitor = AlertMonitor(config)
-    monitor.remove_alert(alert_id)
-    console.print(f"[yellow]Alert {alert_id} removed.[/yellow]")
+    db_path = config.get("portfolio", {}).get("db_path", "data/portfolio.db")
+    db = PortfolioDatabase(db_path)
+    # CLI is admin-only — look up the owner and delete in their name.
+    # (Web/Telegram callers must go through AlertMonitor.remove_alert with
+    # an explicit user_id; the CLI is the operator tool and has no session.)
+    with db._get_conn() as conn:
+        row = conn.execute(
+            "SELECT user_id FROM alerts WHERE id = ?", (alert_id,)
+        ).fetchone()
+    if row is None:
+        console.print(f"[red]Alert {alert_id} not found.[/red]")
+        return
+    owner_uid = row["user_id"]
+    if owner_uid is None:
+        # Legacy single-user row pre-multi-tenant.
+        with db._get_conn() as conn:
+            conn.execute("DELETE FROM alerts WHERE id = ?", (alert_id,))
+        deleted = 1
+    else:
+        deleted = db.remove_alert(alert_id, user_id=owner_uid)
+    if deleted:
+        console.print(
+            f"[yellow]Alert {alert_id} removed (owner_uid={owner_uid}).[/yellow]"
+        )
+    else:
+        console.print(f"[red]Alert {alert_id} could not be removed.[/red]")
 
 
 # ── monitor ──────────────────────────────────────────────────────────────────

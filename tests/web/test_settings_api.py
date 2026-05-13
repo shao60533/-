@@ -19,8 +19,13 @@ import pytest
 
 @pytest.fixture
 def alice(app_client, monkeypatch):
-    """Logged-in alice; we drop the API-key env vars so file persistence is
-    actually exercised — env-var overrides would shadow the YAML write."""
+    """Admin-logged client (fixture name kept for diff brevity).
+
+    /api/settings GET+POST is admin-only as of hardening-iteration-v1 P0.2
+    — previously any logged-in user could rewrite the global config and
+    steal LLM API keys (C3). We drop the API-key env vars so file
+    persistence is actually exercised — env-var overrides would shadow
+    the YAML write."""
     monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
     monkeypatch.delenv("QWEN_API_KEY", raising=False)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
@@ -42,7 +47,7 @@ def alice(app_client, monkeypatch):
     cfg["qwen"]["enabled"] = True
 
     users = app_client["users"]
-    return app_client["make_client"](users.alice_email, users.alice_password)
+    return app_client["make_client"](users.admin_email, users.admin_password)
 
 
 def test_save_then_clear_gemini_key(alice):

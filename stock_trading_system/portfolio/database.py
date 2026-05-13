@@ -329,7 +329,13 @@ class PortfolioDatabase:
         visible to *some* tenant rather than vanishing under the new
         per-user filters.
         """
-        for table in ("positions", "transactions", "daily_snapshots", "alerts"):
+        # hardening-iteration-v1 P0.3: ``alert_history`` joined the
+        # multi-tenant-private set. Pre-fix the p0a_data_partition migration
+        # added the column but ``save_alert_trigger`` never populated it
+        # (C5). The write side now requires user_id; this ALTER makes sure
+        # the column actually exists on fresh DBs too.
+        for table in ("positions", "transactions", "daily_snapshots",
+                      "alerts", "alert_history"):
             cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
             if "user_id" not in cols:
                 try:
@@ -617,31 +623,62 @@ class PortfolioDatabase:
         with self._get_conn() as conn:
             conn.execute("UPDATE alerts SET triggered = 1 WHERE id = ?", (alert_id,))
 
-    def remove_alert(self, alert_id: int):
+    def remove_alert(self, alert_id: int, user_id: int) -> int:
+        """Delete an alert owned by ``user_id``. Returns affected row count
+        (0 if the alert exists but belongs to another user — caller maps to
+        404 to avoid leaking existence).
+
+        Closes C4 (IDOR): pre-fix ``DELETE FROM alerts WHERE id = ?`` let any
+        logged-in user delete any other user's alerts by guessing the id.
+        """
         with self._get_conn() as conn:
-            conn.execute("DELETE FROM alerts WHERE id = ?", (alert_id,))
+            cur = conn.execute(
+                "DELETE FROM alerts WHERE id = ? AND user_id = ?",
+                (alert_id, user_id),
+            )
+            return cur.rowcount
 
     def save_alert_trigger(self, alert_id: int, ticker: str, condition: str,
-                           threshold: float, current_price: float | None = None):
+                           threshold: float, current_price: float | None = None,
+                           user_id: int | None = None):
+        """Append an entry to ``alert_history``. ``user_id`` is now required
+        for the multi-tenant contract (the column was added by
+        ``p0a_data_partition`` but writes were never populating it — leaving
+        the column NULL and making ``/api/alerts/history`` leak across users).
+        """
         from datetime import datetime
         with self._get_conn() as conn:
             conn.execute(
-                """INSERT INTO alert_history (alert_id, ticker, condition, threshold, current_price, triggered_at)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
+                """INSERT INTO alert_history
+                   (alert_id, ticker, condition, threshold, current_price,
+                    triggered_at, user_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (alert_id, ticker, condition, threshold, current_price,
-                 datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+                 datetime.now().strftime("%Y-%m-%d %H:%M:%S"), user_id),
             )
 
-    def get_alert_history(self, ticker: str | None = None, limit: int = 50) -> list[dict]:
+    def get_alert_history(self, user_id: int, ticker: str | None = None,
+                          limit: int = 50) -> list[dict]:
+        """Return alert-trigger history for ``user_id`` only.
+
+        Closes C5: pre-fix this returned every user's trigger rows (the
+        WHERE clause only filtered by ticker). Web callers always pass
+        ``g.user.id``; admin-style global aggregation is intentionally
+        unsupported here — use the validation tooling for cross-user
+        diagnostics.
+        """
         with self._get_conn() as conn:
             if ticker:
                 rows = conn.execute(
-                    "SELECT * FROM alert_history WHERE ticker = ? ORDER BY id DESC LIMIT ?",
-                    (ticker, limit),
+                    "SELECT * FROM alert_history WHERE user_id = ? AND ticker = ? "
+                    "ORDER BY id DESC LIMIT ?",
+                    (user_id, ticker, limit),
                 ).fetchall()
             else:
                 rows = conn.execute(
-                    "SELECT * FROM alert_history ORDER BY id DESC LIMIT ?", (limit,)
+                    "SELECT * FROM alert_history WHERE user_id = ? "
+                    "ORDER BY id DESC LIMIT ?",
+                    (user_id, limit),
                 ).fetchall()
             return [dict(r) for r in rows]
 

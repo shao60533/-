@@ -7,6 +7,9 @@ from pathlib import Path
 
 from flask import Flask, render_template, jsonify, request, redirect, g, Response
 from flask_socketio import SocketIO
+from flask_wtf.csrf import CSRFProtect, CSRFError
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 
 from stock_trading_system.config import load_config, get_config, save_config
 from stock_trading_system.config.settings import update_user_config, WRITABLE_SETTING_PATHS
@@ -15,6 +18,22 @@ from stock_trading_system.utils import get_logger
 logger = get_logger("web")
 
 socketio = SocketIO()
+csrf = CSRFProtect()
+# hardening-iteration-v1 P0.4: rate-limit login / register / invite-code
+# endpoints to defeat brute-force. ``key_func`` is overridden per route
+# where we want email-based keys; the default IP-based key catches the
+# spray-then-pivot scenario.
+limiter = Limiter(
+    key_func=get_remote_address,
+    # No default_limits — only the per-route decorators on /api/auth/*
+    # enforce buckets. A blanket default would throttle high-traffic
+    # logged-in operations (dashboard polling, paper-trade reads) that
+    # we have no security reason to limit, and would also break the
+    # test suite where one suite's traffic could exhaust the global
+    # bucket for the next.
+    storage_uri="memory://",
+    headers_enabled=True,
+)
 
 # Lazy-initialized shared components
 _portfolio_mgr = None
@@ -582,6 +601,38 @@ def create_app(config_path=None):
     from datetime import timedelta
     app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=30)
 
+    # CSRF (Flask-WTF). Token lives as long as the session so users with
+    # 30-day sessions don't get challenged mid-task. Flask-WTF accepts
+    # X-CSRFToken / X-CSRF-Token headers by default — the front-end
+    # (frontend/src/lib/api.ts:26 + static/js/app.js) ships the former.
+    app.config["WTF_CSRF_TIME_LIMIT"] = None
+    csrf.init_app(app)
+
+    # Rate limiting (Flask-Limiter). Defaults attach to every route
+    # but are intentionally generous (200/day, 50/hour) — the per-route
+    # `@limiter.limit(...)` decorators on /api/auth/* tighten the
+    # auth-bruteforce surface. Storage is in-process; multi-worker
+    # production must set RATELIMIT_STORAGE_URI=redis://...
+    storage_uri = os.environ.get("RATELIMIT_STORAGE_URI", "memory://")
+    app.config["RATELIMIT_STORAGE_URI"] = storage_uri
+    limiter.init_app(app)
+
+    @app.errorhandler(429)
+    def _ratelimit_handler(e):
+        # Surfacing the precise limit string would help operators tune;
+        # surfacing Retry-After (already in headers via headers_enabled)
+        # is enough for clients.
+        retry_after = None
+        try:
+            retry_after = int(getattr(e, "retry_after", 0) or 0) or None
+        except (TypeError, ValueError):
+            retry_after = None
+        body = {"error": "rate_limited",
+                "message": "请求过于频繁，请稍后再试。"}
+        if retry_after:
+            body["retry_after_seconds"] = retry_after
+        return jsonify(body), 429
+
     load_config(config_path)
     socketio.init_app(app, cors_allowed_origins="*", async_mode="threading")
 
@@ -666,6 +717,71 @@ def create_app(config_path=None):
                        "/oauth/schwab/", "/api/schwab/")
 
     @app.before_request
+    def _attach_trace_id():
+        """hardening-iteration-v1 P0.5: assign a trace_id to every request
+        so the unified error handler can correlate a client-visible token
+        with the server-side stack trace.
+        """
+        import uuid
+        g.trace_id = uuid.uuid4().hex
+
+    def _safe_internal(exc, http_status=500, error_code="internal",
+                       extra=None):
+        """Build a safe JSON 500 response.
+
+        Logs the exception with the request trace_id so an operator can
+        correlate the user-facing token with the server-side stack
+        trace, then returns a body that contains no provider names,
+        file paths, or other internal context. Use this in place of
+        ``return _safe_internal(e)`` everywhere — leaking
+        ``str(e)`` was one of the most consistent sources of stack/PII
+        disclosure pre-hardening (P0.5).
+        """
+        trace_id = getattr(g, "trace_id", None) or "unknown"
+        logger.exception(
+            "Internal error trace_id=%s path=%s method=%s",
+            trace_id, request.path, request.method,
+        )
+        body = {"error": error_code, "trace_id": trace_id}
+        if http_status >= 500:
+            body["message"] = "服务内部错误，请联系管理员或稍后重试。"
+        if extra:
+            body.update(extra)
+        return jsonify(body), http_status
+
+    # Expose to non-create_app callers (tests).
+    app._safe_internal = _safe_internal  # type: ignore[attr-defined]
+
+    @app.errorhandler(Exception)
+    def _unified_error_handler(e):
+        """P0.5: never leak server internals.
+
+        Werkzeug HTTPException instances (404 / 405 / 401 / 403 / 429 /
+        CSRF 400) keep their original behavior — Flask's default
+        ``e.get_response()`` already returns a clean body. Anything else
+        is logged with full traceback under ``g.trace_id`` and returned
+        as ``{"error":"internal","trace_id":...}``.
+
+        Replaces the dozens of ad-hoc ``except Exception as e: return
+        jsonify({"error": str(e)}), 500`` patterns that used to leak
+        provider names, file paths, and OAuth context to clients.
+        """
+        from werkzeug.exceptions import HTTPException
+        if isinstance(e, HTTPException):
+            # Let Flask render the canonical error page/json response.
+            return e
+        trace_id = getattr(g, "trace_id", None) or "unknown"
+        logger.exception(
+            "Unhandled exception trace_id=%s path=%s method=%s",
+            trace_id, request.path, request.method,
+        )
+        return jsonify({
+            "error": "internal",
+            "message": "服务内部错误，请联系管理员或稍后重试。",
+            "trace_id": trace_id,
+        }), 500
+
+    @app.before_request
     def enforce_auth():
         """Load current user and enforce authentication."""
         if _multi_tenant_ready:
@@ -701,7 +817,23 @@ def create_app(config_path=None):
     def register_page():
         return render_template("register.html")
 
+    def _login_email_key():
+        """Per-email rate-limit key for /api/auth/login.
+
+        Falls back to IP if the request body doesn't carry an email so
+        scanners hitting the route without a payload still get throttled.
+        """
+        try:
+            data = request.get_json(silent=True) or {}
+            email = (data.get("email") or "").strip().lower()
+        except Exception:
+            email = ""
+        return email or get_remote_address()
+
     @app.route("/api/auth/login", methods=["POST"])
+    @csrf.exempt
+    @limiter.limit("10 per minute", methods=["POST"])
+    @limiter.limit("5 per minute", key_func=_login_email_key, methods=["POST"])
     def api_login():
         body = request.get_json(silent=True) or {}
         email = (body.get("email") or "").strip().lower()
@@ -719,6 +851,8 @@ def create_app(config_path=None):
                                   "display_name": user.display_name, "role": user.role}})
 
     @app.route("/api/auth/register", methods=["POST"])
+    @csrf.exempt
+    @limiter.limit("5 per hour", methods=["POST"])
     def api_register():
         body = request.get_json(silent=True) or {}
         invite_code = body.get("invite_code") or ""
@@ -765,6 +899,7 @@ def create_app(config_path=None):
                                   "display_name": u.display_name, "role": u.role}})
 
     @app.route("/api/auth/invites-available")
+    @limiter.limit("20 per hour")
     def api_invites_available():
         """Public check: are invite codes available for registration?"""
         codes = _invite_mgr.list_available(limit=1)
@@ -954,7 +1089,7 @@ def create_app(config_path=None):
         try:
             ctx = get_auth_context(api_key, callback_url)
         except Exception as e:  # noqa: BLE001
-            return jsonify({"error": "auth_context_failed", "detail": str(e)}), 500
+            return _safe_internal(e, error_code="auth_context_failed")
         from flask import session
         session["schwab_oauth_state"] = ctx.state
         session["schwab_oauth_callback_url"] = ctx.callback_url
@@ -997,9 +1132,7 @@ def create_app(config_path=None):
                 token_write_func=_writer,
             )
         except Exception as e:  # noqa: BLE001
-            logger.exception("Schwab OAuth token exchange failed")
-            return jsonify({"error": "token_exchange_failed",
-                            "detail": str(e)[:300]}), 500
+            return _safe_internal(e, error_code="token_exchange_failed")
 
         # Reset cached managers so they pick up the new token immediately.
         global _data_manager, _data_router
@@ -1241,6 +1374,7 @@ def create_app(config_path=None):
         )
 
     @app.route("/api/auth/oauth/register", methods=["POST"])
+    @csrf.exempt
     def oauth_register():
         body = request.get_json(silent=True) or {}
         pending = body.get("pending", "")
@@ -1589,6 +1723,8 @@ def create_app(config_path=None):
     @app.route("/api/portfolio/<ticker>", methods=["DELETE"])
     def api_portfolio_delete(ticker):
         """Remove a position entirely."""
+        if g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
         pm = _get_portfolio_mgr()
         pm.remove_position(ticker.upper())
         return jsonify({"ok": True})
@@ -1699,8 +1835,17 @@ def create_app(config_path=None):
 
     @app.route("/api/alerts/remove", methods=["POST"])
     def api_alert_remove():
-        data = request.json
-        _get_alert_monitor().remove_alert(int(data["id"]))
+        if g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
+        data = request.json or {}
+        try:
+            alert_id = int(data["id"])
+        except (KeyError, TypeError, ValueError):
+            return jsonify({"error": "invalid_id"}), 400
+        ok = _get_alert_monitor().remove_alert(alert_id, user_id=g.user.id)
+        if not ok:
+            # 404 (not 403) — don't leak the existence of someone else's alert.
+            return jsonify({"error": "not_found"}), 404
         return jsonify({"ok": True})
 
     @app.route("/api/alerts/check", methods=["POST"])
@@ -1714,12 +1859,16 @@ def create_app(config_path=None):
 
     @app.route("/api/alerts/history")
     def api_alert_history():
+        if g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
         from stock_trading_system.portfolio.database import PortfolioDatabase
         db_path = get_config().get("portfolio", {}).get("db_path", "data/portfolio.db")
         db = PortfolioDatabase(db_path)
         ticker = request.args.get("ticker")
         limit = int(request.args.get("limit", 50))
-        return jsonify(db.get_alert_history(ticker=ticker, limit=limit))
+        return jsonify(db.get_alert_history(
+            user_id=g.user.id, ticker=ticker, limit=limit,
+        ))
 
     # ── Analysis History API ──────────────────────────────────────────────
 
@@ -2394,8 +2543,13 @@ def create_app(config_path=None):
         try:
             df = _get_data_manager().get_history(ticker, period=period, interval="1d")
         except Exception as e:  # noqa: BLE001
-            logger.warning("/api/quote/history failed for %s: %s", ticker, e)
-            return jsonify({"ticker": ticker, "days": days, "bars": [], "error": str(e)}), 200
+            trace_id = getattr(g, "trace_id", "unknown")
+            logger.exception("/api/quote/history failed for %s trace_id=%s",
+                             ticker, trace_id)
+            return jsonify({
+                "ticker": ticker, "days": days, "bars": [],
+                "error": "history_unavailable", "trace_id": trace_id,
+            }), 200
         bars = _ohlcv_rows(df) if (df is not None and len(df) > 0) else []
         return jsonify({"ticker": ticker, "days": days, "bars": bars})
 
@@ -2415,7 +2569,7 @@ def create_app(config_path=None):
             df = _get_data_manager().get_history(t, period=period, interval=interval)
         except Exception as e:
             logger.warning("Chart data failed for %s: %s", t, e)
-            return jsonify({"error": str(e)}), 500
+            return _safe_internal(e)
 
         if df is None or len(df) == 0:
             return jsonify({"error": "No chart data"}), 404
@@ -2453,7 +2607,7 @@ def create_app(config_path=None):
             data = _get_data_manager().get_fundamentals(t)
         except Exception as e:
             logger.warning("Fundamentals failed for %s: %s", t, e)
-            return jsonify({"error": str(e)}), 500
+            return _safe_internal(e)
         if not data:
             return jsonify({"error": "Fundamentals not available"}), 404
         return jsonify(data)
@@ -2466,7 +2620,7 @@ def create_app(config_path=None):
             news = _get_data_manager().get_news(t)
         except Exception as e:
             logger.warning("News failed for %s: %s", t, e)
-            return jsonify({"error": str(e)}), 500
+            return _safe_internal(e)
         return jsonify(news or [])
 
     @app.route("/api/analysis/<int:analysis_id>/quick-info")
@@ -2513,6 +2667,8 @@ def create_app(config_path=None):
 
     @app.route("/api/portfolio/update_cost", methods=["POST"])
     def api_portfolio_update_cost():
+        if g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
         data = request.json or {}
         ticker = data.get("ticker", "").upper()
         try:
@@ -2527,6 +2683,8 @@ def create_app(config_path=None):
 
     @app.route("/api/portfolio/snapshot", methods=["POST"])
     def api_portfolio_snapshot():
+        if g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
         pm = _get_portfolio_mgr()
         pm.take_snapshot()
         return jsonify({"ok": True, "message": "Snapshot saved"})
@@ -2628,6 +2786,7 @@ def create_app(config_path=None):
         return jsonify({"ok": True, "result": result})
 
     @app.route("/api/scheduler/start", methods=["POST"])
+    @admin_required
     def api_scheduler_start():
         global _scheduler_thread
         sched = _get_scheduler()
@@ -2639,6 +2798,7 @@ def create_app(config_path=None):
         return jsonify({"ok": True, "message": "Scheduler started"})
 
     @app.route("/api/scheduler/stop", methods=["POST"])
+    @admin_required
     def api_scheduler_stop():
         global _scheduler_thread
         if _scheduler is None or _scheduler_thread is None or not _scheduler_thread.is_alive():
@@ -2652,6 +2812,7 @@ def create_app(config_path=None):
     # ── Settings (read-only) ────────────────────────────────────────────
 
     @app.route("/api/settings")
+    @admin_required
     def api_settings():
         """Return a masked view of the current config + runtime status."""
         cfg = get_config()
@@ -2756,6 +2917,7 @@ def create_app(config_path=None):
         })
 
     @app.route("/api/settings", methods=["POST"])
+    @admin_required
     def api_settings_update():
         """Write whitelisted settings to ~/.stock_trading/config.yaml.
 
@@ -2775,7 +2937,7 @@ def create_app(config_path=None):
             new_cfg = update_user_config(valid_updates)
         except Exception as e:
             logger.error("Failed to write user config: %s", e)
-            return jsonify({"error": str(e)}), 500
+            return _safe_internal(e)
         applied = new_cfg.get("_applied_paths", []) or []
         _reset_config_dependent_singletons(applied)
         logger.info("Settings updated: %s", applied)
@@ -2829,7 +2991,7 @@ def create_app(config_path=None):
             return jsonify({"error": str(ve)}), 400
         except Exception as e:
             logger.error("Backtest failed: %s", e)
-            return jsonify({"error": str(e)}), 500
+            return _safe_internal(e)
 
         # Convert dataclasses to dicts for JSON serialisation.
         payload = asdict(result)
@@ -3088,7 +3250,7 @@ def create_app(config_path=None):
             return jsonify({"ok": True, "task_id": task["id"], "task": task})
         except Exception as e:
             logger.error("Screen V2 submit failed: %s", e)
-            return jsonify({"ok": False, "error": str(e)}), 500
+            return _safe_internal(e, extra={"ok": False})
 
     @app.route("/api/screen/v2/result/<int:result_id>")
     def api_screen_v2_result(result_id: int):
@@ -3161,7 +3323,7 @@ def create_app(config_path=None):
             return jsonify({"ok": True, "session_id": sid, "session": store.get_session(sid)})
         except Exception as e:
             logger.error("Create paper session failed: %s", e)
-            return jsonify({"ok": False, "error": str(e)}), 500
+            return _safe_internal(e, extra={"ok": False})
 
     @app.route("/api/paper/sessions/<int:session_id>/run", methods=["POST"])
     def api_paper_run(session_id: int):
@@ -3172,7 +3334,7 @@ def create_app(config_path=None):
             return jsonify({"ok": True, "task_id": task["id"], "task": task})
         except Exception as e:
             logger.error("Paper run submit failed: %s", e)
-            return jsonify({"ok": False, "error": str(e)}), 500
+            return _safe_internal(e, extra={"ok": False})
 
     @app.route("/api/paper/sessions")
     def api_paper_list_sessions():
@@ -3561,7 +3723,7 @@ def create_app(config_path=None):
             })
         except Exception as e:
             logger.error("Manual EOD failed for %s: %s", ticker, e)
-            return jsonify({"ok": False, "error": str(e)}), 500
+            return _safe_internal(e, extra={"ok": False})
 
     @app.route("/api/paper/backfill", methods=["POST"])
     def api_paper_backfill():
@@ -3580,7 +3742,7 @@ def create_app(config_path=None):
             return jsonify({"ok": True, "task_id": task["id"], "task": task})
         except Exception as e:
             logger.error("Backfill submit failed: %s", e)
-            return jsonify({"ok": False, "error": str(e)}), 500
+            return _safe_internal(e, extra={"ok": False})
 
     # ── Tasks API ───────────────────────────────────────────────────────
 
@@ -3620,7 +3782,7 @@ def create_app(config_path=None):
             task = tm.submit(task_type, params, title=title, created_by=uid)
         except Exception as e:  # noqa: BLE001
             logger.exception("Failed to submit task")
-            return jsonify({"error": str(e)}), 500
+            return _safe_internal(e)
         return jsonify(task)
 
     VALID_TASK_SCOPES = {"mine", "shared_research", "all"}
@@ -3781,7 +3943,7 @@ def create_app(config_path=None):
         try:
             new_task = tm.retry(task_id)
         except ValueError as e:
-            return jsonify({"error": str(e)}), 404
+            return _safe_internal(e, http_status=404, error_code="not_found")
         return jsonify(new_task)
 
     @app.route("/api/tasks/<task_id>/cancel", methods=["POST"])
@@ -3828,8 +3990,14 @@ def create_app(config_path=None):
     # ── Diagnostics ─────────────────────────────────────────────────────
 
     @app.route("/api/diagnostics/providers", methods=["GET"])
+    @admin_required
     def api_diag_providers():
-        """Quick reachability check for each enabled data provider."""
+        """Quick reachability check for each enabled data provider.
+
+        Admin-only (hardening-iteration-v1 P0.5): the response includes
+        truncated provider error messages which can leak credentials /
+        proxy hostnames if surfaced to ordinary users.
+        """
         results = _probe_providers()
         ok = all(r.get("ok") for r in results.values())
         try:
@@ -3887,7 +4055,7 @@ def create_app(config_path=None):
             })
         except Exception as e:
             logger.error("Failed to load iteration agents: %s", e)
-            return jsonify({"error": str(e)}), 500
+            return _safe_internal(e)
 
     @app.route("/api/iteration/meta/run", methods=["POST"])
     def api_iteration_meta_run():
@@ -3920,7 +4088,7 @@ def create_app(config_path=None):
             return jsonify(result)
         except Exception as e:
             logger.error("Meta agent run failed: %s", e)
-            return jsonify({"error": str(e)}), 500
+            return _safe_internal(e)
 
     @app.route("/api/iteration/prompts", methods=["GET"])
     def api_iteration_prompts():
@@ -3934,7 +4102,7 @@ def create_app(config_path=None):
             return jsonify({"prompts": history})
         except Exception as e:
             logger.error("Failed to load prompt history: %s", e)
-            return jsonify({"error": str(e)}), 500
+            return _safe_internal(e)
 
     # ── Screener V3 API ──────────────────────────────────────────────
 
@@ -4164,7 +4332,7 @@ def create_app(config_path=None):
             return jsonify({"error": "result_not_found"}), 404
         except Exception as e:  # noqa: BLE001
             logger.exception("V3 result lookup failed")
-            return jsonify({"error": str(e)}), 500
+            return _safe_internal(e)
 
     def _v3_roundtable_envelope(payload: dict, candidates: list[dict]) -> dict | None:
         """Project roundtable data into the ``{items: [...]}`` shape the

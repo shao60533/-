@@ -50,6 +50,21 @@ INVARIANTS = [
 
     ("no_regex_literal_in_plans",
      "SELECT COUNT(*) FROM paper_trade_plans WHERE thesis = 'regex 解析'", 0),
+
+    # hardening-iteration-v1 P0.3 / P1.5: alert_history.user_id was added
+    # by p0a_data_partition but the write side (save_alert_trigger) never
+    # populated it pre-fix (C5). Going forward every new row must carry
+    # the owner so /api/alerts/history can filter and Telegram-bot triggers
+    # are attributable.
+    ("alert_history_have_owner",
+     "SELECT COUNT(*) FROM alert_history WHERE user_id IS NULL", 0),
+
+    # P1.5 also locks down: snapshots that landed via the legacy
+    # post_market_close path used to land with user_id=NULL (C9). The
+    # new per-user scheduler (DailySnapshotScheduler.take_snapshot_all_users)
+    # always supplies a user_id; this invariant guards regressions.
+    ("daily_snapshots_have_owner",
+     "SELECT COUNT(*) FROM daily_snapshots WHERE user_id IS NULL", 0),
 ]
 
 
