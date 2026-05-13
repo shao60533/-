@@ -2,14 +2,14 @@ import { useMemo, useState } from "react"
 import { Plus, Search, Sparkles } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { Chip, ChipRow } from "@/components/ui/chip"
 import {
   BuyDialog, SellDialog, UpdateCostDialog,
   type HoldingTarget,
 } from "@/components/shared/HoldingDialogs"
-import { apiDel } from "@/lib/api"
+import { apiDel, apiPost } from "@/lib/api"
+import { toast } from "@/components/ui/toaster"
 import { cn } from "@/lib/utils"
 
 // Default visible count per mobile-ui-v1.3 §4.2 — show 5 cards by
@@ -106,35 +106,11 @@ export function HoldingsSection({
         </CardContent>
       </Card>
 
-      {/* Product gap note: batch_analysis worker exists but no real
-          mobile entry yet. Don't pretend it's implemented. */}
-      <Card className="border-dashed border-[var(--color-accent-yellow)]/40 bg-[var(--color-accent-yellow)]/5">
-        <CardContent className="pt-4 space-y-2">
-          <div className="flex items-center justify-between gap-2 min-w-0">
-            <strong className="text-sm truncate">建议补齐入口：批量分析持仓</strong>
-            <Badge variant="outline" className="shrink-0 text-[10px]">产品缺口</Badge>
-          </div>
-          <p className="text-xs text-muted-foreground break-words">
-            后端 batch_analysis worker 与任务类型已存在，但真实前端暂无触发按钮。合并后应放在首页持仓明细上方，作为批量复核的主入口。
-          </p>
-          <div className="flex flex-wrap gap-2 pt-1">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => alert("产品缺口：批量分析持仓尚未接入前端入口")}
-            >
-              批量分析持仓
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => (window.location.href = "/tasks")}
-            >
-              查看任务类型
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
+      {/* v1.1: batch_analysis trigger card. Replaces the v1.0 "product
+          gap" placeholder; backend POST /api/batch/analyze enqueues a
+          batch_analysis task that the existing worker pipeline picks
+          up. See docs/design/batch-analyze-holdings.md §14. */}
+      <BatchAnalyzeHoldingsCard holdingsCount={holdings.length} />
 
       {/* Holding cards — default to first 5; "全部 N" reveals the rest.
           Each card carries 看分析 + 卖出 / 修正成本 / 移除. */}
@@ -255,5 +231,115 @@ function HoldingCard({
         </Button>
       </div>
     </article>
+  )
+}
+
+
+/* ── BatchAnalyzeHoldingsCard ─────────────────────────────────────
+ *
+ * v1.1 entry surface for the batch_analysis task. Sits above the
+ * holding cards in HoldingsSection. POSTs /api/batch/analyze with
+ * skip_recent_hours=4 (skip ticker already analysed in the last
+ * 4h to avoid duplicate work).
+ *
+ * The button is disabled when holdingsCount === 0 so the user
+ * never enqueues an empty batch. Server still preflights this case
+ * (returns 400 reason="no_holdings") in case the holdings count
+ * went stale between mount and click.
+ *
+ * The confirm dialog surfaces the cost upfront ("5-30 分钟") so
+ * users don't accidentally fire a heavy batch on a phone. The
+ * success toast deep-links to /tasks?focus=<task_id> so they can
+ * follow progress without hunting in the task center.
+ *
+ * Exported for the v1.1 vitest suite — production consumer is the
+ * adjacent <HoldingsSection> only.
+ */
+export function BatchAnalyzeHoldingsCard({
+  holdingsCount,
+}: {
+  holdingsCount: number
+}) {
+  const [busy, setBusy] = useState(false)
+  const disabled = holdingsCount === 0 || busy
+
+  async function onSubmit() {
+    if (disabled) return
+    if (!window.confirm(
+      `确认批量分析当前 ${holdingsCount} 只持仓?\n\n`
+      + "跳过最近 4 小时已分析的 ticker,逐只顺序执行,预计耗时 5-30 分钟。\n"
+      + "可在任务中心查看进度。",
+    )) return
+
+    setBusy(true)
+    try {
+      const res = await apiPost<{
+        task_id: string
+        total_holdings: number
+        status: string
+      }>("/api/batch/analyze", { skip_recent_hours: 4 })
+      toast.success(`已提交批量分析任务（${res.total_holdings} 只持仓）`, {
+        action: {
+          label: "查看任务",
+          onClick: () => {
+            window.location.href = `/tasks?focus=${res.task_id}`
+          },
+        },
+      })
+    } catch (caught) {
+      const e = caught as { body?: { reason?: string } } | null
+      if (e?.body?.reason === "no_holdings") {
+        toast.error("暂无持仓,请先添加持仓")
+      } else {
+        toast.error("提交失败,请稍后重试")
+      }
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const btnLabel = busy
+    ? "提交中..."
+    : holdingsCount === 0
+      ? "暂无持仓"
+      : `批量分析持仓 (${holdingsCount})`
+
+  return (
+    <Card className="border-[var(--color-accent-yellow)]/40 bg-[var(--color-accent-yellow)]/5">
+      <CardContent className="pt-4 space-y-2">
+        <div className="flex items-center justify-between gap-2 min-w-0">
+          <strong className="text-sm truncate flex items-center gap-1.5">
+            <Sparkles className="h-3.5 w-3.5 text-[var(--color-accent-yellow)]" />
+            批量分析持仓
+          </strong>
+          <span className="text-[10px] text-muted-foreground shrink-0">
+            batch_analysis
+          </span>
+        </div>
+        <p className="text-xs text-muted-foreground break-words">
+          一键复核所有持仓的最新 AI 观点。跳过最近 4 小时已分析的 ticker,逐只顺序执行,预计耗时 5-30 分钟。
+        </p>
+        <div className="flex flex-wrap gap-2 pt-1">
+          <Button
+            variant="default"
+            size="sm"
+            onClick={onSubmit}
+            disabled={disabled}
+            data-batch-analyze-trigger
+          >
+            {btnLabel}
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              window.location.href = "/tasks?type=batch_analysis"
+            }}
+          >
+            查看历史批次
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
   )
 }

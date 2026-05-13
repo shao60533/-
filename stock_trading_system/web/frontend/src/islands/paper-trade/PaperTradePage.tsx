@@ -450,35 +450,121 @@ function DailyDataTab({ ticker, dailies, hasActivePlan, onRefresh }: {
     }
     if (areaStart) markAreas.push([{ xAxis: areaStart }, { xAxis: dailies[dailies.length - 1].date }])
 
+    // 2026-05-14 visual revamp — palette aligned with the dashboard:
+    // equity line stays the dominant visual (sky-400, restrained
+    // gradient fill); drawdown bars sit in a smaller secondary grid
+    // at lower opacity so they read as context, not foreground.
+    // Tooltip integer-rounds money so a 7-decimal float can't leak.
+    const EQ_LINE = "#60A5FA"
+    const EQ_AREA_TOP = "rgba(96,165,250,0.22)"
+    const EQ_AREA_BOTTOM = "rgba(96,165,250,0.02)"
+    const DRAWDOWN_AREA = "rgba(248,113,113,0.08)"
+    const DRAWDOWN_BAR = "rgba(248,113,113,0.55)"
+    const GRID_LINE = "rgba(148,163,184,0.12)"
+    const AXIS_LINE = "rgba(148,163,184,0.20)"
+    const AXIS_LABEL = "#94A3B8"
+    const TOOLTIP_BG = "rgba(15,23,42,0.94)"
+    const TOOLTIP_BORDER = "rgba(148,163,184,0.20)"
+    const TOOLTIP_TEXT = "#E2E8F0"
+    const fmtMoney0 = (v: number) =>
+      `$${Math.round(v).toLocaleString("en-US")}`
+
     return {
       backgroundColor: "transparent",
-      tooltip: { trigger: "axis" },
+      tooltip: {
+        trigger: "axis",
+        backgroundColor: TOOLTIP_BG,
+        borderColor: TOOLTIP_BORDER,
+        borderWidth: 1,
+        textStyle: { color: TOOLTIP_TEXT, fontSize: 12 },
+        padding: [8, 10],
+        formatter: (params: unknown) => {
+          const arr = Array.isArray(params) ? params : [params]
+          const head = (arr[0] as { axisValueLabel?: string; name?: string })
+          const date = head?.axisValueLabel ?? head?.name ?? ""
+          const lines = arr.map((p) => {
+            const it = p as { marker?: string; seriesName?: string; value?: unknown }
+            const isPct = it.seriesName === "回撤%"
+            const v = typeof it.value === "number"
+              ? (isPct ? `${it.value.toFixed(2)}%` : fmtMoney0(it.value))
+              : String(it.value ?? "")
+            return `${it.marker ?? ""}${it.seriesName ?? ""}: <b>${v}</b>`
+          })
+          return [date, ...lines].join("<br/>")
+        },
+      },
       grid: [
         { left: gridLeft, right: gridRight, top: 30, height: "55%" },
         { left: gridLeft, right: gridRight, top: "75%", height: "18%" },
       ],
       xAxis: [
-        { type: "category", data: dates, gridIndex: 0, axisLine: { lineStyle: { color: "#444" } } },
-        { type: "category", data: dates, gridIndex: 1, axisLine: { lineStyle: { color: "#444" } } },
+        {
+          type: "category", data: dates, gridIndex: 0,
+          axisLine: { lineStyle: { color: AXIS_LINE } },
+          axisLabel: { color: AXIS_LABEL, fontSize: 11 },
+          axisTick: { lineStyle: { color: AXIS_LINE } },
+        },
+        {
+          type: "category", data: dates, gridIndex: 1,
+          axisLine: { lineStyle: { color: AXIS_LINE } },
+          axisLabel: { color: AXIS_LABEL, fontSize: 11 },
+          axisTick: { lineStyle: { color: AXIS_LINE } },
+        },
       ],
       yAxis: [
-        { type: "value", gridIndex: 0, axisLabel: { formatter: (v: number) => `$${(v/1000).toFixed(0)}k` }, splitLine: { lineStyle: { color: "#222" } } },
-        { type: "value", gridIndex: 1, axisLabel: { formatter: (v: number) => `${v.toFixed(0)}%` }, splitLine: { lineStyle: { color: "#222" } } },
+        {
+          type: "value", gridIndex: 0,
+          axisLine: { show: false },
+          axisLabel: {
+            color: AXIS_LABEL, fontSize: 11,
+            formatter: (v: number) => `$${(v/1000).toFixed(0)}k`,
+          },
+          axisTick: { show: false },
+          splitLine: { lineStyle: { color: GRID_LINE } },
+        },
+        {
+          type: "value", gridIndex: 1,
+          axisLine: { show: false },
+          axisLabel: {
+            color: AXIS_LABEL, fontSize: 11,
+            formatter: (v: number) => `${v.toFixed(0)}%`,
+          },
+          axisTick: { show: false },
+          splitLine: { lineStyle: { color: GRID_LINE } },
+        },
       ],
       series: [
         {
           name: "权益", type: "line", data: values, smooth: true,
-          lineStyle: { color: "#3882ff", width: 2 },
-          areaStyle: { color: { type: "linear", x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: "rgba(56,130,255,0.25)" }, { offset: 1, color: "rgba(56,130,255,0)" }] } },
+          showSymbol: false,
+          symbolSize: isMobile ? 4 : 5,
+          lineStyle: { color: EQ_LINE, width: 2 },
+          itemStyle: { color: EQ_LINE },
+          areaStyle: {
+            color: {
+              type: "linear", x: 0, y: 0, x2: 0, y2: 1,
+              colorStops: [
+                { offset: 0, color: EQ_AREA_TOP },
+                { offset: 1, color: EQ_AREA_BOTTOM },
+              ],
+            },
+          },
           markArea: markAreas.length > 0 ? {
             silent: true,
-            itemStyle: { color: "rgba(255,56,96,0.08)" },
+            itemStyle: { color: DRAWDOWN_AREA },
             data: markAreas as any,
           } : undefined,
+          z: 3,
         },
         {
-          name: "回撤%", type: "bar", data: drawdowns, xAxisIndex: 1, yAxisIndex: 1,
-          itemStyle: { color: "#ff3860" },
+          name: "回撤%", type: "bar",
+          data: drawdowns, xAxisIndex: 1, yAxisIndex: 1,
+          barMaxWidth: isMobile ? 4 : 6,
+          itemStyle: {
+            color: DRAWDOWN_BAR,
+            borderRadius: [0, 0, 2, 2],
+          },
+          z: 1,
         },
       ],
     }
@@ -526,9 +612,12 @@ function DailyDataTab({ ticker, dailies, hasActivePlan, onRefresh }: {
         <CardHeader><CardTitle className="text-sm">权益曲线</CardTitle></CardHeader>
         <CardContent>
           <div className="mobile-chart-panel" data-chart-host>
+            {/* 2026-05-14 chart revamp: mobile 320 / desktop 360 so
+                the equity line gets enough vertical room to read as
+                the primary metric. */}
             <ChartPanel
               option={chartOption}
-              height={isMobile ? 280 : 360}
+              height={isMobile ? 320 : 360}
               loading={dailies.length === 0}
             />
           </div>

@@ -1653,6 +1653,62 @@ def create_app(config_path=None):
         )
         return jsonify({"task_id": task["id"], "status": "queued"})
 
+    @app.route("/api/batch/analyze", methods=["POST"])
+    def api_batch_analyze():
+        """Submit a batch_analysis task for all current user holdings.
+
+        Body (all optional):
+            skip_recent_hours: int = 4   # 跳过最近 N 小时已分析的 ticker
+            date: str = today            # YYYY-MM-DD
+
+        Returns:
+            200 {task_id, status:"queued", total_holdings}
+            400 {reason:"no_holdings", message} 当用户当前无持仓
+            401 当未登录
+
+        Worker pipeline (workers.py::make_batch_analysis_worker) is
+        untouched; this route is purely the entry surface and the
+        per-user holdings preflight so we don't pollute the task
+        center with empty batches.
+        """
+        if g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
+
+        data = request.get_json(silent=True) or {}
+        skip_hours = int(data.get("skip_recent_hours", 4))
+        from stock_trading_system.utils.helpers import today_str
+        date = data.get("date") or today_str()
+
+        # Preflight: refuse empty-holdings submissions. PortfolioManager
+        # is multi-tenant aware — passing user_id makes the row scope
+        # explicit so a future change to the auto-resolve helper doesn't
+        # silently leak someone else's holdings into the count.
+        pm = _get_portfolio_mgr()
+        holdings = pm.get_holdings(user_id=g.user.id)
+        tickers = [h["ticker"] for h in holdings if h.get("shares", 0) > 0]
+        if not tickers:
+            return jsonify({
+                "reason": "no_holdings",
+                "message": "暂无持仓,请先添加持仓",
+            }), 400
+
+        tm = _get_task_manager()
+        task = tm.submit(
+            task_type="batch_analysis",
+            params={
+                "skip_recent_hours": skip_hours,
+                "date": date,
+                "__user_id__": g.user.id,
+            },
+            title=f"批量分析持仓 · {len(tickers)} 只",
+            created_by=g.user.id,
+        )
+        return jsonify({
+            "task_id": task["id"],
+            "status": "queued",
+            "total_holdings": len(tickers),
+        })
+
     # ── Screener API ────────────────────────────────────────────────────
 
     @app.route("/api/screen", methods=["POST"])
