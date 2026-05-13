@@ -639,14 +639,53 @@ def create_app(config_path=None):
                 e,
             )
         else:
-            def _snapshot_all_users():
-                return take_snapshot_all_users(
+            def _daily_pipeline():
+                """Run portfolio snapshot, then paper-trade EOD.
+
+                Returns a combined ``{portfolio, paper_trade}`` shape so
+                ``/api/scheduler/run-now`` echoes both halves in one
+                response. Errors on the paper-trade leg never kill the
+                portfolio snapshot — they're captured by
+                :func:`run_paper_trade_eod_all` per session.
+                """
+                portfolio_result = take_snapshot_all_users(
                     _user_repo,
                     portfolio_manager_factory=lambda _uid: _get_portfolio_mgr(),
                 )
+                # Paper-trade leg: hits every running ticker session
+                # under the same primary-lock contract. DailyUpdater is
+                # lazy-loaded inside run_paper_trade_eod_all to keep
+                # boot light when no paper-trade sessions exist.
+                from stock_trading_system.strategy.paper_trader import (
+                    run_paper_trade_eod_all,
+                )
+                try:
+                    paper_summary = run_paper_trade_eod_all(
+                        get_config(),
+                        store=_get_paper_store(),
+                    )
+                    paper_payload = paper_summary.to_dict()
+                except Exception as e:  # pragma: no cover — defence
+                    logger.exception(
+                        "[scheduler] paper-trade EOD leg failed: %s", e,
+                    )
+                    paper_payload = {
+                        "ran_at": None,
+                        "total_sessions": 0,
+                        "updated_sessions": 0,
+                        "new_rows": 0,
+                        "latest_date": None,
+                        "errors": [{"error": f"{type(e).__name__}: {e}"}],
+                        "per_session": [],
+                        "user_id": None,
+                    }
+                return {
+                    "portfolio": portfolio_result,
+                    "paper_trade": paper_payload,
+                }
 
             DailySnapshotScheduler.reset()
-            scheduler = DailySnapshotScheduler.get(_snapshot_all_users)
+            scheduler = DailySnapshotScheduler.get(_daily_pipeline)
             scheduler.start_if_primary()
 
     # Public paths that don't require authentication
@@ -2663,6 +2702,22 @@ def create_app(config_path=None):
         else:
             apsched_payload = ap.status()
         uid = g.user.id if g.user else None
+        # Paper-trade auto-EOD status — separate from portfolio snapshot
+        # so an operator can tell which leg is stale.
+        paper_trade_payload: dict
+        try:
+            from stock_trading_system.strategy.paper_trader import (
+                paper_trade_status_snapshot,
+            )
+            paper_trade_payload = paper_trade_status_snapshot(_get_paper_store())
+        except Exception as e:  # pragma: no cover — defensive
+            paper_trade_payload = {
+                "total_ticker_sessions": 0,
+                "stale_sessions_count": 0,
+                "latest_eod_date": None,
+                "last_run": None,
+                "error": f"{type(e).__name__}: {e}",
+            }
         return jsonify({
             **legacy,
             "running": bool(legacy["running"] or apsched_payload.get("running")),
@@ -2671,12 +2726,21 @@ def create_app(config_path=None):
             "pid": apsched_payload.get("pid"),
             "last_run": _last_snapshot_at(uid),
             "legacy": legacy,
+            "paper_trade": paper_trade_payload,
         })
 
     @app.route("/api/scheduler/run-now", methods=["POST"])
     @admin_required
     def api_scheduler_run_now():
-        """Fire the daily-snapshot job immediately (admin-only)."""
+        """Fire the daily-snapshot pipeline immediately (admin-only).
+
+        Returns a combined ``{portfolio, paper_trade}`` envelope under
+        ``result`` so the response covers both legs in one round-trip.
+        The legacy single-payload shape (portfolio result inline at
+        ``result``) is preserved as a fallback when the boot-time
+        closure didn't wire paper-trade — older deployments will still
+        see their portfolio result here.
+        """
         ap = _daily_snapshot_scheduler()
         if ap is None:
             return jsonify({"ok": False, "error": "scheduler not initialized"}), 503
@@ -3596,28 +3660,53 @@ def create_app(config_path=None):
 
     @app.route("/api/paper/tickers/<ticker>/eod", methods=["POST"])
     def api_paper_ticker_eod(ticker: str):
-        # paper-trade v1.5: require login + scope to current user. Without
-        # user_id, find_session_by_ticker may return another user's older
-        # session for the same ticker → manual EOD updates the wrong row
-        # and the calling user's detail page stays empty.
+        """Manual EOD refresh for one (user, ticker) — all sibling sessions.
+
+        paper-trade v1.5 used to call ``find_session_by_ticker`` and run
+        DailyUpdater against a single session. Legacy duplicate sessions
+        for the same (user, ticker) — created before the
+        ``(ticker, user_id)`` UNIQUE index landed — were left with stale
+        ``last_eod_date``, so the detail page (which aggregates sibling
+        ids via ``aggregate_ticker_session_ids``) showed gaps. We now
+        run the unified :func:`run_paper_trade_eod_for_ticker` which
+        iterates every sibling under the same user_id scope, so all
+        rows the detail page can ever read get the same update window.
+
+        Cross-user isolation is preserved by the explicit
+        ``user_id=g.user.id`` scope passed into the runner.
+        """
         if g.user is None:
             return jsonify({"ok": False, "error": "unauthorized"}), 401
         store = _get_paper_store()
-        sess = store.find_session_by_ticker(ticker.upper(), user_id=g.user.id)
-        if not sess:
+        from stock_trading_system.strategy.paper_trader import (
+            run_paper_trade_eod_for_ticker,
+        )
+        # Aggregate sibling ids first — empty list = no session at all
+        # (or all belong to a different user). Return 404 to match the
+        # pre-fix shape so existing UI error handlers still work.
+        sibling_ids = store.aggregate_ticker_session_ids(
+            ticker.upper(), user_id=int(g.user.id),
+        )
+        if not sibling_ids:
             return jsonify({"ok": False, "error": "Not found"}), 404
         try:
-            from stock_trading_system.strategy.paper_trader import DailyUpdater
-            updater = DailyUpdater(get_config(), store)
-            rows = updater.update_session(int(sess["id"]))
-            return jsonify({
-                "ok": True,
-                "new_rows": len(rows),
-                "session_id": int(sess["id"]),
-            })
+            summary = run_paper_trade_eod_for_ticker(
+                get_config(), store=store,
+                ticker=ticker.upper(), user_id=int(g.user.id),
+            )
         except Exception as e:
             logger.error("Manual EOD failed for %s: %s", ticker, e)
             return jsonify({"ok": False, "error": str(e)}), 500
+        return jsonify({
+            "ok": True,
+            "new_rows": summary.new_rows,
+            "session_id": int(sibling_ids[0]),   # primary id (legacy field)
+            "session_ids": [int(s) for s in sibling_ids],
+            "updated_sessions": summary.updated_sessions,
+            "latest_date": summary.latest_date,
+            "per_session": summary.per_session,
+            "errors": summary.errors,
+        })
 
     @app.route("/api/paper/backfill", methods=["POST"])
     def api_paper_backfill():
