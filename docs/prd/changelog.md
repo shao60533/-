@@ -2,6 +2,7 @@
 
 | 日期 | 版本 | 变更内容 | 关联文件 | 关联 Commit |
 |------|------|---------|---------|-------------|
+| 2026-05-15 | v1.0 | 新手引导（Onboarding）：注册后首次自动触发欢迎 modal + Driver.js 6 步 Tour + 常驻 4 项 Checklist（持仓/AI 分析/选股/纸面，与底 4 tab 1-1 对应）+ 4 处空状态 CTA + LLMSwitcher 首次点击 inline hint + 设置页"重新观看引导"入口；新表 `user_onboarding`（welcome_pending/welcomed/tour_completed/checklist_dismissed/steps_completed JSONB）+ 4 API 端点（GET state / POST mark-welcomed / POST dismiss-checklist / POST reset，**无** complete-step 公开端点防伪造）+ 4 个任务完成钩子复用现有 portfolio.buy/analysis worker/screen_v3 worker/paper plan save handler 调 fail-soft `_mark_onboarding_step` helper；**仅移动端**（用户 2026-05-15 决策不做桌面变体），所有引导组件 `md:hidden` 隔离桌面 0 视觉变化；新增依赖 `driver.js@^1.3`（~5KB gzipped，npm 本地依赖不走 CDN 保国内访问）；移动端首屏增量 ≤8KB JS；风险提示文案"输出非投资建议、纸面交易不触发真实下单"集中在 WelcomeModal 一处常量；约 9h 实装 ~1020 LOC 纯前端 + 后端薄表 + 4 端点。 | [onboarding.md](onboarding.md) | — |
 | 2026-04-12 | v2.0 | 初版 PRD，定义 9 大页面功能、P0/P1/P2 需求矩阵、后端 API 规格、成功指标 | [v2.0-stock-trading-system.md](v2.0-stock-trading-system.md) | — |
 | 2026-04-18 | v1.0 | 全局模型切换（Qwen ↔ Gemini）：推理层一键切换 + Nav 下拉 UI + env 锁定态 + 目标 key 校验 | [model-switch.md](model-switch.md) | — |
 | 2026-04-19 | v1.0 | 多租户：邀请码注册 + 邮箱密码登录 + 私有（持仓/预警/纸面）vs 共享（分析/选股/回测）数据分区 + admin 首启自动迁移 + 用户级 model-switch + 任务中心我的/全部双 tab | [multi-tenant.md](multi-tenant.md) | — |

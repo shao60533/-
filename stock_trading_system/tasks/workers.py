@@ -845,15 +845,57 @@ def make_batch_analysis_worker(deps):
                 progress_cb(batch_pct, f"{ticker}: {step or ''}")
 
             try:
-                result = analysis_worker_fn(
-                    {"ticker": ticker, "date": date, "__task_id__": task_id},
-                    sub_progress,
-                )
+                # Forward the parent user_id so the per-user advice hook
+                # knows whose holdings snapshot to take when we save the
+                # child row. Without it, advice would land NULL on every
+                # batch ticker — breaking paper-trade and the detail page.
+                sub_params = {
+                    "ticker": ticker,
+                    "date": date,
+                    "__task_id__": task_id,
+                    "__user_id__": params.get("__user_id__"),
+                }
+                result = analysis_worker_fn(sub_params, sub_progress)
                 advice = result.get("advice") or {}
+
+                # v1.1 fix: persist this child as a first-class
+                # analysis_history row + run the post-save hook so it
+                # appears in /api/history and powers paper-trade /
+                # agent-score side effects exactly like /api/analyze.
+                # Best-effort: failure here logs but keeps the batch
+                # going (the analysis itself succeeded; only the
+                # bookkeeping step failed).
+                analysis_id = None
+                tm = getattr(deps, "task_manager", None)
+                if tm is not None:
+                    try:
+                        analysis_id = tm.record_child_analysis(
+                            parent_task_id=task_id,
+                            ticker=ticker,
+                            index=skipped + i,
+                            result=result,
+                        )
+                    except Exception as save_err:  # noqa: BLE001
+                        logger.warning(
+                            "record_child_analysis failed for %s "
+                            "(parent=%s): %s",
+                            ticker, task_id, save_err,
+                        )
+                else:
+                    # No task_manager on deps — happens only in tests
+                    # that build deps by hand. The analysis still
+                    # succeeded; just no row is written. Surface it
+                    # so the test harness can detect the gap.
+                    logger.debug(
+                        "batch: deps.task_manager is None — "
+                        "skipping child analysis_history save for %s",
+                        ticker,
+                    )
+
                 item = {
                     "ticker": ticker,
                     "status": "success",
-                    "analysis_id": result.get("analysis_id"),
+                    "analysis_id": analysis_id,
                     "signal": result.get("signal"),
                     "confidence": advice.get("confidence"),
                     "advice_action": advice.get("action"),
@@ -928,7 +970,13 @@ def echo_worker(params: dict, progress_cb: ProgressCb) -> dict:
 
 
 class WorkerDeps:
-    """Container for lazy dependency getters."""
+    """Container for lazy dependency getters.
+
+    ``task_manager`` is set by :func:`register_default_workers` immediately
+    after registration so workers that need to recurse into the manager
+    (currently only batch_analysis, which records child analysis_history
+    rows) can reach it without an import cycle. Other workers ignore it.
+    """
 
     def __init__(
         self,
@@ -947,6 +995,10 @@ class WorkerDeps:
         self.get_portfolio = get_portfolio
         self.get_router = get_router
         self.socketio = socketio
+        # Late-bound by register_default_workers (avoids a chicken-and-egg
+        # at construction time — the TaskManager is built around this
+        # very deps object).
+        self.task_manager: Any | None = None
 
 
 def make_rendering_backfill_worker(get_analyzer):
@@ -1138,6 +1190,12 @@ def register_default_workers(tm, deps: WorkerDeps) -> None:
     Skips workers with missing deps rather than raising — makes it
     easy to stand up a test environment with only some deps wired.
     """
+    # Expose the TaskManager on the deps so the batch_analysis worker can
+    # call back into record_child_analysis() once per successful ticker.
+    # Done before register() so the closure inside make_batch_analysis_worker
+    # captures a fully-populated deps.
+    deps.task_manager = tm
+
     tm.register("echo", echo_worker)
 
     if deps.get_analyzer and deps.get_strategy_engine and deps.get_portfolio \
