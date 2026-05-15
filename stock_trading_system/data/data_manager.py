@@ -21,7 +21,10 @@ logger = get_logger("data.manager")
 class DataManager:
     """Unified data manager with automatic market routing and failover."""
 
-    # Consecutive failure threshold — skip provider after N failures
+    # Consecutive failure threshold — skip provider for the rest of this
+    # process lifetime after N consecutive failures. Hard cap at 1 so the
+    # very first network timeout removes a provider from the rotation
+    # (we can't afford a 30s timeout on every dashboard refresh).
     _SKIP_THRESHOLD = 1
 
     def __init__(self, config: dict, cache=None):
@@ -44,12 +47,19 @@ class DataManager:
         self._yfinance = YFinanceProvider()
         self._qwen = QwenProvider(config)
         self._schwab = SchwabProvider(config)
-        # Track consecutive failures per provider to skip broken ones.
-        # IB starts skipped (event loop issue in thread pools).
-        # Polygon starts skipped (free tier 429 rate limit makes it
-        # unusable for concurrent batch lookups like get_holdings).
-        # Schwab starts at 0 — only auto-skips on real failures.
-        self._fail_count = {"ib": 1, "polygon": 1, "schwab": 0}
+        # hardening-iteration-v1 P3.3: fail-count starts at 0 for every
+        # provider. Pre-fix the dict was ``{"ib": 1, "polygon": 1, ...}``,
+        # which combined with ``_SKIP_THRESHOLD = 1`` meant IB and Polygon
+        # were marked skipped from boot regardless of the master switch
+        # — dead-code state that hid behind the cron-time master-switch
+        # gating. The real "this provider is disabled" signal is the
+        # config-level master switch (``providers.<name>_enabled``) +
+        # the provider-specific ``.enabled`` toggle; the counter just
+        # records runtime failures and lets us back off after a real
+        # incident. Polygon's free-tier 429 race that motivated the
+        # pre-emptive skip is now properly fixed by the threading.Lock
+        # added in P2.7.
+        self._fail_count = {"ib": 0, "polygon": 0, "schwab": 0}
 
     def _is_skipped(self, provider: str) -> bool:
         return self._fail_count.get(provider, 0) >= self._SKIP_THRESHOLD

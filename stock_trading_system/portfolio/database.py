@@ -380,53 +380,16 @@ class PortfolioDatabase:
                     logger.warning("backfill %s.user_id failed: %s", table, e)
 
     def _migrate_analysis_history(self, conn: sqlite3.Connection):
-        """Idempotently add structured columns to pre-existing analysis_history."""
-        cols = {r["name"] for r in conn.execute("PRAGMA table_info(analysis_history)").fetchall()}
-        additions = [
-            ("action", "TEXT"),
-            ("confidence", "TEXT"),
-            ("position_pct", "REAL"),
-            ("entry_low", "REAL"),
-            ("entry_high", "REAL"),
-            ("stop_loss", "REAL"),
-            ("take_profit", "REAL"),
-            ("model", "TEXT"),
-            ("steps_json", "TEXT"),
-            # v1.14 provenance columns. ALTER TABLE ADD COLUMN is idempotent
-            # — pre-existing rows get NULL, fine for a shared library that
-            # didn't capture this metadata before.
-            ("created_by", "INTEGER"),
-            ("provider", "TEXT"),
-            ("config_hash", "TEXT"),
-            ("task_id", "TEXT"),
-            ("duration_sec", "REAL"),
-            ("bookmarked", "INTEGER DEFAULT 0"),
-            # v1.16: depth (quick/standard/deep) — UX hint surfaced on
-            # the detail page. Old rows with NULL get treated as
-            # 'standard' by the API DTO via _normalize_depth.
-            ("depth", "TEXT DEFAULT 'standard'"),
-            # v1.19: per-tab structured cards extracted from the analyzer
-            # reports. JSON blob shaped like
-            # ``{"summary": {...} | None, "Market": {...} | None, ...}``.
-            # Empty string when extraction was skipped (e.g. quick depth or
-            # extractor failure); the DTO parses it into a dict and the
-            # frontend falls back to markdown when a key is missing or null.
-            ("rendering_json", "TEXT"),
-            # v1.7 — structured-summary state machine (see CREATE TABLE
-            # above). New columns; older DBs get migrated lazily via
-            # this list. Default ``rendering_status='pending'`` makes
-            # legacy rows readable as "structured summary not yet
-            # generated" so the backfill task can pick them up.
-            ("rendering_status", "TEXT DEFAULT 'pending'"),
-            ("rendering_error", "TEXT"),
-            ("rendering_generated_at", "TEXT"),
-        ]
-        for name, typ in additions:
-            if name not in cols:
-                try:
-                    conn.execute(f"ALTER TABLE analysis_history ADD COLUMN {name} {typ}")
-                except sqlite3.OperationalError as e:
-                    logger.warning("Migration for column %s failed: %s", name, e)
+        """Idempotently add structured columns to pre-existing analysis_history.
+
+        hardening-iteration-v1 P3.5: schema and ALTER list now live in
+        ``_schema_analysis_history.py`` so this method and
+        ``TaskStore._ensure_analysis_history_table`` cannot drift.
+        """
+        from stock_trading_system.portfolio._schema_analysis_history import (
+            ensure_analysis_history,
+        )
+        ensure_analysis_history(conn)
 
         # v1.16 SECURITY MIGRATION: pre-v1.14 rows had per-user advice
         # baked into the shared row's advice_json + structured columns.
