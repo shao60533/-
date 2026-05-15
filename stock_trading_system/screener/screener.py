@@ -1,8 +1,26 @@
-"""Layer 3: AI-powered stock screener - orchestrates 3-layer screening.
+"""Layer 3: AI-powered stock screener - orchestrates 3-layer screening — DEPRECATED.
+
+hardening-iteration-v1 P3.1 [H12] — this is the legacy v1 screener.
+Replaced by ``stock_trading_system.screener.v3.pipeline.ScreenerV3Pipeline``
+(14 guru agents, roundtable consensus, integrated cache, async). Three
+call sites still bind to this module:
+
+    web/app.py:72          (used to be ``/api/screen``)
+    alerts/telegram_bot.py (``/screen`` Telegram command)
+    main.py CLI            (``stock screen``)
+
+A v3 ``screen_sync(market, strategy)`` wrapper that mirrors the v1 dict
+shape is the migration target; once that's in place, the three sites
+flip and this module deletes. Until then the DeprecationWarning below
+makes the legacy path visible to anyone re-importing.
+
+Original notes — kept for diff context:
 
 US: IB Scanner -> finviz fundamentals -> Gemini AI evaluation
 CN: AkShare screening -> Gemini AI evaluation
 """
+
+import warnings
 
 from stock_trading_system.screener.criteria import ScreenCriteria, STRATEGIES
 from stock_trading_system.screener.ib_scanner import IBScanner
@@ -14,6 +32,16 @@ from stock_trading_system.utils import get_logger
 from stock_trading_system.utils.helpers import today_str
 
 logger = get_logger("screener")
+
+warnings.warn(
+    "stock_trading_system.screener.screener (v1 StockScreener) is "
+    "deprecated — use stock_trading_system.screener.v3 pipeline. "
+    "Scheduled for deletion after the v3 sync-wrapper PR retires "
+    "the three remaining call sites (web/app.py, telegram_bot.py, "
+    "main.py CLI). See hardening-iteration-v1 P3.1 / H12.",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 
 class StockScreener:
