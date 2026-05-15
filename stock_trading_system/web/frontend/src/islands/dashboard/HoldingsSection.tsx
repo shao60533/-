@@ -8,6 +8,7 @@ import {
   BuyDialog, SellDialog, UpdateCostDialog,
   type HoldingTarget,
 } from "@/components/shared/HoldingDialogs"
+import { EmptyStateCTA } from "@/components/shared/EmptyStateCTA"
 import { apiDel, apiPost } from "@/lib/api"
 import { toast } from "@/components/ui/toaster"
 import { cn } from "@/lib/utils"
@@ -115,11 +116,20 @@ export function HoldingsSection({
       {/* Holding cards — default to first 5; "全部 N" reveals the rest.
           Each card carries 看分析 + 卖出 / 修正成本 / 移除. */}
       {filtered.length === 0 ? (
-        <Card>
-          <CardContent className="py-8 text-center text-muted-foreground">
-            {holdings.length === 0 ? "暂无持仓，点击右上角「买入」添加" : "无匹配结果"}
-          </CardContent>
-        </Card>
+        holdings.length === 0 ? (
+          <EmptyStateCTA
+            icon="📊"
+            message="暂无持仓 — 添加第一只即可开始追踪净值、PnL 与 AI 观点"
+            ctaLabel="+ 添加第一只持仓"
+            onClick={() => setBuyOpen(true)}
+          />
+        ) : (
+          <Card>
+            <CardContent className="py-8 text-center text-muted-foreground">
+              无匹配结果
+            </CardContent>
+          </Card>
+        )
       ) : (
         <div className="space-y-2" data-holdings-list>
           {visible.map(h => (

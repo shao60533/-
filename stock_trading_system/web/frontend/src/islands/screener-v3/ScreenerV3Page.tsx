@@ -12,6 +12,7 @@ import { Stat } from "@/components/ui/stat"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert"
 import { PipelineDAG } from "@/components/shared/PipelineDAG"
+import { EmptyStateCTA } from "@/components/shared/EmptyStateCTA"
 import { GURUS as STATIC_GURUS, type Guru } from "@/data/gurus"
 import { apiGet } from "@/lib/api"
 // ``subscribeTaskStream`` is dynamic-imported inside the running
@@ -209,7 +210,7 @@ function ScreenerForm({ prefillTaskId = null }: ScreenerFormProps) {
           <AlertDescription>{prefillBanner}</AlertDescription>
         </Alert>
       )}
-    <Card>
+    <Card id="screener-form">
       <CardHeader>
         <div className="mobile-card-header">
           <div className="mc-title">
@@ -1109,7 +1110,19 @@ function RecentScreensCard() {
       .finally(() => setLoading(false))
   }, [])
 
-  if (!loading && items.length === 0) return null
+  if (!loading && items.length === 0) {
+    return (
+      <EmptyStateCTA
+        icon="🎯"
+        message="暂无选股历史，上方表单提交即可"
+        ctaLabel="↑ 开始第一次选股"
+        onClick={() => {
+          const target = document.getElementById("screener-form")
+          if (target) target.scrollIntoView({ behavior: "smooth", block: "start" })
+        }}
+      />
+    )
+  }
 
   return (
     <Card>
