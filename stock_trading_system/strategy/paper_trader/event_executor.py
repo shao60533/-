@@ -90,6 +90,18 @@ def _inner(store, *, analysis_id, ticker, analysis_date, signal, advice,
         plan=plan, parse_method=parse_method,
     )
 
+    # Onboarding v1.0: mark "first-paper-plan" the first time a real plan
+    # row is persisted for this user. Fail-soft — never raises.
+    if user_id:
+        try:
+            from stock_trading_system.web.app import _mark_onboarding_step
+            _mark_onboarding_step(user_id, "first-paper-plan")
+        except Exception as _ob_exc:
+            logger.warning(
+                "onboarding mark first-paper-plan failed user=%s: %s",
+                user_id, _ob_exc,
+            )
+
     # ── 2. Fire immediate orders using today's bar (if we have one) ──
     bar = today_bar or _bar_from_price(analysis_date, current_price)
     triggered = []

@@ -1571,6 +1571,7 @@ def create_app(config_path=None):
             date=data.get("date"), notes=data.get("notes", ""),
             user_id=g.user.id,
         )
+        _mark_onboarding_step(g.user.id, "add-holding")
         return jsonify({"ok": True, "message": f"BUY {data['shares']} {ticker} @ {data['price']}"})
 
     @app.route("/api/portfolio/sell", methods=["POST"])

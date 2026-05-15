@@ -202,6 +202,15 @@ def make_analysis_worker(get_analyzer, get_strategy_engine, get_portfolio, get_r
                 "advice": advice_dict,
                 "holdings_snapshot": holdings_snapshot,
             }
+        if user_id:
+            try:
+                from stock_trading_system.web.app import _mark_onboarding_step
+                _mark_onboarding_step(user_id, "first-analysis")
+            except Exception as _ob_exc:
+                logger.warning(
+                    "onboarding mark first-analysis failed user=%s: %s",
+                    user_id, _ob_exc,
+                )
         return out
 
     return worker
@@ -611,6 +620,15 @@ def make_screen_v3_worker():
             if k not in ("user_id", "provider", "__task_id__", "__cancel_event__")
         }))
         progress_cb(98, "整理结果")
+        if user_id:
+            try:
+                from stock_trading_system.web.app import _mark_onboarding_step
+                _mark_onboarding_step(user_id, "first-screen")
+            except Exception as _ob_exc:
+                logger.warning(
+                    "onboarding mark first-screen failed user=%s: %s",
+                    user_id, _ob_exc,
+                )
         return result
 
     return worker
