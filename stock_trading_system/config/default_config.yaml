@@ -156,6 +156,17 @@ reports:
 portfolio:
   db_path: "data/portfolio.db"
 
+# Paper-trade simulator. The Decimal flag below is the hardening-iteration-v1
+# P2.6 feature flag (designed §3.3): when enabled, cash / PnL accumulate via
+# decimal.Decimal instead of float so 1000 buy/sell loops don't drift due to
+# binary-float rounding error. Default OFF — step-1 (this PR) ships the flag
+# and the helper module; step-2 (subsequent PR) rewires
+# simulator.py / order_engine.py / session_store.py to consult the flag and
+# do the actual arithmetic conversion. Flip to true only after a dogfood
+# week confirms the new path matches existing reports to the cent.
+paper_trade:
+  decimal: false
+
 # Self-iterating agent evolution module (see docs/design/self-iterating-agents.md).
 iteration:
   enabled: false                  # Master switch — disabled by default
