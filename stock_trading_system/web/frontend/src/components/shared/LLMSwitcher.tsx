@@ -81,10 +81,33 @@ export interface LLMSwitcherProps {
   variant?: LLMSwitcherVariant
 }
 
+const ONBOARDING_LLM_HINT_KEY = "onboarding_hint_llm_dismissed"
+
 export function LLMSwitcher({ variant = "full" }: LLMSwitcherProps = {}) {
   const [state, setState] = useState<LLMState | null>(null)
   const [or, setOr] = useState<OpenRouterActive | null>(null)
   const [switching, setSwitching] = useState(false)
+  // Onboarding v1.0: one-time inline hint. localStorage is the source
+  // of truth (mobile hint state does not need to sync across devices).
+  // Initialized to false on SSR / when localStorage is unavailable so
+  // the hint never blocks first render in those environments.
+  const [showHint, setShowHint] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false
+    try {
+      return !window.localStorage.getItem(ONBOARDING_LLM_HINT_KEY)
+    } catch {
+      return false
+    }
+  })
+  const dismissHint = () => {
+    setShowHint(false)
+    try {
+      window.localStorage.setItem(ONBOARDING_LLM_HINT_KEY, "1")
+    } catch {
+      // localStorage may be unavailable (private mode); the next
+      // mount will simply re-show the hint — acceptable per PRD §3.1.
+    }
+  }
 
   useEffect(() => {
     apiGet<LLMState>("/api/settings/llm-provider")
@@ -207,7 +230,14 @@ export function LLMSwitcher({ variant = "full" }: LLMSwitcherProps = {}) {
   )
 
   return (
-    <DropdownMenu>
+    <div className="relative">
+    <DropdownMenu
+      onOpenChange={(open) => {
+        // First click on the trigger dismisses the hint — leaves the
+        // dropdown free to keep handling its own state.
+        if (open && showHint) dismissHint()
+      }}
+    >
       <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="w-72">
         <DropdownMenuLabel>切换 AI 模型</DropdownMenuLabel>
@@ -286,5 +316,22 @@ export function LLMSwitcher({ variant = "full" }: LLMSwitcherProps = {}) {
         )}
       </DropdownMenuContent>
     </DropdownMenu>
+      {showHint && (
+        <div
+          role="status"
+          className="md:hidden absolute top-full right-0 mt-2 max-w-[240px] p-2.5 pr-7 rounded-md border border-primary/35 bg-primary/10 text-xs shadow-xl z-50 text-foreground"
+        >
+          点这里切换 AI 模型（OpenRouter / Qwen / Gemini）。
+          <button
+            type="button"
+            aria-label="关闭提示"
+            className="absolute top-1 right-1 px-1 text-muted-foreground hover:text-foreground"
+            onClick={dismissHint}
+          >
+            ×
+          </button>
+        </div>
+      )}
+    </div>
   )
 }
