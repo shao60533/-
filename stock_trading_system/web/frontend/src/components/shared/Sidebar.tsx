@@ -175,6 +175,7 @@ export function MobileTabbar() {
   return (
     <>
       <nav
+        data-mobile-tabbar=""
         className="md:hidden fixed bottom-0 left-0 right-0 bg-card/95 backdrop-blur border-t border-border flex z-50 shadow-[0_-10px_30px_-24px_rgba(0,0,0,0.9)]"
         style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}
       >

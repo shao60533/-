@@ -703,7 +703,7 @@ export function AccountOverviewCard({
     : "text-[var(--color-accent-red)]"
 
   return (
-    <Card className="bg-card/95 ring-1 ring-primary/10 shadow-sm">
+    <Card id="account-hero" className="bg-card/95 ring-1 ring-primary/10 shadow-sm">
       <CardContent className="pt-5 pb-4 px-4 space-y-3">
         {/* mobile-ui-v1.3.1 fixup #2: 账户总值 takes full width as
             the dominant hero number; 今日 PnL sits on its own

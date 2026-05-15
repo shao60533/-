@@ -65,7 +65,7 @@ export function HoldingsSection({
   }
 
   return (
-    <section className="space-y-3" data-section="holdings">
+    <section id="holdings-section" className="space-y-3" data-section="holdings">
       <div className="flex items-baseline justify-between gap-2 min-w-0">
         <h2 className="text-base font-semibold truncate">持仓明细</h2>
         <span className="text-xs text-muted-foreground shrink-0">{total} 只股票</span>
@@ -305,7 +305,10 @@ export function BatchAnalyzeHoldingsCard({
       : `批量分析持仓 (${holdingsCount})`
 
   return (
-    <Card className="border-[var(--color-accent-yellow)]/40 bg-[var(--color-accent-yellow)]/5">
+    <Card
+      id="batch-analyze-card"
+      className="border-[var(--color-accent-yellow)]/40 bg-[var(--color-accent-yellow)]/5"
+    >
       <CardContent className="pt-4 space-y-2">
         <div className="flex items-center justify-between gap-2 min-w-0">
           <strong className="text-sm truncate flex items-center gap-1.5">

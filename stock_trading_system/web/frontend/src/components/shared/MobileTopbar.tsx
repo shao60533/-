@@ -7,6 +7,7 @@ interface MobileTopbarProps {
 export function MobileTopbar({ pageTitle }: MobileTopbarProps) {
   return (
     <header
+      id="topbar"
       data-mobile-topbar=""
       className="md:hidden sticky top-0 z-40 border-b border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/85"
     >
