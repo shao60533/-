@@ -8,6 +8,7 @@ import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert"
 import { Switch } from "@/components/ui/switch"
 import { apiGet, apiPost, ApiError } from "@/lib/api"
 import { toast } from "@/components/ui/toaster"
+import { useOnboardingState } from "@/components/shared/onboarding/useOnboardingState"
 
 // Backend response shape from GET /api/settings (see web/app.py::api_settings).
 interface SettingsResponse {
@@ -640,7 +641,49 @@ export function SettingsPage() {
       <LoginMethodsSection />
 
       <SchedulerStatusCard />
+
+      <OnboardingSection />
     </div>
+  )
+}
+
+/**
+ * "新手引导" section — single reset button hooked into
+ * /api/onboarding/reset. After reset the user is invited to return
+ * to the dashboard where the welcome modal re-fires.
+ *
+ * Spec: docs/design/onboarding.md §4.9.
+ */
+function OnboardingSection() {
+  const { reset } = useOnboardingState()
+  const [busy, setBusy] = useState(false)
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>新手引导</CardTitle>
+        <CardDescription>
+          重新观看欢迎导览与 4 项上手任务清单（仅移动端可见）。
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true)
+            try {
+              await reset()
+              toast.success("已重置，回首页即可重新查看引导")
+            } finally {
+              setBusy(false)
+            }
+          }}
+        >
+          {busy ? "重置中..." : "重新观看引导"}
+        </Button>
+      </CardContent>
+    </Card>
   )
 }
 
