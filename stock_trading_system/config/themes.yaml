@@ -1,0 +1,57 @@
+# hardening-iteration-v1 P2.4 [H11] — Theme → ticker map.
+#
+# Pre-P2.4 these lists were hard-coded inside qwen_provider.py system
+# prompts, so adding/removing a ticker required a code commit. They
+# live here now so an ops user can update the universe without touching
+# Python. The qwen prompt is rebuilt from this file at materialize_universe
+# time.
+#
+# Schema:
+#   themes:
+#     <stable_id>:
+#       cn_keywords:  Chinese keywords that map to this theme
+#       en_description:  one-line English summary used in the prompt
+#       tickers:  member tickers (uppercase, US market unless noted)
+#       excluded_tickers:  tickers that look thematic but must NOT be
+#                          returned for this query (e.g. NEE for "energy_oil")
+#       gating_keywords_to_include:  if present, this theme is ONLY
+#                                    invoked when the user also writes
+#                                    one of these keywords (e.g. cloud
+#                                    storage requires "云存储")
+#       gating_tickers:  tickers that only enter the universe when
+#                        gating_keywords_to_include matches
+#   blocklist_for_strong_themes:
+#     tickers:  generic large-caps that must NEVER appear in strong
+#               theme queries
+themes:
+  utilities:
+    cn_keywords: ["电力", "电力股", "公用事业"]
+    en_description: "Utilities sector"
+    tickers: [NEE, SO, DUK, AEP, EXC, SRE, PEG, ED, XEL, D]
+
+  energy_oil:
+    cn_keywords: ["能源股", "能源"]
+    en_description: "Energy sector oil/gas chain"
+    tickers: [XOM, CVX, COP, EOG, SLB, LNG, MPC, PSX]
+    # These look "energy" but belong to new_energy; gate them out of
+    # plain "能源股" queries unless the user explicitly asks for the
+    # gating_keywords below.
+    excluded_tickers: [NEE, FSLR, ENPH]
+    excluded_unless_gating: ["清洁能源", "新能源", "可再生", "光伏", "风电", "储能"]
+
+  new_energy:
+    cn_keywords: ["新能源", "清洁能源", "可再生", "光伏", "风电", "储能"]
+    en_description: "EV + solar + wind + storage + renewables"
+    tickers: [NEE, FSLR, ENPH, SEDG, BEP, CWEN, ARRY, FLNC]
+    excluded_tickers: [AAPL, BRK-B, V, JPM, META, MSFT, GOOGL]
+
+  storage:
+    cn_keywords: ["存储"]
+    en_description: "Memory / storage chips and hardware (DRAM/NAND/SSD/HDD)"
+    tickers: [MU, WDC, STX, SNDK, MRVL, INTC, AMD, NVDA, AVGO]
+    # Cloud-storage names only enter when the user explicitly says so.
+    gating_keywords_to_include: ["云存储", "对象存储"]
+    gating_tickers: [AMZN, MSFT, GOOGL]
+
+blocklist_for_strong_themes:
+  tickers: [BRK-B, JPM, V, MA, PG, WMT, UNH]

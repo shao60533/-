@@ -97,7 +97,8 @@ def run_invariants(db_path: str) -> dict:
 
     conn.close()
     results["go"] = len(results["fail"]) == 0
-    results["checked_at"] = datetime.utcnow().isoformat() + "Z"
+    from stock_trading_system.utils.timez import now_utc
+    results["checked_at"] = now_utc().isoformat()
     return results
 
 

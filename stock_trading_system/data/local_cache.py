@@ -1,18 +1,40 @@
 """Unified SQLite-backed cache for price / fundamentals / news / bars.
 
+hardening-iteration-v1 P2.3 [H10]: payloads are JSON now, not pickle.
+Pre-P2.3 the cache deserialized untrusted blobs with ``pickle.loads`` —
+any process that could write to ``cache.db`` (Railway volume, host
+filesystem, malicious git commit) could trigger arbitrary code at
+read time. JSON serialisation removes that RCE surface.
+
+DataFrames (the one non-JSON-native shape we store) round-trip via
+``df.to_json(orient="split")`` inside a tagged envelope:
+
+    {"v": 1, "kind": "df", "data": "<orient=split JSON string>"}
+
+Plain values land as:
+
+    {"v": 1, "kind": "json", "data": <inner>}
+
+Legacy pickle rows are recognised by the absence of the JSON header
+byte ``{``; they're read-skipped (returning a cache miss) so the next
+write rotates them. A one-shot ``migrate_drop_legacy_pickle()`` helper
+purges them eagerly.
+
 Design goals:
 - Single cache class with typed accessors (set_price, get_price, ...)
 - Per-category TTL, configurable via `config["data_routing"]["cache_ttl"]`.
-- Stores pickled payload for flexibility (DataFrame, dict, list all work).
+- Stores JSON payload (was: pickle); DataFrame round-tripped via
+  pandas to_json(orient="split").
 - Thread-safe short-lived connections + WAL mode.
 """
 
 from __future__ import annotations
 
-import pickle
+import json
 import sqlite3
 import threading
 from datetime import datetime, timedelta
+from io import StringIO
 from pathlib import Path
 from typing import Any
 
@@ -58,12 +80,69 @@ _DEFAULT_TTL: dict[str, int] = {
 }
 
 
+# Envelope schema version. Bump if the on-disk shape changes; readers
+# must reject envelopes with unknown ``v`` rather than guess.
+_ENVELOPE_VERSION = 1
+
+
 def _now() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _parse(ts: str) -> datetime:
     return datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
+
+
+def _serialize(value: Any) -> bytes:
+    """Wrap ``value`` in the JSON envelope and return UTF-8 bytes."""
+    try:
+        import pandas as pd
+    except ImportError:  # pandas absent → df path is unreachable
+        pd = None
+
+    if pd is not None and isinstance(value, pd.DataFrame):
+        envelope = {
+            "v": _ENVELOPE_VERSION,
+            "kind": "df",
+            "data": value.to_json(orient="split", date_format="iso"),
+        }
+    else:
+        envelope = {"v": _ENVELOPE_VERSION, "kind": "json", "data": value}
+    return json.dumps(envelope, ensure_ascii=False, default=str).encode("utf-8")
+
+
+def _deserialize(blob: bytes) -> Any:
+    """Inverse of :func:`_serialize`. Returns None for unknown / legacy
+    payloads so the cache treats them as misses and rewrites on next set."""
+    if not blob:
+        return None
+    # Legacy pickle blobs start with the pickle opcode \x80 (binary
+    # protocol) — never a printable JSON char. Reject them outright
+    # so we can't accidentally trip a pickle gadget chain.
+    if not blob.startswith(b"{"):
+        return None
+    try:
+        envelope = json.loads(blob.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(envelope, dict) or envelope.get("v") != _ENVELOPE_VERSION:
+        return None
+    kind = envelope.get("kind")
+    if kind == "json":
+        return envelope.get("data")
+    if kind == "df":
+        try:
+            import pandas as pd
+        except ImportError:
+            return None
+        raw = envelope.get("data")
+        if not isinstance(raw, str):
+            return None
+        try:
+            return pd.read_json(StringIO(raw), orient="split")
+        except ValueError:
+            return None
+    return None
 
 
 class LocalCache:
@@ -103,6 +182,9 @@ class LocalCache:
     def _init(self):
         with self._lock, self._conn() as conn:
             conn.executescript(_SCHEMA)
+        # hardening-iteration-v1 P2.3 [H10]: drop legacy pickle rows on
+        # first boot. Idempotent — next boots see an empty result.
+        self.migrate_drop_legacy_pickle()
 
     # ── Generic get/set ──────────────────────────────────────────────────
 
@@ -140,10 +222,13 @@ class LocalCache:
             except ValueError:
                 self._misses += 1
                 return None
-        try:
-            value = pickle.loads(row["payload"])
-        except Exception as e:  # noqa: BLE001
-            logger.warning("Failed to unpickle %s:%s — %s", category, key, e)
+        value = _deserialize(row["payload"])
+        if value is None:
+            # Legacy pickle row, malformed JSON envelope, or genuinely-
+            # stored None. We can't distinguish "real None" from
+            # "rejected blob" here, so treat the entry as a miss — the
+            # caller will refetch and overwrite. Safer than silently
+            # returning stale data.
             self._misses += 1
             return None
         self._hits += 1
@@ -175,6 +260,10 @@ class LocalCache:
         (was: silently treated as "no TTL = forever"). Use
         ``unsafe_default_ttl`` to opt-in for dev/experimental categories
         before they're registered in ``_DEFAULT_TTL``.
+
+        hardening-iteration-v1 P2.3: values are JSON-encoded inside a
+        tagged envelope; DataFrame round-trips via ``to_json/read_json``.
+        Was: ``pickle.dumps`` — read path was an RCE surface.
         """
         if category not in self._ttl:
             if unsafe_default_ttl is None:
@@ -192,9 +281,12 @@ class LocalCache:
                          category, unsafe_default_ttl)
 
         try:
-            blob = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
-        except Exception as e:
-            logger.warning("Cannot pickle %s:%s — %s", category, key, e)
+            blob = _serialize(value)
+        except (TypeError, ValueError) as e:
+            # Non-JSONable Python objects (custom classes, sets, ...)
+            # land here. Same outcome as the pre-P2.3 pickle failure —
+            # write is dropped + warning logged.
+            logger.warning("Cannot json-encode %s:%s — %s", category, key, e)
             return
         with self._lock, self._conn() as conn:
             conn.execute(
@@ -264,6 +356,21 @@ class LocalCache:
     def clear(self) -> None:
         with self._lock, self._conn() as conn:
             conn.execute("DELETE FROM kv_cache")
+
+    def migrate_drop_legacy_pickle(self) -> int:
+        """Delete rows whose payload doesn't start with the JSON header
+        byte ``{`` — legacy pickle blobs from before P2.3. Returns the
+        number of rows removed. Safe to run repeatedly; idempotent."""
+        with self._lock, self._conn() as conn:
+            cur = conn.execute(
+                "DELETE FROM kv_cache WHERE substr(payload, 1, 1) != ?",
+                (b"{",),
+            )
+            n = cur.rowcount
+        if n:
+            logger.info("LocalCache: dropped %d legacy pickle row(s) "
+                         "(hardening-iteration-v1 P2.3 [H10])", n)
+        return n
 
     def stats(self) -> dict:
         total = self._hits + self._misses

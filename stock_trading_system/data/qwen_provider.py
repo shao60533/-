@@ -11,14 +11,88 @@ Scope:
 
 NOT used for historical bars, fundamentals, or news (other providers cover
 those reliably; LLM output for large datasets is unstable).
+
+hardening-iteration-v1 P2.4 [H11]: the system prompt previously hard-
+coded a dozen ticker lists (NEE/SO/DUK/AEP/..., MU/WDC/STX/...) inline.
+That meant every theme-roster tweak required a code commit and a
+deploy. The lists now live in ``config/themes.yaml`` and are spliced
+into the prompt at materialize_universe time via ``_build_theme_prompt()``.
 """
 
 import json
 import re
+from functools import lru_cache
+from pathlib import Path
 
 from stock_trading_system.utils import get_logger
 
 logger = get_logger("data.qwen")
+
+
+@lru_cache(maxsize=1)
+def _load_themes() -> dict:
+    """Read the bundled themes.yaml. Cached for the process lifetime —
+    operators edit the file & restart the worker, no hot-reload."""
+    try:
+        import yaml
+    except ImportError:
+        logger.warning("PyYAML missing — falling back to empty theme map")
+        return {}
+    p = Path(__file__).resolve().parent.parent / "config" / "themes.yaml"
+    if not p.exists():
+        logger.warning("themes.yaml not found at %s — theme map empty", p)
+        return {}
+    try:
+        with p.open("r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    except Exception as e:  # noqa: BLE001
+        logger.warning("themes.yaml parse failed: %s", e)
+        return {}
+    return data
+
+
+def _build_theme_prompt() -> str:
+    """Render the theme-to-tickers map into the Chinese prompt fragment
+    that disambiguates user queries. Empty string when themes.yaml is
+    missing — caller's surrounding generic instructions still apply."""
+    data = _load_themes()
+    themes = (data.get("themes") or {})
+    if not themes:
+        return ""
+
+    lines: list[str] = []
+    for theme_id, t in themes.items():
+        kws = "/".join(t.get("cn_keywords") or [])
+        en = t.get("en_description") or theme_id
+        tickers = "/".join(t.get("tickers") or [])
+        if not (kws and tickers):
+            continue
+        line = f"中文「{kws}」默认指 {en}（{tickers}）"
+
+        excl = t.get("excluded_tickers") or []
+        excl_gate = t.get("excluded_unless_gating") or []
+        if excl:
+            gate_blurb = ""
+            if excl_gate:
+                gate_blurb = "；除非用户明确写「" + "」/「".join(excl_gate) + "」"
+            line += f"{gate_blurb}，否则不要把 {'/'.join(excl)} 当成本主题成员"
+
+        gate_kws = t.get("gating_keywords_to_include") or []
+        gate_tickers = t.get("gating_tickers") or []
+        if gate_kws and gate_tickers:
+            line += (
+                f"；只有用户明确写「{'/'.join(gate_kws)}」时才把 "
+                f"{'/'.join(gate_tickers)} 视作本主题成员"
+            )
+        lines.append(line + "。")
+
+    blocklist = (data.get("blocklist_for_strong_themes") or {}).get("tickers") or []
+    if blocklist:
+        lines.append(
+            f"禁止为强主题查询返回 {'/'.join(blocklist)} 等泛大盘股。"
+        )
+
+    return "".join(lines)
 
 
 _QUOTE_SYSTEM = (
@@ -315,24 +389,15 @@ class QwenProvider:
         # The system prompt mirrors ``UniverseFilter._llm_universe``
         # generic-fallback wording — same theme-fit / no-mega-cap
         # constraints — so both paths produce comparable lists.
+        # hardening-iteration-v1 P2.4: theme rosters splice in from
+        # config/themes.yaml at runtime (was: hard-coded inline).
+        theme_block = _build_theme_prompt()
         system = (
             "你是股票候选池生成助手。根据用户筛选条件返回候选股票代码。"
             "必须严格匹配用户主题，不要用泛大盘龙头、知名公司或高市值公司凑数。"
             "如果用户查询包含行业/主题词，只能返回与该主题有直接业务暴露的公司。"
             "「龙头股」表示该主题/行业内部的龙头，不是全市场市值龙头。"
-            "中文「电力 / 电力股 / 公用事业」默认指 Utilities sector "
-            "（NEE/SO/DUK/AEP/EXC/SRE/PEG/ED/XEL/D），不是泛能源、不是科技。"
-            "中文「能源股 / 能源」默认指 Energy sector 油气链 "
-            "（XOM/CVX/COP/EOG/SLB/LNG/MPC/PSX）；除非用户明确写「清洁能源」"
-            "/「新能源」/「可再生」/「光伏」/「风电」/「储能」，否则不要"
-            "把 NEE/FSLR/ENPH 当成默认能源股。"
-            "中文「新能源」默认拆解为 EV + 光伏 + 风电 + 储能 + 可再生能源 "
-            "（NEE/FSLR/ENPH/SEDG/BEP/CWEN/ARRY/FLNC），禁止混入 "
-            "AAPL/BRK-B/V/JPM/META/MSFT/GOOGL 等泛大盘股或纯油气股。"
-            "中文「存储」默认指存储芯片/内存/DRAM/NAND/闪存/SSD/HDD/数据存储硬件 "
-            "（MU/WDC/STX/SNDK/MRVL/INTC/AMD/NVDA/AVGO）；只有用户明确写"
-            "云存储/对象存储 时才把 AMZN/MSFT/GOOGL 视作主题成员。"
-            "禁止为强主题查询返回 BRK-B/JPM/V/MA/PG/WMT/UNH 等泛大盘股。"
+            f"{theme_block}"
             f"市场: {market.upper()}。返回 JSON: "
             f"{{\"tickers\": [{{\"ticker\":\"...\", \"name\":\"...\", "
             f"\"sector\":\"...\"}}, ...]}}，不含其他文字。"

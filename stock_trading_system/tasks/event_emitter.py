@@ -52,7 +52,10 @@ def ensure_task_events_table(db_path: str) -> None:
 
 
 def _now_iso() -> str:
-    return datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    # P2.5: utcnow() deprecated in Py3.12+; route via timez helper which
+    # returns a tz-aware UTC datetime under the hood.
+    from stock_trading_system.utils.timez import utc_iso_z
+    return utc_iso_z()
 
 
 def _resolve_db_path(db_path: str | None) -> str:

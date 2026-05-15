@@ -100,7 +100,8 @@ def _run_pytest_suite(level_name: str, test_path: str) -> dict:
 
 
 def run_all(level: str, db_path: str, report_path: str | None = None) -> dict:
-    started = datetime.utcnow().isoformat() + "Z"
+    from stock_trading_system.utils.timez import now_utc
+    started = now_utc().isoformat()
     levels = {}
 
     # L0 always
@@ -124,7 +125,7 @@ def run_all(level: str, db_path: str, report_path: str | None = None) -> dict:
 
     report = {
         "started_at": started,
-        "finished_at": datetime.utcnow().isoformat() + "Z",
+        "finished_at": now_utc().isoformat(),
         "db_path": db_path,
         "levels": levels,
         "failures": failures,
