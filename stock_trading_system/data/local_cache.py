@@ -34,6 +34,7 @@ import json
 import sqlite3
 import threading
 from datetime import datetime, timedelta
+from stock_trading_system.utils.timez import now_local
 from io import StringIO
 from pathlib import Path
 from typing import Any
@@ -86,7 +87,7 @@ _ENVELOPE_VERSION = 1
 
 
 def _now() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return now_local().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _parse(ts: str) -> datetime:
@@ -216,7 +217,7 @@ class LocalCache:
         if ttl is not None:
             try:
                 fetched = _parse(row["fetched_at"])
-                if datetime.now() - fetched > timedelta(seconds=ttl):
+                if now_local() - fetched > timedelta(seconds=ttl):
                     self._misses += 1
                     return None
             except ValueError:
@@ -342,7 +343,7 @@ class LocalCache:
     def cleanup(self) -> int:
         """Delete all expired entries based on per-category TTLs."""
         total = 0
-        now = datetime.now()
+        now = now_local()
         with self._lock, self._conn() as conn:
             for category, ttl in self._ttl.items():
                 cutoff = (now - timedelta(seconds=ttl)).strftime("%Y-%m-%d %H:%M:%S")

@@ -19,6 +19,7 @@ import shutil
 import sqlite3
 import sys
 from datetime import datetime
+from stock_trading_system.utils.timez import now_local
 from pathlib import Path
 
 
@@ -146,7 +147,7 @@ def migrate(
     pwd_hash = bcrypt.hashpw(admin_pwd.encode(), bcrypt.gensalt(rounds=12)).decode()
     admin_email_norm = admin_email.strip().lower()
     display_name = admin_email_norm.split("@")[0]
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now = now_local().strftime("%Y-%m-%d %H:%M:%S")
 
     plan.append(f"-- Phase 2: Create admin user ({admin_email_norm})")
     plan.append(

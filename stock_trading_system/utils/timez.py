@@ -65,3 +65,25 @@ def utc_iso_z() -> str:
     """Return ``now_utc()`` formatted as the ISO 8601 ``...Z`` string
     every JSON contract in this codebase serialises to."""
     return now_utc().strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
+def now_local() -> datetime:
+    """Server-local naive datetime — exactly equivalent to the bare
+    ``datetime.now()`` call.
+
+    Why expose this when ``datetime.now()`` already works:
+
+    * P2.5 step-1 (this PR) routes every existing ``datetime.now()`` call
+      through this single point, so the grep regression guard for the
+      deprecated/forbidden form catches stray reintroductions.
+    * P2.5 step-2 (a follow-up PR) walks the 53 call sites and replaces
+      ``now_local()`` with ``now_utc()`` / ``now_ny()`` per call site,
+      after auditing each ``-`` / ``>`` / ``<`` comparison against
+      DB-parsed datetimes to make sure the change doesn't introduce
+      aware-vs-naive TypeErrors.
+
+    Until step-2 ships, ``now_local()`` returning naive is the safer
+    rename — every existing arithmetic / comparison path keeps the
+    type contract it already relies on.
+    """
+    return datetime.now()

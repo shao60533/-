@@ -1,6 +1,7 @@
 """Alert monitor - checks price/indicator conditions and triggers notifications."""
 
 from datetime import datetime
+from stock_trading_system.utils.timez import now_local
 
 from stock_trading_system.portfolio.database import PortfolioDatabase
 from stock_trading_system.data.data_manager import DataManager
@@ -167,7 +168,7 @@ class AlertMonitor:
                 f"🚨 Alert Triggered: {alert['ticker']}\n"
                 f"Condition: {alert['condition']} {alert['threshold']}\n"
                 f"Current Price: {alert.get('current_price', 'N/A')}\n"
-                f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                f"Time: {now_local().strftime('%Y-%m-%d %H:%M:%S')}"
             )
 
             for notifier in self._notifiers:

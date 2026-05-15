@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta
+from stock_trading_system.utils.timez import now_local
 from typing import Any
 
 import pandas as pd
@@ -198,7 +199,7 @@ def _evaluate(kind: str, trig: dict, bar: dict, recent: pd.DataFrame | None,
         except Exception:
             return False, None, ""
         day_dt = datetime.strptime(str(_get(bar, "date") or ""), "%Y-%m-%d") \
-            if _get(bar, "date") else datetime.now()
+            if _get(bar, "date") else now_local()
         if (day_dt - created_dt).days >= months * 30:
             return True, close, f"time_stop {months}M reached"
         return False, None, ""

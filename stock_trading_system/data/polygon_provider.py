@@ -7,6 +7,7 @@ Used when IB TWS is not available.
 import threading
 import time
 from datetime import datetime, timedelta
+from stock_trading_system.utils.timez import now_local
 
 import pandas as pd
 
@@ -95,9 +96,9 @@ class PolygonProvider:
             client = self._get_client()
 
             if not to_date:
-                to_date = datetime.now().strftime("%Y-%m-%d")
+                to_date = now_local().strftime("%Y-%m-%d")
             if not from_date:
-                from_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
+                from_date = (now_local() - timedelta(days=365)).strftime("%Y-%m-%d")
 
             aggs = list(client.list_aggs(
                 ticker=ticker,

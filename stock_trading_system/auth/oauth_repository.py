@@ -15,6 +15,7 @@ import json
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
+from stock_trading_system.utils.timez import now_local
 from typing import Optional
 
 from stock_trading_system.auth.oauth_crypto import encrypt_token
@@ -118,7 +119,7 @@ class OAuthAccountRepository:
         Always updates last_login_at on touch — the route layer relies on
         that to surface "last sign-in" timestamps in /settings.
         """
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now = now_local().strftime("%Y-%m-%d %H:%M:%S")
         access_enc = encrypt_token(tokens.access_token)
         refresh_enc = encrypt_token(tokens.refresh_token) if tokens.refresh_token else None
         raw_json = json.dumps(profile.raw, ensure_ascii=False)

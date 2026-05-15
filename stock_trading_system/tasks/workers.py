@@ -12,6 +12,7 @@ import json
 from typing import Any, Callable
 
 from stock_trading_system.utils import get_logger
+from stock_trading_system.utils.timez import now_local
 
 logger = get_logger("tasks.workers")
 
@@ -790,7 +791,7 @@ def make_backtest_worker(get_router):
 
 def _today_str() -> str:
     from datetime import datetime
-    return datetime.now().strftime("%Y-%m-%d")
+    return now_local().strftime("%Y-%m-%d")
 
 
 # ── Batch analysis (one-click all holdings) ──────────────────────────────────
@@ -931,7 +932,7 @@ def _within_hours(created_at_str: str, hours: int) -> bool:
     from datetime import datetime, timedelta
     try:
         created = datetime.strptime(created_at_str, "%Y-%m-%d %H:%M:%S")
-        return datetime.now() - created < timedelta(hours=hours)
+        return now_local() - created < timedelta(hours=hours)
     except Exception:
         return False
 

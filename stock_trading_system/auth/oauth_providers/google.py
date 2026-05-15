@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, timedelta
+from stock_trading_system.utils.timez import now_local
 from typing import Any
 from urllib.parse import urlencode
 
@@ -130,7 +131,7 @@ class GoogleProvider:
         expires_in = payload.get("expires_in")
         if isinstance(expires_in, (int, float)) and expires_in > 0:
             expires_at = (
-                datetime.now() + timedelta(seconds=int(expires_in))
+                now_local() + timedelta(seconds=int(expires_in))
             ).isoformat()
 
         tokens = OAuthTokens(

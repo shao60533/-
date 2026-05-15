@@ -18,6 +18,7 @@ import json
 import sqlite3
 import threading
 from datetime import datetime, timedelta
+from stock_trading_system.utils.timez import now_local
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -58,7 +59,7 @@ CREATE INDEX IF NOT EXISTS idx_tasks_params_hash ON tasks(params_hash, status);
 
 def now_iso() -> str:
     """ISO 8601 timestamp in local time (second precision)."""
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return now_local().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def hash_params(task_type: str, params: dict) -> str:
@@ -348,7 +349,7 @@ class TaskStore:
 
         Returns the most recent match whose status is in *statuses*.
         """
-        cutoff = (datetime.now() - timedelta(seconds=max(0, window_seconds))) \
+        cutoff = (now_local() - timedelta(seconds=max(0, window_seconds))) \
             .strftime("%Y-%m-%d %H:%M:%S")
         statuses = tuple(statuses)
         if not statuses:
@@ -904,7 +905,7 @@ class TaskStore:
 
     def cleanup_expired(self, days: int = 30) -> int:
         """Delete task rows older than *days*. Returns rows deleted."""
-        cutoff = (datetime.now() - timedelta(days=max(0, days))) \
+        cutoff = (now_local() - timedelta(days=max(0, days))) \
             .strftime("%Y-%m-%d %H:%M:%S")
         with self._lock, self._conn() as conn:
             cur = conn.execute(

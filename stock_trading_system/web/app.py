@@ -14,6 +14,7 @@ from flask_limiter.util import get_remote_address
 from stock_trading_system.config import load_config, get_config, save_config
 from stock_trading_system.config.settings import update_user_config, WRITABLE_SETTING_PATHS
 from stock_trading_system.utils import get_logger
+from stock_trading_system.utils.timez import now_local
 
 logger = get_logger("web")
 
@@ -3321,7 +3322,7 @@ def create_app(config_path=None):
     def api_paper_create_session():
         data = request.json or {}
         try:
-            name = data.get("name") or f"Session {__import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M')}"
+            name = data.get("name") or f"Session {now_local().strftime('%Y-%m-%d %H:%M')}"
             mode = data.get("mode", "replay")
             if mode not in ("replay", "live"):
                 return jsonify({"ok": False, "error": "mode must be replay|live"}), 400

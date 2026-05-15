@@ -68,3 +68,32 @@ def test_no_utcnow_calls_in_production_code():
         if re.search(r"datetime\.utcnow\s*\(", src):
             bad.append(str(rel))
     assert not bad, f"P2.5 regression: datetime.utcnow() call sites remain: {bad}"
+
+
+def test_no_bare_datetime_now_calls_in_production_code():
+    """P2.5 step-1: every ``datetime.now()`` call routes through timez.
+
+    Step-1 collapses them all to ``now_local()`` so the grep guard works;
+    step-2 (a follow-up PR) will audit each call site and split into
+    ``now_utc()`` / ``now_ny()`` based on what the timestamp actually
+    represents (DB write vs trading-day vs user-facing display).
+    """
+    pkg_root = Path(__file__).resolve().parent.parent.parent / "stock_trading_system"
+    bad: list[str] = []
+    for p in pkg_root.rglob("*.py"):
+        rel = p.relative_to(pkg_root)
+        if rel.parts[0] == "utils" and rel.parts[-1] == "timez.py":
+            continue
+        src = p.read_text(encoding="utf-8")
+        if re.search(r"\bdatetime\.now\s*\(\s*\)", src):
+            bad.append(str(rel))
+    assert not bad, f"P2.5 regression: datetime.now() call sites remain: {bad}"
+
+
+def test_now_local_is_naive_and_equivalent_to_datetime_now():
+    """now_local() must behave identically to ``datetime.now()`` — naive
+    server-local time. Any divergence would shift every DB timestamp
+    field in lockstep without us noticing."""
+    from stock_trading_system.utils.timez import now_local
+    t = now_local()
+    assert t.tzinfo is None, "now_local() must return naive (step-1 contract)"

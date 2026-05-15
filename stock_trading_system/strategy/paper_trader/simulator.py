@@ -18,6 +18,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
+from stock_trading_system.utils.timez import now_local
 from typing import Callable
 
 from stock_trading_system.utils import get_logger
@@ -87,7 +88,7 @@ class PaperTradeSimulator:
         benchmark_sym = cfg.get("benchmark") or "SPY"
 
         start_date = sess["start_date"]
-        end_date = sess.get("end_date") or datetime.now().strftime("%Y-%m-%d")
+        end_date = sess.get("end_date") or now_local().strftime("%Y-%m-%d")
 
         cb(2, "加载信号")
         sig_list = self._signals.load(
@@ -184,7 +185,7 @@ class PaperTradeSimulator:
         self._store.update_session(
             session_id, status="completed",
             metrics_json=full_metrics,
-            completed_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            completed_at=now_local().strftime("%Y-%m-%d %H:%M:%S"),
         )
         cb(100, f"完成 · 收益 {metrics['total_return_pct']:+.2f}% · {metrics['num_trades']} 笔交易")
         return {"metrics": full_metrics, "trades": len(trades), "equity": len(equity)}

@@ -16,6 +16,7 @@ import json
 import sqlite3
 import threading
 from datetime import datetime
+from stock_trading_system.utils.timez import now_local
 from pathlib import Path
 from typing import Any
 
@@ -335,7 +336,7 @@ class PaperTradeStore:
                 return int(row["id"])
 
             now = _now_iso()
-            today = datetime.now().strftime("%Y-%m-%d")
+            today = now_local().strftime("%Y-%m-%d")
             cur = conn.execute(
                 """INSERT INTO paper_trade_sessions
                    (name, mode, status, start_capital, start_date, end_date,
@@ -646,7 +647,7 @@ class PaperTradeStore:
 # ── Helpers ────────────────────────────────────────────────────────────────
 
 def _now_iso() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return now_local().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _plan_fingerprint(plan: dict) -> str:

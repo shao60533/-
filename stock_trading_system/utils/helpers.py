@@ -2,6 +2,7 @@
 
 import re
 from datetime import datetime
+from stock_trading_system.utils.timez import now_local
 
 
 def detect_market(ticker: str) -> str:
@@ -49,4 +50,4 @@ def format_large_number(value: float) -> str:
 
 def today_str() -> str:
     """Return today's date as YYYY-MM-DD string."""
-    return datetime.now().strftime("%Y-%m-%d")
+    return now_local().strftime("%Y-%m-%d")

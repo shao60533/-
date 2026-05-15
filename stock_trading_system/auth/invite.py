@@ -5,6 +5,7 @@ from __future__ import annotations
 import secrets
 import sqlite3
 from datetime import datetime
+from stock_trading_system.utils.timez import now_local
 
 from stock_trading_system.utils import get_logger
 
@@ -27,11 +28,11 @@ class InviteCodeManager:
     ) -> str:
         """Generate a new invite code."""
         code = secrets.token_urlsafe(9)  # ~12 chars
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now = now_local().strftime("%Y-%m-%d %H:%M:%S")
         expires_at = None
         if expires_in_days:
             from datetime import timedelta
-            expires_at = (datetime.now() + timedelta(days=expires_in_days)).strftime(
+            expires_at = (now_local() + timedelta(days=expires_in_days)).strftime(
                 "%Y-%m-%d %H:%M:%S"
             )
 
@@ -61,7 +62,7 @@ class InviteCodeManager:
         if row.get("expires_at"):
             try:
                 exp = datetime.strptime(row["expires_at"], "%Y-%m-%d %H:%M:%S")
-                if datetime.now() > exp:
+                if now_local() > exp:
                     return "invite_expired"
             except ValueError:
                 pass
@@ -69,7 +70,7 @@ class InviteCodeManager:
 
     def redeem(self, code: str, user_id: int) -> None:
         """Mark a code as used by the given user."""
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now = now_local().strftime("%Y-%m-%d %H:%M:%S")
         with self._conn() as conn:
             conn.execute(
                 "UPDATE invite_codes SET used_by = ?, used_at = ? WHERE code = ?",
@@ -78,7 +79,7 @@ class InviteCodeManager:
 
     def revoke(self, code: str) -> bool:
         """Revoke a code. Returns True if found."""
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now = now_local().strftime("%Y-%m-%d %H:%M:%S")
         with self._conn() as conn:
             cur = conn.execute(
                 "UPDATE invite_codes SET revoked_at = ? WHERE code = ? AND revoked_at IS NULL",
@@ -96,7 +97,7 @@ class InviteCodeManager:
 
     def list_available(self, limit: int = 20) -> list[str]:
         """List unused, non-revoked, non-expired invite codes."""
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now = now_local().strftime("%Y-%m-%d %H:%M:%S")
         with self._conn() as conn:
             rows = conn.execute(
                 """SELECT code FROM invite_codes
