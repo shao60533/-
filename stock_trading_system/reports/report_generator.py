@@ -25,10 +25,15 @@ class ReportGenerator:
         self._output_dir = Path(config.get("reports", {}).get("output_dir", "reports_output"))
         self._output_dir.mkdir(parents=True, exist_ok=True)
 
-    def daily_report(self) -> str:
-        """Generate daily portfolio report."""
-        holdings = self._pm.get_holdings()
-        pnl = self._pm.get_pnl()
+    def daily_report(self, user_id: int) -> str:
+        """Generate daily portfolio report for one tenant.
+
+        ``user_id`` is required after hardening-iteration-v1 P1.3 — the
+        prior cron path called this with no user and got a cross-tenant
+        aggregate. Per-user reports must be triggered per user_id.
+        """
+        holdings = self._pm.get_holdings(user_id=user_id)
+        pnl = self._pm.get_pnl(user_id=user_id)
         date = today_str()
 
         lines = [
@@ -56,12 +61,12 @@ class ReportGenerator:
         self._save_report(f"daily_{date}.md", report)
         return report
 
-    def weekly_report(self) -> str:
-        """Generate weekly portfolio report."""
-        holdings = self._pm.get_holdings()
-        pnl = self._pm.get_pnl()
-        history = self._pm.get_history(days=7)
-        transactions = self._pm.get_transactions()
+    def weekly_report(self, user_id: int) -> str:
+        """Generate weekly portfolio report for one tenant."""
+        holdings = self._pm.get_holdings(user_id=user_id)
+        pnl = self._pm.get_pnl(user_id=user_id)
+        history = self._pm.get_history(days=7, user_id=user_id)
+        transactions = self._pm.get_transactions(user_id=user_id)
         date = today_str()
 
         lines = [
@@ -89,7 +94,7 @@ class ReportGenerator:
             lines.append("")
 
         # Allocation
-        allocation = self._pm.get_allocation()
+        allocation = self._pm.get_allocation(user_id=user_id)
         if allocation:
             lines.append("## 仓位分布")
             for item in allocation:
@@ -99,11 +104,11 @@ class ReportGenerator:
         self._save_report(f"weekly_{date}.md", report)
         return report
 
-    def monthly_report(self) -> str:
-        """Generate monthly portfolio report."""
-        holdings = self._pm.get_holdings()
-        pnl = self._pm.get_pnl()
-        history = self._pm.get_history(days=30)
+    def monthly_report(self, user_id: int) -> str:
+        """Generate monthly portfolio report for one tenant."""
+        holdings = self._pm.get_holdings(user_id=user_id)
+        pnl = self._pm.get_pnl(user_id=user_id)
+        history = self._pm.get_history(days=30, user_id=user_id)
         date = today_str()
 
         lines = [

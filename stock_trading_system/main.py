@@ -13,6 +13,44 @@ console = Console()
 logger = get_logger("main")
 
 
+def _resolve_cli_user_id(email: str | None = None) -> int:
+    """Resolve user_id for CLI commands that touch tenant-scoped data.
+
+    Priority:
+        1. ``--user-email`` option (if the command exposes it)
+        2. ``STOCK_USER_EMAIL`` env var
+        3. First active admin in the users table (operator's default tenant)
+
+    Raises ``click.ClickException`` with an actionable message if no
+    tenant can be resolved — this replaces the pre-P1.3 behaviour where
+    CLI calls fell through to ``user_id=None`` and either no-op'd or
+    silently wrote into a cross-tenant aggregate.
+    """
+    from stock_trading_system.auth.repository import UserRepository
+    cfg = get_config()
+    db_path = cfg.get("portfolio", {}).get("db_path", "data/portfolio.db")
+    repo = UserRepository(db_path)
+
+    email = email or os.environ.get("STOCK_USER_EMAIL")
+    if email:
+        u = repo.find_by_email(email.strip().lower())
+        if u is None:
+            raise click.ClickException(
+                f"No active user with email {email!r} (check users table or "
+                "register via the web UI first)."
+            )
+        return u.id
+
+    for u in repo.list_all():
+        if u.role == "admin" and u.status == "active":
+            return u.id
+
+    raise click.ClickException(
+        "No tenant context for CLI command. Pass --user-email <email>, "
+        "set STOCK_USER_EMAIL env, or seed an admin user via the web UI."
+    )
+
+
 @click.group()
 @click.option("--config", "config_path", default=None, help="Path to config YAML file")
 def cli(config_path):
@@ -110,15 +148,18 @@ def portfolio():
 @click.argument("price", type=float)
 @click.option("--date", default=None, help="Transaction date (YYYY-MM-DD)")
 @click.option("--notes", default="", help="Transaction notes")
-def portfolio_add(ticker, shares, price, date, notes):
+@click.option("--user-email", default=None, help="Tenant email (or set STOCK_USER_EMAIL)")
+def portfolio_add(ticker, shares, price, date, notes, user_email):
     """Add a buy transaction. Example: portfolio add AAPL 100 150.50"""
     from stock_trading_system.portfolio.manager import PortfolioManager
     from stock_trading_system.utils.helpers import detect_market
 
+    uid = _resolve_cli_user_id(user_email)
     config = get_config()
     pm = PortfolioManager(config)
     market = detect_market(ticker)
-    pm.add_position(ticker.upper(), shares, price, market=market, date=date, notes=notes)
+    pm.add_position(ticker.upper(), shares, price, market=market,
+                    date=date, notes=notes, user_id=uid)
     console.print(f"[green]Added: BUY {shares} {ticker.upper()} @ {price}[/green]")
 
 
@@ -128,25 +169,30 @@ def portfolio_add(ticker, shares, price, date, notes):
 @click.argument("price", type=float)
 @click.option("--date", default=None, help="Transaction date (YYYY-MM-DD)")
 @click.option("--notes", default="", help="Transaction notes")
-def portfolio_sell(ticker, shares, price, date, notes):
+@click.option("--user-email", default=None, help="Tenant email (or set STOCK_USER_EMAIL)")
+def portfolio_sell(ticker, shares, price, date, notes, user_email):
     """Record a sell transaction. Example: portfolio sell AAPL 50 180.00"""
     from stock_trading_system.portfolio.manager import PortfolioManager
 
+    uid = _resolve_cli_user_id(user_email)
     config = get_config()
     pm = PortfolioManager(config)
-    pm.sell_position(ticker.upper(), shares, price, date=date, notes=notes)
+    pm.sell_position(ticker.upper(), shares, price, date=date,
+                     notes=notes, user_id=uid)
     console.print(f"[yellow]Sold: SELL {shares} {ticker.upper()} @ {price}[/yellow]")
 
 
 @portfolio.command("list")
-def portfolio_list():
+@click.option("--user-email", default=None, help="Tenant email (or set STOCK_USER_EMAIL)")
+def portfolio_list(user_email):
     """Show current holdings with real-time P&L."""
     from stock_trading_system.portfolio.manager import PortfolioManager
     from stock_trading_system.utils.helpers import format_currency, format_percent
 
+    uid = _resolve_cli_user_id(user_email)
     config = get_config()
     pm = PortfolioManager(config)
-    holdings = pm.get_holdings()
+    holdings = pm.get_holdings(user_id=uid)
 
     if not holdings:
         console.print("[dim]No positions in portfolio.[/dim]")
@@ -178,13 +224,15 @@ def portfolio_list():
 
 @portfolio.command("history")
 @click.option("--ticker", default=None, help="Filter by ticker")
-def portfolio_history(ticker):
+@click.option("--user-email", default=None, help="Tenant email (or set STOCK_USER_EMAIL)")
+def portfolio_history(ticker, user_email):
     """Show transaction history."""
     from stock_trading_system.portfolio.manager import PortfolioManager
 
+    uid = _resolve_cli_user_id(user_email)
     config = get_config()
     pm = PortfolioManager(config)
-    transactions = pm.get_transactions(ticker=ticker)
+    transactions = pm.get_transactions(ticker=ticker, user_id=uid)
 
     table = Table(title="Transaction History")
     table.add_column("Date", style="dim")
@@ -209,14 +257,16 @@ def portfolio_history(ticker):
 
 
 @portfolio.command("pnl")
-def portfolio_pnl():
+@click.option("--user-email", default=None, help="Tenant email (or set STOCK_USER_EMAIL)")
+def portfolio_pnl(user_email):
     """Show profit & loss summary."""
     from stock_trading_system.portfolio.manager import PortfolioManager
     from stock_trading_system.utils.helpers import format_currency, format_percent
 
+    uid = _resolve_cli_user_id(user_email)
     config = get_config()
     pm = PortfolioManager(config)
-    pnl = pm.get_pnl()
+    pnl = pm.get_pnl(user_id=uid)
 
     console.print("\n[bold]Portfolio P&L Summary[/bold]")
     console.print(f"  Total Cost:    {format_currency(pnl['total_cost'])}")
@@ -226,14 +276,16 @@ def portfolio_pnl():
 
 
 @portfolio.command("allocation")
-def portfolio_allocation():
+@click.option("--user-email", default=None, help="Tenant email (or set STOCK_USER_EMAIL)")
+def portfolio_allocation(user_email):
     """Show position allocation breakdown."""
     from stock_trading_system.portfolio.manager import PortfolioManager
     from stock_trading_system.utils.helpers import format_percent
 
+    uid = _resolve_cli_user_id(user_email)
     config = get_config()
     pm = PortfolioManager(config)
-    allocation = pm.get_allocation()
+    allocation = pm.get_allocation(user_id=uid)
 
     console.print("\n[bold]Position Allocation[/bold]")
     for item in allocation:
@@ -248,7 +300,8 @@ def portfolio_allocation():
 @cli.command()
 @click.option("--type", "report_type", type=click.Choice(["daily", "weekly", "monthly", "stock"]), default="daily")
 @click.option("--ticker", default=None, help="Ticker for stock report")
-def report(report_type, ticker):
+@click.option("--user-email", default=None, help="Tenant email (or set STOCK_USER_EMAIL) — required for daily/weekly/monthly")
+def report(report_type, ticker, user_email):
     """Generate analysis reports."""
     from stock_trading_system.reports.report_generator import ReportGenerator
 
@@ -261,14 +314,16 @@ def report(report_type, ticker):
 
     console.print(f"\n[bold cyan]Generating {report_type} report...[/bold cyan]\n")
 
-    if report_type == "daily":
-        content = gen.daily_report()
-    elif report_type == "weekly":
-        content = gen.weekly_report()
-    elif report_type == "monthly":
-        content = gen.monthly_report()
-    else:
+    if report_type == "stock":
         content = gen.stock_report(ticker.upper())
+    else:
+        uid = _resolve_cli_user_id(user_email)
+        if report_type == "daily":
+            content = gen.daily_report(user_id=uid)
+        elif report_type == "weekly":
+            content = gen.weekly_report(user_id=uid)
+        else:
+            content = gen.monthly_report(user_id=uid)
 
     console.print(content)
 
@@ -291,14 +346,16 @@ def alert():
     "stop_loss", "take_profit",
 ]))
 @click.argument("threshold", type=float)
-def alert_add(ticker, condition, threshold):
+@click.option("--user-email", default=None, help="Tenant email (or set STOCK_USER_EMAIL)")
+def alert_add(ticker, condition, threshold, user_email):
     """Add an alert. Example: alert add AAPL price_above 200"""
     from stock_trading_system.alerts.monitor import AlertMonitor
 
+    uid = _resolve_cli_user_id(user_email)
     config = get_config()
     monitor = AlertMonitor(config)
-    monitor.add_alert(ticker.upper(), condition, threshold)
-    console.print(f"[green]Alert added: {ticker.upper()} {condition} {threshold}[/green]")
+    monitor.add_alert(ticker.upper(), condition, threshold, user_id=uid)
+    console.print(f"[green]Alert added: {ticker.upper()} {condition} {threshold} (user={uid})[/green]")
 
 
 @alert.command("list")

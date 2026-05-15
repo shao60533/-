@@ -89,7 +89,14 @@ class PortfolioDatabase:
         self._init_tables()
 
     def _get_conn(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._db_path)
+        # hardening-iteration-v1 P3.6 — match the task_store.py pattern:
+        # WAL + a generous busy_timeout so concurrent writers (Schwab/
+        # IB providers + daily-snapshot scheduler + user POSTs) don't
+        # collide with "database is locked" 500s.
+        conn = sqlite3.connect(self._db_path, timeout=10)
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA busy_timeout = 5000")
+        conn.execute("PRAGMA synchronous = NORMAL")
         conn.row_factory = sqlite3.Row
         return conn
 

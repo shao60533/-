@@ -131,6 +131,14 @@ alerts:
     bot_token: ""
     chat_id: ""
     enabled: false
+    # hardening-iteration-v1 P1.1 [C2] — bot is multi-tenant now.
+    # Empty `user_map` = bot runs but every command is denied (locked-down
+    # default). Map Telegram chat ids to registered user emails; only listed
+    # chats get to /buy /sell /alert and they operate on THEIR own data.
+    # `user_map` keys are Telegram chat ids (int as string OR int — both
+    # accepted), values are the registered user's email. Resolution happens
+    # once at bot startup against the users table.
+    user_map: {}
   email:
     smtp_host: ""
     smtp_port: 587

@@ -1,6 +1,17 @@
-"""Telegram bot - receive commands and interact with the trading system."""
+"""Telegram bot - receive commands and interact with the trading system.
+
+hardening-iteration-v1 P1.1 [C2]: bot is **multi-tenant** with a
+chat-id → user_id whitelist. Empty `alerts.telegram.user_map` =
+locked-down default (bot starts but rejects every command). Each
+command resolves `update.effective_chat.id` to a registered user_id
+via the cache built at startup; unknown chats get a curt rejection.
+This closes the pre-P1.1 hole where any Telegram user could
+/buy /sell /alert into a shared user_id=NULL "system tenant" and
+/alerts /check could list every tenant's alerts.
+"""
 
 import asyncio
+import functools
 from telegram import Update, BotCommand
 from telegram.ext import (
     ApplicationBuilder,
@@ -19,6 +30,10 @@ logger = get_logger("telegram.bot")
 _portfolio_mgr = None
 _alert_monitor = None
 _data_manager = None
+
+# Authorization cache populated by `_init_authz()` at bot start.
+# Maps Telegram chat_id (int) → registered user_id (int).
+_chat_to_user: dict[int, int] = {}
 
 
 def _get_portfolio_mgr():
@@ -45,6 +60,91 @@ def _get_data_manager():
     return _data_manager
 
 
+def _init_authz(config: dict) -> int:
+    """Build the chat_id → user_id cache from config + users table.
+
+    Returns the number of successfully resolved chats. Logs (does not
+    raise) for entries that don't match a registered active user — the
+    bot keeps running but those chats stay denied.
+    """
+    global _chat_to_user
+    _chat_to_user = {}
+
+    tg_cfg = config.get("alerts", {}).get("telegram", {})
+    user_map = tg_cfg.get("user_map") or {}
+    if not user_map:
+        logger.warning(
+            "Telegram bot started with EMPTY user_map — every command "
+            "will be rejected. Populate alerts.telegram.user_map to "
+            "authorize chat ids."
+        )
+        return 0
+
+    db_path = config.get("portfolio", {}).get("db_path", "data/portfolio.db")
+    from stock_trading_system.auth.repository import UserRepository
+    repo = UserRepository(db_path)
+
+    resolved = 0
+    for raw_chat_id, email in user_map.items():
+        try:
+            chat_id = int(raw_chat_id)
+        except (TypeError, ValueError):
+            logger.error("Invalid Telegram chat_id %r in user_map", raw_chat_id)
+            continue
+        if not isinstance(email, str) or not email.strip():
+            logger.error("Invalid email %r for chat_id=%s in user_map", email, chat_id)
+            continue
+        user = repo.find_by_email(email.strip().lower())
+        if user is None:
+            logger.error(
+                "Telegram user_map[%s]=%s — no active user found, skipping",
+                chat_id, email,
+            )
+            continue
+        _chat_to_user[chat_id] = user.id
+        resolved += 1
+        logger.info("Telegram authz: chat_id=%s → user_id=%d (%s)",
+                    chat_id, user.id, email)
+
+    return resolved
+
+
+def _resolve_user_id(chat_id: int) -> int | None:
+    """Return registered user_id for ``chat_id`` or None if not authorized."""
+    return _chat_to_user.get(int(chat_id))
+
+
+def require_auth(handler):
+    """Decorator: reject command unless chat is in the whitelist.
+
+    Attaches the resolved user_id to ``context.user_data['user_id']`` so
+    each command body just reads ``ctx.user_data['user_id']`` rather than
+    re-resolving. Also logs unauthorized attempts at WARNING level so
+    operators can see brute-probe patterns.
+    """
+    @functools.wraps(handler)
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        chat = update.effective_chat
+        if chat is None:
+            return
+        user_id = _resolve_user_id(chat.id)
+        if user_id is None:
+            logger.warning(
+                "Unauthorized Telegram command: chat_id=%s username=%s text=%r",
+                chat.id, getattr(update.effective_user, "username", None),
+                getattr(update.message, "text", None),
+            )
+            if update.message is not None:
+                await update.message.reply_text(
+                    "⛔ 此 Telegram 帐号未授权访问本 bot。请联系管理员将你的 chat id "
+                    "加入 alerts.telegram.user_map。"
+                )
+            return
+        context.user_data["user_id"] = user_id
+        return await handler(update, context)
+    return wrapper
+
+
 def _escape_md(text: str) -> str:
     """Escape MarkdownV2 special characters."""
     for ch in r"\_*[]()~`>#+-=|{}.!":
@@ -55,6 +155,7 @@ def _escape_md(text: str) -> str:
 # ── Command Handlers ────────────────────────────────────────────────────────
 
 
+@require_auth
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start command."""
     await update.message.reply_text(
@@ -76,11 +177,13 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+@require_auth
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /help command."""
     await cmd_start(update, context)
 
 
+@require_auth
 async def cmd_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /price <ticker> - get current price."""
     if not context.args:
@@ -107,6 +210,7 @@ async def cmd_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"无法获取 {ticker} 的价格数据")
 
 
+@require_auth
 async def cmd_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /analyze <ticker> - run AI analysis."""
     if not context.args:
@@ -131,7 +235,6 @@ async def cmd_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📰 *新闻:*\n{_escape_md(result.news_report[:500])}\n\n"
             f"🏢 *基本面:*\n{_escape_md(result.fundamentals_report[:500])}"
         )
-        # Telegram has 4096 char limit
         if len(text) > 4000:
             text = text[:4000] + "\\.\\.\\."
         await update.message.reply_text(text, parse_mode="MarkdownV2")
@@ -140,10 +243,12 @@ async def cmd_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"分析失败: {e}")
 
 
+@require_auth
 async def cmd_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /portfolio - show current holdings."""
+    """Handle /portfolio - show current holdings for the authorized user."""
+    user_id = context.user_data["user_id"]
     pm = _get_portfolio_mgr()
-    holdings = pm.get_holdings()
+    holdings = pm.get_holdings(user_id=user_id)
 
     if not holdings:
         await update.message.reply_text("📂 当前无持仓")
@@ -153,34 +258,43 @@ async def cmd_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for h in holdings:
         emoji = "📈" if h["pnl"] >= 0 else "📉"
         pnl_pct = f"+{h['pnl_pct']:.1f}" if h["pnl_pct"] >= 0 else f"{h['pnl_pct']:.1f}"
+        shares_s = f"{h['shares']:.0f}"
+        cost_s = f"{h['avg_cost']:.2f}"
+        price_s = f"{h['current_price']:.2f}"
         lines.append(
             f"{emoji} *{_escape_md(h['ticker'])}*  "
-            f"{_escape_md(f'{h[\"shares\"]:.0f}')}股  "
-            f"成本{_escape_md(f'{h[\"avg_cost\"]:.2f}')}  "
-            f"现价{_escape_md(f'{h[\"current_price\"]:.2f}')}  "
+            f"{_escape_md(shares_s)}股  "
+            f"成本{_escape_md(cost_s)}  "
+            f"现价{_escape_md(price_s)}  "
             f"{_escape_md(pnl_pct)}%"
         )
 
     await update.message.reply_text("\n".join(lines), parse_mode="MarkdownV2")
 
 
+@require_auth
 async def cmd_pnl(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /pnl - P&L summary."""
+    """Handle /pnl - P&L summary for the authorized user."""
+    user_id = context.user_data["user_id"]
     pm = _get_portfolio_mgr()
-    pnl = pm.get_pnl()
+    pnl = pm.get_pnl(user_id=user_id)
 
     emoji = "📈" if pnl["total_pnl"] >= 0 else "📉"
     pnl_pct = f"+{pnl['total_pnl_pct']:.2f}" if pnl["total_pnl_pct"] >= 0 else f"{pnl['total_pnl_pct']:.2f}"
+    cost_s = f"${pnl['total_cost']:,.2f}"
+    value_s = f"${pnl['total_value']:,.2f}"
+    pnl_s = f"${pnl['total_pnl']:,.2f}"
     text = (
         f"{emoji} *盈亏汇总*\n\n"
-        f"总成本: {_escape_md(f'${pnl[\"total_cost\"]:,.2f}')}\n"
-        f"总市值: {_escape_md(f'${pnl[\"total_value\"]:,.2f}')}\n"
-        f"总盈亏: {_escape_md(f'${pnl[\"total_pnl\"]:,.2f}')} \\({_escape_md(pnl_pct)}%\\)\n"
+        f"总成本: {_escape_md(cost_s)}\n"
+        f"总市值: {_escape_md(value_s)}\n"
+        f"总盈亏: {_escape_md(pnl_s)} \\({_escape_md(pnl_pct)}%\\)\n"
         f"持仓数: {pnl['positions']}"
     )
     await update.message.reply_text(text, parse_mode="MarkdownV2")
 
 
+@require_auth
 async def cmd_buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /buy <ticker> <shares> <price>."""
     if len(context.args) < 3:
@@ -190,13 +304,16 @@ async def cmd_buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ticker = context.args[0].upper()
     shares = float(context.args[1])
     price = float(context.args[2])
+    user_id = context.user_data["user_id"]
 
     from stock_trading_system.utils.helpers import detect_market
     pm = _get_portfolio_mgr()
-    pm.add_position(ticker, shares, price, market=detect_market(ticker))
+    pm.add_position(ticker, shares, price,
+                    market=detect_market(ticker), user_id=user_id)
     await update.message.reply_text(f"✅ 买入: {shares:.0f} {ticker} @ {price:.2f}")
 
 
+@require_auth
 async def cmd_sell(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /sell <ticker> <shares> <price>."""
     if len(context.args) < 3:
@@ -206,12 +323,18 @@ async def cmd_sell(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ticker = context.args[0].upper()
     shares = float(context.args[1])
     price = float(context.args[2])
+    user_id = context.user_data["user_id"]
 
     pm = _get_portfolio_mgr()
-    pm.sell_position(ticker, shares, price)
+    try:
+        pm.sell_position(ticker, shares, price, user_id=user_id)
+    except ValueError as e:
+        await update.message.reply_text(f"❌ {e}")
+        return
     await update.message.reply_text(f"✅ 卖出: {shares:.0f} {ticker} @ {price:.2f}")
 
 
+@require_auth
 async def cmd_alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /alert <ticker> <condition> <threshold>."""
     if len(context.args) < 3:
@@ -225,22 +348,19 @@ async def cmd_alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ticker = context.args[0].upper()
     condition = context.args[1]
     threshold = float(context.args[2])
+    user_id = context.user_data["user_id"]
 
     monitor = _get_alert_monitor()
-    monitor.add_alert(ticker, condition, threshold)
+    monitor.add_alert(ticker, condition, threshold, user_id=user_id)
     await update.message.reply_text(f"🔔 预警已添加: {ticker} {condition} {threshold}")
 
 
+@require_auth
 async def cmd_alerts(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /alerts - list active alerts.
-
-    Telegram bot is currently single-tenant (single bot owner), so it lists
-    every active alert with ``scope='all'``. If the bot is later wired up
-    to per-user authentication, swap to ``scope='user'`` with the resolved
-    Telegram→user_id mapping.
-    """
+    """Handle /alerts - list authorized user's active alerts."""
+    user_id = context.user_data["user_id"]
     monitor = _get_alert_monitor()
-    alerts = monitor.list_alerts(scope="all")
+    alerts = monitor.list_alerts(user_id=user_id, scope="user")
 
     if not alerts:
         await update.message.reply_text("🔕 当前无活跃预警")
@@ -260,13 +380,12 @@ async def cmd_alerts(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines), parse_mode="MarkdownV2")
 
 
+@require_auth
 async def cmd_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /check - manually check alerts.
-
-    Like ``cmd_alerts``, single-tenant bot use uses ``scope='all'``.
-    """
+    """Handle /check - manually check this user's alerts."""
+    user_id = context.user_data["user_id"]
     monitor = _get_alert_monitor()
-    triggered = monitor.check_alerts(scope="all")
+    triggered = monitor.check_alerts(user_id=user_id, scope="user")
 
     if triggered:
         lines = [f"🚨 触发 {len(triggered)} 条预警:\n"]
@@ -277,6 +396,7 @@ async def cmd_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("✅ 无预警触发")
 
 
+@require_auth
 async def cmd_screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /screen [market] [strategy]."""
     market = context.args[0] if context.args else "us"
@@ -308,9 +428,11 @@ async def cmd_screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"筛选失败: {e}")
 
 
+@require_auth
 async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /report [type]."""
     report_type = context.args[0] if context.args else "daily"
+    user_id = context.user_data["user_id"]
 
     await update.message.reply_text(f"📝 正在生成{report_type}报告...")
 
@@ -318,16 +440,13 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from stock_trading_system.reports.report_generator import ReportGenerator
         gen = ReportGenerator(get_config())
 
-        if report_type == "daily":
-            content = gen.daily_report()
-        elif report_type == "weekly":
-            content = gen.weekly_report()
+        if report_type == "weekly":
+            content = gen.weekly_report(user_id=user_id)
         elif report_type == "monthly":
-            content = gen.monthly_report()
+            content = gen.monthly_report(user_id=user_id)
         else:
-            content = gen.daily_report()
+            content = gen.daily_report(user_id=user_id)
 
-        # Send as plain text (report uses markdown that may conflict with Telegram)
         if len(content) > 4000:
             content = content[:4000] + "..."
         await update.message.reply_text(content)
@@ -337,8 +456,16 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle unknown commands."""
-    await update.message.reply_text("未知命令，输入 /help 查看可用命令")
+    """Handle unknown commands. Not wrapped in @require_auth so
+    unauthorized users still see a friendly 'unknown command' message
+    rather than getting silently dropped."""
+    chat = update.effective_chat
+    if chat is not None and _resolve_user_id(chat.id) is None:
+        # Don't even reveal which commands exist.
+        logger.warning("Unauthorized unknown command from chat_id=%s", chat.id)
+        return
+    if update.message is not None:
+        await update.message.reply_text("未知命令，输入 /help 查看可用命令")
 
 
 # ── Bot Setup ───────────────────────────────────────────────────────────────
@@ -376,11 +503,13 @@ def run_bot(config_path=None):
         print("Error: Telegram bot_token not configured in config.yaml")
         return
 
+    authorized = _init_authz(config)
+    logger.info("Telegram bot authz: %d chat(s) whitelisted", authorized)
+
     logger.info("Starting Telegram bot...")
 
     app = ApplicationBuilder().token(token).post_init(post_init).build()
 
-    # Register handlers
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("price", cmd_price))

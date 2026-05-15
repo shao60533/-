@@ -132,6 +132,7 @@ def make_analysis_worker(get_analyzer, get_strategy_engine, get_portfolio, get_r
         progress_cb(85, "生成策略建议")
         advice, holdings_snapshot = _build_advice_with_snapshot(
             result, ticker, get_strategy_engine, get_portfolio, get_router,
+            user_id=user_id,
         )
 
         progress_cb(98, "整理结果")
@@ -329,17 +330,24 @@ def _rendering_outputs(rendering, result) -> dict:
 
 def _build_advice_with_snapshot(
     result, ticker, get_strategy_engine, get_portfolio, get_router,
+    user_id: int | None = None,
 ) -> tuple[dict | None, str | None]:
     """Build per-user advice + capture the holdings snapshot at advice time.
 
     The snapshot is what user_analysis_advice.holdings_context_snapshot stores
     — needed so an audit trail can replay why a particular position-sizing
     recommendation was made later.
+
+    ``user_id`` is required after hardening-iteration-v1 P1.3 — worker
+    context has no Flask g.user, and PortfolioManager will now raise if
+    called without a tenant id. When the caller can't determine which
+    user owns the run, snapshot is an empty list rather than a cross-
+    tenant aggregate.
     """
     try:
         engine = get_strategy_engine()
         portfolio = get_portfolio()
-        holdings = portfolio.get_holdings()
+        holdings = portfolio.get_holdings(user_id=user_id) if user_id else []
         snapshot = json.dumps(
             [
                 {
@@ -647,20 +655,29 @@ def make_report_worker(get_report_gen):
     def worker(params: dict, progress_cb: ProgressCb) -> dict:
         rtype = params.get("type", "daily")
         ticker = params.get("ticker")
+        # P1.3: report generators are per-tenant; caller injects __user_id__.
+        # 'stock' report is the only type that doesn't need user_id (it's
+        # an analysis run for one ticker, independent of holdings).
+        user_id = params.get("__user_id__")
         progress_cb(20, f"生成 {rtype} 报告")
         gen = get_report_gen()
-        if rtype == "daily":
-            content = gen.daily_report()
-        elif rtype == "weekly":
-            content = gen.weekly_report()
-        elif rtype == "monthly":
-            content = gen.monthly_report()
-        elif rtype == "stock":
+        if rtype == "stock":
             if not ticker:
                 raise ValueError("stock report requires a ticker")
             content = gen.stock_report(ticker.upper())
         else:
-            raise ValueError(f"Unknown report type: {rtype}")
+            if user_id is None:
+                raise RuntimeError(
+                    f"report worker: __user_id__ missing for type={rtype}"
+                )
+            if rtype == "daily":
+                content = gen.daily_report(user_id=user_id)
+            elif rtype == "weekly":
+                content = gen.weekly_report(user_id=user_id)
+            elif rtype == "monthly":
+                content = gen.monthly_report(user_id=user_id)
+            else:
+                raise ValueError(f"Unknown report type: {rtype}")
         progress_cb(95, "完成")
         return {"type": rtype, "ticker": (ticker or "").upper(),
                 "content": content}
@@ -791,10 +808,18 @@ def make_batch_analysis_worker(deps):
         skip_hours = int(params.get("skip_recent_hours", 4))
         date = params.get("date") or _today_str()
         task_id = params.get("__task_id__", "")
+        # P1.3: worker is in a thread, no Flask g.user — caller injects
+        # __user_id__ at submit time. Without it PortfolioManager raises.
+        user_id = params.get("__user_id__")
+        if user_id is None:
+            raise RuntimeError(
+                "batch_analyze_holdings: __user_id__ missing in params "
+                "(worker can't determine which tenant's holdings to scan)"
+            )
 
-        # 1. Get holdings
+        # 1. Get holdings (scoped to the submitting user)
         pm = deps.get_portfolio()
-        holdings = pm.get_holdings()
+        holdings = pm.get_holdings(user_id=user_id)
         tickers = [h["ticker"] for h in holdings if h.get("shares", 0) > 0]
 
         if not tickers:

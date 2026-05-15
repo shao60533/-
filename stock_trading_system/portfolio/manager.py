@@ -42,8 +42,18 @@ class PortfolioManager:
 
     # ── Manual Entry ─────────────────────────────────────────────────────
 
-    def _user_id(self, user_id: int | None = None) -> int | None:
-        """Resolve user_id: explicit param > flask g.user > None."""
+    def _user_id(self, user_id: int | None = None) -> int:
+        """Resolve user_id: explicit param > flask g.user > raise.
+
+        hardening-iteration-v1 P1.3: the legacy ``return None`` branch
+        let cron/CLI callers fall into "no tenant filter" mode at the DB
+        layer, producing cross-tenant aggregates (snapshots with
+        ``user_id=NULL``, alert_history with no owner). Callers in
+        non-request contexts (cron / CLI / worker) MUST now pass
+        ``user_id=`` explicitly. Admin-only sweeps that legitimately
+        span tenants should iterate users and call this per user_id,
+        not pass ``None``.
+        """
         if user_id is not None:
             return user_id
         try:
@@ -52,7 +62,11 @@ class PortfolioManager:
                 return g.user.id
         except ImportError:
             pass
-        return None
+        raise RuntimeError(
+            "PortfolioManager: missing tenant context. Pass user_id "
+            "explicitly from worker/CLI/cron callers; never rely on "
+            "implicit None — see hardening-iteration-v1 P1.3."
+        )
 
     def add_position(
         self,

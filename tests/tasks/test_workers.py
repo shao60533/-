@@ -76,9 +76,10 @@ class FakeScreener:
 
 
 class FakeReportGen:
-    def daily_report(self): return "# Daily\n\nContent"
-    def weekly_report(self): return "# Weekly"
-    def monthly_report(self): return "# Monthly"
+    # hardening-iteration-v1 P1.3 — daily/weekly/monthly now require user_id.
+    def daily_report(self, user_id): return "# Daily\n\nContent"
+    def weekly_report(self, user_id): return "# Weekly"
+    def monthly_report(self, user_id): return "# Monthly"
     def stock_report(self, ticker): return f"# {ticker} Report"
 
 
@@ -192,9 +193,16 @@ def test_backtest_worker_rejects_empty_ticker():
 
 def test_report_worker_daily():
     worker = make_report_worker(get_report_gen=lambda: FakeReportGen())
-    r = worker({"type": "daily"}, lambda *a, **k: None)
+    r = worker({"type": "daily", "__user_id__": 1}, lambda *a, **k: None)
     assert r["type"] == "daily"
     assert r["content"].startswith("# Daily")
+
+
+def test_report_worker_daily_missing_user_id_raises():
+    """P1.3: cron/CLI caller must inject __user_id__ for tenant-scoped reports."""
+    worker = make_report_worker(get_report_gen=lambda: FakeReportGen())
+    with pytest.raises(RuntimeError, match="__user_id__ missing"):
+        worker({"type": "daily"}, lambda *a, **k: None)
 
 
 def test_report_worker_stock():
@@ -212,7 +220,7 @@ def test_report_worker_stock_missing_ticker():
 def test_report_worker_unknown_type():
     worker = make_report_worker(get_report_gen=lambda: FakeReportGen())
     with pytest.raises(ValueError, match="Unknown report type"):
-        worker({"type": "yearly"}, lambda *a, **k: None)
+        worker({"type": "yearly", "__user_id__": 1}, lambda *a, **k: None)
 
 
 # ── WK-1.4.9 qwen fundamentals worker ───────────────────────────────────────
@@ -301,7 +309,8 @@ def test_submit_analysis_task_runs_to_completion(tmp_path):
         get_router=lambda: FakeRouter(),
     )
     register_default_workers(tm, deps)
-    task = tm.submit("analysis", {"ticker": "AAPL"})
+    # P1.6: TaskManager.submit now requires created_by from non-request callers.
+    task = tm.submit("analysis", {"ticker": "AAPL"}, created_by=1)
     final = tm.wait_for(task["id"], timeout=5)
     assert final["status"] == "success"
     assert final["result_ref"].startswith("analysis_history:")

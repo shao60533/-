@@ -126,7 +126,12 @@ class TaskManager:
 
         Multi-tenant: if caller didn't pass created_by, infer from Flask g.user
         so per-user task lists work without every route remembering to pass it.
-        Falls back to legacy "user" string in non-request contexts (cron, CLI).
+
+        hardening-iteration-v1 P1.6: the legacy ``created_by = "user"`` string
+        fallback wrote tasks with a non-integer owner column (typeof=text);
+        ``task_events.user_id`` then inherited that string via downstream
+        joins. Cron / worker callers MUST now pass ``created_by`` explicitly.
+        Implicit None → raise so tests catch the regression.
         """
         if created_by is None:
             try:
@@ -136,7 +141,11 @@ class TaskManager:
             except Exception:
                 pass
             if created_by is None:
-                created_by = "user"
+                raise RuntimeError(
+                    "TaskManager.submit: created_by missing. Pass it "
+                    "explicitly from non-request callers (cron/CLI) — "
+                    "see hardening-iteration-v1 P1.6."
+                )
         window = (
             self._default_window
             if idempotency_window is None

@@ -1539,7 +1539,9 @@ def create_app(config_path=None):
 
     @app.route("/api/portfolio/holdings")
     def api_holdings():
-        return jsonify(_get_portfolio_mgr().get_holdings())
+        if g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
+        return jsonify(_get_portfolio_mgr().get_holdings(user_id=g.user.id))
 
     def _validate_trade(data: dict, *, require_existing: bool,
                          user_id: int) -> str | None:
@@ -1652,11 +1654,15 @@ def create_app(config_path=None):
 
     @app.route("/api/portfolio/pnl")
     def api_pnl():
-        return jsonify(_get_portfolio_mgr().get_pnl())
+        if g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
+        return jsonify(_get_portfolio_mgr().get_pnl(user_id=g.user.id))
 
     @app.route("/api/portfolio/allocation")
     def api_allocation():
-        return jsonify(_get_portfolio_mgr().get_allocation())
+        if g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
+        return jsonify(_get_portfolio_mgr().get_allocation(user_id=g.user.id))
 
     @app.route("/api/portfolio/summary")
     def api_portfolio_summary():
@@ -1726,13 +1732,15 @@ def create_app(config_path=None):
         if g.user is None:
             return jsonify({"error": "unauthorized"}), 401
         pm = _get_portfolio_mgr()
-        pm.remove_position(ticker.upper())
+        pm.remove_position(ticker.upper(), user_id=g.user.id)
         return jsonify({"ok": True})
 
     @app.route("/api/portfolio/history")
     def api_history():
+        if g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
         days = request.args.get("days", 30, type=int)
-        return jsonify(_get_portfolio_mgr().get_history(days=days))
+        return jsonify(_get_portfolio_mgr().get_history(days=days, user_id=g.user.id))
 
     # ── Analysis API ────────────────────────────────────────────────────
 
@@ -2439,17 +2447,20 @@ def create_app(config_path=None):
 
     @app.route("/api/report", methods=["POST"])
     def api_report():
+        if g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
         data = request.json
         report_type = data.get("type", "daily")
         ticker = data.get("ticker")
         gen = _get_report_gen()
+        uid = g.user.id
 
         if report_type == "daily":
-            content = gen.daily_report()
+            content = gen.daily_report(user_id=uid)
         elif report_type == "weekly":
-            content = gen.weekly_report()
+            content = gen.weekly_report(user_id=uid)
         elif report_type == "monthly":
-            content = gen.monthly_report()
+            content = gen.monthly_report(user_id=uid)
         elif report_type == "stock" and ticker:
             content = gen.stock_report(ticker.upper())
         else:
@@ -2678,7 +2689,7 @@ def create_app(config_path=None):
         if not ticker:
             return jsonify({"error": "Missing ticker"}), 400
         pm = _get_portfolio_mgr()
-        pm.update_cost(ticker, avg_cost)
+        pm.update_cost(ticker, avg_cost, user_id=g.user.id)
         return jsonify({"ok": True, "message": f"Updated {ticker} avg cost to {avg_cost}"})
 
     @app.route("/api/portfolio/snapshot", methods=["POST"])
@@ -2686,7 +2697,7 @@ def create_app(config_path=None):
         if g.user is None:
             return jsonify({"error": "unauthorized"}), 401
         pm = _get_portfolio_mgr()
-        pm.take_snapshot()
+        pm.take_snapshot(user_id=g.user.id)
         return jsonify({"ok": True, "message": "Snapshot saved"})
 
     @app.route("/api/portfolio/snapshots/backfill", methods=["POST"])

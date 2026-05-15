@@ -65,6 +65,19 @@ INVARIANTS = [
     # always supplies a user_id; this invariant guards regressions.
     ("daily_snapshots_have_owner",
      "SELECT COUNT(*) FROM daily_snapshots WHERE user_id IS NULL", 0),
+
+    # P1.5: every user_analysis_advice row must reference a live
+    # analysis_history row — otherwise the audit trail "which analysis
+    # produced this advice" is broken and the row is unreachable in UI.
+    ("user_advice_links_analysis",
+     """SELECT COUNT(*) FROM user_analysis_advice
+        WHERE analysis_id NOT IN (SELECT id FROM analysis_history)""", 0),
+
+    # P1.5 / P1.6: with TaskManager.submit now raising on missing
+    # created_by, every new task row carries an owner. This invariant
+    # catches regressions where a non-request caller forgets to pass it.
+    ("tasks_have_owner",
+     "SELECT COUNT(*) FROM tasks WHERE created_by IS NULL", 0),
 ]
 
 

@@ -35,6 +35,11 @@ CREATE INDEX IF NOT EXISTS idx_cache_fetched_at ON kv_cache(fetched_at);
 
 
 # Default TTLs in seconds — overridden by config[data_routing][cache_ttl].
+#
+# hardening-iteration-v1 P2.2: every category that downstream code may
+# write MUST be registered here, otherwise set() rejects the write. This
+# closes the pre-P2.2 hole where unknown categories silently became
+# "no-TTL = forever" — turning the cache into a memory-leaking time bomb.
 _DEFAULT_TTL: dict[str, int] = {
     "price_quote": 60,        # 1 min
     "daily_bars": 43200,      # 12 h
@@ -42,6 +47,14 @@ _DEFAULT_TTL: dict[str, int] = {
     "fundamentals": 86400,    # 24 h
     "news": 3600,             # 1 h
     "screen_results": 3600,   # 1 h
+    # screener v3 guru signals — TTL is computed per-call via
+    # _seconds_until_end_of_day(), so the entry here is just to
+    # register the category (any positive number works as default).
+    "guru_signal_v3": 3600,
+    # screener v2 metadata caches
+    "regime": 3600,           # market regime detection (refresh hourly)
+    "nl_parse": 86400,        # NL → query spec (deterministic, day-long)
+    "roundtable": 3600,       # v3 roundtable consensus
 }
 
 
@@ -68,6 +81,12 @@ class LocalCache:
             )
         self._ttl = {**_DEFAULT_TTL, **{k: int(v) for k, v in ttl_overrides.items()}}
 
+        # Per-entry TTL overrides for callers that need finer control than
+        # the category default (e.g. screener v3 guru cache: "expire at
+        # end of trading day"). Process-local; LRU-bounded so a busy
+        # cache doesn't grow this dict unbounded.
+        self._per_entry_ttl: dict[tuple[str, str], int] = {}
+
         # Stats (process-local, for monitoring cache hit rate)
         self._hits = 0
         self._misses = 0
@@ -88,10 +107,20 @@ class LocalCache:
     # ── Generic get/set ──────────────────────────────────────────────────
 
     def get(self, category: str, key: str) -> Any | None:
-        """Return cached value if present and not expired. None otherwise."""
-        ttl = self._ttl.get(category)
+        """Return cached value if present and not expired. None otherwise.
+
+        TTL resolution: per-entry override (set via ``set(..., ttl=)``) >
+        category default in ``_DEFAULT_TTL`` > None (read-only treat as
+        non-expiring). The per-entry path is what makes screener v3
+        guru's "expire at EOD" semantics work.
+        """
+        ttl = self._per_entry_ttl.get((category, key))
         if ttl is None:
-            # Unknown category — treat as infinite TTL but warn.
+            ttl = self._ttl.get(category)
+        if ttl is None:
+            # Unknown category at read time — likely legacy row from a
+            # category we since un-registered. Treat as non-expiring so
+            # we don't lose data, but log for visibility.
             logger.debug("Unknown cache category '%s' — using no TTL", category)
         with self._conn() as conn:
             row = conn.execute(
@@ -120,8 +149,48 @@ class LocalCache:
         self._hits += 1
         return value
 
-    def set(self, category: str, key: str, value: Any) -> None:
-        """Write/overwrite a cache entry."""
+    def set(
+        self,
+        category: str,
+        key: str,
+        value: Any,
+        ttl: int | None = None,
+        unsafe_default_ttl: int | None = None,
+    ) -> None:
+        """Write/overwrite a cache entry.
+
+        ``ttl`` is accepted for callers that want a per-write TTL override
+        (e.g. screener v3 guru cache computes "seconds until EOD"). When
+        provided it shadows ``_DEFAULT_TTL[category]`` for THIS entry's
+        eligibility check at read time. The current schema doesn't store
+        per-entry TTL, so the override is applied logically via
+        ``self._per_entry_ttl[(cat,key)]`` — see ``get()``.
+
+        hardening-iteration-v1 P2.1: pre-P2.1 LocalCache.set didn't
+        accept ``ttl=`` at all and every v3 guru cache write raised
+        ``TypeError`` that was swallowed in caller's debug-only except,
+        so cache hit-rate was 0% silently. This signature unblocks v3.
+
+        hardening-iteration-v1 P2.2: unknown categories are rejected
+        (was: silently treated as "no TTL = forever"). Use
+        ``unsafe_default_ttl`` to opt-in for dev/experimental categories
+        before they're registered in ``_DEFAULT_TTL``.
+        """
+        if category not in self._ttl:
+            if unsafe_default_ttl is None:
+                logger.warning(
+                    "LocalCache.set rejected: unknown category %r — "
+                    "register it in _DEFAULT_TTL first or pass "
+                    "unsafe_default_ttl=<seconds> for experimental use",
+                    category,
+                )
+                return
+            # Caller knows what they're doing — register the category
+            # for the lifetime of this LocalCache instance.
+            self._ttl[category] = int(unsafe_default_ttl)
+            logger.info("LocalCache: dev-registered category %r ttl=%ds",
+                         category, unsafe_default_ttl)
+
         try:
             blob = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
         except Exception as e:
@@ -135,6 +204,8 @@ class LocalCache:
                 "  payload = excluded.payload, fetched_at = excluded.fetched_at",
                 (category, key, blob, _now()),
             )
+        if ttl is not None:
+            self._per_entry_ttl[(category, key)] = int(ttl)
 
     def delete(self, category: str, key: str) -> bool:
         with self._lock, self._conn() as conn:
