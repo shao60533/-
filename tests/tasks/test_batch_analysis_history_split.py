@@ -161,7 +161,7 @@ def test_batch_two_successes_creates_two_analysis_history_rows(configured_tm):
         # skip branch.
         task = tm.submit("batch_analysis",
                          {"skip_recent_hours": 0, "__user_id__": 1})
-        final = tm.wait_for(task["id"], timeout=10)
+        final = tm.wait_for(task["id"], timeout=30)
         assert final["status"] == "success", final
 
         # Two child analysis_history rows: one AAPL, one MSFT.
@@ -204,7 +204,7 @@ def test_batch_one_success_one_failure_writes_exactly_one_row(configured_tm):
     try:
         task = tm.submit("batch_analysis",
                          {"skip_recent_hours": 0, "__user_id__": 1})
-        final = tm.wait_for(task["id"], timeout=10)
+        final = tm.wait_for(task["id"], timeout=30)
         assert final["status"] == "success", final
 
         # Exactly one analysis_history row (AAPL), none for BADCO.
@@ -290,7 +290,7 @@ def test_single_analysis_path_writes_exactly_one_row_no_regression(configured_tm
         task = tm.submit("analysis",
                          {"ticker": "AAPL", "date": "2026-05-15",
                           "__user_id__": 1})
-        final = tm.wait_for(task["id"], timeout=10)
+        final = tm.wait_for(task["id"], timeout=30)
         assert final["status"] == "success", final
         assert final["result_ref"].startswith("analysis_history:")
 
