@@ -1,0 +1,63 @@
+/*
+ * Driver.js dark-theme overrides for onboarding v1.0.
+ *
+ * Aligns the library's default white popovers with the shadcn dark
+ * palette used everywhere else in StockAI Terminal. Visual contract
+ * lives at /demo_onboarding_v1.html — keep changes here in lockstep
+ * with that demo.
+ */
+
+.driver-popover {
+  background: hsl(var(--card));
+  color: hsl(var(--foreground));
+  border: 1px solid color-mix(in srgb, hsl(var(--primary)) 30%, transparent);
+  border-radius: 12px;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.6);
+}
+
+.driver-popover-title {
+  color: hsl(var(--foreground));
+  font-size: 15px;
+  font-weight: 800;
+  margin-bottom: 4px;
+}
+
+.driver-popover-description {
+  color: hsl(var(--muted-foreground));
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.driver-popover-progress-text {
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+}
+
+.driver-popover-footer button {
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+  border: 1px solid hsl(var(--primary));
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: 700;
+  text-shadow: none;
+  padding: 8px 14px;
+  min-height: 36px;
+}
+
+.driver-popover-prev-btn {
+  background: transparent !important;
+  color: hsl(var(--muted-foreground)) !important;
+  border: 1px solid hsl(var(--border)) !important;
+}
+
+.driver-popover-close-btn {
+  color: hsl(var(--muted-foreground));
+  font-size: 16px;
+  top: 8px;
+  right: 10px;
+}
+
+.driver-overlay {
+  opacity: 0.72 !important;
+}
