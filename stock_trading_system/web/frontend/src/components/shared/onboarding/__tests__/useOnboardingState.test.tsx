@@ -43,7 +43,7 @@ describe("useOnboardingState", () => {
     const { result } = renderHook(() => useOnboardingState())
     await waitFor(() => expect(result.current.loading).toBe(false))
     expect(result.current.state).toEqual(DEFAULT_STATE)
-    const fetchMock = global.fetch as unknown as ReturnType<typeof vi.fn>
+    const fetchMock = globalThis.fetch as unknown as ReturnType<typeof vi.fn>
     expect(fetchMock.mock.calls[0][0]).toBe("/api/onboarding/state")
   })
 
@@ -51,7 +51,7 @@ describe("useOnboardingState", () => {
     const { result } = renderHook(() => useOnboardingState())
     await waitFor(() => expect(result.current.loading).toBe(false))
 
-    const fetchMock = global.fetch as unknown as ReturnType<typeof vi.fn>
+    const fetchMock = globalThis.fetch as unknown as ReturnType<typeof vi.fn>
     fetchMock.mockClear()
 
     await act(async () => {
@@ -74,7 +74,7 @@ describe("useOnboardingState", () => {
     const { result } = renderHook(() => useOnboardingState())
     await waitFor(() => expect(result.current.loading).toBe(false))
 
-    const fetchMock = global.fetch as unknown as ReturnType<typeof vi.fn>
+    const fetchMock = globalThis.fetch as unknown as ReturnType<typeof vi.fn>
     fetchMock.mockClear()
 
     await act(async () => {
@@ -91,7 +91,7 @@ describe("useOnboardingState", () => {
     const { result } = renderHook(() => useOnboardingState())
     await waitFor(() => expect(result.current.loading).toBe(false))
 
-    const fetchMock = global.fetch as unknown as ReturnType<typeof vi.fn>
+    const fetchMock = globalThis.fetch as unknown as ReturnType<typeof vi.fn>
     fetchMock.mockClear()
 
     await act(async () => {
