@@ -660,6 +660,21 @@ def create_app(config_path=None):
     from stock_trading_system.migrations.add_oauth_accounts import add_oauth_accounts
     add_oauth_accounts(db_path)
 
+    # hardening-iteration-v1 P3.4: run any remaining pending migrations
+    # via the unified runner. Idempotent — already-applied entries are
+    # skipped via applied_migrations table. add_oauth_accounts() above
+    # stays as the explicit early call because OAuth must be ready
+    # before the route table builds; everything else can flow through
+    # the runner.
+    if _multi_tenant_ready:
+        try:
+            from stock_trading_system.migrations._runner import run_pending
+            run_pending(db_path)
+        except Exception as e:  # noqa: BLE001
+            # A migration failure must not stop the web app from booting
+            # in degraded mode — log loud and continue.
+            logger.warning("Migration runner failed on boot: %s", e)
+
     # Fail-fast on missing/malformed OAUTH_ENCRYPT_KEY *only when* an OAuth
     # provider is enabled. Without a provider configured, the rest of the
     # app must still boot (deployments that don't use OAuth at all).
