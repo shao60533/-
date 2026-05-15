@@ -32,6 +32,26 @@ _task_manager = None
 _local_cache = None
 _data_router = None
 _cleanup_scheduler = None
+_onboarding_repo = None  # OnboardingRepository, populated by create_app()
+
+
+def _mark_onboarding_step(user_id, step_id: str) -> None:
+    """Fail-soft helper called from business handlers (worker / endpoint)
+    when a tracked onboarding action succeeds.
+
+    NEVER raises — onboarding bookkeeping must not break the business
+    action that triggered it. Silent when the repo singleton hasn't been
+    initialized yet (e.g. import-time call before create_app()).
+    """
+    if not user_id or _onboarding_repo is None:
+        return
+    try:
+        _onboarding_repo.mark_step(int(user_id), step_id)
+    except Exception as e:
+        logger.warning(
+            "onboarding mark_step failed user=%s step=%s: %s",
+            user_id, step_id, e,
+        )
 
 
 def _get_portfolio_mgr():
@@ -600,6 +620,10 @@ def create_app(config_path=None):
     _invite_mgr = InviteCodeManager(db_path)
     _multi_tenant_ready = ensure_multi_tenant_ready(db_path)
 
+    from stock_trading_system.auth.onboarding_repository import OnboardingRepository
+    global _onboarding_repo
+    _onboarding_repo = OnboardingRepository(db_path)
+
     from stock_trading_system.tasks.event_emitter import ensure_task_events_table
     ensure_task_events_table(db_path)
 
@@ -828,6 +852,49 @@ def create_app(config_path=None):
         if pwd_err:
             return jsonify({"error": "password_weak", "message": pwd_err}), 400
         _user_repo.update_password(u.id, new)
+        return jsonify({"ok": True})
+
+    # ── Onboarding v1.0 ────────────────────────────────────────────────
+
+    @app.route("/api/onboarding/state")
+    def api_onboarding_state():
+        from flask import g
+        if g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
+        state = _onboarding_repo.get_or_init(g.user.id)
+        return jsonify({
+            "welcome_pending": state.welcome_pending,
+            "welcomed": state.welcomed,
+            "tour_completed": state.tour_completed,
+            "checklist_dismissed": state.checklist_dismissed,
+            "steps_completed": state.steps_completed,
+        })
+
+    @app.route("/api/onboarding/mark-welcomed", methods=["POST"])
+    def api_onboarding_mark_welcomed():
+        from flask import g
+        if g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
+        body = request.get_json(silent=True) or {}
+        _onboarding_repo.mark_welcomed(
+            g.user.id, tour_completed=bool(body.get("tour_completed", False)),
+        )
+        return jsonify({"ok": True})
+
+    @app.route("/api/onboarding/dismiss-checklist", methods=["POST"])
+    def api_onboarding_dismiss_checklist():
+        from flask import g
+        if g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
+        _onboarding_repo.dismiss_checklist(g.user.id)
+        return jsonify({"ok": True})
+
+    @app.route("/api/onboarding/reset", methods=["POST"])
+    def api_onboarding_reset():
+        from flask import g
+        if g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
+        _onboarding_repo.reset(g.user.id)
         return jsonify({"ok": True})
 
     # ── Admin Routes ───────────────────────────────────────────────────

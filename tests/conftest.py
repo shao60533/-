@@ -37,6 +37,7 @@ def _reset_app_singletons() -> None:
         "_analyzer", "_screener", "_report_gen", "_strategy_engine",
         "_scheduler", "_scheduler_thread", "_paper_store",
         "_data_router", "_cleanup_scheduler",
+        "_onboarding_repo",
     ):
         if hasattr(app_module, attr):
             setattr(app_module, attr, None)
@@ -80,6 +81,17 @@ def _bootstrap_users_db(db_path: str) -> None:
             notify_email   INTEGER DEFAULT 0,
             created_at     TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at     TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS user_onboarding (
+            user_id              INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+            welcome_pending      INTEGER NOT NULL DEFAULT 0,
+            welcomed             INTEGER NOT NULL DEFAULT 0,
+            tour_completed       INTEGER NOT NULL DEFAULT 0,
+            tour_skipped_at_step INTEGER,
+            checklist_dismissed  INTEGER NOT NULL DEFAULT 0,
+            steps_completed      TEXT NOT NULL DEFAULT '{}',
+            created_at           TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at           TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
         """
     )
