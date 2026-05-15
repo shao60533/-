@@ -609,6 +609,10 @@ def create_app(config_path=None):
     from stock_trading_system.migrations.add_oauth_accounts import add_oauth_accounts
     add_oauth_accounts(db_path)
 
+    # Onboarding v1.0. Idempotent — only creates user_onboarding when missing.
+    from stock_trading_system.migrations.add_user_onboarding import add_user_onboarding
+    add_user_onboarding(db_path)
+
     # Fail-fast on missing/malformed OAUTH_ENCRYPT_KEY *only when* an OAuth
     # provider is enabled. Without a provider configured, the rest of the
     # app must still boot (deployments that don't use OAuth at all).
