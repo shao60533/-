@@ -79,12 +79,19 @@ def test_mark_baseline_marks_names(fresh_db):
 
 def test_baseline_marked_names_skipped_on_dry_run(fresh_db):
     """After baseline marking, the dry-run plan should NOT include
-    those names — they're treated as done."""
-    _runner.mark_baseline(fresh_db, ["to_multi_tenant", "p0a_data_partition"])
+    those names — they're treated as done.
+
+    ``to_multi_tenant`` is intentionally outside the runner's
+    MIGRATIONS list (one-shot bootstrap, takes admin creds, runs via
+    its own CLI), so baseline-marking it is a no-op as far as the
+    runner is concerned. Only check migrations the runner actually
+    iterates.
+    """
+    _runner.mark_baseline(fresh_db, ["p0a_data_partition", "task_events_v1"])
     result = _runner.run_pending(fresh_db, dry_run=True)
     skipped = set(result["skipped_done"])
-    assert "to_multi_tenant" in skipped
     assert "p0a_data_partition" in skipped
+    assert "task_events_v1" in skipped
 
 
 def test_opt_in_skipped_by_default(fresh_db):

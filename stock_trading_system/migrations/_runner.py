@@ -40,8 +40,18 @@ logger = get_logger("migrations.runner")
 # Canonical order — newer migrations append. The runner walks this list
 # and skips anything already in ``applied_migrations``. NEVER reorder;
 # the list IS the version history.
+#
+# Note: ``to_multi_tenant`` is intentionally NOT in this list. It's a
+# one-shot bootstrap migration that takes ``admin_email`` /
+# ``admin_password`` as required positional args; the runner only kicks
+# in once the DB is multi-tenant-ready (the create_app() gate), so by
+# the time we reach this loop ``to_multi_tenant`` has already run via
+# its own CLI invocation. Trying to re-run it through the runner
+# blows up with TypeError because the runner can't synthesise
+# credentials. Treat to_multi_tenant the same way Alembic treats the
+# initial-schema migration: an external one-shot, not a forever-loop
+# entry.
 MIGRATIONS: list[str] = [
-    "to_multi_tenant",
     "p0a_data_partition",
     "task_events_v1",
     "paper_trade_v1_3",
