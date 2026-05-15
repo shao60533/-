@@ -812,6 +812,7 @@ def create_app(config_path=None):
         # Create user + redeem invite
         user = _user_repo.create(email, password, display_name)
         _invite_mgr.redeem(invite_code, user.id)
+        _onboarding_repo.init_for_new_user(user.id)
         login_user(user.id)
 
         return jsonify({"user": {"id": user.id, "email": user.email,
@@ -1406,6 +1407,7 @@ def create_app(config_path=None):
             profile=profile_rec, tokens=tokens_rec,
         )
         _invite_mgr.redeem(invite_code, new_user.id)
+        _onboarding_repo.init_for_new_user(new_user.id)
         _login_user(new_user.id)
         _user_repo.update_last_login(new_user.id)
         return jsonify({"ok": True, "user_id": new_user.id})
