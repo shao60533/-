@@ -310,7 +310,7 @@
   <main class="stage">
     <section class="brief">
       <h1>StockAI · 新手引导 Demo v1</h1>
-      <p>注册后首次自动触发的引导体验。包含：(1) 欢迎 modal + 风险提示；(2) Driver.js 6 步 Tour；(3) 常驻 Checklist（5 任务进度）；(4) 持仓空状态 CTA；(5) LLMSwitcher 首次点击 inline hint。所有进度仅 demo 内 localStorage 持久化。</p>
+      <p>注册后首次自动触发的引导体验。包含：(1) 欢迎 modal + 风险提示；(2) Driver.js 6 步 Tour；(3) 常驻 Checklist（4 任务进度）；(4) 持仓空状态 CTA；(5) LLMSwitcher 首次点击 inline hint。所有进度仅 demo 内 localStorage 持久化。</p>
       <div class="toolbar">
         <button onclick="resetAll()">🔄 重置 demo（重新触发引导）</button>
         <button onclick="startTour()">▶️ 仅播放 Tour（6 步）</button>
@@ -456,7 +456,6 @@
         "first-analysis": false,
         "first-screen": false,
         "first-paper-plan": false,
-        "first-alert": false,
       },
     };
     let state = loadState();
@@ -474,7 +473,6 @@
       { id: "first-analysis",  label: "完成第一次 AI 分析",     target: "tab-analysis" },
       { id: "first-screen",    label: "完成第一次智能选股",     target: "tab-discover" },
       { id: "first-paper-plan",label: "创建第一笔纸面交易计划", target: "tab-paper" },
-      { id: "first-alert",     label: "设置第一个价格预警",     target: "tab-more" },
     ];
 
     function renderChecklist() {
@@ -590,8 +588,8 @@
           {
             element: "#checklist-anchor", // 占位 element,通过 onHighlightStarted 显示 checklist
             popover: {
-              title: "🚀 5 项上手任务",
-              description: "完成下面 5 项任务即可解锁全部核心功能。完成度持续显示在首页，可随时折叠。",
+              title: "🚀 4 项上手任务",
+              description: "完成下面 4 项任务即可解锁全部核心功能。完成度持续显示在首页，可随时折叠。",
               side: "top", align: "center",
             },
             onHighlightStarted: () => {
