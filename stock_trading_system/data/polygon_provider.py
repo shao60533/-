@@ -7,7 +7,7 @@ Used when IB TWS is not available.
 import threading
 import time
 from datetime import datetime, timedelta
-from stock_trading_system.utils.timez import now_local
+from stock_trading_system.utils.timez import now_local, now_ny, today_str_ny
 
 import pandas as pd
 
@@ -96,9 +96,11 @@ class PolygonProvider:
             client = self._get_client()
 
             if not to_date:
-                to_date = now_local().strftime("%Y-%m-%d")
+                to_date = today_str_ny()
             if not from_date:
-                from_date = (now_local() - timedelta(days=365)).strftime("%Y-%m-%d")
+                # P2.5 step-2: Polygon range is a NY-market calendar
+                # span — align with today_str_ny() above.
+                from_date = (now_ny() - timedelta(days=365)).strftime("%Y-%m-%d")
 
             aggs = list(client.list_aggs(
                 ticker=ticker,

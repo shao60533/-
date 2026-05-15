@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
-from stock_trading_system.utils.timez import now_local
+from stock_trading_system.utils.timez import now_local, now_utc
 from typing import Optional
 
 from stock_trading_system.auth.password import hash_password
@@ -102,7 +102,7 @@ class UserRepository:
         email_norm = email.strip().lower()
         name = display_name or email_norm.split("@")[0]
         pwd_hash = hash_password(password)
-        now = now_local().strftime("%Y-%m-%d %H:%M:%S")
+        now = now_utc().strftime("%Y-%m-%d %H:%M:%S")
 
         with self._conn() as conn:
             cur = conn.execute(
@@ -115,7 +115,7 @@ class UserRepository:
         return self.find_by_id(user_id)  # type: ignore[return-value]
 
     def update_last_login(self, user_id: int) -> None:
-        now = now_local().strftime("%Y-%m-%d %H:%M:%S")
+        now = now_utc().strftime("%Y-%m-%d %H:%M:%S")
         with self._conn() as conn:
             conn.execute(
                 "UPDATE users SET last_login_at = ? WHERE id = ?",

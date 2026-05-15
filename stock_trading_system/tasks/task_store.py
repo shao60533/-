@@ -18,7 +18,7 @@ import json
 import sqlite3
 import threading
 from datetime import datetime, timedelta
-from stock_trading_system.utils.timez import now_local
+from stock_trading_system.utils.timez import now_local, now_utc
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -59,7 +59,7 @@ CREATE INDEX IF NOT EXISTS idx_tasks_params_hash ON tasks(params_hash, status);
 
 def now_iso() -> str:
     """ISO 8601 timestamp in local time (second precision)."""
-    return now_local().strftime("%Y-%m-%d %H:%M:%S")
+    return now_utc().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def hash_params(task_type: str, params: dict) -> str:
@@ -349,7 +349,9 @@ class TaskStore:
 
         Returns the most recent match whose status is in *statuses*.
         """
-        cutoff = (now_local() - timedelta(seconds=max(0, window_seconds))) \
+        # P2.5 step-2: compare against DB timestamps written via
+        # now_utc() — keep both sides on the same clock.
+        cutoff = (now_utc() - timedelta(seconds=max(0, window_seconds))) \
             .strftime("%Y-%m-%d %H:%M:%S")
         statuses = tuple(statuses)
         if not statuses:
@@ -905,7 +907,8 @@ class TaskStore:
 
     def cleanup_expired(self, days: int = 30) -> int:
         """Delete task rows older than *days*. Returns rows deleted."""
-        cutoff = (now_local() - timedelta(days=max(0, days))) \
+        # P2.5 step-2: align with the UTC clock that wrote created_at.
+        cutoff = (now_utc() - timedelta(days=max(0, days))) \
             .strftime("%Y-%m-%d %H:%M:%S")
         with self._lock, self._conn() as conn:
             cur = conn.execute(

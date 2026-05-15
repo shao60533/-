@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import datetime
-from stock_trading_system.utils.timez import now_local
+from stock_trading_system.utils.timez import now_local, now_utc
 from typing import Any
 
 from stock_trading_system.utils import get_logger
@@ -40,7 +40,7 @@ class PromptStore:
         reasoning: str | None = None,
     ) -> int:
         """Insert a new prompt version (status=candidate). Returns its id."""
-        now = now_local().strftime("%Y-%m-%d %H:%M:%S")
+        now = now_utc().strftime("%Y-%m-%d %H:%M:%S")
         with self._get_conn() as conn:
             cur = conn.execute(
                 """INSERT INTO prompt_versions

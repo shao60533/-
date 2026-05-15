@@ -2,7 +2,7 @@
 
 import json
 from datetime import datetime
-from stock_trading_system.utils.timez import now_local
+from stock_trading_system.utils.timez import now_local, now_utc, today_str_ny
 from pathlib import Path
 
 from stock_trading_system.portfolio.database import PortfolioDatabase
@@ -82,8 +82,8 @@ class PortfolioManager:
         """Record a buy and update position."""
         uid = self._user_id(user_id)
         market = market or detect_market(ticker)
-        date = date or now_local().strftime("%Y-%m-%d")
-        timestamp = now_local().strftime("%Y-%m-%d %H:%M:%S")
+        date = date or today_str_ny()
+        timestamp = now_utc().strftime("%Y-%m-%d %H:%M:%S")
 
         txn = Transaction(
             id=None, ticker=ticker, action="buy",
@@ -135,7 +135,7 @@ class PortfolioManager:
                 f"Sell shares ({shares}) exceeds holding ({existing.shares})"
             )
 
-        timestamp = now_local().strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = now_utc().strftime("%Y-%m-%d %H:%M:%S")
         txn = Transaction(
             id=None, ticker=ticker, action="sell",
             shares=shares, price=price, timestamp=timestamp, notes=notes, user_id=uid,
@@ -312,7 +312,7 @@ class PortfolioManager:
         pnl = self.get_pnl(user_id=uid)
 
         snapshot = DailySnapshot(
-            date=now_local().strftime("%Y-%m-%d"),
+            date=today_str_ny(),
             total_value=pnl["total_value"],
             total_cost=pnl["total_cost"],
             pnl=pnl["total_pnl"],

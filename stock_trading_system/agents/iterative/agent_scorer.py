@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import datetime, timedelta
-from stock_trading_system.utils.timez import now_local
+from stock_trading_system.utils.timez import now_local, now_utc
 from typing import Any
 
 import numpy as np
@@ -100,7 +100,7 @@ class AgentScorer:
         if not self._config.scorer.extract_signals:
             return []
 
-        now = now_local().strftime("%Y-%m-%d %H:%M:%S")
+        now = now_utc().strftime("%Y-%m-%d %H:%M:%S")
         records: list[dict] = []
 
         for agent_id, (state_key, method) in AGENT_MAP.items():
@@ -293,7 +293,7 @@ class AgentScorer:
                  weight = excluded.weight,
                  updated_at = excluded.updated_at,
                  updated_by_task_id = excluded.updated_by_task_id""",
-            (agent_id, weight, now_local().isoformat(), task_id),
+            (agent_id, weight, now_utc().isoformat(), task_id),
         )
         conn.commit()
         conn.close()

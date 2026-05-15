@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
-from stock_trading_system.utils.timez import now_local
+from stock_trading_system.utils.timez import now_local, today_str_ny
 from typing import Any
 
 from stock_trading_system.agents.iterative.agent_scorer import AGENT_MAP, AgentScorer
@@ -142,7 +142,7 @@ class MetaAgent:
         baseline_session_id = None
         if self._session_store:
             try:
-                today = now_local().strftime("%Y-%m-%d")
+                today = today_str_ny()
                 baseline_session_id = self._get_or_create_baseline_session()
                 ab_session_id = self._session_store.create_session(
                     name=f"A/B: {worst_id} prompt v{version_id}",
@@ -304,7 +304,7 @@ Best agent's prompt:
             if config.get("ab_baseline") and s.get("status") in ("pending", "running"):
                 return s["id"]
         # Create a new baseline
-        today = now_local().strftime("%Y-%m-%d")
+        today = today_str_ny()
         return self._session_store.create_session(
             name="A/B Baseline (default prompts)",
             mode="live",

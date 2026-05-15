@@ -3,7 +3,7 @@
 import json
 import sqlite3
 from datetime import datetime
-from stock_trading_system.utils.timez import now_local
+from stock_trading_system.utils.timez import now_local, now_utc
 from pathlib import Path
 
 from stock_trading_system.portfolio.models import Position, Transaction, DailySnapshot
@@ -407,7 +407,7 @@ class PortfolioDatabase:
             ).fetchall()
         except sqlite3.OperationalError:
             rows = []
-        ts = now_local().strftime("%Y-%m-%d %H:%M:%S")
+        ts = now_utc().strftime("%Y-%m-%d %H:%M:%S")
         for r in rows:
             try:
                 adv = json.loads(r["advice_json"])
@@ -574,7 +574,7 @@ class PortfolioDatabase:
         with self._get_conn() as conn:
             conn.execute(
                 "INSERT INTO alerts (ticker, condition, threshold, created, user_id) VALUES (?, ?, ?, ?, ?)",
-                (ticker, condition, threshold, now_local().strftime("%Y-%m-%d %H:%M:%S"), user_id),
+                (ticker, condition, threshold, now_utc().strftime("%Y-%m-%d %H:%M:%S"), user_id),
             )
 
     def get_active_alerts(self, user_id: int | None = None) -> list[dict]:
@@ -625,7 +625,7 @@ class PortfolioDatabase:
                     triggered_at, user_id)
                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (alert_id, ticker, condition, threshold, current_price,
-                 now_local().strftime("%Y-%m-%d %H:%M:%S"), user_id),
+                 now_utc().strftime("%Y-%m-%d %H:%M:%S"), user_id),
             )
 
     def get_alert_history(self, user_id: int, ticker: str | None = None,
@@ -701,7 +701,7 @@ class PortfolioDatabase:
                     data.get("risk_assessment", ""),
                     data.get("trade_decision", ""),
                     "",                          # advice_json — see docstring
-                    data.get("created_at", now_local().strftime("%Y-%m-%d %H:%M:%S")),
+                    data.get("created_at", now_utc().strftime("%Y-%m-%d %H:%M:%S")),
                     None,                        # action
                     None,                        # confidence
                     None,                        # position_pct
@@ -738,7 +738,7 @@ class PortfolioDatabase:
         for legacy rows. Doesn't touch any other column so an in-flight
         re-extract can't accidentally clobber signal / advice / etc.
         """
-        ts = generated_at or now_local().strftime("%Y-%m-%d %H:%M:%S")
+        ts = generated_at or now_utc().strftime("%Y-%m-%d %H:%M:%S")
         with self._get_conn() as conn:
             cur = conn.execute(
                 """UPDATE analysis_history
@@ -867,7 +867,7 @@ class PortfolioDatabase:
                     _coerce_float(adv.get("take_profit")),
                     adv.get("reasoning") or "",
                     adv.get("risk_warning") or "",
-                    now_local().strftime("%Y-%m-%d %H:%M:%S"),
+                    now_utc().strftime("%Y-%m-%d %H:%M:%S"),
                 ),
             )
             return int(cur.lastrowid)
@@ -917,7 +917,7 @@ class PortfolioDatabase:
                     "INSERT OR IGNORE INTO analysis_bookmarks "
                     "(user_id, analysis_id, created_at) VALUES (?, ?, ?)",
                     (int(user_id), int(analysis_id),
-                     now_local().strftime("%Y-%m-%d %H:%M:%S")),
+                     now_utc().strftime("%Y-%m-%d %H:%M:%S")),
                 )
                 return True
             conn.execute(
@@ -943,7 +943,7 @@ class PortfolioDatabase:
         analysis_id: int | None = None,
     ) -> int:
         """Idempotent — same (user, ticker) just refreshes the timestamp."""
-        ts = now_local().strftime("%Y-%m-%d %H:%M:%S")
+        ts = now_utc().strftime("%Y-%m-%d %H:%M:%S")
         with self._get_conn() as conn:
             cur = conn.execute(
                 """INSERT INTO user_watchlist

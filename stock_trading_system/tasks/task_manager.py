@@ -25,7 +25,7 @@ import traceback
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime
-from stock_trading_system.utils.timez import now_local
+from stock_trading_system.utils.timez import now_local, now_ny
 from typing import Any, Callable, Iterable
 
 from stock_trading_system.tasks.task_store import (
@@ -42,8 +42,13 @@ WorkerFn = Callable[[dict, Callable[..., None]], dict]
 
 
 def _gen_title(task_type: str, params: dict) -> str:
-    """Human-readable auto title for tasks."""
-    ts = now_local().strftime("%Y-%m-%d %H:%M")
+    """Human-readable auto title for tasks.
+
+    P2.5 step-2: task titles are surfaced in the UI — render in NY
+    time so a 14:30 ET analysis still reads 14:30 even when the
+    Railway worker is in UTC.
+    """
+    ts = now_ny().strftime("%Y-%m-%d %H:%M")
     ticker = params.get("ticker")
     if task_type == "analysis":
         return f"{ticker or '未指定'} 分析 · {ts}"

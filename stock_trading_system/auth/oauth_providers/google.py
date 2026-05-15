@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, timedelta
-from stock_trading_system.utils.timez import now_local
+from stock_trading_system.utils.timez import now_local, now_utc
 from typing import Any
 from urllib.parse import urlencode
 
@@ -130,8 +130,11 @@ class GoogleProvider:
         expires_at = None
         expires_in = payload.get("expires_in")
         if isinstance(expires_in, (int, float)) and expires_in > 0:
+            # P2.5 step-2: OAuth tokens are time-compared against the
+            # provider's UTC ``exp`` claim; store the absolute deadline
+            # in UTC too so the comparator on read has matching tz.
             expires_at = (
-                now_local() + timedelta(seconds=int(expires_in))
+                now_utc() + timedelta(seconds=int(expires_in))
             ).isoformat()
 
         tokens = OAuthTokens(

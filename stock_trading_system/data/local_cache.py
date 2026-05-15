@@ -34,7 +34,7 @@ import json
 import sqlite3
 import threading
 from datetime import datetime, timedelta
-from stock_trading_system.utils.timez import now_local
+from stock_trading_system.utils.timez import now_local, now_utc
 from io import StringIO
 from pathlib import Path
 from typing import Any
@@ -87,7 +87,7 @@ _ENVELOPE_VERSION = 1
 
 
 def _now() -> str:
-    return now_local().strftime("%Y-%m-%d %H:%M:%S")
+    return now_utc().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _parse(ts: str) -> datetime:

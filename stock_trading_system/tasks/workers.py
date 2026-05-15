@@ -12,7 +12,7 @@ import json
 from typing import Any, Callable
 
 from stock_trading_system.utils import get_logger
-from stock_trading_system.utils.timez import now_local
+from stock_trading_system.utils.timez import now_local, today_str_ny
 
 logger = get_logger("tasks.workers")
 
@@ -791,7 +791,7 @@ def make_backtest_worker(get_router):
 
 def _today_str() -> str:
     from datetime import datetime
-    return now_local().strftime("%Y-%m-%d")
+    return today_str_ny()
 
 
 # ── Batch analysis (one-click all holdings) ──────────────────────────────────
