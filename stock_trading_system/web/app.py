@@ -806,7 +806,51 @@ def create_app(config_path=None):
         with the server-side stack trace.
         """
         import uuid
+        import time as _time
         g.trace_id = uuid.uuid4().hex
+        g.request_started_at = _time.perf_counter()
+
+    @app.after_request
+    def _log_request_perf(response):
+        """Lightweight request timing for the mobile dashboard slow-path.
+
+        We keep this globally cheap and only log noisy detail for the
+        dashboard bootstrap endpoints, or for any API request that crosses
+        a slow threshold. The response header makes browser-side inspection
+        line up with server logs under the same trace_id.
+        """
+        import time as _time
+        started = getattr(g, "request_started_at", None)
+        if started is None:
+            return response
+        elapsed_ms = int((_time.perf_counter() - started) * 1000)
+        response.headers["X-Response-Time-ms"] = str(elapsed_ms)
+        response.headers["X-Trace-Id"] = getattr(g, "trace_id", "unknown")
+
+        path = request.path
+        dashboard_boot_paths = {
+            "/api/dashboard",
+            "/api/tasks",
+            "/api/portfolio/allocation",
+            "/api/portfolio/transactions",
+            "/api/portfolio/summary",
+        }
+        should_log = path in dashboard_boot_paths or (
+            path.startswith("/api/") and elapsed_ms >= 800
+        )
+        if should_log:
+            logger.info(
+                "[perf.request] trace_id=%s method=%s path=%s status=%s "
+                "elapsed_ms=%s user_id=%s query=%s",
+                getattr(g, "trace_id", "unknown"),
+                request.method,
+                path,
+                response.status_code,
+                elapsed_ms,
+                getattr(getattr(g, "user", None), "id", None),
+                request.query_string.decode("utf-8", errors="ignore"),
+            )
+        return response
 
     def _safe_internal(exc, http_status=500, error_code="internal",
                        extra=None):
@@ -1629,17 +1673,65 @@ def create_app(config_path=None):
             ],
         })
 
+    @app.route("/api/perf/client", methods=["POST"])
+    def api_client_perf():
+        """Ingest lightweight browser timings for production diagnosis.
+
+        This is intentionally log-only: no persistence, no PII payloads, and
+        a small cap so a broken client cannot flood stdout. The dashboard
+        island uses it to correlate mobile "加载中..." stalls with API and
+        render timings under the same authenticated user.
+        """
+        if g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
+        body = request.get_json(silent=True) or {}
+        events = body.get("events") if isinstance(body, dict) else None
+        if not isinstance(events, list):
+            events = [body] if isinstance(body, dict) else []
+        accepted = 0
+        for event in events[:20]:
+            if not isinstance(event, dict):
+                continue
+            name = str(event.get("name") or event.get("event") or "unknown")[:80]
+            fields = event.get("fields") if isinstance(event.get("fields"), dict) else {}
+            safe_fields = {
+                str(k)[:60]: v for k, v in fields.items()
+                if isinstance(v, (str, int, float, bool)) or v is None
+            }
+            logger.info(
+                "[perf.client] trace_id=%s user_id=%s name=%s fields=%s",
+                getattr(g, "trace_id", "unknown"),
+                g.user.id,
+                name,
+                safe_fields,
+            )
+            accepted += 1
+        return jsonify({"ok": True, "accepted": accepted})
+
     # ── Dashboard API ───────────────────────────────────────────────────
 
     @app.route("/api/dashboard")
     def api_dashboard():
         if g.user is None:
             return jsonify({"error": "unauthorized"}), 401
+        import time as _time
+        perf_started = _time.perf_counter()
+        marks: dict[str, int] = {}
+
+        def _mark(name: str, step_started: float) -> None:
+            marks[name] = int((_time.perf_counter() - step_started) * 1000)
+
         uid = g.user.id
         pm = _get_portfolio_mgr()
+        step_started = _time.perf_counter()
         pnl = pm.get_pnl(user_id=uid)
+        _mark("pnl_ms", step_started)
+        step_started = _time.perf_counter()
         holdings = pm.get_holdings(user_id=uid)
+        _mark("holdings_ms", step_started)
+        step_started = _time.perf_counter()
         alerts = _get_alert_monitor().list_alerts(user_id=uid, scope="user")
+        _mark("alerts_ms", step_started)
         # `history_days=all` returns the full series since the user's first
         # snapshot; the chart's range chips do client-side filtering on top.
         # Anything else is parsed as a positive int rolling window.
@@ -1652,7 +1744,10 @@ def create_app(config_path=None):
                 days = parsed if parsed > 0 else None
             except ValueError:
                 days = 30
+        step_started = _time.perf_counter()
         history = pm.get_history(days=days, user_id=uid)
+        _mark("history_ms", step_started)
+        total_ms = int((_time.perf_counter() - perf_started) * 1000)
         # Provenance for the equity-curve card: the React island shows
         # an "insufficient snapshots — click 重新计算" notice when the
         # user has holdings but the daily_snapshots table can't draw a
@@ -1664,6 +1759,17 @@ def create_app(config_path=None):
             history_status = "insufficient_snapshots"
         else:
             history_status = "ok"
+        logger.info(
+            "[perf.dashboard] trace_id=%s user_id=%s total_ms=%s "
+            "history_days=%s holdings_count=%s history_count=%s marks=%s",
+            getattr(g, "trace_id", "unknown"),
+            uid,
+            total_ms,
+            raw_days or "all",
+            len(holdings),
+            len(history),
+            marks,
+        )
         return jsonify({
             "pnl": pnl,
             "holdings": holdings,
@@ -3440,6 +3546,7 @@ def create_app(config_path=None):
     _PROVIDER_LABEL = {"qwen": "Qwen", "gemini": "Gemini", "openrouter": "OpenRouter"}
 
     @app.route("/api/settings/llm-provider", methods=["GET"])
+    @admin_required
     def get_llm_provider():
         from stock_trading_system.llm.router import (
             get_active_provider, has_provider_key, is_provider_locked_by_env,
@@ -3454,6 +3561,7 @@ def create_app(config_path=None):
         })
 
     @app.route("/api/settings/llm-provider", methods=["POST"])
+    @admin_required
     def set_llm_provider():
         from stock_trading_system.llm.router import is_provider_locked_by_env, has_provider_key
         from stock_trading_system.llm.constants import VALID_PROVIDERS
@@ -3485,9 +3593,8 @@ def create_app(config_path=None):
     # singletons).
 
     @app.route("/api/settings/openrouter/active", methods=["GET"])
+    @admin_required
     def get_openrouter_active():
-        if g.user is None:
-            return jsonify({"error": "unauthorized"}), 401
         from stock_trading_system.llm.router import (
             get_active_provider, resolve_openrouter_model,
         )
@@ -3512,9 +3619,8 @@ def create_app(config_path=None):
         })
 
     @app.route("/api/settings/openrouter/active", methods=["POST"])
+    @admin_required
     def set_openrouter_active():
-        if g.user is None:
-            return jsonify({"error": "unauthorized"}), 401
         from stock_trading_system.llm.router import is_provider_locked_by_env
         if is_provider_locked_by_env():
             return jsonify({

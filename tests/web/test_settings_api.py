@@ -22,10 +22,11 @@ def alice(app_client, monkeypatch):
     """Admin-logged client (fixture name kept for diff brevity).
 
     /api/settings GET+POST is admin-only as of hardening-iteration-v1 P0.2
-    — previously any logged-in user could rewrite the global config and
-    steal LLM API keys (C3). We drop the API-key env vars so file
-    persistence is actually exercised — env-var overrides would shadow
-    the YAML write."""
+    + mobile-ui-v1.3.1 addendum #3 — previously any logged-in user could
+    rewrite the global config and steal LLM API keys (C3). Non-admin
+    denial is owned by tests/web/test_settings_admin_gate.py. We drop
+    the API-key env vars so file persistence is actually exercised —
+    env-var overrides would shadow the YAML write."""
     monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
     monkeypatch.delenv("QWEN_API_KEY", raising=False)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)

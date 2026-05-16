@@ -16,7 +16,11 @@ def client(app_client, monkeypatch):
     monkeypatch.delenv("LLM_PROVIDER", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     users = app_client["users"]
-    return app_client["make_client"](users.alice_email, users.alice_password)
+    # mobile-ui-v1.3.1 addendum #3 — /api/settings/llm-provider is now
+    # admin-only; use the admin user to preserve test intent (covers the
+    # provider+OR surface contract; non-admin denial is tested in
+    # tests/web/test_settings_admin_gate.py).
+    return app_client["make_client"](users.admin_email, users.admin_password)
 
 
 # ── §8.5 TC1: GET surfaces has_openrouter_key alongside qwen/gemini ──

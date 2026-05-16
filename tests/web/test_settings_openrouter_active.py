@@ -14,7 +14,10 @@ def client(app_client, monkeypatch):
     monkeypatch.delenv("LLM_PROVIDER", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     users = app_client["users"]
-    return app_client["make_client"](users.alice_email, users.alice_password)
+    # mobile-ui-v1.3.1 addendum #3 — /api/settings/openrouter/active is
+    # admin-only; use the admin user to preserve the original test
+    # intent (cover the OR active-preset switch contract).
+    return app_client["make_client"](users.admin_email, users.admin_password)
 
 
 # ── §9.1 TC1: GET requires login ─────────────────────────────────────

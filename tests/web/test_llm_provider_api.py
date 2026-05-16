@@ -11,10 +11,17 @@ import pytest
 
 @pytest.fixture
 def client(app_client, monkeypatch):
-    """Logged-in alice client with both Qwen and Gemini API keys configured."""
+    """Logged-in admin client with both Qwen and Gemini API keys configured.
+
+    mobile-ui-v1.3.1 addendum #3 gated /api/settings/llm-provider as
+    admin-only; this fixture switched from alice → admin to preserve
+    its original intent (exercise the LLM-provider switch contract).
+    Non-admin enforcement is covered by the dedicated admin-gate test
+    file (tests/web/test_settings_admin_gate.py).
+    """
     monkeypatch.delenv("LLM_PROVIDER", raising=False)
     users = app_client["users"]
-    return app_client["make_client"](users.alice_email, users.alice_password)
+    return app_client["make_client"](users.admin_email, users.admin_password)
 
 
 # ── TC-MS-A1: GET returns current provider + key status ──────────
