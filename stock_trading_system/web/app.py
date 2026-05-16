@@ -3866,6 +3866,21 @@ def create_app(config_path=None):
         if not ana:
             return jsonify({"ok": False, "error": "Analysis not found"}), 404
 
+        # Defense in depth — even if some legacy analysis row carried a
+        # typo'd ticker, refuse to start tracking it. process_analysis
+        # would also reject internally; failing here gives the user a
+        # clearer 400 instead of a silent "skipped" task result.
+        from stock_trading_system.utils.ticker_validator import (
+            InvalidTickerError, normalize_and_validate_ticker,
+        )
+        try:
+            normalize_and_validate_ticker(
+                ana["ticker"], allow_quote_failure=True,
+            )
+        except InvalidTickerError as e:
+            return jsonify({"ok": False, "error": "invalid_ticker",
+                            "ticker": ana["ticker"], "reason": e.reason}), 400
+
         user_advice = pdb.get_user_advice(g.user.id, aid) or {}
         store = _get_paper_store()
         current_price = None

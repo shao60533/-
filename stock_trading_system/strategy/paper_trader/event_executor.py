@@ -56,6 +56,19 @@ def process_analysis(
 def _inner(store, *, analysis_id, ticker, analysis_date, signal, advice,
             current_price, today_bar, recent_bars, qwen_provider, analysis_blob,
             user_id):
+    # Reject typo / non-existent tickers up-front so they never cause a
+    # session to be created — defense in depth on top of
+    # ensure_ticker_session's own check.
+    from stock_trading_system.utils.ticker_validator import (
+        InvalidTickerError, normalize_and_validate_ticker,
+    )
+    try:
+        v = normalize_and_validate_ticker(ticker, allow_quote_failure=True)
+    except InvalidTickerError as e:
+        return {"ok": False, "action": "skipped",
+                "reason": f"invalid_ticker: {e.reason}"}
+    ticker = v.canonical
+
     if (signal or "").upper() == "ERROR":
         return {"ok": True, "action": "skipped", "reason": "ERROR signal"}
 

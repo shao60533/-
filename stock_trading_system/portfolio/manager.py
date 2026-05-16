@@ -266,7 +266,7 @@ class PortfolioManager:
         uid = self._user_id(user_id)
 
         if use_cache:
-            cached = _read_user_holdings_cache(uid)
+            cached = _read_user_holdings_cache(uid, self._holdings_cache_scope)
             if cached is not None:
                 return cached
 
@@ -277,7 +277,7 @@ class PortfolioManager:
         positions = self._db.get_all_positions(user_id=uid)
         if not positions:
             if use_cache:
-                _write_user_holdings_cache(uid, [])
+                _write_user_holdings_cache(self._holdings_cache_scope, uid, [])
             return []
 
         # 1) Schwab batch for US tickers — one network call replaces N
@@ -372,7 +372,7 @@ class PortfolioManager:
             })
 
         if use_cache:
-            _write_user_holdings_cache(uid, holdings)
+            _write_user_holdings_cache(self._holdings_cache_scope, uid, holdings)
         return holdings
 
     def _fetch_batch_with_timeout(
