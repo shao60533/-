@@ -1214,6 +1214,50 @@ function CardFallback({ error }: { error: Error }) {
  * render are real value, the missing tabs already fall back to
  * markdown directly, and an extra banner adds noise without action.
  */
+/** analysis-overview-fallback v1.0 — ``_meta`` block written by the
+ *  rendering worker. ``getRenderingMeta`` tolerates legacy rows that
+ *  pre-date the meta block. */
+export interface RenderingMeta {
+  summary_source?: "llm" | "fallback"
+  failed_tabs?: string[]
+  errors?: Record<string, string>
+}
+
+export function getRenderingMeta(
+  detail: Pick<AnalysisDetail, "rendering">,
+): RenderingMeta {
+  const meta =
+    (detail.rendering as { _meta?: RenderingMeta } | null | undefined)?._meta
+  return meta && typeof meta === "object" ? meta : {}
+}
+
+/** Banner reason key. Pure function so the vitest suite can pin the
+ *  decision tree without rendering the heavy <AnalysisPage>. */
+export type BannerReason =
+  | "summary_fallback"
+  | "summary_missing"
+  | "failed"
+  | "pending"
+  | "empty"
+  | null
+
+export function decideBannerReason(
+  detail: Pick<AnalysisDetail, "rendering_status" | "rendering">,
+): BannerReason {
+  const status = detail.rendering_status
+  const meta = getRenderingMeta(detail)
+  const summaryFallback = meta.summary_source === "fallback"
+  const summaryMissing =
+    Array.isArray(meta.failed_tabs) && meta.failed_tabs.includes("summary")
+
+  if (status === "partial" && summaryFallback) return "summary_fallback"
+  if (status === "partial" && summaryMissing) return "summary_missing"
+  if (!status || status === "success" || status === "partial") return null
+  if (status === "failed") return "failed"
+  if (status === "pending") return "pending"
+  return "empty"
+}
+
 function RenderingStatusBanner({
   detail, onRetried,
 }: {
@@ -1221,6 +1265,7 @@ function RenderingStatusBanner({
   onRetried: () => void
 }) {
   const status = detail.rendering_status
+  const meta = getRenderingMeta(detail)
   const [retrying, setRetrying] = useState(false)
   const [msg, setMsg] = useState<string | null>(null)
 
@@ -1238,28 +1283,43 @@ function RenderingStatusBanner({
     }
   }
 
-  // Skip rendering for healthy + partial states.
-  if (!status || status === "success" || status === "partial") return null
+  const reason = decideBannerReason(detail)
+  if (reason === null) return null
 
-  const headline =
-    status === "failed"  ? "结构化摘要生成失败" :
-    status === "pending" ? "结构化摘要待生成" :
-    /* empty */          "未生成结构化摘要"
-  const tone = status === "failed"
-    ? "border-amber-500/50 bg-amber-500/10 text-amber-200"
-    : "border-zinc-500/40 bg-zinc-500/5 text-zinc-300"
+  let headline: string
+  let tone: string
+  let body: string
+  if (reason === "summary_fallback") {
+    headline = "概览由 fallback 生成"
+    tone = "border-sky-500/40 bg-sky-500/10 text-sky-200"
+    body = "概览结构化生成失败，已使用兜底摘要。可点击重试重新生成。"
+  } else if (reason === "summary_missing") {
+    headline = "概览结构化缺失"
+    tone = "border-amber-500/50 bg-amber-500/10 text-amber-200"
+    body = "结构化概览未生成，可点击重试基于现有报告补一份。"
+  } else if (reason === "failed") {
+    headline = "结构化摘要生成失败"
+    tone = "border-amber-500/50 bg-amber-500/10 text-amber-200"
+    body = "完整论述已显示在下方各 tab，可点击重试重新生成结构化卡片。"
+  } else if (reason === "pending") {
+    headline = "结构化摘要待生成"
+    tone = "border-zinc-500/40 bg-zinc-500/5 text-zinc-300"
+    body = "结构化摘要任务正在排队，稍候自动出现；也可手动触发重试。"
+  } else {
+    headline = "未生成结构化摘要"
+    tone = "border-zinc-500/40 bg-zinc-500/5 text-zinc-300"
+    body = "本次分析没有结构化卡片（历史记录尚未生成）。可点击重试按当前数据补一份。"
+  }
 
   return (
-    <div className={`rounded border px-3 py-2 text-xs flex flex-wrap items-start gap-2 ${tone}`}>
+    <div
+      data-rendering-banner
+      data-banner-reason={reason}
+      className={`rounded border px-3 py-2 text-xs flex flex-wrap items-start gap-2 ${tone}`}
+    >
       <div className="flex-1 min-w-0">
         <div className="font-semibold">{headline}</div>
-        <div className="opacity-80 mt-0.5 break-words">
-          {status === "failed"
-            ? "完整论述已显示在下方各 tab，可点击重试重新生成结构化卡片。"
-            : status === "empty"
-            ? "本次分析没有结构化卡片（历史记录尚未生成）。可点击重试按当前数据补一份。"
-            : "结构化摘要任务正在排队，稍候自动出现；也可手动触发重试。"}
-        </div>
+        <div className="opacity-80 mt-0.5 break-words">{body}</div>
         {detail.rendering_error && (
           <details className="mt-1">
             <summary className="cursor-pointer text-[10px] opacity-70">
@@ -1267,6 +1327,16 @@ function RenderingStatusBanner({
             </summary>
             <code className="block mt-1 text-[10px] font-mono whitespace-pre-wrap opacity-70 break-words">
               {detail.rendering_error}
+            </code>
+          </details>
+        )}
+        {meta.errors?.summary && (
+          <details className="mt-1">
+            <summary className="cursor-pointer text-[10px] opacity-70">
+              概览生成错误（开发者）
+            </summary>
+            <code className="block mt-1 text-[10px] font-mono whitespace-pre-wrap opacity-70 break-words">
+              {meta.errors.summary}
             </code>
           </details>
         )}
@@ -1280,6 +1350,7 @@ function RenderingStatusBanner({
         onClick={handleRetry}
         disabled={retrying}
         className="shrink-0"
+        data-rendering-retry
       >
         {retrying ? "提交中…" : "重新生成结构化摘要"}
       </Button>

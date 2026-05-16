@@ -289,9 +289,18 @@ def _rendering_outputs(rendering, result) -> dict:
     result to figure out which source reports actually had content, so
     a tab whose source markdown was empty is classified as ``empty``
     instead of ``failed``.
+
+    analysis-overview-fallback v1.0 (2026-05-16): the extractor stamps
+    ``_fallback_used`` / ``_fallback_error`` on the ``summary`` card when
+    its deterministic path ran in place of the LLM. We promote those
+    into a single ``rendering["_meta"]`` block here so the API DTO + UI
+    banner have one observable surface.
     """
     from datetime import datetime as _dt
-    from stock_trading_system.agents.rendering.status import classify
+    from stock_trading_system.agents.rendering.status import (
+        attach_meta,
+        classify,
+    )
 
     # Source-tab presence — derived from analyzer fields. Empty / missing
     # source means we shouldn't blame the LLM if the tab is empty.
@@ -310,9 +319,16 @@ def _rendering_outputs(rendering, result) -> dict:
         source_present.append("Risk Assessment")
     if getattr(result, "trade_decision", None):
         source_present.append("Decision")
-    # Overview is always derivable when any other source is present.
+    # Overview is always derivable when any other source is present —
+    # the deterministic fallback in _extract_overview guarantees a
+    # non-None summary card whenever at least one source report exists.
     if source_present:
         source_present.append("summary")
+
+    # Promote per-tab fallback markers into rendering["_meta"]. Safe to
+    # mutate the dict — it's the locally-held extract result and the
+    # downstream serializer consumes it verbatim.
+    rendering = attach_meta(rendering)
 
     json_str = _serialize_rendering(rendering)
     status, error = classify(rendering, source_tabs_present=source_present)
@@ -1173,6 +1189,13 @@ def make_rendering_backfill_worker(get_analyzer):
 
             try:
                 rendering = extractor.extract(stub, ticker=ticker)
+                # analysis-overview-fallback v1.0: promote fallback
+                # markers into rendering["_meta"] so backfilled rows
+                # carry the same observability surface as live rows.
+                from stock_trading_system.agents.rendering.status import (
+                    attach_meta as _attach_meta,
+                )
+                rendering = _attach_meta(rendering)
                 json_str = json.dumps(rendering, ensure_ascii=False)
                 # Use the same source-tab presence logic as the live
                 # worker so partial classification matches.

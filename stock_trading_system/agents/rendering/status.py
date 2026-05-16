@@ -31,12 +31,23 @@ _TAB_KEYS: tuple[str, ...] = (
     "Fundamentals", "Investment Debate", "Risk Assessment", "Decision",
 )
 
+# Per-tab marker keys stamped by the extractor when a deterministic
+# fallback ran in place of the LLM. They are NOT schema-shaped payload
+# — ``available_tabs`` / ``classify`` ignore them when deciding
+# "extracted" vs "missing". ``attach_meta`` surfaces them in a single
+# ``rendering["_meta"]`` block for the frontend banner.
+_FALLBACK_MARKERS = ("_fallback_used", "_fallback_error")
+
 
 def _has_content(value: Any) -> bool:
     """A tab counts as ``extracted`` when its value is a non-empty dict
     (the extractor already returns ``None`` for tabs with no source
-    text and ``{...}`` for everything else)."""
-    return isinstance(value, dict) and bool(value)
+    text and ``{...}`` for everything else). Marker-only payloads
+    (theoretically possible, defensive) are treated as empty."""
+    if not isinstance(value, dict):
+        return False
+    payload_keys = [k for k in value.keys() if k not in _FALLBACK_MARKERS]
+    return bool(payload_keys)
 
 
 def available_tabs(rendering: dict | None) -> list[str]:
@@ -45,6 +56,52 @@ def available_tabs(rendering: dict | None) -> list[str]:
     if not isinstance(rendering, dict):
         return []
     return [k for k in _TAB_KEYS if _has_content(rendering.get(k))]
+
+
+def attach_meta(rendering: dict | None) -> dict | None:
+    """Inject ``rendering["_meta"]`` describing per-tab fallback usage
+    and any pre-classification errors.
+
+    ``_meta`` shape (analysis-overview-fallback v1.0):
+
+        {
+          "summary_source": "llm" | "fallback",   # omitted if no summary
+          "failed_tabs":    ["Risk Assessment", ...],
+          "errors":         {"summary": "RateLimitError: ..."}
+        }
+
+    Returns the same ``rendering`` dict (mutated in place) so callers
+    can chain. ``None`` / non-dict input is returned unchanged.
+    """
+    if not isinstance(rendering, dict):
+        return rendering
+
+    failed_tabs: list[str] = []
+    errors: dict[str, str] = {}
+    summary_source: str | None = None
+
+    for key in _TAB_KEYS:
+        value = rendering.get(key)
+        if value is None:
+            failed_tabs.append(key)
+            continue
+        if not isinstance(value, dict):
+            continue
+        if key == "summary":
+            summary_source = (
+                "fallback" if value.get("_fallback_used") else "llm"
+            )
+            err = value.get("_fallback_error")
+            if isinstance(err, str) and err:
+                errors[key] = err[:200]
+
+    meta: dict[str, Any] = {"failed_tabs": failed_tabs}
+    if summary_source is not None:
+        meta["summary_source"] = summary_source
+    if errors:
+        meta["errors"] = errors
+    rendering["_meta"] = meta
+    return rendering
 
 
 def classify(
