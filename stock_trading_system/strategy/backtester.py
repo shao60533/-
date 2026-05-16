@@ -113,6 +113,38 @@ class BacktestResult:
     trades: list = field(default_factory=list)
     benchmark_curve: list = field(default_factory=list)
 
+    # hardening-iteration-v1 P3.2 step-2: legacy ``strategy.backtest``
+    # used different field names + percentage scale (0–100) while this
+    # module uses ratios (0–1). ``to_v1_dict()`` is the bridge the web
+    # entry will serialise through when it flips from Backtester to
+    # BacktestEngine — both schemas land in the JSON response so any
+    # frontend caller (and the React island in particular) that reads
+    # either field set keeps working through the migration window.
+    def to_v1_dict(self) -> dict:
+        """Serialise with both v1 and v2 field names + scales.
+
+        v1 → v2 alias mapping:
+            total_return_pct        ← total_return * 100
+            max_drawdown_pct        ← max_drawdown * 100
+            annualized_return_pct   ← annualized_return * 100
+            trade_count             ← num_trades
+            final_equity            ← final_value
+            strategy                ← strategy_id
+
+        Both old and new keys are present so consumers can migrate at
+        their own pace.
+        """
+        from dataclasses import asdict
+        out = asdict(self)
+        # Add legacy aliases (percentage scale + old key names).
+        out["total_return_pct"] = round(self.total_return * 100, 4)
+        out["max_drawdown_pct"] = round(self.max_drawdown * 100, 4)
+        out["annualized_return_pct"] = round(self.annualized_return * 100, 4)
+        out["trade_count"] = self.num_trades
+        out["final_equity"] = self.final_value
+        out["strategy"] = self.strategy_id
+        return out
+
 
 STRATEGIES = [
     {
