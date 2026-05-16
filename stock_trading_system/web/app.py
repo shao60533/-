@@ -1815,25 +1815,58 @@ def create_app(config_path=None):
 
     # ── Screener API ────────────────────────────────────────────────────
 
+    def _screener_engine_choice() -> str:
+        """``config.screener.engine`` — ``v1`` (legacy 3-layer) or ``v3``.
+
+        P3.1 step-3 grayscale: opt-in flag so an operator can route
+        the legacy ``/api/screen`` endpoint into the V3 guru pipeline
+        without touching code. Default ``v1`` keeps the legacy
+        IB Scanner + finviz + AI evaluation. Flip to ``v3`` after
+        dogfood confirms the guru voting output is acceptable.
+        """
+        return ((get_config().get("screener") or {}).get("engine") or "v1").lower()
+
     @app.route("/api/screen", methods=["POST"])
     def api_screen():
         data = request.json
         market = data.get("market", "us")
         strategy = data.get("strategy", "growth")
+        engine_choice = _screener_engine_choice()
 
         def run_screen():
             try:
-                socketio.emit("screen_status", {"status": "running", "market": market, "strategy": strategy})
-                screener = _get_screener()
-                results = screener.screen(market=market, strategy=strategy)
-                socketio.emit("screen_result", {"results": results, "market": market, "strategy": strategy})
+                socketio.emit(
+                    "screen_status",
+                    {"status": "running", "market": market,
+                     "strategy": strategy, "engine": engine_choice},
+                )
+                if engine_choice == "v3":
+                    # P3.1 step-3 grayscale path. screen_sync wraps the
+                    # async v3 pipeline + maps strategy→nl_query +
+                    # translates v3 signals back to v1 BUY/SELL/HOLD.
+                    from stock_trading_system.screener.v3.sync_wrapper import (
+                        screen_sync,
+                    )
+                    results = screen_sync(
+                        get_config(), market=market, strategy=strategy,
+                    )
+                else:
+                    screener = _get_screener()
+                    results = screener.screen(market=market, strategy=strategy)
+                socketio.emit(
+                    "screen_result",
+                    {"results": results, "market": market,
+                     "strategy": strategy, "engine": engine_choice},
+                )
             except Exception as e:
                 logger.error("Screening failed: %s", e)
                 socketio.emit("screen_error", {"error": str(e)})
 
         thread = threading.Thread(target=run_screen, daemon=True)
         thread.start()
-        return jsonify({"ok": True, "message": f"Screening {market} with {strategy} strategy"})
+        return jsonify({"ok": True,
+                        "message": f"Screening {market} with {strategy} strategy",
+                        "engine": engine_choice})
 
     # ── Alerts API ──────────────────────────────────────────────────────
 
@@ -2972,12 +3005,27 @@ def create_app(config_path=None):
 
     # ── Backtesting ─────────────────────────────────────────────────────
 
+    def _backtest_engine_choice() -> str:
+        """``config.backtest.engine`` — ``v1`` (legacy) or ``v2``.
+
+        P3.2 step-3 grayscale: opt-in flag so an operator can switch
+        the entire ``/api/backtest`` family to BacktestEngine without
+        a code change. Default ``v1`` keeps the legacy schema.
+        """
+        return ((get_config().get("backtest") or {}).get("engine") or "v1").lower()
+
     @app.route("/api/backtest/strategies")
     def api_backtest_strategies():
         """List available backtest strategies with their parameter schemas."""
-        from stock_trading_system.strategy.backtest import Backtester
-        bt = Backtester(get_config())
-        return jsonify({"strategies": bt.list_strategies()})
+        if _backtest_engine_choice() == "v2":
+            from stock_trading_system.strategy.backtester import BacktestEngine
+            return jsonify({"strategies": BacktestEngine(get_config()).list_strategies()})
+        # Legacy default.
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            from stock_trading_system.strategy.backtest import Backtester
+            return jsonify({"strategies": Backtester(get_config()).list_strategies()})
 
     @app.route("/api/backtest/run", methods=["POST"])
     def api_backtest_run():
@@ -2992,7 +3040,6 @@ def create_app(config_path=None):
         }
         """
         from dataclasses import asdict
-        from stock_trading_system.strategy.backtest import Backtester
         data = request.json or {}
         ticker = (data.get("ticker") or "").upper().strip()
         strategy = data.get("strategy") or "buy_and_hold"
@@ -3005,7 +3052,46 @@ def create_app(config_path=None):
         if not ticker:
             return jsonify({"error": "Missing ticker"}), 400
 
+        engine_choice = _backtest_engine_choice()
+
         try:
+            if engine_choice == "v2":
+                # P3.2 step-3 grayscale path. ``BacktestEngine.run`` takes
+                # explicit ``start_date`` / ``end_date`` — map the v1
+                # ``period`` argument (1y / 6mo / etc.) to a date range
+                # so callers don't need to change their POST body.
+                from stock_trading_system.strategy.backtester import BacktestEngine
+                from datetime import date, timedelta
+                period_map = {
+                    "1mo": 30, "3mo": 90, "6mo": 180,
+                    "1y": 365, "2y": 730, "5y": 1825,
+                }
+                days = period_map.get(period, 365)
+                end_date = date.today().strftime("%Y-%m-%d")
+                start_date = (date.today() - timedelta(days=days)).strftime("%Y-%m-%d")
+                engine = BacktestEngine(get_config())
+                result = engine.run(
+                    ticker=ticker,
+                    strategy_id=strategy,
+                    start_date=start_date,
+                    end_date=end_date,
+                    initial_capital=initial_capital,
+                    params=params,
+                )
+                # to_v1_dict() emits BOTH schema sets — frontend keeps working.
+                payload = result.to_v1_dict()
+                # Trade objects get the same treatment as the v1 path.
+                payload["trades"] = [
+                    asdict(t) if not isinstance(t, dict) else t
+                    for t in result.trades
+                ]
+                return jsonify(payload)
+
+            # Legacy default — strategy.backtest.Backtester.
+            import warnings
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                from stock_trading_system.strategy.backtest import Backtester
             bt = Backtester(get_config())
             result = bt.run(
                 ticker=ticker,

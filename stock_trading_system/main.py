@@ -101,16 +101,29 @@ def analyze(ticker, date):
 @cli.command()
 @click.option("--market", type=click.Choice(["us", "cn", "all"]), default="us", help="Market to screen")
 @click.option("--strategy", type=click.Choice(["growth", "value", "momentum", "low_volatility"]), default="growth")
-def screen(market, strategy):
-    """Screen stocks using 3-layer filtering (IB Scanner + finviz + AI)."""
-    from stock_trading_system.screener.screener import StockScreener
-
+@click.option("--engine", type=click.Choice(["v1", "v3", "auto"]), default="auto",
+              help="Override the screener engine — defaults to config.screener.engine.")
+def screen(market, strategy, engine):
+    """Screen stocks. P3.1 step-3: defaults to ``config.screener.engine``
+    (legacy ``v1`` unless flipped); ``--engine v3`` opts into the V3
+    guru pipeline via the sync wrapper."""
     config = get_config()
-    screener = StockScreener(config)
 
-    console.print(f"\n[bold cyan]Screening {market.upper()} market with '{strategy}' strategy...[/bold cyan]\n")
+    if engine == "auto":
+        engine = ((config.get("screener") or {}).get("engine") or "v1").lower()
 
-    results = screener.screen(market=market, strategy=strategy)
+    console.print(f"\n[bold cyan]Screening {market.upper()} market with '{strategy}' strategy (engine={engine})...[/bold cyan]\n")
+
+    if engine == "v3":
+        from stock_trading_system.screener.v3.sync_wrapper import screen_sync
+        results = screen_sync(config, market=market, strategy=strategy)
+    else:
+        import warnings as _w
+        with _w.catch_warnings():
+            _w.simplefilter("ignore", DeprecationWarning)
+            from stock_trading_system.screener.screener import StockScreener
+        screener = StockScreener(config)
+        results = screener.screen(market=market, strategy=strategy)
 
     table = Table(title=f"Top Picks - {market.upper()} ({strategy})")
     table.add_column("Rank", style="dim", width=4)

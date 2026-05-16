@@ -405,9 +405,21 @@ async def cmd_screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"🔍 正在筛选 {market.upper()} 市场 ({strategy} 策略)，请稍候...")
 
     try:
-        from stock_trading_system.screener.screener import StockScreener
-        screener = StockScreener(get_config())
-        results = screener.screen(market=market, strategy=strategy)
+        # P3.1 step-3 grayscale: opt into v3 guru pipeline via the
+        # ``screener.engine: v3`` config flag. Default ``v1`` keeps
+        # the legacy 3-layer screener exactly as before.
+        config = get_config()
+        engine_choice = ((config.get("screener") or {}).get("engine") or "v1").lower()
+        if engine_choice == "v3":
+            from stock_trading_system.screener.v3.sync_wrapper import screen_sync
+            results = screen_sync(config, market=market, strategy=strategy)
+        else:
+            import warnings as _w
+            with _w.catch_warnings():
+                _w.simplefilter("ignore", DeprecationWarning)
+                from stock_trading_system.screener.screener import StockScreener
+            screener = StockScreener(config)
+            results = screener.screen(market=market, strategy=strategy)
 
         if not results:
             await update.message.reply_text("筛选结果为空")

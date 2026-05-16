@@ -167,6 +167,24 @@ portfolio:
 paper_trade:
   decimal: false
 
+# Backtest engine selection. P3.2 step-3 grayscale flag — set to "v2"
+# to opt the /api/backtest/run endpoint into the BacktestEngine code
+# path (uses to_v1_dict() to keep the response schema compatible).
+# Default "v1" preserves the legacy Backtester output exactly. Flip
+# only after the parity test confirms the slippage/年化/RSI defaults
+# match what your dashboards expect.
+backtest:
+  engine: "v1"
+
+# Screener engine selection. P3.1 step-3 grayscale flag — set to "v3"
+# to opt the /api/screen endpoint (and the Telegram /screen command,
+# and the ``stock screen`` CLI) into the V3 guru pipeline via the
+# screen_sync wrapper. Default "v1" preserves the legacy 3-layer
+# (IB Scanner + finviz + AI) results. Flip only after dogfood
+# confirms the guru voting output is acceptable for your strategies.
+screener:
+  engine: "v1"
+
 # Self-iterating agent evolution module (see docs/design/self-iterating-agents.md).
 iteration:
   enabled: false                  # Master switch — disabled by default
