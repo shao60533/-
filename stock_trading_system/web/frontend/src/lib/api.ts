@@ -3,6 +3,8 @@
  * Enforces CSRF token + credentials (same-origin cookies).
  */
 
+import { perfNow, recordApiTiming } from "./perf"
+
 const CSRF = () =>
   document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]')?.content ?? ""
 
@@ -29,12 +31,22 @@ export async function api<T>(path: string, opts: ApiOptions = {}): Promise<T> {
     ...(json !== undefined ? { body: JSON.stringify(json) } : {}),
     ...rest,
   }
-  const res = await fetch(path, init)
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}))
-    throw new ApiError(res.status, body, (body as any).message ?? res.statusText)
+  const started = perfNow()
+  let status = 0
+  let ok = false
+  const method = init.method || "GET"
+  try {
+    const res = await fetch(path, init)
+    status = res.status
+    ok = res.ok
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}))
+      throw new ApiError(res.status, body, (body as any).message ?? res.statusText)
+    }
+    return res.json()
+  } finally {
+    recordApiTiming(path, method, perfNow() - started, status, ok)
   }
-  return res.json()
 }
 
 export const apiGet = <T>(path: string, opts?: ApiOptions) =>

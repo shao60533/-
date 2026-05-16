@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useCallback } from "react"
+import { useEffect, useState, useMemo, useCallback, useRef } from "react"
 import {
   TrendingUp, Target, Bell,
   Sparkles, Activity, FileText, BarChart3, RefreshCw,
@@ -11,6 +11,7 @@ import { ChartPanel } from "@/components/shared/ChartPanel"
 import { Sparkline } from "@/components/shared/Sparkline"
 import type { EChartsOption } from "@/lib/echarts"
 import { apiGet, apiPost } from "@/lib/api"
+import { perfNow, recordPerfEvent, flushPerfEvents } from "@/lib/perf"
 import { subscribeTaskStream } from "@/lib/socket"
 import { cn } from "@/lib/utils"
 import { HoldingsSection } from "./HoldingsSection"
@@ -144,6 +145,7 @@ interface PortfolioSummary {
 }
 
 export function DashboardPage() {
+  const bootStartedAt = useRef(perfNow())
   const [data, setData] = useState<DashData | null>(null)
   const [tasks, setTasks] = useState<TaskRow[]>([])
   const [alloc, setAlloc] = useState<AllocItem[]>([])
@@ -193,6 +195,10 @@ export function DashboardPage() {
     // tighter 1M/7D chips with no extra round-trip). The user clicking
     // ALL / 1Y / 6M will trigger a separate fetch for the full series
     // — see the range-effect below.
+    const loadStartedAt = perfNow()
+    recordPerfEvent("dashboard.initial_load.start", {
+      history_days: DEFAULT_HISTORY_DAYS,
+    })
     Promise.all([
       apiGet<DashData>(`/api/dashboard?history_days=${DEFAULT_HISTORY_DAYS}`).catch(() => null),
       apiGet<TaskRow[]>("/api/tasks?limit=10&offset=0").catch(() => []),
@@ -206,6 +212,18 @@ export function DashboardPage() {
       setTransactionsCount(Array.isArray(tx) ? tx.length : 0)
       setSummary(s)
       setLoading(false)
+      recordPerfEvent("dashboard.initial_load.done", {
+        elapsed_ms: Math.round(perfNow() - loadStartedAt),
+        mount_elapsed_ms: Math.round(perfNow() - bootStartedAt.current),
+        dashboard_ok: Boolean(d),
+        holdings_count: d?.holdings?.length ?? 0,
+        history_count: d?.history?.length ?? 0,
+        tasks_count: Array.isArray(t) ? t.length : ((t as any)?.tasks?.length ?? 0),
+        allocation_count: Array.isArray(a) ? a.length : 0,
+        transactions_count: Array.isArray(tx) ? tx.length : 0,
+        summary_ok: Boolean(s),
+      })
+      flushPerfEvents()
     })
   }, [])
 

@@ -1,10 +1,12 @@
 import { useState } from "react"
 import {
-  LayoutDashboard, Brain, Crosshair,
-  Wallet, FlaskConical, TestTube, Bell,
-  FileText, Settings, ListChecks, MoreHorizontal,
+  Wallet, FlaskConical, Bell,
+  FileText, Settings, ListChecks,
   Receipt, UserCircle,
 } from "lucide-react"
+import {
+  TabIconDashboard, TabIconAnalysis, TabIconDiscover, TabIconPaper, TabIconMore,
+} from "@/components/icons/TabIcons"
 import { cn } from "@/lib/utils"
 import { getCurrentUser } from "@/lib/auth"
 import {
@@ -16,6 +18,10 @@ interface NavItem {
   label: string
   href: string
   icon: React.ReactNode
+  /** When true, the entry is hidden for non-admin users (and for anon
+   *  users on pages that render the sidebar). Drives both desktop
+   *  Sidebar and mobile More-sheet visibility. */
+  adminOnly?: boolean
 }
 
 interface NavGroup {
@@ -27,7 +33,7 @@ const NAV_GROUPS: NavGroup[] = [
   {
     title: "概览",
     items: [
-      { label: "仪表盘", href: "/", icon: <LayoutDashboard className="w-4 h-4" /> },
+      { label: "仪表盘", href: "/", icon: <TabIconDashboard className="w-4 h-4" /> },
     ],
   },
   {
@@ -37,14 +43,14 @@ const NAV_GROUPS: NavGroup[] = [
       // completed analyses live in one list, so the standalone
       // ``/history`` link was retired (route still 301-redirects to
       // ``/analysis`` so old bookmarks keep resolving).
-      { label: "AI 分析",  href: "/analysis", icon: <Brain className="w-4 h-4" /> },
+      { label: "AI 分析",  href: "/analysis", icon: <TabIconAnalysis className="w-4 h-4" /> },
       { label: "报告中心", href: "/reports",   icon: <FileText className="w-4 h-4" /> },
     ],
   },
   {
     title: "选股",
     items: [
-      { label: "智能选股 V3", href: "/screener-v3", icon: <Crosshair className="w-4 h-4" /> },
+      { label: "智能选股 V3", href: "/screener-v3", icon: <TabIconDiscover className="w-4 h-4" /> },
       { label: "策略回测",   href: "/backtest", icon: <FlaskConical className="w-4 h-4" /> },
     ],
   },
@@ -58,14 +64,14 @@ const NAV_GROUPS: NavGroup[] = [
   {
     title: "纸面交易",
     items: [
-      { label: "全部会话", href: "/paper-trade", icon: <TestTube className="w-4 h-4" /> },
+      { label: "全部会话", href: "/paper-trade", icon: <TabIconPaper className="w-4 h-4" /> },
     ],
   },
   {
     title: "系统",
     items: [
       { label: "任务中心", href: "/tasks",    icon: <ListChecks className="w-4 h-4" /> },
-      { label: "设置",     href: "/settings", icon: <Settings className="w-4 h-4" /> },
+      { label: "设置",     href: "/settings", icon: <Settings className="w-4 h-4" />, adminOnly: true },
     ],
   },
 ]
@@ -143,10 +149,10 @@ function SidebarLink({ item, active }: { item: NavItem; active: boolean }) {
 // stays one tap away.
 
 const MOBILE_PRIMARY: NavItem[] = [
-  { label: "首页", href: "/",             icon: <LayoutDashboard className="w-5 h-5" /> },
-  { label: "分析", href: "/analysis",     icon: <Brain className="w-5 h-5" /> },
-  { label: "发现", href: "/screener-v3",  icon: <Crosshair className="w-5 h-5" /> },
-  { label: "纸面", href: "/paper-trade",  icon: <TestTube className="w-5 h-5" /> },
+  { label: "首页", href: "/",             icon: <TabIconDashboard className="w-5 h-5" /> },
+  { label: "分析", href: "/analysis",     icon: <TabIconAnalysis className="w-5 h-5" /> },
+  { label: "发现", href: "/screener-v3",  icon: <TabIconDiscover className="w-5 h-5" /> },
+  { label: "纸面", href: "/paper-trade",  icon: <TabIconPaper className="w-5 h-5" /> },
 ]
 
 interface MoreEntry extends NavItem { description?: string }
@@ -215,7 +221,7 @@ export function MobileTabbar() {
               moreActive ? "bg-[var(--color-accent-blue)]" : "bg-transparent",
             )}
           />
-          <MoreHorizontal className="w-5 h-5" />
+          <TabIconMore className="w-5 h-5" />
           <span className="mt-0.5 whitespace-nowrap">更多</span>
         </button>
       </nav>
