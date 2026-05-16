@@ -1172,7 +1172,19 @@ def create_app(config_path=None):
     @app.route("/settings")
     @app.route("/settings/<section>")
     def settings_page(section=None):
+        # mobile-ui-v1.3.1 addendum #3: admin-only. Non-admin users
+        # land on /account (their own user info + logout) instead of
+        # seeing a 403. Anon users are caught earlier by enforce_auth().
+        if g.user is None or g.user.role != "admin":
+            return redirect("/account")
         return render_template("islands/settings.html", vite_assets=vite_assets)
+
+    @app.route("/account")
+    def account_page():
+        # Auth gating is owned by enforce_auth() — anon users are
+        # bounced to /login before this handler runs. Both 'user' and
+        # 'admin' roles can reach this page.
+        return render_template("islands/account.html", vite_assets=vite_assets)
 
     # ── Health Check ────────────────────────────────────────────────────
     # Lightweight probe used by Railway / Render / k8s liveness checks.
