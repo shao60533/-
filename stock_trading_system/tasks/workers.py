@@ -828,12 +828,14 @@ def make_batch_analysis_worker(deps):
         date = params.get("date") or _today_str()
         task_id = params.get("__task_id__", "")
         # P1.3: worker is in a thread, no Flask g.user — caller injects
-        # __user_id__ at submit time. Without it PortfolioManager raises.
+        # __user_id__ at submit time. PortfolioManager.get_holdings is
+        # tenant-strict and raises if user_id is missing, so fail fast
+        # here with a self-explanatory message instead of letting the
+        # generic "missing tenant context" bubble up to the task center.
         user_id = params.get("__user_id__")
         if user_id is None:
             raise RuntimeError(
-                "batch_analyze_holdings: __user_id__ missing in params "
-                "(worker can't determine which tenant's holdings to scan)"
+                "batch_analysis missing __user_id__; submitter must inject user id"
             )
 
         # 1. Get holdings (scoped to the submitting user)
@@ -897,7 +899,7 @@ def make_batch_analysis_worker(deps):
                     "ticker": ticker,
                     "date": date,
                     "__task_id__": task_id,
-                    "__user_id__": params.get("__user_id__"),
+                    "__user_id__": user_id,
                 }
                 result = analysis_worker_fn(sub_params, sub_progress)
                 advice = result.get("advice") or {}
