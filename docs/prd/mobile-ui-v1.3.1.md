@@ -100,7 +100,20 @@ v1.3 实装方按 PRD §3.1 严格执行，R-MUI-01..14 功能层面 100% 通过
 | R-MUI-22a | 不改变 Inbox / RecentScreensCard 内部行为 | 同上 | 提交、刷新、点击行为完全一致 |
 | R-MUI-22b | 桌面端布局同步调整（不再保留旧顺序） | 同上 | 桌面 ≥md 与移动端同序 |
 
-### 4.3 P1 可并行
+### 4.3 P0 角色与隐私（用户 2026-05-15 三次反馈）
+
+实测当前 Sidebar 把 `/settings`（含 LLM API key / OpenRouter preset / 通知 / 调度器 / 邀请码生成 / 数据库路径等管理面板）暴露给**所有登录用户**，普通租户不应看到这些；同时 MOBILE_MORE 第 7 项 "账号" 实际跳转到 `/settings#account` —— 用户**没有独立的账号页面**，导致"账号 = 设置页的一个 hash anchor"心智不一致。
+
+| ID | 需求 | 目标文件 | 验收 |
+|---|---|---|---|
+| R-MUI-26 | 桌面 `<Sidebar>` NAV_GROUPS 的 "设置" 项 **仅 admin 可见** | `Sidebar.tsx` | 非 admin 登录后桌面侧栏不显示设置链接 |
+| R-MUI-27 | 移动端 MOBILE_MORE 的 "系统设置" 项 **仅 admin 可见** | `Sidebar.tsx` | 非 admin 移动端 More sheet 不显示系统设置项 |
+| R-MUI-28 | 移动端 MOBILE_MORE 的 "账号" 项跳转到新独立 `/account` 路由，不再 `/settings#account` | `Sidebar.tsx` + 新 island | 点击账号项进入 `/account` 而不是 `/settings` |
+| R-MUI-29 | 新建 `/account` 页面 = 显示用户信息（display_name / email / 角色 badge）+ **退出登录按钮**，**无其它功能链接** | `islands/account/AccountPage.tsx` + 新 Flask 路由 | 页面只渲染一张卡含 3 行信息 + 1 个红色 logout 按钮 |
+| R-MUI-30 | `/settings` 路由后端 **non-admin 返回 403**（不仅靠前端隐藏入口） | `web/app.py` `/settings` view | curl `-b alice_session` 访问 `/settings` 返 403 / redirect 到 `/account` |
+| R-MUI-31 | OAuth 已绑定登录方式（LoginMethodsSection）依然展示在 `/account` 还是 `/settings`？ | — | **保持现状（在 /settings 内的"登录方式"section）** —— OAuth 绑定属于"系统配置"语义，与 admin 设置项放一处合理；用户重读时若有不同意见再 v1.3.3 调整 |
+
+### 4.4 P1 可并行
 
 | ID | 需求 | 验收 |
 |---|---|---|

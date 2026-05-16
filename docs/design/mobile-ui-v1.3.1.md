@@ -413,6 +413,235 @@ function ScreenerHomeView({ prefillId }) {
 
 ---
 
+## 6.6 系统设置 admin 门 + 独立账号页（R-MUI-26..30）
+
+### 6.6.1 Sidebar 改造（[`Sidebar.tsx`](../../stock_trading_system/web/frontend/src/components/shared/Sidebar.tsx)）
+
+**桌面 NAV_GROUPS**（line 25）—— "系统" 组内 "设置" 项加 `adminOnly: true` flag，渲染时 `getCurrentUser()?.role !== "admin"` 过滤掉：
+
+```tsx
+interface NavItem {
+  label: string
+  href: string
+  icon: React.ReactNode
+  adminOnly?: boolean          // ← 新增
+}
+
+// 在 NAV_GROUPS 内:
+{ label: "设置", href: "/settings", icon: <Settings className="w-4 h-4" />, adminOnly: true },
+
+// 桌面 <Sidebar> 渲染处:
+{group.items
+  .filter(item => !item.adminOnly || isAdminUser)
+  .map(item => <SidebarLink key={item.href} item={item} active={isActive(item.href)} />)}
+```
+
+`isAdminUser` 由组件顶部 `const isAdminUser = getCurrentUser()?.role === "admin"` 计算。
+
+**移动 MOBILE_MORE**（line 152-160）同样加 `adminOnly`：
+```tsx
+const MOBILE_MORE: MoreEntry[] = [
+  ...,
+  { label: "系统设置", description: "模型与通知", href: "/settings", icon: <Settings />, adminOnly: true },
+  { label: "账号",     description: "当前用户 / 退出登录", href: "/account", icon: <UserCircle /> }, // ← href 改 /account
+]
+
+// MoreSheet 渲染处过滤:
+{MOBILE_MORE.filter(e => !e.adminOnly || isAdminUser).map(...)}
+```
+
+### 6.6.2 新建独立 `/account` 路由
+
+**Flask 视图**（[`web/app.py`](../../stock_trading_system/web/app.py)）：
+```python
+@app.route("/account")
+@login_required
+def account_page():
+    return render_template(
+        "islands/account.html",
+        vite_assets=vite_assets,
+    )
+```
+
+**Jinja 模板** [`web/templates/islands/account.html`](../../stock_trading_system/web/templates/islands/account.html)（仿现有 island 模板）:
+```jinja
+{% extends "layout.html" %}
+{% block title %}账号 · StockAI Terminal{% endblock %}
+{% block content %}
+<div id="account-root"></div>
+{% endblock %}
+{% block scripts %}
+{{ vite_assets("src/islands/account/main.tsx") | safe }}
+{% endblock %}
+```
+
+**Vite entry** [`src/islands/account/main.tsx`](../../stock_trading_system/web/frontend/src/islands/account/main.tsx)：
+```tsx
+import { createRoot } from "react-dom/client"
+import { AppShell } from "@/components/shared/AppShell"
+import { AccountPage } from "./AccountPage"
+import "@/styles/index.css"
+
+createRoot(document.getElementById("account-root")!).render(
+  <AppShell pageTitle="账号">
+    <AccountPage />
+  </AppShell>
+)
+```
+
+**Vite config** (`vite.config.ts`) 加入新 input。
+
+### 6.6.3 `<AccountPage>` 组件
+
+[`src/islands/account/AccountPage.tsx`](../../stock_trading_system/web/frontend/src/islands/account/AccountPage.tsx)：
+
+```tsx
+import { useState } from "react"
+import { LogOut, UserCircle, Mail, Shield } from "lucide-react"
+import { Card, CardContent } from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/badge"
+import { toast } from "@/components/ui/toaster"
+import { apiPost } from "@/lib/api"
+import { getCurrentUser } from "@/lib/auth"
+
+export function AccountPage() {
+  const user = getCurrentUser()
+  const [busy, setBusy] = useState(false)
+
+  async function onLogout() {
+    if (!confirm("确认退出登录?")) return
+    setBusy(true)
+    try {
+      await apiPost("/api/auth/logout", {})
+      window.location.href = "/login"
+    } catch {
+      toast.error("退出失败,请重试")
+      setBusy(false)
+    }
+  }
+
+  if (!user) {
+    return (
+      <div className="p-4 md:p-6 max-w-md mx-auto">
+        <p className="text-center text-muted-foreground py-8">未登录</p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="p-4 md:p-6 max-w-md mx-auto space-y-4">
+      <Card>
+        <CardContent className="pt-5 space-y-3">
+          <div className="flex items-center gap-3 pb-3 border-b border-border">
+            <div className="w-12 h-12 rounded-full bg-primary/10 grid place-items-center shrink-0">
+              <UserCircle className="w-7 h-7 text-primary" />
+            </div>
+            <div className="min-w-0">
+              <div className="font-semibold truncate">{user.displayName}</div>
+              <Badge variant={user.role === "admin" ? "default" : "secondary"}
+                     className="mt-0.5 text-[10px]">
+                {user.role === "admin" ? "管理员" : "用户"}
+              </Badge>
+            </div>
+          </div>
+
+          <Row icon={<Mail className="w-4 h-4" />} label="账号 ID" value={`#${user.id}`} />
+          <Row icon={<Shield className="w-4 h-4" />} label="角色" value={user.role} />
+          <Row icon={<UserCircle className="w-4 h-4" />} label="显示名" value={user.displayName} />
+        </CardContent>
+      </Card>
+
+      <Button
+        variant="destructive"
+        className="w-full"
+        onClick={onLogout}
+        disabled={busy}
+      >
+        <LogOut className="w-4 h-4 mr-2" />
+        {busy ? "退出中..." : "退出登录"}
+      </Button>
+    </div>
+  )
+}
+
+function Row({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {
+  return (
+    <div className="flex items-center gap-2 text-sm">
+      <span className="text-muted-foreground">{icon}</span>
+      <span className="text-muted-foreground">{label}</span>
+      <span className="ml-auto font-mono text-xs">{value}</span>
+    </div>
+  )
+}
+```
+
+**关键约束**：
+- **只渲染** 用户信息卡 + 退出按钮，**无其他链接 / 入口**（用户明确要求"只有退出登录的功能"）。
+- 显示名 / 角色 / ID 来自 `getCurrentUser()`（meta 标签，server-rendered，无额外请求）。
+- email 字段 v1.0 不显示（getCurrentUser 当前只返 id/displayName/role，加 email 需改 [`layout.html`](../../stock_trading_system/web/templates/layout.html) 注入 `<meta name="user-email">`+ auth.ts —— 可在 v1.3.3 加，不是 P0）。
+
+### 6.6.4 后端 `/settings` admin 门
+
+[`/settings`](../../stock_trading_system/web/app.py) 视图加 admin 守卫：
+
+```python
+@app.route("/settings")
+@login_required
+def settings_page():
+    if g.user is None or g.user.role != "admin":
+        # 非 admin 重定向到 /account(用户期望的"账号"页)
+        return redirect("/account")
+    return render_template("islands/settings.html", vite_assets=vite_assets)
+```
+
+同时 `/api/settings`（GET/POST）端点也要加 admin 门——目前 `/api/settings` 在 [`web/app.py:2177`](../../stock_trading_system/web/app.py) 暴露 LLM API key 配置等管理面板数据，对非 admin 必须 403：
+
+```python
+@app.route("/api/settings")
+def api_settings():
+    if g.user is None:
+        return jsonify({"error": "unauthorized"}), 401
+    if g.user.role != "admin":
+        return jsonify({"error": "forbidden", "reason": "admin_only"}), 403
+    # ... 现有逻辑
+```
+
+同样 admin 门加到 `/api/settings/llm-provider`、`/api/settings/openrouter/active`、`/api/diagnostics/providers` 等管理类端点。
+
+### 6.6.5 严格不动
+
+- [`SettingsPage.tsx`](../../stock_trading_system/web/frontend/src/islands/settings/SettingsPage.tsx) 组件本身（admin 见到的内容不变）
+- LoginMethodsSection（OAuth 绑定 v1.0 暂留在 settings 内，R-MUI-31 标注未来再议）
+- `/api/auth/logout` 接口
+- 现有 admin 用户的工作流（admin 仍能从侧栏看到设置）
+- 普通用户的所有非 settings 流程（持仓 / 分析 / 选股 / 纸面 / 报告 / 回测 / 任务 / 预警 / OAuth 登录）
+
+### 6.6.6 测试
+
+后端 [`tests/web/test_settings_admin_gate.py`](../../tests/web/test_settings_admin_gate.py) 4 case：
+1. 未登录 GET `/settings` → 302 `/login`
+2. alice (user) GET `/settings` → 302 `/account`
+3. admin GET `/settings` → 200 + 渲染 settings island
+4. alice GET `/api/settings` → 403 reason=`admin_only`
+
+前端 vitest [`__tests__/account.test.tsx`](stock_trading_system/web/frontend/src/islands/account/__tests__/account.test.tsx) 3 case：
+1. 渲染用户信息（displayName / role / id）
+2. 点退出 → confirm → POST `/api/auth/logout` → location.href = `/login`
+3. confirm 取消 → 不调 API
+
+前端 vitest [`__tests__/Sidebar.role-gate.test.tsx`](stock_trading_system/web/frontend/src/components/shared/__tests__/Sidebar.role-gate.test.tsx) 3 case：
+1. user role → MOBILE_MORE 不含 "系统设置"
+2. user role → 桌面 NAV_GROUPS 不含 "设置"
+3. admin role → 两处都含
+
+### 6.6.7 实施时长
+
+约 **+1.5h 实装 ~180 LOC**：
+- Sidebar adminOnly filter ~20 / 后端 admin 门 4 处 ~30 / Jinja 模板 + Vite input ~30 / AccountPage 组件 ~60 / 测试 4 文件 ~40
+
+---
+
 ## 7. 实施顺序
 
 | 步骤 | 工作 | 文件 | LOC |
