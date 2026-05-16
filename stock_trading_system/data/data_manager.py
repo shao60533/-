@@ -4,6 +4,8 @@
 - A-shares: AkShare -> Qwen (last resort)
 """
 
+from typing import Any
+
 import pandas as pd
 
 from stock_trading_system.data.ib_provider import IBProvider
@@ -60,6 +62,31 @@ class DataManager:
         # pre-emptive skip is now properly fixed by the threading.Lock
         # added in P2.7.
         self._fail_count = {"ib": 0, "polygon": 0, "schwab": 0}
+        # hardening-iteration-v1 P3.3 step-2: optional delegation to
+        # DataRouter. When ``config["data_routing"]["use_router_delegate"]``
+        # is true, get_price routes through DataRouter (Qwen-first with
+        # LocalCache + capability matrix); when false (default), the
+        # legacy Schwab → IB → Polygon → yfinance → Qwen chain in this
+        # file is used unchanged. step-3 will flip the default once a
+        # dogfood week confirms equivalent behaviour.
+        self._use_router_delegate = bool(
+            (config.get("data_routing", {}) or {}).get("use_router_delegate", False)
+        )
+        self._router: Any | None = None  # lazy — only built when flag is on
+
+    def _get_router(self):
+        """Lazy DataRouter — never built unless the feature flag is on."""
+        if self._router is None and self._use_router_delegate:
+            try:
+                from stock_trading_system.data.data_router import DataRouter
+                self._router = DataRouter(self._config, cache=self._cache)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "DataRouter delegate init failed, falling back to "
+                    "legacy chain: %s", e,
+                )
+                self._use_router_delegate = False
+        return self._router
 
     def _is_skipped(self, provider: str) -> bool:
         return self._fail_count.get(provider, 0) >= self._SKIP_THRESHOLD
@@ -82,8 +109,18 @@ class DataManager:
 
         Uses LocalCache (price_quote, 60s TTL) to avoid redundant
         network calls within a short window.
+
+        hardening-iteration-v1 P3.3 step-2: when
+        ``config["data_routing"]["use_router_delegate"]`` is true the
+        call delegates to DataRouter (Qwen-first + capability matrix).
+        Default OFF — legacy chain runs.
         """
         market = market or detect_market(ticker)
+
+        if self._use_router_delegate:
+            router = self._get_router()
+            if router is not None:
+                return router.get_price(ticker, market=market)
 
         # Check cache first (60s TTL via LocalCache.price_quote)
         if self._cache is not None:
