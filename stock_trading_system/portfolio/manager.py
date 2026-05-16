@@ -71,8 +71,14 @@ def _write_user_holdings_cache(user_id: int, holdings: list[dict]) -> None:
 # runs under a wall-clock cap; whatever fails to come back in time is
 # treated as "no quote" and the holding falls back to cost basis with
 # price_source="cost" so the row still renders.
-_BATCH_QUOTE_TIMEOUT_SEC = 6.0
-_FALLBACK_QUOTE_TIMEOUT_SEC = 5.0
+#
+# Budgets are intentionally tight: dashboard first-paint target is <2s
+# wall-clock. _HOLDINGS_TOTAL_QUOTE_BUDGET_SEC is the joint cap across
+# batch + fallback; the fallback phase shrinks dynamically so we never
+# blow past it even if batch consumed most of the window.
+_BATCH_QUOTE_TIMEOUT_SEC = 1.5
+_FALLBACK_QUOTE_TIMEOUT_SEC = 1.0
+_HOLDINGS_TOTAL_QUOTE_BUDGET_SEC = 2.0
 
 
 class PortfolioManager:
@@ -264,9 +270,10 @@ class PortfolioManager:
         snapshot (paper-trade snapshotter, cron sweeps).
         """
         uid = self._user_id(user_id)
+        quote_started = _time.monotonic()
 
         if use_cache:
-            cached = _read_user_holdings_cache(uid, self._holdings_cache_scope)
+            cached = _read_user_holdings_cache(uid)
             if cached is not None:
                 return cached
 
@@ -277,7 +284,7 @@ class PortfolioManager:
         positions = self._db.get_all_positions(user_id=uid)
         if not positions:
             if use_cache:
-                _write_user_holdings_cache(self._holdings_cache_scope, uid, [])
+                _write_user_holdings_cache(uid, [])
             return []
 
         # 1) Schwab batch for US tickers — one network call replaces N
@@ -299,10 +306,13 @@ class PortfolioManager:
                         sources[ticker] = "realtime"
 
         # 2) Whatever the batch missed (and any CN positions) → per-ticker
-        # fallback, capped by _FALLBACK_QUOTE_TIMEOUT_SEC across the whole
-        # set. as_completed(timeout=...) raises if any future hasn't
-        # finished by the deadline — we catch and break so the tickers
-        # we *did* get back still land in `prices`.
+        # fallback. The fallback budget shrinks by however long the batch
+        # phase already consumed so the joint wall-clock stays under
+        # _HOLDINGS_TOTAL_QUOTE_BUDGET_SEC. We do NOT use a `with`
+        # ThreadPoolExecutor block: __exit__ calls shutdown(wait=True),
+        # which keeps the request blocked on the slow provider even
+        # after our timeout has fired. Manually shutdown(wait=False,
+        # cancel_futures=True) is the only way to actually return now.
         missing = [p for p in positions if p.ticker not in prices]
         if missing:
             def _fetch_price(pos):
@@ -314,27 +324,43 @@ class PortfolioManager:
                 except Exception:  # noqa: BLE001
                     return pos.ticker, 0
 
-            with ThreadPoolExecutor(max_workers=min(len(missing), 8)) as pool:
-                futures = {pool.submit(_fetch_price, p): p for p in missing}
-                deadline = _time.monotonic() + _FALLBACK_QUOTE_TIMEOUT_SEC
-                try:
-                    for f in as_completed(
-                        futures,
-                        timeout=_FALLBACK_QUOTE_TIMEOUT_SEC,
-                    ):
-                        ticker, price = f.result()
-                        if price:
-                            prices[ticker] = price
-                            sources[ticker] = "realtime"
-                        if _time.monotonic() >= deadline:
-                            break
-                except FutTimeout:
-                    logger.warning(
-                        "get_holdings fallback timeout user=%s "
-                        "missing=%s budget=%ss",
-                        uid, [p.ticker for p in missing],
-                        _FALLBACK_QUOTE_TIMEOUT_SEC,
-                    )
+            elapsed = _time.monotonic() - quote_started
+            remaining_budget = _HOLDINGS_TOTAL_QUOTE_BUDGET_SEC - elapsed
+            fallback_deadline = max(
+                0.2,
+                min(_FALLBACK_QUOTE_TIMEOUT_SEC, remaining_budget),
+            )
+
+            executor = ThreadPoolExecutor(
+                max_workers=min(len(missing), 8),
+                thread_name_prefix="quote-fallback",
+            )
+            futures = {executor.submit(_fetch_price, p): p for p in missing}
+            try:
+                for f in as_completed(futures, timeout=fallback_deadline):
+                    ticker, price = f.result()
+                    if price:
+                        prices[ticker] = price
+                        sources[ticker] = "realtime"
+            except FutTimeout:
+                unfinished = [
+                    futures[f].ticker for f in futures if not f.done()
+                ]
+                for f in futures:
+                    if not f.done():
+                        f.cancel()
+                logger.warning(
+                    "get_holdings fallback timeout user=%s "
+                    "unfinished=%s budget=%.2fs elapsed=%.2fs",
+                    uid, unfinished, fallback_deadline,
+                    _time.monotonic() - quote_started,
+                )
+            finally:
+                # wait=False + cancel_futures=True drops queued work and
+                # detaches running threads from the request lifecycle.
+                # Already-running provider calls eventually return into
+                # nowhere; the request itself is unblocked immediately.
+                executor.shutdown(wait=False, cancel_futures=True)
 
         holdings: list[dict] = []
         for pos in positions:
@@ -372,7 +398,7 @@ class PortfolioManager:
             })
 
         if use_cache:
-            _write_user_holdings_cache(self._holdings_cache_scope, uid, holdings)
+            _write_user_holdings_cache(uid, holdings)
         return holdings
 
     def _fetch_batch_with_timeout(
@@ -385,29 +411,40 @@ class PortfolioManager:
 
         DataManager.get_prices_batch is synchronous and provider-bound
         (Schwab); when the provider stalls there's no way to interrupt
-        the underlying socket from inside the call. Submitting it to a
-        ThreadPoolExecutor + Future.result(timeout=...) gives us a wall
-        clock cap — on timeout we just abandon the future and return {}
-        so callers fall back to per-ticker / cost basis.
+        the underlying socket from inside the call. We submit it to a
+        single-worker pool and bound the wait with future.result(timeout).
+
+        Crucially, we do NOT use `with ThreadPoolExecutor(...)`. The
+        context manager's __exit__ calls shutdown(wait=True), which
+        keeps the request blocked on the slow socket even after our
+        timeout has already fired — that's exactly the 60s hang we're
+        fixing. Manual shutdown(wait=False, cancel_futures=True)
+        releases the request immediately; the stuck worker thread
+        eventually returns into a cancelled future and is GC'd.
         """
         from concurrent.futures import (
             ThreadPoolExecutor, TimeoutError as FutTimeout,
         )
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(
-                self._data_manager.get_prices_batch, tickers, market=market,
+        executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="quote-batch",
+        )
+        future = executor.submit(
+            self._data_manager.get_prices_batch, tickers, market=market,
+        )
+        try:
+            return future.result(timeout=timeout_sec)
+        except FutTimeout:
+            future.cancel()
+            logger.warning(
+                "get_prices_batch timeout market=%s n_tickers=%s budget=%ss",
+                market, len(tickers), timeout_sec,
             )
-            try:
-                return future.result(timeout=timeout_sec)
-            except FutTimeout:
-                logger.warning(
-                    "get_prices_batch timeout market=%s n_tickers=%s budget=%ss",
-                    market, len(tickers), timeout_sec,
-                )
-                return {}
-            except Exception as e:  # noqa: BLE001
-                logger.warning("get_prices_batch failed: %s", e)
-                return {}
+            return {}
+        except Exception as e:  # noqa: BLE001
+            logger.warning("get_prices_batch failed: %s", e)
+            return {}
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
 
     @staticmethod
     def compute_pnl_from_holdings(holdings: list[dict]) -> dict:
