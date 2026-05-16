@@ -542,6 +542,100 @@ class TaskManager:
                     analysis_id, e,
                 )
 
+    # ── Child-analysis recording (batch_analysis fan-out) ───────────────
+    #
+    # batch_analysis is the only worker that runs N sub-analyses in
+    # process without going through ``submit()`` for each one. v1.0
+    # stashed the whole batch result as a JSON blob via
+    # ``_save_generic_result`` — the per-ticker data was reachable on
+    # the parent envelope but never produced first-class
+    # ``analysis_history`` rows, so /api/history and the analysis
+    # detail page couldn't see the sub-results.
+    #
+    # ``record_child_analysis`` is the surgical fix: the batch worker
+    # calls this once per *successful* ticker. It mints a stable
+    # synthetic ``child_task_id`` (so multiple rows from the same batch
+    # don't collide on the parent id), reuses ``_save_analysis_result``
+    # for the canonical INSERT, then fires the SAME post-save hook
+    # chain (user_advice + agent_score + paper_trade) so detail / paper
+    # trade / scorecards line up with the single-ticker path.
+    #
+    # Failure mode: every step is best-effort. A hook crash logs and
+    # returns the analysis_id we already have — we never raise back
+    # into the batch worker, which would abort the remaining tickers.
+    def record_child_analysis(
+        self,
+        *,
+        parent_task_id: str,
+        ticker: str,
+        index: int,
+        result: dict,
+    ) -> int | None:
+        """Persist a batch_analysis sub-result and run the post-save hook.
+
+        Args:
+            parent_task_id: The batch_analysis task id; used to make
+                the child's synthetic task_id collision-proof.
+            ticker: Ticker symbol — fed into the synthetic task_id so
+                the row is human-traceable from a SQL dump.
+            index: Position of this child within the batch (0-based).
+            result: The dict returned by the analysis worker for this
+                ticker. Mutated in-place: ``result["task_id"]`` is
+                overridden with the synthetic child id before save so
+                the row's ``task_id`` column points at the child, not
+                the parent.
+
+        Returns:
+            The new ``analysis_history`` row id, or None when the save
+            failed (rare — surfaced as a warning log; the batch worker
+            still records the ticker as ``success`` because the analysis
+            itself succeeded, only the persistence step failed).
+        """
+        child_task_id = f"batch:{parent_task_id or 'unknown'}:{ticker}:{index}"
+        # Override task_id on the dict so _save_analysis_result writes the
+        # child id (line 477 of task_store: "result.get('task_id') or task_id"
+        # — without this override the parent id would leak in).
+        try:
+            result["task_id"] = child_task_id
+            result_ref = self._store.save_result("analysis", child_task_id, result)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "record_child_analysis: save failed for %s (parent=%s): %s",
+                ticker, parent_task_id, e,
+            )
+            return None
+
+        if not (isinstance(result_ref, str)
+                and result_ref.startswith("analysis_history:")):
+            logger.warning(
+                "record_child_analysis: unexpected result_ref %r for %s",
+                result_ref, ticker,
+            )
+            return None
+
+        try:
+            analysis_id = int(result_ref.split(":", 1)[1])
+        except (ValueError, IndexError) as e:
+            logger.warning(
+                "record_child_analysis: bad result_ref %s: %s", result_ref, e,
+            )
+            return None
+
+        # Fire the shared post-save hook so user_analysis_advice +
+        # agent_score + paper_trade run for this ticker exactly as
+        # they would for /api/analyze. The hook itself swallows its
+        # own errors so a single ticker can never crash the batch.
+        try:
+            self._post_analysis_save(result_ref, result)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "record_child_analysis: post-save hook crashed for %s "
+                "(analysis_id=%d, parent=%s): %s",
+                ticker, analysis_id, parent_task_id, e,
+            )
+
+        return analysis_id
+
     def wait_for(self, task_id: str, timeout: float | None = None) -> dict | None:
         """Block until a task reaches a terminal state. Test convenience."""
         with self._lock:

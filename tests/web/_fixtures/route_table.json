@@ -189,6 +189,13 @@
     "endpoint": "api_backtest_strategies"
   },
   {
+    "rule": "/api/batch/analyze",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_batch_analyze"
+  },
+  {
     "rule": "/api/chart/<ticker>",
     "methods": [
       "GET"
@@ -306,6 +313,34 @@
       "GET"
     ],
     "endpoint": "api_news"
+  },
+  {
+    "rule": "/api/onboarding/dismiss-checklist",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_onboarding_dismiss_checklist"
+  },
+  {
+    "rule": "/api/onboarding/mark-welcomed",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_onboarding_mark_welcomed"
+  },
+  {
+    "rule": "/api/onboarding/reset",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_onboarding_reset"
+  },
+  {
+    "rule": "/api/onboarding/state",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_onboarding_state"
   },
   {
     "rule": "/api/paper/backfill",

@@ -60,10 +60,13 @@ describe("<AnalysisPage> — v1.3.1 R-MUI-22 layout order", () => {
     await act(async () => {
       render(<AnalysisPage />)
     })
-    await waitFor(() =>
-      expect(
-        screen.getByText(/暂无分析记录.*提交上方的新分析/),
-      ).toBeInTheDocument(),
-    )
+    // After the onboarding v1.0 EmptyStateCTA rewrite the copy reads
+    // "暂无分析记录，上方表单提交一个新分析开始"; the test asserts the
+    // empty-state still references the form ABOVE the inbox.
+    await waitFor(() => {
+      const empty = screen.getByText(/暂无分析记录/)
+      expect(empty).toBeInTheDocument()
+      expect(empty.textContent ?? "").toMatch(/上方/)
+    })
   })
 })

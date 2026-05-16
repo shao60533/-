@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { Chip, ChipRow } from "@/components/ui/chip"
 import { Skeleton } from "@/components/ui/skeleton"
+import { EmptyStateCTA } from "@/components/shared/EmptyStateCTA"
 import { apiGet } from "@/lib/api"
 
 type Mode = "forward" | "replay"
@@ -114,9 +115,16 @@ export function PaperTradeListPage() {
           {[1, 2, 3].map(i => <Skeleton key={i} className="h-44" />)}
         </div>
       ) : filtered.length === 0 ? (
-        <div className="text-center py-16 text-muted-foreground">
-          {mode === "forward" ? "暂无前向追踪会话" : "暂无历史回放"}
-        </div>
+        <EmptyStateCTA
+          icon="📝"
+          message={
+            mode === "forward"
+              ? "暂无纸面追踪，从分析详情或选股结果发起"
+              : "暂无历史回放，发起一次 AI 分析即可建立首个会话"
+          }
+          ctaLabel="→ 看 AI 分析"
+          href="/analysis"
+        />
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {filtered.map(t => <TickerCard key={t.id} t={t} />)}

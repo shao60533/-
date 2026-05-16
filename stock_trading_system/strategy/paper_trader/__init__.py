@@ -18,6 +18,11 @@ from stock_trading_system.strategy.paper_trader.daily_updater import DailyUpdate
 from stock_trading_system.strategy.paper_trader.backfill import backfill_all
 from stock_trading_system.strategy.paper_trader.plan_parser import extract_plan
 from stock_trading_system.strategy.paper_trader import order_engine
+from stock_trading_system.strategy.paper_trader.eod_runner import (
+    EodRunSummary, EodSessionResult,
+    run_paper_trade_eod_all, run_paper_trade_eod_for_ticker,
+    paper_trade_status_snapshot, get_last_run,
+)
 
 __all__ = [
     "PaperTradeStore", "SignalLoader", "PaperTradeSimulator",
@@ -26,4 +31,8 @@ __all__ = [
     "ensure_ticker_session", "decide_action", "process_analysis",
     "DailyUpdater", "backfill_all",
     "extract_plan", "order_engine",
+    # v1.x paper-trade EOD auto-update wiring
+    "EodRunSummary", "EodSessionResult",
+    "run_paper_trade_eod_all", "run_paper_trade_eod_for_ticker",
+    "paper_trade_status_snapshot", "get_last_run",
 ]

@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { PipelineDAG } from "@/components/shared/PipelineDAG"
 import { ErrorBoundary } from "@/components/shared/ErrorBoundary"
+import { EmptyStateCTA } from "@/components/shared/EmptyStateCTA"
 import type { TVChartState } from "@/components/shared/TVChart"
 import { apiGet, apiPost, apiDel } from "@/lib/api"
 // react-markdown + remark-gfm + rehype-sanitize together are ~70kB
@@ -480,7 +481,7 @@ export function AnalysisPage() {
           point on mobile, so it sits ABOVE the inbox. Submit-then-
           watch flow stays intact — the optimistic running row still
           shows up in the inbox below as soon as the user submits. */}
-      <Card>
+      <Card id="analysis-form">
         <CardHeader><CardTitle>发起分析</CardTitle></CardHeader>
         <CardContent className="space-y-4">
           <div className="flex flex-col gap-3 form-row-mobile sm:flex-row sm:items-end">
@@ -554,9 +555,15 @@ export function AnalysisPage() {
             total={inbox.length}
           />
           {inbox.length === 0 ? (
-            <p className="text-sm text-muted-foreground py-6 text-center">
-              暂无分析记录，提交上方的新分析开始
-            </p>
+            <EmptyStateCTA
+              icon="🧠"
+              message="暂无分析记录，上方表单提交一个新分析开始"
+              ctaLabel="↑ 发起第一次分析"
+              onClick={() => {
+                const target = document.getElementById("analysis-form")
+                if (target) target.scrollIntoView({ behavior: "smooth", block: "start" })
+              }}
+            />
           ) : (() => {
               const filterUpper = inboxTickerQ.trim().toUpperCase()
               const visible = filterUpper

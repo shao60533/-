@@ -52,6 +52,26 @@ _task_manager = None
 _local_cache = None
 _data_router = None
 _cleanup_scheduler = None
+_onboarding_repo = None  # OnboardingRepository, populated by create_app()
+
+
+def _mark_onboarding_step(user_id, step_id: str) -> None:
+    """Fail-soft helper called from business handlers (worker / endpoint)
+    when a tracked onboarding action succeeds.
+
+    NEVER raises — onboarding bookkeeping must not break the business
+    action that triggered it. Silent when the repo singleton hasn't been
+    initialized yet (e.g. import-time call before create_app()).
+    """
+    if not user_id or _onboarding_repo is None:
+        return
+    try:
+        _onboarding_repo.mark_step(int(user_id), step_id)
+    except Exception as e:
+        logger.warning(
+            "onboarding mark_step failed user=%s step=%s: %s",
+            user_id, step_id, e,
+        )
 
 
 def _get_portfolio_mgr():
@@ -652,6 +672,10 @@ def create_app(config_path=None):
     _invite_mgr = InviteCodeManager(db_path)
     _multi_tenant_ready = ensure_multi_tenant_ready(db_path)
 
+    from stock_trading_system.auth.onboarding_repository import OnboardingRepository
+    global _onboarding_repo
+    _onboarding_repo = OnboardingRepository(db_path)
+
     from stock_trading_system.tasks.event_emitter import ensure_task_events_table
     ensure_task_events_table(db_path)
 
@@ -661,11 +685,15 @@ def create_app(config_path=None):
     from stock_trading_system.migrations.add_oauth_accounts import add_oauth_accounts
     add_oauth_accounts(db_path)
 
+    # Onboarding v1.0. Idempotent — only creates user_onboarding when missing.
+    from stock_trading_system.migrations.add_user_onboarding import add_user_onboarding
+    add_user_onboarding(db_path)
+
     # hardening-iteration-v1 P3.4: run any remaining pending migrations
     # via the unified runner. Idempotent — already-applied entries are
-    # skipped via applied_migrations table. add_oauth_accounts() above
-    # stays as the explicit early call because OAuth must be ready
-    # before the route table builds; everything else can flow through
+    # skipped via applied_migrations table. add_oauth_accounts() and
+    # add_user_onboarding() above stay as explicit early calls (must be
+    # ready before the route table builds); everything else flows through
     # the runner.
     if _multi_tenant_ready:
         try:
@@ -706,14 +734,53 @@ def create_app(config_path=None):
                 e,
             )
         else:
-            def _snapshot_all_users():
-                return take_snapshot_all_users(
+            def _daily_pipeline():
+                """Run portfolio snapshot, then paper-trade EOD.
+
+                Returns a combined ``{portfolio, paper_trade}`` shape so
+                ``/api/scheduler/run-now`` echoes both halves in one
+                response. Errors on the paper-trade leg never kill the
+                portfolio snapshot — they're captured by
+                :func:`run_paper_trade_eod_all` per session.
+                """
+                portfolio_result = take_snapshot_all_users(
                     _user_repo,
                     portfolio_manager_factory=lambda _uid: _get_portfolio_mgr(),
                 )
+                # Paper-trade leg: hits every running ticker session
+                # under the same primary-lock contract. DailyUpdater is
+                # lazy-loaded inside run_paper_trade_eod_all to keep
+                # boot light when no paper-trade sessions exist.
+                from stock_trading_system.strategy.paper_trader import (
+                    run_paper_trade_eod_all,
+                )
+                try:
+                    paper_summary = run_paper_trade_eod_all(
+                        get_config(),
+                        store=_get_paper_store(),
+                    )
+                    paper_payload = paper_summary.to_dict()
+                except Exception as e:  # pragma: no cover — defence
+                    logger.exception(
+                        "[scheduler] paper-trade EOD leg failed: %s", e,
+                    )
+                    paper_payload = {
+                        "ran_at": None,
+                        "total_sessions": 0,
+                        "updated_sessions": 0,
+                        "new_rows": 0,
+                        "latest_date": None,
+                        "errors": [{"error": f"{type(e).__name__}: {e}"}],
+                        "per_session": [],
+                        "user_id": None,
+                    }
+                return {
+                    "portfolio": portfolio_result,
+                    "paper_trade": paper_payload,
+                }
 
             DailySnapshotScheduler.reset()
-            scheduler = DailySnapshotScheduler.get(_snapshot_all_users)
+            scheduler = DailySnapshotScheduler.get(_daily_pipeline)
             scheduler.start_if_primary()
 
     # Public paths that don't require authentication
@@ -895,6 +962,7 @@ def create_app(config_path=None):
         # Create user + redeem invite
         user = _user_repo.create(email, password, display_name)
         _invite_mgr.redeem(invite_code, user.id)
+        _onboarding_repo.init_for_new_user(user.id)
         login_user(user.id)
 
         return jsonify({"user": {"id": user.id, "email": user.email,
@@ -936,6 +1004,49 @@ def create_app(config_path=None):
         if pwd_err:
             return jsonify({"error": "password_weak", "message": pwd_err}), 400
         _user_repo.update_password(u.id, new)
+        return jsonify({"ok": True})
+
+    # ── Onboarding v1.0 ────────────────────────────────────────────────
+
+    @app.route("/api/onboarding/state")
+    def api_onboarding_state():
+        from flask import g
+        if g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
+        state = _onboarding_repo.get_or_init(g.user.id)
+        return jsonify({
+            "welcome_pending": state.welcome_pending,
+            "welcomed": state.welcomed,
+            "tour_completed": state.tour_completed,
+            "checklist_dismissed": state.checklist_dismissed,
+            "steps_completed": state.steps_completed,
+        })
+
+    @app.route("/api/onboarding/mark-welcomed", methods=["POST"])
+    def api_onboarding_mark_welcomed():
+        from flask import g
+        if g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
+        body = request.get_json(silent=True) or {}
+        _onboarding_repo.mark_welcomed(
+            g.user.id, tour_completed=bool(body.get("tour_completed", False)),
+        )
+        return jsonify({"ok": True})
+
+    @app.route("/api/onboarding/dismiss-checklist", methods=["POST"])
+    def api_onboarding_dismiss_checklist():
+        from flask import g
+        if g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
+        _onboarding_repo.dismiss_checklist(g.user.id)
+        return jsonify({"ok": True})
+
+    @app.route("/api/onboarding/reset", methods=["POST"])
+    def api_onboarding_reset():
+        from flask import g
+        if g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
+        _onboarding_repo.reset(g.user.id)
         return jsonify({"ok": True})
 
     # ── Admin Routes ───────────────────────────────────────────────────
@@ -1446,6 +1557,7 @@ def create_app(config_path=None):
             profile=profile_rec, tokens=tokens_rec,
         )
         _invite_mgr.redeem(invite_code, new_user.id)
+        _onboarding_repo.init_for_new_user(new_user.id)
         _login_user(new_user.id)
         _user_repo.update_last_login(new_user.id)
         return jsonify({"ok": True, "user_id": new_user.id})
@@ -1611,6 +1723,7 @@ def create_app(config_path=None):
             date=data.get("date"), notes=data.get("notes", ""),
             user_id=g.user.id,
         )
+        _mark_onboarding_step(g.user.id, "add-holding")
         return jsonify({"ok": True, "message": f"BUY {data['shares']} {ticker} @ {data['price']}"})
 
     @app.route("/api/portfolio/sell", methods=["POST"])
@@ -1812,6 +1925,62 @@ def create_app(config_path=None):
             created_by=g.user.id,
         )
         return jsonify({"task_id": task["id"], "status": "queued"})
+
+    @app.route("/api/batch/analyze", methods=["POST"])
+    def api_batch_analyze():
+        """Submit a batch_analysis task for all current user holdings.
+
+        Body (all optional):
+            skip_recent_hours: int = 4   # 跳过最近 N 小时已分析的 ticker
+            date: str = today            # YYYY-MM-DD
+
+        Returns:
+            200 {task_id, status:"queued", total_holdings}
+            400 {reason:"no_holdings", message} 当用户当前无持仓
+            401 当未登录
+
+        Worker pipeline (workers.py::make_batch_analysis_worker) is
+        untouched; this route is purely the entry surface and the
+        per-user holdings preflight so we don't pollute the task
+        center with empty batches.
+        """
+        if g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
+
+        data = request.get_json(silent=True) or {}
+        skip_hours = int(data.get("skip_recent_hours", 4))
+        from stock_trading_system.utils.helpers import today_str
+        date = data.get("date") or today_str()
+
+        # Preflight: refuse empty-holdings submissions. PortfolioManager
+        # is multi-tenant aware — passing user_id makes the row scope
+        # explicit so a future change to the auto-resolve helper doesn't
+        # silently leak someone else's holdings into the count.
+        pm = _get_portfolio_mgr()
+        holdings = pm.get_holdings(user_id=g.user.id)
+        tickers = [h["ticker"] for h in holdings if h.get("shares", 0) > 0]
+        if not tickers:
+            return jsonify({
+                "reason": "no_holdings",
+                "message": "暂无持仓,请先添加持仓",
+            }), 400
+
+        tm = _get_task_manager()
+        task = tm.submit(
+            task_type="batch_analysis",
+            params={
+                "skip_recent_hours": skip_hours,
+                "date": date,
+                "__user_id__": g.user.id,
+            },
+            title=f"批量分析持仓 · {len(tickers)} 只",
+            created_by=g.user.id,
+        )
+        return jsonify({
+            "task_id": task["id"],
+            "status": "queued",
+            "total_holdings": len(tickers),
+        })
 
     # ── Screener API ────────────────────────────────────────────────────
 
@@ -2825,6 +2994,22 @@ def create_app(config_path=None):
         else:
             apsched_payload = ap.status()
         uid = g.user.id if g.user else None
+        # Paper-trade auto-EOD status — separate from portfolio snapshot
+        # so an operator can tell which leg is stale.
+        paper_trade_payload: dict
+        try:
+            from stock_trading_system.strategy.paper_trader import (
+                paper_trade_status_snapshot,
+            )
+            paper_trade_payload = paper_trade_status_snapshot(_get_paper_store())
+        except Exception as e:  # pragma: no cover — defensive
+            paper_trade_payload = {
+                "total_ticker_sessions": 0,
+                "stale_sessions_count": 0,
+                "latest_eod_date": None,
+                "last_run": None,
+                "error": f"{type(e).__name__}: {e}",
+            }
         return jsonify({
             **legacy,
             "running": bool(legacy["running"] or apsched_payload.get("running")),
@@ -2833,12 +3018,21 @@ def create_app(config_path=None):
             "pid": apsched_payload.get("pid"),
             "last_run": _last_snapshot_at(uid),
             "legacy": legacy,
+            "paper_trade": paper_trade_payload,
         })
 
     @app.route("/api/scheduler/run-now", methods=["POST"])
     @admin_required
     def api_scheduler_run_now():
-        """Fire the daily-snapshot job immediately (admin-only)."""
+        """Fire the daily-snapshot pipeline immediately (admin-only).
+
+        Returns a combined ``{portfolio, paper_trade}`` envelope under
+        ``result`` so the response covers both legs in one round-trip.
+        The legacy single-payload shape (portfolio result inline at
+        ``result``) is preserved as a fallback when the boot-time
+        closure didn't wire paper-trade — older deployments will still
+        see their portfolio result here.
+        """
         ap = _daily_snapshot_scheduler()
         if ap is None:
             return jsonify({"ok": False, "error": "scheduler not initialized"}), 503
@@ -3815,28 +4009,53 @@ def create_app(config_path=None):
 
     @app.route("/api/paper/tickers/<ticker>/eod", methods=["POST"])
     def api_paper_ticker_eod(ticker: str):
-        # paper-trade v1.5: require login + scope to current user. Without
-        # user_id, find_session_by_ticker may return another user's older
-        # session for the same ticker → manual EOD updates the wrong row
-        # and the calling user's detail page stays empty.
+        """Manual EOD refresh for one (user, ticker) — all sibling sessions.
+
+        paper-trade v1.5 used to call ``find_session_by_ticker`` and run
+        DailyUpdater against a single session. Legacy duplicate sessions
+        for the same (user, ticker) — created before the
+        ``(ticker, user_id)`` UNIQUE index landed — were left with stale
+        ``last_eod_date``, so the detail page (which aggregates sibling
+        ids via ``aggregate_ticker_session_ids``) showed gaps. We now
+        run the unified :func:`run_paper_trade_eod_for_ticker` which
+        iterates every sibling under the same user_id scope, so all
+        rows the detail page can ever read get the same update window.
+
+        Cross-user isolation is preserved by the explicit
+        ``user_id=g.user.id`` scope passed into the runner.
+        """
         if g.user is None:
             return jsonify({"ok": False, "error": "unauthorized"}), 401
         store = _get_paper_store()
-        sess = store.find_session_by_ticker(ticker.upper(), user_id=g.user.id)
-        if not sess:
+        from stock_trading_system.strategy.paper_trader import (
+            run_paper_trade_eod_for_ticker,
+        )
+        # Aggregate sibling ids first — empty list = no session at all
+        # (or all belong to a different user). Return 404 to match the
+        # pre-fix shape so existing UI error handlers still work.
+        sibling_ids = store.aggregate_ticker_session_ids(
+            ticker.upper(), user_id=int(g.user.id),
+        )
+        if not sibling_ids:
             return jsonify({"ok": False, "error": "Not found"}), 404
         try:
-            from stock_trading_system.strategy.paper_trader import DailyUpdater
-            updater = DailyUpdater(get_config(), store)
-            rows = updater.update_session(int(sess["id"]))
-            return jsonify({
-                "ok": True,
-                "new_rows": len(rows),
-                "session_id": int(sess["id"]),
-            })
+            summary = run_paper_trade_eod_for_ticker(
+                get_config(), store=store,
+                ticker=ticker.upper(), user_id=int(g.user.id),
+            )
         except Exception as e:
             logger.error("Manual EOD failed for %s: %s", ticker, e)
             return _safe_internal(e, extra={"ok": False})
+        return jsonify({
+            "ok": True,
+            "new_rows": summary.new_rows,
+            "session_id": int(sibling_ids[0]),   # primary id (legacy field)
+            "session_ids": [int(s) for s in sibling_ids],
+            "updated_sessions": summary.updated_sessions,
+            "latest_date": summary.latest_date,
+            "per_session": summary.per_session,
+            "errors": summary.errors,
+        })
 
     @app.route("/api/paper/backfill", methods=["POST"])
     def api_paper_backfill():

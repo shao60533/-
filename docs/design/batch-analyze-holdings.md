@@ -660,3 +660,185 @@ tasks:
 ---
 
 *方案 v1.0 结束。请审阅后确认是否可以进入实施阶段。*
+
+---
+
+## 十四、v1.1 前端入口补丁（2026-05-13）
+
+### 14.1 现状
+
+v1.0 设计稿于 2026-04-18 立项，**后端已实装**（[`tasks/workers.py:782 make_batch_analysis_worker`](../../stock_trading_system/tasks/workers.py)，注册名 `batch_analysis`，含跳过近期分析 / 逐只推送 `batch_analysis_item` 事件 / 完整结果汇总），[`TasksPage.tsx`](../../stock_trading_system/web/frontend/src/islands/tasks/TasksPage.tsx) 已识别 `batch_analysis` 任务类型并在事件流中渲染。
+
+但 **2 项前端入口仍未接通**：
+
+1. **后端 API 路由缺失** —— `/api/batch/analyze` 路由从未实装；worker 注册了但前端无法触发提交（除非走 `/api/tasks/submit` 通用入口）。
+2. **首页 gap-note 卡为占位 alert** —— [`HoldingsSection.tsx:111-137`](../../stock_trading_system/web/frontend/src/islands/dashboard/HoldingsSection.tsx) 当前是「产品缺口」黄边提示卡，点击只 `alert("产品缺口：批量分析持仓尚未接入前端入口")`，不是真实触发。
+
+[mobile-ui-v1.3.md](mobile-ui-v1.3.md) R-MUI-02 已把 gap-note 卡放在首页持仓明细上方作为占位，本期把占位换成**真实可用入口**。
+
+### 14.2 修法
+
+#### 14.2.1 后端：新增 `POST /api/batch/analyze` 路由（[`web/app.py`](../../stock_trading_system/web/app.py)，仿照 [`/api/analyze`](../../stock_trading_system/web/app.py#L1603) pattern）
+
+```python
+@app.route("/api/batch/analyze", methods=["POST"])
+def api_batch_analyze():
+    """提交批量持仓分析任务。
+
+    Body (all optional):
+        skip_recent_hours: int = 4   # 跳过最近 N 小时已分析的 ticker
+        date: str = today            # YYYY-MM-DD
+    Returns:
+        {task_id, status: "queued", total_holdings, will_skip, will_analyze}
+        无持仓时返回 400 {reason: "no_holdings"}
+    """
+    if g.user is None:
+        return jsonify({"error": "unauthorized"}), 401
+    data = request.get_json(silent=True) or {}
+    skip_hours = int(data.get("skip_recent_hours", 4))
+    date = data.get("date") or _today_str()
+
+    # 预检:用户当前持仓
+    pm = _get_portfolio_for_user(g.user.id)  # 用现有 helper
+    holdings = pm.get_holdings()
+    tickers = [h["ticker"] for h in holdings if h.get("shares", 0) > 0]
+    if not tickers:
+        return jsonify({"reason": "no_holdings",
+                        "message": "暂无持仓,请先添加持仓"}), 400
+
+    tm = _get_task_manager()
+    task = tm.submit(
+        task_type="batch_analysis",
+        params={
+            "skip_recent_hours": skip_hours,
+            "date": date,
+            "__user_id__": g.user.id,
+        },
+        title=f"批量分析持仓 · {len(tickers)} 只",
+        created_by=g.user.id,
+    )
+    return jsonify({
+        "task_id": task["id"],
+        "status": "queued",
+        "total_holdings": len(tickers),
+    })
+```
+
+**关键约束**：
+- 必须登录（与 `/api/analyze` 一致）
+- 多租户：用户只能批量分析**自己的**持仓（`g.user.id` 走 `_get_portfolio_for_user`，多租户隔离自动生效）
+- 持仓为空时返回 400 而非空跑任务（避免任务中心被无效任务污染）
+
+#### 14.2.2 前端：替换 [`HoldingsSection.tsx`](../../stock_trading_system/web/frontend/src/islands/dashboard/HoldingsSection.tsx) gap-note 卡为真实触发卡
+
+视觉保留黄边 hero accent（仍然标识"重要操作"），删 `Badge variant="outline">产品缺口</Badge>` + 文案改"批量复核所有持仓的最新 AI 观点"：
+
+```tsx
+function BatchAnalyzeHoldingsCard({ holdingsCount }: { holdingsCount: number }) {
+  const [busy, setBusy] = useState(false)
+  const disabled = holdingsCount === 0 || busy
+
+  async function onSubmit() {
+    if (disabled) return
+    if (!confirm(`确认批量分析当前 ${holdingsCount} 只持仓?\n\n跳过最近 4 小时已分析的 ticker,逐只顺序执行,预计耗时 5-30 分钟。可在任务中心查看进度。`)) return
+    setBusy(true)
+    try {
+      const res = await apiPost<{ task_id: string; total_holdings: number }>(
+        "/api/batch/analyze", { skip_recent_hours: 4 },
+      )
+      toast.success(`已提交批量分析任务（${res.total_holdings} 只持仓）`, {
+        action: { label: "查看任务", onClick: () => location.href = `/tasks?focus=${res.task_id}` },
+      })
+    } catch (e: any) {
+      if (e?.body?.reason === "no_holdings") {
+        toast.error("暂无持仓,请先添加持仓")
+      } else {
+        toast.error("提交失败")
+      }
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Card className="border-[var(--color-accent-yellow)]/40 bg-[var(--color-accent-yellow)]/5">
+      <CardContent className="pt-4 space-y-2">
+        <div className="flex items-center justify-between gap-2 min-w-0">
+          <strong className="text-sm truncate flex items-center gap-1.5">
+            <Sparkles className="h-3.5 w-3.5 text-[var(--color-accent-yellow)]" />
+            批量分析持仓
+          </strong>
+          <span className="text-[10px] text-muted-foreground shrink-0">复用 batch_analysis</span>
+        </div>
+        <p className="text-xs text-muted-foreground break-words">
+          一键复核所有持仓的最新 AI 观点。跳过最近 4 小时已分析的 ticker，逐只顺序执行，预计耗时 5-30 分钟。
+        </p>
+        <div className="flex flex-wrap gap-2 pt-1">
+          <Button variant="default" size="sm" onClick={onSubmit} disabled={disabled} data-batch-analyze-trigger>
+            {busy ? "提交中..." : holdingsCount === 0 ? "暂无持仓" : `批量分析持仓 (${holdingsCount})`}
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => location.href = "/tasks?type=batch_analysis"}>
+            查看历史批次
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+```
+
+**关键点**：
+- `holdingsCount === 0` → 按钮 disabled + 文案变 "暂无持仓"（避免提交后 400）
+- 提交前 `confirm()` 二次确认（成本 + 时长提示，避免误点）
+- 成功后 toast `action: 查看任务` 一键跳转
+- `disabled` 与 `busy` 双重防护，防重复点击
+- `data-batch-analyze-trigger` 锚点供 Playwright 测试用
+- 视觉沿用现有黄边 hero accent，但**移除"产品缺口"badge**（不再是占位）
+- 头部加 `<Sparkles>` icon 强化"AI 操作"语义
+
+#### 14.2.3 调用方更新
+
+[`HoldingsSection`](../../stock_trading_system/web/frontend/src/islands/dashboard/HoldingsSection.tsx) 在 render 里把原 gap-note 卡（line 111-137）替换为：
+
+```tsx
+<BatchAnalyzeHoldingsCard holdingsCount={holdings.length} />
+```
+
+### 14.3 严格不动
+
+- `make_batch_analysis_worker` 内部实现（worker 完全不动）
+- `_emit_batch_item` / `batch_analysis_item` 事件 envelope
+- `tasks/workers.py` 注册链（`tm.register("batch_analysis", ...)` 已就位）
+- [`TasksPage.tsx`](../../stock_trading_system/web/frontend/src/islands/tasks/TasksPage.tsx) 任务渲染逻辑（已识别 batch_analysis type）
+- `/api/analyze` 单只分析路径
+- 多租户边界（[v1.18 R-fix-12](analysis-inbox.md)）
+- 邀请码 / 登录 / OAuth
+- HoldingsSection 其余部分（搜索 / 5↔ 全部 / 持仓卡）
+
+### 14.4 测试
+
+后端 `tests/web/test_api_batch_analyze.py`（4 case）：
+1. 未登录 → 401
+2. 持仓为空 → 400 reason=`no_holdings`
+3. 有 3 只持仓 → 200 + task_id + total_holdings=3 + 任务在 TaskManager 队列中
+4. 跨用户隔离：alice 提交后任务 created_by=alice.id，bob 看不到
+
+前端 `tests/frontend/dashboard/batch-analyze-card.test.tsx`（5 case）：
+1. holdingsCount=0 → 按钮 disabled + 文案 "暂无持仓"
+2. holdingsCount=3 → 按钮可点 + 文案 "批量分析持仓 (3)"
+3. 点击 → confirm 弹窗 → 取消则不调 API
+4. confirm 后 mock fetch 200 → toast.success + action 链接含 task_id
+5. mock fetch 400 reason=no_holdings → toast.error 文案 "暂无持仓"
+
+### 14.5 实施顺序
+
+1. 后端 `/api/batch/analyze` 路由 + 4 单测 (~30min)
+2. 前端 `<BatchAnalyzeHoldingsCard>` 组件 + 5 vitest case (~45min)
+3. 替换 HoldingsSection 旧卡片调用 (~5min)
+4. 手动 E2E：dashboard 点按钮 → 确认 → 跳任务中心看到运行中批次任务 (~10min)
+
+**约 ~1.5h 实装 ~150 LOC**（后端 50 / 前端 80 / 测试 40-50 LOC，纯增量，0 schema / 0 worker 改动）。
+
+---
+
+*v1.1 frontend entry patch 设计稿 — 等待确认后开始实施*

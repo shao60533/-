@@ -1,0 +1,677 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>StockAI · 新手引导 Demo v1</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/driver.js@1.3.1/dist/driver.css">
+  <style>
+    :root {
+      --bg: #090d12; --panel: #101720; --panel-2: #151f2a; --panel-3: #1b2733;
+      --line: #253343; --line-2: #334658;
+      --text: #eff5f8; --muted: #8da1af; --soft: #5e7281;
+      --blue: #55a6ff; --blue-2: #2e78ca;
+      --green: #27d17f; --red: #ff5c73; --yellow: #f4c54f; --purple: #b79cff;
+      --radius: 8px;
+      --shadow: 0 28px 90px rgba(0,0,0,.46);
+      color-scheme: dark;
+    }
+    * { box-sizing: border-box; }
+    html, body { min-height: 100%; }
+    body {
+      margin: 0; display: grid; place-items: center;
+      background:
+        radial-gradient(circle at 18% 2%, rgba(85,166,255,.16), transparent 28%),
+        radial-gradient(circle at 92% 12%, rgba(39,209,127,.09), transparent 28%),
+        linear-gradient(145deg, #071018, #0b0c10 58%, #10151b);
+      color: var(--text);
+      font-family: Inter, "SF Pro Text", -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+    }
+    button, input, select { font: inherit; color: inherit; }
+    button {
+      min-height: 44px; border: 1px solid var(--line); border-radius: var(--radius);
+      background: #172231; cursor: pointer; font-size: 13px; font-weight: 720;
+    }
+    button:hover { border-color: var(--line-2); }
+    button.primary { background: var(--blue-2); border-color: var(--blue-2); color: #fff; }
+    button.primary:hover { background: var(--blue); }
+    button.ghost { background: transparent; border-color: transparent; color: var(--muted); }
+    button.ghost:hover { color: var(--text); border-color: var(--line); }
+    .stage {
+      width: min(100vw, 1100px); min-height: 100vh;
+      display: grid; gap: 18px; align-items: start;
+      padding: 24px 22px;
+    }
+    .brief { max-width: 600px; margin: 0 auto; text-align: center; }
+    .brief h1 { margin: 0 0 12px; font-size: 28px; line-height: 1.2; }
+    .brief p { margin: 0 0 14px; color: var(--muted); line-height: 1.7; font-size: 14px; }
+    .toolbar {
+      display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-bottom: 4px;
+    }
+    .toolbar button { min-height: 38px; padding: 0 14px; font-size: 12px; }
+
+    /* Phone frame */
+    .phone {
+      position: relative;
+      width: min(100%, 402px); height: 880px;
+      max-height: calc(100vh - 60px);
+      margin: 0 auto;
+      border: 1px solid rgba(255,255,255,.14); border-radius: 34px;
+      background: #070b10; box-shadow: var(--shadow); overflow: hidden;
+    }
+    .screen {
+      height: 100%; display: flex; flex-direction: column; overflow: hidden;
+      background: var(--bg); position: relative;
+    }
+
+    /* Topbar */
+    .topbar {
+      position: sticky; top: 0; z-index: 4;
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 12px; padding: 12px 16px;
+      border-bottom: 1px solid rgba(36,49,64,.72);
+      background: rgba(9,13,18,.94); backdrop-filter: blur(16px);
+    }
+    .brand { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+    .brand strong { font-size: 14px; color: var(--blue); }
+    .brand span { color: var(--muted); font-size: 10.5px; max-width: 180px;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .provider {
+      min-height: 30px; padding: 0 10px;
+      display: inline-flex; align-items: center; gap: 6px;
+      border: 1px solid rgba(85,166,255,.3); border-radius: 999px;
+      color: var(--blue); background: rgba(85,166,255,.08);
+      font-size: 11.5px; font-weight: 700; cursor: pointer;
+    }
+    .dot {
+      width: 7px; height: 7px; border-radius: 50%; background: currentColor;
+      box-shadow: 0 0 0 4px color-mix(in srgb, currentColor 18%, transparent);
+    }
+
+    /* Content */
+    .content { flex: 1; overflow-y: auto; padding: 14px 14px 80px; }
+
+    /* Hero card */
+    .hero {
+      border: 1px solid rgba(85,166,255,.18); border-radius: 12px;
+      background: linear-gradient(135deg, rgba(85,166,255,.08), transparent 48%), rgba(255,255,255,.025);
+      padding: 16px 14px; box-shadow: 0 1px 0 rgba(255,255,255,.04) inset;
+    }
+    .hero-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+    .label { color: var(--muted); font-size: 11px; }
+    .money { margin-top: 3px; font-family: "SF Mono", Menlo, monospace;
+      font-size: 24px; font-weight: 800; }
+    .pnl { font-family: "SF Mono", Menlo, monospace; font-size: 13px; font-weight: 700; text-align: right; }
+    .gain { color: var(--green); }
+    .loss { color: var(--red); }
+    .muted { color: var(--muted); }
+
+    /* Sparkline */
+    .sparkline { margin: 10px -6px 6px; height: 44px; }
+    .sparkline svg { width: 100%; height: 100%; display: block; }
+
+    /* Three metric row */
+    .metric-row {
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
+      padding-top: 8px; border-top: 1px solid rgba(255,255,255,.06); margin-top: 4px;
+    }
+    .metric { min-width: 0; }
+    .metric .label { display: flex; align-items: center; gap: 4px; }
+    .metric strong { display: block; margin-top: 2px;
+      font-family: "SF Mono", Menlo, monospace; font-size: 13px; font-weight: 700; }
+
+    /* Section title */
+    .section {
+      display: flex; align-items: center; justify-content: space-between;
+      margin: 18px 2px 8px; color: var(--muted); font-size: 11.5px; font-weight: 700;
+    }
+    .section b { color: var(--text); font-size: 14px; }
+
+    /* Holdings empty + batch analyze */
+    .empty-card {
+      border: 1px dashed rgba(255,255,255,.15); border-radius: var(--radius);
+      background: rgba(255,255,255,.02); padding: 22px 16px; text-align: center;
+    }
+    .empty-card .ico { font-size: 28px; opacity: .55; margin-bottom: 6px; }
+    .empty-card p { color: var(--muted); font-size: 12.5px; margin: 0 0 12px; }
+    .empty-card .cta { padding: 0 14px; min-height: 38px; }
+
+    .batch-card {
+      border: 1px solid rgba(244,197,79,.4); border-radius: var(--radius);
+      background: rgba(244,197,79,.06); padding: 12px;
+    }
+    .batch-card .head {
+      display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    }
+    .batch-card strong { font-size: 13px; display: flex; align-items: center; gap: 6px; }
+    .batch-card .desc { color: var(--muted); font-size: 11.5px; margin: 6px 0 10px; line-height: 1.5; }
+    .batch-card .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .batch-card .actions button { min-height: 34px; padding: 0 12px; font-size: 12px; }
+    .icon-spark { display: inline-block; width: 13px; height: 13px;
+      background: var(--yellow); clip-path: polygon(50% 0,61% 35%,100% 50%,61% 65%,50% 100%,39% 65%,0 50%,39% 35%); }
+
+    /* Bottom tabbar */
+    .tabbar {
+      position: absolute; left: 0; right: 0; bottom: 0; z-index: 5;
+      display: grid; grid-template-columns: repeat(5, 1fr);
+      background: rgba(9,13,18,.96); backdrop-filter: blur(16px);
+      border-top: 1px solid rgba(36,49,64,.7); padding: 6px 0 8px;
+    }
+    .tab {
+      display: flex; flex-direction: column; align-items: center; gap: 2px;
+      color: var(--muted); font-size: 10.5px; border: 0; background: transparent;
+      cursor: pointer; min-height: 50px; position: relative;
+      padding-top: 6px;
+    }
+    .tab.active { color: var(--blue); background: rgba(85,166,255,.08); }
+    .tab.active::before {
+      content: ""; position: absolute; top: 0; left: 50%; transform: translateX(-50%);
+      width: 22px; height: 3px; border-radius: 0 0 6px 6px; background: var(--blue);
+    }
+    .tab .ico {
+      width: 18px; height: 18px; border-radius: 4px;
+      background: currentColor; opacity: .9;
+      mask-position: center; mask-repeat: no-repeat; mask-size: contain;
+    }
+
+    /* Onboarding checklist widget */
+    .checklist {
+      position: absolute; left: 12px; right: 12px; bottom: 70px; z-index: 6;
+      border: 1px solid rgba(85,166,255,.3); border-radius: 12px;
+      background: rgba(11,15,22,.96); backdrop-filter: blur(14px);
+      padding: 12px; box-shadow: 0 14px 40px rgba(0,0,0,.6);
+      display: none;
+    }
+    .checklist.show { display: block; animation: rise .25s ease-out; }
+    @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+    .checklist .head {
+      display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px;
+    }
+    .checklist .head strong { font-size: 13px; }
+    .checklist .close {
+      width: 22px; height: 22px; min-height: 22px; padding: 0; line-height: 1;
+      background: transparent; border-color: transparent; color: var(--muted);
+    }
+    .progress {
+      height: 4px; background: rgba(255,255,255,.06); border-radius: 999px;
+      overflow: hidden; margin-bottom: 10px;
+    }
+    .progress i {
+      display: block; height: 100%; background: linear-gradient(90deg, var(--blue), var(--green));
+      transition: width .3s ease-out;
+    }
+    .check-item {
+      display: flex; align-items: center; gap: 10px; padding: 7px 0;
+      border-bottom: 1px solid rgba(255,255,255,.04);
+      font-size: 12px; cursor: pointer;
+    }
+    .check-item:last-child { border-bottom: none; }
+    .check-item .ring {
+      width: 16px; height: 16px; border-radius: 50%;
+      border: 1.5px solid var(--line-2); flex-shrink: 0;
+      display: grid; place-items: center; font-size: 10px;
+    }
+    .check-item.done { color: var(--muted); text-decoration: line-through; }
+    .check-item.done .ring { border-color: var(--green); background: var(--green); color: #0b1118; }
+    .check-item .arrow { margin-left: auto; color: var(--soft); font-size: 14px; }
+
+    /* Welcome modal */
+    .modal-scrim {
+      position: absolute; inset: 0; z-index: 100;
+      background: rgba(5,9,13,.72); backdrop-filter: blur(4px);
+      display: none; place-items: center; padding: 18px;
+    }
+    .modal-scrim.show { display: grid; }
+    .modal {
+      width: 100%; max-width: 340px;
+      border: 1px solid rgba(85,166,255,.25); border-radius: 16px;
+      background: linear-gradient(155deg, rgba(85,166,255,.12), transparent 50%), #0e141d;
+      padding: 22px 18px 18px; box-shadow: var(--shadow);
+    }
+    .modal .badge {
+      display: inline-block; padding: 3px 10px; border-radius: 999px;
+      background: rgba(85,166,255,.18); color: var(--blue);
+      font-size: 10px; font-weight: 700; margin-bottom: 12px;
+    }
+    .modal h2 { margin: 0 0 8px; font-size: 19px; line-height: 1.3; }
+    .modal p { margin: 0 0 14px; color: var(--muted); font-size: 12.5px; line-height: 1.65; }
+    .modal .feats { display: grid; gap: 8px; margin-bottom: 16px; }
+    .feats .f { display: flex; gap: 10px; align-items: flex-start; padding: 8px 10px;
+      border: 1px solid rgba(255,255,255,.07); border-radius: 8px; background: rgba(255,255,255,.02); }
+    .feats .f .num {
+      width: 22px; height: 22px; border-radius: 50%;
+      background: rgba(85,166,255,.18); color: var(--blue);
+      display: grid; place-items: center; font-size: 11px; font-weight: 800; flex-shrink: 0;
+    }
+    .feats .f b { display: block; font-size: 12.5px; }
+    .feats .f span { display: block; color: var(--muted); font-size: 11px; margin-top: 1px; line-height: 1.45; }
+    .modal .actions { display: flex; gap: 8px; }
+    .modal .actions button { flex: 1; min-height: 40px; }
+    .risk {
+      margin-top: 10px; padding: 8px 10px; border-radius: 7px;
+      background: rgba(244,197,79,.08); border: 1px solid rgba(244,197,79,.25);
+      color: var(--muted); font-size: 10.5px; line-height: 1.55;
+    }
+
+    /* Tooltip inline hint */
+    .inline-hint {
+      position: absolute; top: 56px; right: 14px; z-index: 50;
+      max-width: 240px; padding: 10px 12px;
+      border: 1px solid rgba(85,166,255,.35); border-radius: 8px;
+      background: rgba(85,166,255,.1); color: var(--text); font-size: 12px;
+      line-height: 1.5; box-shadow: 0 10px 28px rgba(0,0,0,.4);
+      display: none;
+    }
+    .inline-hint.show { display: block; animation: rise .2s ease-out; }
+    .inline-hint::before {
+      content: ""; position: absolute; top: -7px; right: 22px;
+      border-left: 7px solid transparent; border-right: 7px solid transparent;
+      border-bottom: 7px solid rgba(85,166,255,.35);
+    }
+    .inline-hint .close-hint {
+      position: absolute; top: 4px; right: 6px;
+      width: 18px; height: 18px; min-height: 18px; padding: 0; line-height: 1;
+      background: transparent; border: 0; color: var(--muted); font-size: 14px; cursor: pointer;
+    }
+
+    /* Driver.js overrides — match our dark theme */
+    .driver-popover {
+      background: #0e141d; color: var(--text);
+      border: 1px solid rgba(85,166,255,.3); border-radius: 12px;
+      box-shadow: 0 14px 40px rgba(0,0,0,.6);
+    }
+    .driver-popover-title {
+      color: var(--text); font-size: 15px; font-weight: 800; margin-bottom: 4px;
+    }
+    .driver-popover-description {
+      color: var(--muted); font-size: 12.5px; line-height: 1.6;
+    }
+    .driver-popover-progress-text { color: var(--soft); font-size: 11px; }
+    .driver-popover-footer button {
+      background: var(--blue-2); color: #fff; border: 1px solid var(--blue-2);
+      border-radius: 7px; font-size: 12px; font-weight: 700;
+      text-shadow: none; padding: 8px 14px; min-height: 36px;
+    }
+    .driver-popover-footer button:hover { background: var(--blue); }
+    .driver-popover-prev-btn {
+      background: transparent !important; color: var(--muted) !important;
+      border: 1px solid var(--line) !important;
+    }
+    .driver-popover-close-btn {
+      color: var(--muted); font-size: 16px; top: 8px; right: 10px;
+    }
+    .driver-popover-arrow-side-top { border-top-color: rgba(85,166,255,.3); }
+    .driver-popover-arrow-side-bottom { border-bottom-color: rgba(85,166,255,.3); }
+    .driver-active-element { z-index: 999; }
+    .driver-overlay { opacity: .72 !important; }
+  </style>
+</head>
+<body>
+  <main class="stage">
+    <section class="brief">
+      <h1>StockAI · 新手引导 Demo v1</h1>
+      <p>注册后首次自动触发的引导体验。包含：(1) 欢迎 modal + 风险提示；(2) Driver.js 6 步 Tour；(3) 常驻 Checklist（4 任务进度）；(4) 持仓空状态 CTA；(5) LLMSwitcher 首次点击 inline hint。所有进度仅 demo 内 localStorage 持久化。</p>
+      <div class="toolbar">
+        <button onclick="resetAll()">🔄 重置 demo（重新触发引导）</button>
+        <button onclick="startTour()">▶️ 仅播放 Tour（6 步）</button>
+        <button onclick="toggleChecklist()">📋 显示/隐藏 Checklist</button>
+        <button onclick="completeRandomTask()">✓ 模拟完成一项任务</button>
+      </div>
+    </section>
+
+    <section class="phone" aria-label="StockAI mobile onboarding demo">
+      <div class="screen">
+        <header class="topbar" id="topbar">
+          <div class="brand">
+            <strong>⚡ StockAI Terminal</strong>
+            <span>首页 · 资产与持仓</span>
+          </div>
+          <button class="provider" id="llm-switcher" onclick="onSwitcherClick()">
+            <i class="dot"></i> Gemini
+          </button>
+        </header>
+
+        <div class="inline-hint" id="hint-llm">
+          点这里切换 AI 模型（OpenRouter / Qwen / Gemini）。
+          <button class="close-hint" onclick="closeHint()">×</button>
+        </div>
+
+        <div class="content">
+          <div class="hero" id="hero">
+            <div class="hero-row">
+              <div>
+                <div class="label">账户总值</div>
+                <div class="money">$0.00</div>
+              </div>
+              <div class="pnl muted">今日 PnL<br>—</div>
+            </div>
+            <div class="sparkline">
+              <svg viewBox="0 0 320 44" preserveAspectRatio="none" aria-hidden="true">
+                <path d="M0,38 L40,36 L80,34 L120,30 L160,28 L200,24 L240,22 L280,18 L320,16"
+                      fill="none" stroke="var(--green)" stroke-width="1.5" stroke-opacity=".6"/>
+                <path d="M0,38 L40,36 L80,34 L120,30 L160,28 L200,24 L240,22 L280,18 L320,16 L320,44 L0,44 Z"
+                      fill="color-mix(in srgb, var(--green) 14%, transparent)"/>
+              </svg>
+            </div>
+            <div class="metric-row">
+              <div class="metric"><div class="label">总盈亏</div><strong class="muted">—</strong></div>
+              <div class="metric"><div class="label">收益率</div><strong class="muted">—</strong></div>
+              <div class="metric"><div class="label">活跃预警</div><strong>0</strong></div>
+            </div>
+          </div>
+
+          <div class="section"><b>持仓明细</b><span>0 只股票</span></div>
+
+          <div class="empty-card" id="holdings-empty">
+            <div class="ico">📊</div>
+            <p>暂无持仓 — 添加第一只持仓即可开始追踪净值、PnL 与 AI 观点。</p>
+            <button class="primary cta" onclick="completeTask('add-holding')">+ 添加第一只持仓</button>
+          </div>
+
+          <div class="section" style="margin-top:14px"><b>AI 复核</b><span>批量分析</span></div>
+          <div class="batch-card" id="batch-card">
+            <div class="head">
+              <strong><i class="icon-spark"></i> 批量分析持仓</strong>
+              <span class="muted" style="font-size:10px">batch_analysis</span>
+            </div>
+            <p class="desc">一键复核所有持仓的最新 AI 观点。跳过最近 4 小时已分析的 ticker，逐只顺序执行，预计耗时 5–30 分钟。</p>
+            <div class="actions">
+              <button class="primary" disabled>暂无持仓</button>
+              <button class="ghost">查看历史批次</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Checklist widget (sticky above tabbar) -->
+        <div class="checklist" id="checklist">
+          <div class="head">
+            <strong>🚀 上手任务</strong>
+            <button class="close" onclick="hideChecklist()">×</button>
+          </div>
+          <div class="progress"><i id="progress-bar" style="width:0%"></i></div>
+          <div id="check-list"></div>
+        </div>
+
+        <!-- Bottom tabbar -->
+        <nav class="tabbar">
+          <button class="tab active" data-tab="dashboard">
+            <span style="font-size:16px">⌂</span>首页
+          </button>
+          <button class="tab" data-tab="analysis" id="tab-analysis">
+            <span style="font-size:16px">🧠</span>分析
+          </button>
+          <button class="tab" data-tab="discover" id="tab-discover">
+            <span style="font-size:16px">🎯</span>发现
+          </button>
+          <button class="tab" data-tab="paper" id="tab-paper">
+            <span style="font-size:16px">📝</span>纸面
+          </button>
+          <button class="tab" data-tab="more">
+            <span style="font-size:16px">⋯</span>更多
+          </button>
+        </nav>
+
+        <!-- Welcome modal -->
+        <div class="modal-scrim" id="welcome">
+          <div class="modal">
+            <span class="badge">👋 欢迎</span>
+            <h2>欢迎使用 StockAI Terminal</h2>
+            <p>30 秒了解你将用到的核心能力，随时可跳过。</p>
+            <div class="feats">
+              <div class="f">
+                <div class="num">1</div>
+                <div><b>AI 分析</b><span>14 大师 + 8 维结构化报告 + K 线 + 多空辩论</span></div>
+              </div>
+              <div class="f">
+                <div class="num">2</div>
+                <div><b>智能选股 V3</b><span>自然语言 → 候选股票 + 圆桌辩论 + 投票共识</span></div>
+              </div>
+              <div class="f">
+                <div class="num">3</div>
+                <div><b>纸面交易</b><span>不动用真金的策略追踪，按 Plan / Event 双视图复盘</span></div>
+              </div>
+            </div>
+            <div class="actions">
+              <button class="ghost" onclick="skipWelcome()">稍后再说</button>
+              <button class="primary" onclick="startTour()">开始 60 秒导览</button>
+            </div>
+            <div class="risk">⚠️ <b>风险提示</b>：本系统输出为 AI 研究观点，<b>不构成投资建议</b>；纸面交易仅作模拟，不触发任何真实下单。</div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/driver.js@1.3.1/dist/driver.js.iife.js"></script>
+  <script>
+    // ── State (localStorage backed) ────────────────────────────────────────
+    const KEY = "demo_onboarding_v1_state";
+    const DEFAULT_STATE = {
+      welcomed: false,
+      tour_completed: false,
+      checklist_dismissed: false,
+      hint_llm_dismissed: false,
+      tasks: {
+        "add-holding": false,
+        "first-analysis": false,
+        "first-screen": false,
+        "first-paper-plan": false,
+      },
+    };
+    let state = loadState();
+    function loadState() {
+      try {
+        const raw = JSON.parse(localStorage.getItem(KEY) || "{}");
+        return { ...DEFAULT_STATE, ...raw, tasks: { ...DEFAULT_STATE.tasks, ...(raw.tasks || {}) } };
+      } catch { return { ...DEFAULT_STATE }; }
+    }
+    function saveState() { localStorage.setItem(KEY, JSON.stringify(state)); }
+
+    // ── Task list config ───────────────────────────────────────────────────
+    const TASKS = [
+      { id: "add-holding",     label: "添加第一只持仓",        target: "tab-dashboard" },
+      { id: "first-analysis",  label: "完成第一次 AI 分析",     target: "tab-analysis" },
+      { id: "first-screen",    label: "完成第一次智能选股",     target: "tab-discover" },
+      { id: "first-paper-plan",label: "创建第一笔纸面交易计划", target: "tab-paper" },
+    ];
+
+    function renderChecklist() {
+      const root = document.getElementById("check-list");
+      const done = TASKS.filter(t => state.tasks[t.id]).length;
+      const pct = Math.round((done / TASKS.length) * 100);
+      document.getElementById("progress-bar").style.width = pct + "%";
+      root.innerHTML = TASKS.map((t, i) => {
+        const ok = state.tasks[t.id];
+        return `
+          <div class="check-item ${ok ? "done" : ""}" onclick="completeTask('${t.id}')">
+            <div class="ring">${ok ? "✓" : (i + 1)}</div>
+            <div>${t.label}</div>
+            <div class="arrow">${ok ? "" : "›"}</div>
+          </div>`;
+      }).join("");
+
+      // 100% → 自动隐藏
+      if (done === TASKS.length) {
+        setTimeout(() => {
+          document.getElementById("checklist").classList.remove("show");
+          state.checklist_dismissed = true; saveState();
+          flashToast("🎉 全部任务完成！可在设置中重新开启引导");
+        }, 600);
+      }
+    }
+    function showChecklist() {
+      if (!state.checklist_dismissed) {
+        document.getElementById("checklist").classList.add("show");
+      }
+    }
+    function hideChecklist() {
+      document.getElementById("checklist").classList.remove("show");
+      state.checklist_dismissed = true; saveState();
+    }
+    function toggleChecklist() {
+      const el = document.getElementById("checklist");
+      if (el.classList.contains("show")) hideChecklist();
+      else { state.checklist_dismissed = false; saveState(); showChecklist(); }
+    }
+    function completeTask(id) {
+      if (!state.tasks[id]) {
+        state.tasks[id] = true; saveState(); renderChecklist();
+        flashToast(`✓ 已完成：${TASKS.find(t => t.id === id).label}`);
+      }
+      // 模拟跳转：闪烁对应 tab
+      const t = TASKS.find(t => t.id === id);
+      if (t) {
+        const el = document.getElementById(t.target) || document.querySelector(`[data-tab="dashboard"]`);
+        if (el) { el.style.animation = "none"; void el.offsetWidth; el.style.animation = "rise .3s ease-out"; }
+      }
+    }
+    function completeRandomTask() {
+      const next = TASKS.find(t => !state.tasks[t.id]);
+      if (next) completeTask(next.id);
+      else flashToast("所有任务已完成");
+    }
+
+    // ── Tour ───────────────────────────────────────────────────────────────
+    function startTour() {
+      document.getElementById("welcome").classList.remove("show");
+      const drv = window.driver.js.driver({
+        showProgress: true,
+        progressText: "{{current}} / {{total}}",
+        nextBtnText: "下一步 →",
+        prevBtnText: "← 上一步",
+        doneBtnText: "完成 ✓",
+        allowClose: true,
+        smoothScroll: true,
+        stagePadding: 6,
+        stageRadius: 10,
+        steps: [
+          {
+            element: "#topbar",
+            popover: {
+              title: "顶栏 · 品牌与模型切换",
+              description: "左侧显示当前页面，右侧蓝色 chip 是 AI 模型切换器。点击可在 Gemini / OpenRouter / Qwen 之间切换 deep / quick 两挡。",
+              side: "bottom", align: "center",
+            },
+          },
+          {
+            element: "#hero",
+            popover: {
+              title: "账户 Hero · 总览与趋势",
+              description: "顶部是账户总值 + 今日 PnL；中间是 90 天净值 sparkline；底部是总盈亏 / 收益率 / 活跃预警 三栏。",
+              side: "bottom",
+            },
+          },
+          {
+            element: "#holdings-empty",
+            popover: {
+              title: "持仓明细 · 决策中枢",
+              description: "首页合并持仓管理：搜索 / 买入 / 5 ↔ 全部切换 / 每只可看分析、卖出、修正成本、移除。",
+              side: "top",
+            },
+          },
+          {
+            element: "#batch-card",
+            popover: {
+              title: "批量分析持仓",
+              description: "一键复核所有持仓的最新 AI 观点。跳过 4 小时内已分析的 ticker，逐只顺序执行，结果实时推送。",
+              side: "top",
+            },
+          },
+          {
+            element: ".tabbar",
+            popover: {
+              title: "底部导航 · 5 个一级入口",
+              description: "首页 / 分析（AI Inbox）/ 发现（智能选股）/ 纸面（追踪计划）/ 更多（报告、回测、预警、任务、设置）。",
+              side: "top", align: "center",
+            },
+          },
+          {
+            element: "#checklist-anchor", // 占位 element,通过 onHighlightStarted 显示 checklist
+            popover: {
+              title: "🚀 4 项上手任务",
+              description: "完成下面 4 项任务即可解锁全部核心功能。完成度持续显示在首页，可随时折叠。",
+              side: "top", align: "center",
+            },
+            onHighlightStarted: () => {
+              state.checklist_dismissed = false; saveState();
+              showChecklist(); renderChecklist();
+            },
+          },
+        ],
+        onDestroyed: () => {
+          state.tour_completed = true; state.welcomed = true; saveState();
+          showChecklist(); renderChecklist();
+          flashToast("✓ 引导完成，开始你的第一步");
+        },
+      });
+      // 为最后一步注入一个临时 anchor 元素(指向 checklist 位置)
+      let anchor = document.getElementById("checklist-anchor");
+      if (!anchor) {
+        anchor = document.createElement("div");
+        anchor.id = "checklist-anchor";
+        anchor.style.cssText = "position:absolute;left:50%;bottom:130px;width:200px;height:24px;transform:translateX(-50%);pointer-events:none;";
+        document.querySelector(".screen").appendChild(anchor);
+      }
+      drv.drive();
+    }
+    function skipWelcome() {
+      document.getElementById("welcome").classList.remove("show");
+      state.welcomed = true; saveState();
+      showChecklist(); renderChecklist();
+    }
+
+    // ── Inline hint ────────────────────────────────────────────────────────
+    function onSwitcherClick() {
+      if (!state.hint_llm_dismissed) {
+        document.getElementById("hint-llm").classList.add("show");
+      } else {
+        flashToast("模型切换菜单（演示中）");
+      }
+    }
+    function closeHint() {
+      document.getElementById("hint-llm").classList.remove("show");
+      state.hint_llm_dismissed = true; saveState();
+    }
+
+    // ── Toast ──────────────────────────────────────────────────────────────
+    function flashToast(text) {
+      let t = document.getElementById("flash-toast");
+      if (!t) {
+        t = document.createElement("div");
+        t.id = "flash-toast";
+        t.style.cssText = "position:fixed;top:20px;left:50%;transform:translateX(-50%);z-index:9999;padding:10px 18px;border-radius:999px;background:rgba(11,17,24,.95);color:#eff5f8;font-size:13px;font-weight:700;border:1px solid rgba(85,166,255,.3);box-shadow:0 10px 30px rgba(0,0,0,.5);transition:opacity .25s";
+        document.body.appendChild(t);
+      }
+      t.textContent = text; t.style.opacity = "1";
+      clearTimeout(window.__flashT);
+      window.__flashT = setTimeout(() => { t.style.opacity = "0"; }, 1800);
+    }
+
+    // ── Reset ──────────────────────────────────────────────────────────────
+    function resetAll() {
+      localStorage.removeItem(KEY);
+      state = loadState();
+      document.getElementById("hint-llm").classList.remove("show");
+      document.getElementById("checklist").classList.remove("show");
+      renderChecklist();
+      flashToast("已重置 · 即将自动重启引导");
+      setTimeout(autoStart, 700);
+    }
+
+    // ── Auto-trigger on first visit ────────────────────────────────────────
+    function autoStart() {
+      if (!state.welcomed) {
+        document.getElementById("welcome").classList.add("show");
+      } else if (!state.checklist_dismissed) {
+        showChecklist(); renderChecklist();
+      } else {
+        renderChecklist();
+      }
+    }
+
+    // Init
+    renderChecklist();
+    autoStart();
+  </script>
+</body>
+</html>

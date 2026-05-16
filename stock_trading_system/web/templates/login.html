@@ -6,14 +6,64 @@
     <title>登录 — StockAI</title>
     <link href="/static/css/style.css" rel="stylesheet">
     <style>
-        body { display:flex; align-items:center; justify-content:center; min-height:100vh; background:var(--bg-primary); }
-        .auth-card { background:var(--bg-card); border:1px solid var(--border); border-radius:12px; padding:40px 32px; width:100%; max-width:400px; }
-        .auth-title { font-size:24px; font-weight:700; text-align:center; margin-bottom:24px; color:var(--accent-blue); }
-        .auth-input { width:100%; padding:12px 16px; margin-bottom:16px; background:var(--bg-secondary); color:var(--text-primary); border:1px solid var(--border); border-radius:8px; font-size:14px; }
+        /* mobile-ui v1.3.x (2026-05-15): the original `body { display:flex;
+           align-items:center; justify-content:center; min-height:100vh; }`
+           rule produced a fully-centered card with ~250px of pure-black
+           space above and below it on iPhone 390×844 viewports. The fix:
+           top-align on mobile, only center on tablets/desktop. ``100dvh``
+           replaces ``100vh`` so the height stays stable while the mobile
+           browser address bar collapses. */
+        html, body { margin: 0; }
+        body {
+          display: flex;
+          flex-direction: column;
+          /* Mobile: top-aligned card with a small comfortable gap. */
+          justify-content: flex-start;
+          align-items: center;
+          min-height: 100dvh;
+          padding-top: max(32px, env(safe-area-inset-top));
+          padding-bottom: max(24px, env(safe-area-inset-bottom));
+          padding-left: 16px;
+          padding-right: 16px;
+          background: var(--bg-primary);
+          box-sizing: border-box;
+        }
+        /* Tablet+ — return to fully centred for the desktop login surface
+           where the viewport is tall enough that centring still reads as
+           intentional. */
+        @media (min-width: 640px) {
+          body {
+            justify-content: center;
+            padding-top: max(40px, env(safe-area-inset-top));
+            padding-bottom: max(40px, env(safe-area-inset-bottom));
+          }
+        }
+        /* Mobile card sizing: tighter padding + smaller radius so the
+           hero block doesn't push the OAuth strip off-screen at 390px. */
+        .auth-card {
+          background: var(--bg-card);
+          border: 1px solid var(--border);
+          border-radius: 16px;
+          padding: 24px 20px;
+          width: 100%;
+          max-width: 420px;
+          box-sizing: border-box;
+        }
+        @media (min-width: 640px) {
+          .auth-card { border-radius: 12px; padding: 40px 32px; max-width: 400px; }
+        }
+        .auth-title { font-size:22px; font-weight:700; text-align:center; margin-bottom:20px; color:var(--accent-blue); }
+        @media (min-width: 640px) {
+          .auth-title { font-size: 24px; margin-bottom: 24px; }
+        }
+        .auth-input { width:100%; padding:12px 16px; margin-bottom:12px; background:var(--bg-secondary); color:var(--text-primary); border:1px solid var(--border); border-radius:8px; font-size:16px; box-sizing:border-box; }
+        @media (min-width: 640px) {
+          .auth-input { font-size: 14px; margin-bottom: 16px; }
+        }
         .auth-input:focus { outline:none; border-color:var(--accent-blue); }
         .auth-btn { width:100%; padding:14px; background:var(--accent-blue); color:#fff; border:none; border-radius:8px; font-size:16px; font-weight:600; cursor:pointer; }
         .auth-btn:hover { opacity:0.9; }
-        .auth-link { text-align:center; margin-top:16px; font-size:13px; color:var(--text-secondary); }
+        .auth-link { text-align:center; margin-top:14px; font-size:13px; color:var(--text-secondary); }
         .auth-link a { color:var(--accent-blue); text-decoration:none; }
         .auth-error { color:var(--accent-red); font-size:13px; text-align:center; margin-bottom:12px; display:none; }
         .auth-notice { color:var(--text-secondary); font-size:12px; text-align:center; margin-bottom:12px; padding:8px; background:var(--bg-secondary); border-radius:6px; display:none; }
@@ -34,7 +84,13 @@
         }
         .oauth-btn:hover { background:#f6f8fa; border-color:#afb8c1; }
         .oauth-btn img { display:block; }
-        .oauth-divider { display:none; text-align:center; margin:24px 0 16px; color:#888; font-size:12px; }
+        /* Mobile-tighter divider: 16/12 rhythm keeps the OAuth strip
+           visible above the fold at 390×844; the desktop md+ rule
+           preserves the original 24/16 spacing. */
+        .oauth-divider { display:none; text-align:center; margin:16px 0 12px; color:#888; font-size:12px; }
+        @media (min-width: 640px) {
+          .oauth-divider { margin: 24px 0 16px; }
+        }
     </style>
 </head>
 <body>

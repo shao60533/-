@@ -65,6 +65,72 @@ const RANGE_DAYS: Record<Range, number> = { "ALL": 99999, "1Y": 365, "6M": 180, 
 const DEFAULT_HISTORY_DAYS = 90
 const FULL_HISTORY = "all"
 
+/* ── Chart palette (2026-05-14 visual revamp) ──────────────────
+ * Replaces the prior high-saturation defaults (#3882ff / #00ff88 /
+ * #ff3860 / Tailwind-bright pie pool) with a restrained financial
+ * palette. Slate-aware muted scales for axes / grid / tooltip so
+ * the equity line stays the dominant visual; PnL bars + drawdown
+ * shading drop down a tier in opacity. Pie chart palette mirrors
+ * the Tailwind 400 family on slate backgrounds — six core hues
+ * plus the muted slate fallback so >6 tickers still cycle cleanly. */
+const CHART_PALETTE = {
+  // Equity line — sky-400. Lower saturation than the legacy #3882ff
+  // but still recognisably "the blue line".
+  equityLine:       "#60A5FA",
+  equityAreaTop:    "rgba(96,165,250,0.22)",
+  equityAreaBottom: "rgba(96,165,250,0.02)",
+  // PnL / gain / loss. Tailwind emerald-500 + red-400, both dimmed
+  // with explicit alpha so the bars never compete with the equity
+  // line for foreground attention.
+  gainBar:          "rgba(34,197,94,0.55)",   // #22C55E @ .55
+  lossBar:          "rgba(248,113,113,0.55)", // #F87171 @ .55
+  // Drawdown shading on the paper-trade equity panel — same red
+  // family but pushed deeper into the background.
+  drawdownArea:     "rgba(248,113,113,0.10)",
+  drawdownBar:      "rgba(248,113,113,0.55)",
+  // Grid lines + axis chrome — slate-400 at very low alpha so they
+  // read as "structure" not "lines".
+  gridLine:         "rgba(148,163,184,0.12)",
+  axisLine:         "rgba(148,163,184,0.20)",
+  axisLabel:        "#94A3B8",
+  axisTick:         "rgba(148,163,184,0.25)",
+  // Tooltip surface — slate-900 / lighter slate border. Avoid the
+  // ECharts default white-on-grey block.
+  tooltipBg:        "rgba(15,23,42,0.94)",
+  tooltipBorder:    "rgba(148,163,184,0.20)",
+  tooltipText:      "#E2E8F0",
+  // Pie chart palette — six restrained hues mirrored from
+  // Tailwind 400/500 on slate. Order: blue → teal → violet →
+  // amber → rose → slate. >6 tickers wrap.
+  pie: ["#60A5FA", "#2DD4BF", "#C084FC", "#FBBF24", "#FB7185", "#94A3B8"],
+  pieBorder:        "rgba(15,23,42,1)",
+  pieLabel:         "#CBD5E1",
+}
+const TOOLTIP_BASE = {
+  backgroundColor: CHART_PALETTE.tooltipBg,
+  borderColor: CHART_PALETTE.tooltipBorder,
+  borderWidth: 1,
+  textStyle: { color: CHART_PALETTE.tooltipText, fontSize: 12 },
+  padding: [8, 10] as [number, number],
+}
+
+/** Track ≤575.98px breakpoint without a global state library.
+ *  Used by chart options to swap radius / label / height. */
+function useIsMobileChart(): boolean {
+  const [isMobile, setIsMobile] = useState(() =>
+    typeof window !== "undefined"
+      && window.matchMedia?.("(max-width: 575.98px)").matches,
+  )
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return
+    const mq = window.matchMedia("(max-width: 575.98px)")
+    const handler = (e: MediaQueryListEvent) => setIsMobile(e.matches)
+    mq.addEventListener?.("change", handler)
+    return () => mq.removeEventListener?.("change", handler)
+  }, [])
+  return isMobile
+}
+
 const rangeToHistoryParam = (r: Range): string =>
   r === "ALL" || r === "1Y" || r === "6M" ? FULL_HISTORY : String(DEFAULT_HISTORY_DAYS)
 
@@ -92,6 +158,10 @@ export function DashboardPage() {
   )
   const [backfilling, setBackfilling] = useState(false)
   const [backfillMsg, setBackfillMsg] = useState<string | null>(null)
+  // 2026-05-14 chart revamp — mobile breakpoint hook drives chart
+  // grid margins, pie radius, label formatter, and dataZoom slider
+  // sizing so the same option dict adapts cleanly at 390px.
+  const isMobile = useIsMobileChart()
 
   // Pull /api/dashboard separately so the ↻ button can refresh it without
   // re-fetching the whole bundle.
@@ -223,31 +293,38 @@ export function DashboardPage() {
     [history],
   )
 
-  // Equity chart option
+  // Equity chart option — 2026-05-14 visual revamp. Equity stays the
+  // dominant line (sky-400 stroke + soft gradient fill); 日盈亏 bars
+  // drop to ~55% alpha so they read as a secondary metric in the
+  // ``grid`` instead of competing with the line. Axes / grid use
+  // slate-400 at low alpha so the chrome doesn't shout. Tooltip body
+  // + crosshair labels all run through the integer money formatter
+  // so a 7-decimal float can't leak (this guard is locked by a
+  // backend test, see web/test_dashboard_history.py).
   const equityOption = useMemo((): EChartsOption | null => {
     if (filteredHistory.length === 0) return null
     return {
       backgroundColor: "transparent",
       tooltip: {
+        ...TOOLTIP_BASE,
         trigger: "axis",
         axisPointer: {
           type: "cross",
-          // Belt-and-braces rounding: ``valueFormatter`` covers tooltip
-          // body, this covers the floating crosshair tag on each axis.
-          // Some ECharts builds skip ``valueFormatter`` when a series
-          // has its own formatter, so we also set ``yAxis.axisPointer``
-          // below — between the three guards a long decimal can't leak.
+          lineStyle: { color: CHART_PALETTE.axisLine },
+          crossStyle: { color: CHART_PALETTE.axisLine },
           label: {
+            backgroundColor: CHART_PALETTE.tooltipBg,
+            color: CHART_PALETTE.tooltipText,
+            borderColor: CHART_PALETTE.tooltipBorder,
+            borderWidth: 1,
             formatter: (p: { axisDimension?: string; value?: unknown }) => {
               if (p.axisDimension === "y" && typeof p.value === "number") {
-                return fmtInt(p.value)
+                return fmtMoneyInt(p.value)
               }
               return String(p.value ?? "")
             },
           },
         },
-        // Custom callback (instead of relying on ``valueFormatter`` only)
-        // so older ECharts builds + the negative-bar codepath both round.
         formatter: (params: unknown) => {
           const arr = Array.isArray(params) ? params : [params]
           const head = (arr[0] as { axisValueLabel?: string; name?: string })
@@ -261,49 +338,117 @@ export function DashboardPage() {
           return [date, ...lines].join("<br/>")
         },
       },
-      grid: { left: 60, right: 20, top: 20, bottom: filteredHistory.length > 60 ? 50 : 30 },
-      xAxis: { type: "category", data: filteredHistory.map(h => h.date), axisLine: { lineStyle: { color: "#444" } } },
+      grid: {
+        left: isMobile ? 44 : 60,
+        right: isMobile ? 14 : 20,
+        top: 20,
+        bottom: filteredHistory.length > 60 ? 50 : 30,
+      },
+      xAxis: {
+        type: "category",
+        data: filteredHistory.map(h => h.date),
+        axisLine: { lineStyle: { color: CHART_PALETTE.axisLine } },
+        axisLabel: { color: CHART_PALETTE.axisLabel, fontSize: 11 },
+        axisTick: { lineStyle: { color: CHART_PALETTE.axisTick } },
+      },
       yAxis: {
         type: "value",
-        axisLabel: { formatter: (v: number) => `$${(v/1000).toFixed(0)}k` },
-        splitLine: { lineStyle: { color: "#222" } },
-        // Last guard: the cross's Y-axis floating tag. Without this
-        // formatter ECharts falls back to the raw value string, which
-        // is where ``213,322.19902038574`` was leaking from.
+        axisLine: { show: false },
+        axisLabel: {
+          color: CHART_PALETTE.axisLabel, fontSize: 11,
+          formatter: (v: number) => `$${(v/1000).toFixed(0)}k`,
+        },
+        axisTick: { show: false },
+        splitLine: { lineStyle: { color: CHART_PALETTE.gridLine } },
         axisPointer: {
           label: {
+            backgroundColor: CHART_PALETTE.tooltipBg,
+            color: CHART_PALETTE.tooltipText,
+            borderColor: CHART_PALETTE.tooltipBorder,
+            borderWidth: 1,
             formatter: (p: { value?: unknown }) =>
               typeof p.value === "number" ? fmtMoneyInt(p.value) : String(p.value ?? ""),
           },
         },
       },
-      dataZoom: filteredHistory.length > 60 ? [{ type: "inside", start: 70, end: 100 }, { type: "slider", height: 20, bottom: 5 }] : [],
+      dataZoom: filteredHistory.length > 60 ? [
+        { type: "inside", start: 70, end: 100 },
+        {
+          type: "slider", height: 20, bottom: 5,
+          borderColor: CHART_PALETTE.axisLine,
+          fillerColor: "rgba(96,165,250,0.10)",
+          dataBackground: {
+            lineStyle: { color: CHART_PALETTE.axisLine },
+            areaStyle: { color: "rgba(96,165,250,0.06)" },
+          },
+          textStyle: { color: CHART_PALETTE.axisLabel, fontSize: 10 },
+        },
+      ] : [],
       series: [
         {
-          name: "净值", type: "line", data: filteredHistory.map(h => h.total_value), smooth: true,
-          lineStyle: { color: "#3882ff", width: 2 },
-          areaStyle: { color: { type: "linear", x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: "rgba(56,130,255,0.25)" }, { offset: 1, color: "rgba(56,130,255,0)" }] } },
+          name: "净值", type: "line",
+          data: filteredHistory.map(h => h.total_value),
+          smooth: true,
+          // No point markers — line stays clean; emphasized point
+          // only on hover via tooltip crosshair.
+          showSymbol: false,
+          symbol: "circle",
+          symbolSize: isMobile ? 4 : 5,
+          lineStyle: { color: CHART_PALETTE.equityLine, width: 2 },
+          itemStyle: { color: CHART_PALETTE.equityLine },
+          areaStyle: {
+            color: {
+              type: "linear", x: 0, y: 0, x2: 0, y2: 1,
+              colorStops: [
+                { offset: 0, color: CHART_PALETTE.equityAreaTop },
+                { offset: 1, color: CHART_PALETTE.equityAreaBottom },
+              ],
+            },
+          },
+          z: 3,
         },
         {
-          name: "盈亏", type: "bar", data: filteredHistory.map(h => h.pnl),
-          itemStyle: { color: (p: any) => p.value >= 0 ? "#00ff88" : "#ff3860" },
+          name: "日盈亏", type: "bar",
+          data: filteredHistory.map(h => h.pnl),
+          // Lower-emphasis bars: thinner, semi-transparent, sit
+          // behind the equity line (z=1). Gain/loss tones come
+          // from the same restrained palette.
+          barMaxWidth: isMobile ? 4 : 6,
+          itemStyle: {
+            color: (p: any) =>
+              p.value >= 0 ? CHART_PALETTE.gainBar : CHART_PALETTE.lossBar,
+            borderRadius: [2, 2, 0, 0],
+          },
+          z: 1,
         },
       ],
     }
-  }, [filteredHistory])
+  }, [filteredHistory, isMobile])
 
-  // Allocation pie option
+  // Allocation pie option — 2026-05-14 visual revamp.
+  // • Restrained 6-hue palette (Tailwind 400 on slate) — no
+  //   high-saturation defaults from the old pool.
+  // • Mobile (≤575.98px): hide outer engraved labels entirely and
+  //   render a ticker legend strip BELOW the chart (see
+  //   <AllocationLegend>). Outer label-lines competing with a 290px
+  //   pie diameter was the main source of the previous overflow
+  //   reports at 320/375.
+  // • Desktop: keep outer labels but use muted slate text so no
+  //   single ticker label "shouts" — color contrast comes from the
+  //   sector wedge itself.
   const allocOption = useMemo((): EChartsOption | null => {
     if (alloc.length === 0) return null
+    const pieRadiusInner = isMobile ? "44%" : "32%"
+    const pieRadiusOuter = isMobile ? "70%" : "50%"
     return {
       backgroundColor: "transparent",
-      color: ["#3882ff", "#00d4ff", "#a855f7", "#00ff88", "#ff8c00", "#ff3860", "#ffd000", "#bc8cff"],
+      color: CHART_PALETTE.pie,
       tooltip: {
+        ...TOOLTIP_BASE,
         trigger: "item",
         formatter: (p: any) => {
           const name = p?.name ?? ""
           const value = typeof p?.value === "number" ? fmtMoneyInt(p.value) : p?.value
-          // 1 decimal max — never trail a long float into the tooltip.
           const pctRaw = typeof p?.percent === "number" ? p.percent : null
           const pct = pctRaw != null
             ? (pctRaw === Math.round(pctRaw) ? `${pctRaw}%` : `${pctRaw.toFixed(1)}%`)
@@ -311,48 +456,56 @@ export function DashboardPage() {
           return `${name}: ${value} (${pct})`
         },
       },
-      // Pull the chart inward + boost label-line lengths so 4-letter
-      // tickers like XIACY / META / MSFT have room to render outside
-      // the pie without colliding with the card edge or each other.
-      // Center stays at 50% horizontally so left and right labels get
-      // symmetric breathing room (the previous 42% offset starved the
-      // left side and labels got clipped at the card border).
       series: [{
         type: "pie",
-        radius: ["32%", "50%"],
-        center: ["50%", "55%"],
+        radius: [pieRadiusInner, pieRadiusOuter],
+        center: ["50%", "50%"],
         avoidLabelOverlap: true,
         minShowLabelAngle: 2,
         data: alloc.map(a => ({ name: a.ticker, value: a.value })),
-        label: {
-          color: "#e8edf5",
+        // Mobile: no outer labels — the <AllocationLegend> list
+        // below the chart owns ticker → color mapping. Desktop:
+        // muted slate label so the sector color stays the visual
+        // anchor.
+        label: isMobile ? { show: false } : {
+          color: CHART_PALETTE.pieLabel,
           fontSize: 12,
           fontFamily: "JetBrains Mono, monospace",
-          // Ticker only — no percent/amount to keep labels narrow.
-          formatter: "{b}",
-          // Allow label to flow past the chart edge if needed; the
-          // surrounding Card has padding that absorbs ~12px overflow.
+          // Cap ticker labels at 5 chars on the slice; full code
+          // still available via tooltip + the desktop fallback
+          // list below the chart on overflow.
+          formatter: (p: any) => {
+            const t = String(p?.name ?? "")
+            return t.length > 5 ? `${t.slice(0, 5)}…` : t
+          },
           overflow: "none",
         },
-        // Longer label lines so the text endpoint sits outside the
-        // pie's "shadow" radius — `length` is the radial segment,
-        // `length2` is the horizontal jog before the text.
-        labelLine: { length: 18, length2: 36, maxSurfaceAngle: 80, smooth: true },
-        // ``moveOverlap: "shiftY"`` already on; ``hideOverlap: false``
-        // means we never silently drop a ticker (spec rule).
+        labelLine: isMobile ? { show: false } : {
+          length: 14, length2: 28, maxSurfaceAngle: 80, smooth: true,
+          lineStyle: { color: CHART_PALETTE.axisLine },
+        },
         labelLayout: { hideOverlap: false, moveOverlap: "shiftY" },
-        itemStyle: { borderColor: "#111a2e", borderWidth: 2 },
-        emphasis: { itemStyle: { shadowBlur: 10, shadowColor: "rgba(0,0,0,0.5)" } },
+        itemStyle: {
+          borderColor: CHART_PALETTE.pieBorder,
+          borderWidth: 2,
+        },
+        emphasis: {
+          itemStyle: { shadowBlur: 10, shadowColor: "rgba(0,0,0,0.45)" },
+          scale: true,
+          scaleSize: 4,
+        },
       }],
     }
-  }, [alloc])
+  }, [alloc, isMobile])
 
   if (loading) {
     return <div className="p-8 text-center text-muted-foreground">加载中...</div>
   }
 
   return (
-    <div className="p-4 md:p-6 space-y-6 max-w-6xl mx-auto">
+    // pb-24 on mobile keeps the last chart clear of the 50px tabbar
+    // (+ env(safe-area-inset-bottom)); desktop reverts via md:pb-6.
+    <div className="p-4 pb-24 md:p-6 md:pb-6 space-y-6 max-w-6xl mx-auto">
       {/* mobile-ui-v1.3.1 fixup #2: MobileTopbar already shows the
           pageTitle "首页 · 资产与持仓"; on mobile the in-content h1
           duplicates that surface and pushes the account hero below
@@ -426,15 +579,35 @@ export function DashboardPage() {
                 生成多日净值曲线。
               </div>
             )}
-            <ChartPanel option={equityOption} height={280} loading={filteredHistory.length === 0} />
+            {/* mobile-ui chart revamp: 320px on mobile / 340 desktop —
+                line stays primary; PnL bars sit at lower z + lower
+                opacity so 净值 remains the dominant visual. */}
+            <ChartPanel
+              option={equityOption}
+              height={isMobile ? 320 : 340}
+              loading={filteredHistory.length === 0}
+            />
           </CardContent>
         </Card>
 
-        {/* Allocation pie */}
+        {/* Allocation pie + legend strip — on mobile the outer label
+            track is gone, so the legend list below carries ticker
+            colour mapping. */}
         <Card>
           <CardHeader><CardTitle className="text-sm">仓位分布</CardTitle></CardHeader>
           <CardContent>
-            <ChartPanel option={allocOption} height={280} loading={alloc.length === 0} />
+            <ChartPanel
+              option={allocOption}
+              height={isMobile ? 240 : 280}
+              loading={alloc.length === 0}
+            />
+            {alloc.length > 0 && (
+              <AllocationLegend
+                items={alloc}
+                palette={CHART_PALETTE.pie}
+                compact={isMobile}
+              />
+            )}
           </CardContent>
         </Card>
       </div>
@@ -530,7 +703,7 @@ export function AccountOverviewCard({
     : "text-[var(--color-accent-red)]"
 
   return (
-    <Card className="bg-card/95 ring-1 ring-primary/10 shadow-sm">
+    <Card id="account-hero" className="bg-card/95 ring-1 ring-primary/10 shadow-sm">
       <CardContent className="pt-5 pb-4 px-4 space-y-3">
         {/* mobile-ui-v1.3.1 fixup #2: 账户总值 takes full width as
             the dominant hero number; 今日 PnL sits on its own
@@ -587,6 +760,48 @@ export function AccountOverviewCard({
         </div>
       </CardContent>
     </Card>
+  )
+}
+
+/* ── Allocation legend (mobile + overflow) ────────────────────
+   Mobile-only fallback for the allocation pie: shows ticker dots
+   in the wedge color + percent share next to each ticker. Owns
+   "full ticker name" surface when the pie itself drops outer
+   labels at ≤575.98px. Desktop also gets a compact version for
+   parity, but only when the dataset has >6 tickers so the
+   default outer labels stop overlapping. */
+function AllocationLegend({ items, palette, compact }: {
+  items: AllocItem[]
+  palette: string[]
+  compact: boolean
+}) {
+  // Hide on desktop when there are few enough tickers that the
+  // outer-label track reads cleanly.
+  if (!compact && items.length <= 6) return null
+  const total = items.reduce((s, a) => s + (a.value || 0), 0) || 1
+  return (
+    <ul
+      data-allocation-legend=""
+      className="mt-3 grid grid-cols-2 gap-x-3 gap-y-1 text-xs"
+    >
+      {items.map((a, i) => {
+        const pct = ((a.value || 0) / total) * 100
+        const pctLabel = pct >= 10 ? `${pct.toFixed(0)}%` : `${pct.toFixed(1)}%`
+        return (
+          <li key={a.ticker} className="flex items-center gap-2 min-w-0">
+            <span
+              aria-hidden="true"
+              className="inline-block h-2.5 w-2.5 rounded-full shrink-0"
+              style={{ backgroundColor: palette[i % palette.length] }}
+            />
+            <span className="font-mono truncate text-foreground/90">{a.ticker}</span>
+            <span className="ml-auto tabular-nums text-muted-foreground shrink-0">
+              {pctLabel}
+            </span>
+          </li>
+        )
+      })}
+    </ul>
   )
 }
 
