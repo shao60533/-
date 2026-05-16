@@ -14,7 +14,7 @@ import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert"
 import { PipelineDAG } from "@/components/shared/PipelineDAG"
 import { EmptyStateCTA } from "@/components/shared/EmptyStateCTA"
 import { GURUS as STATIC_GURUS, type Guru } from "@/data/gurus"
-import { apiGet } from "@/lib/api"
+import { apiGet, apiPost, ApiError } from "@/lib/api"
 // ``subscribeTaskStream`` is dynamic-imported inside the running
 // view (and guru matrix) so /screener-v3 home + /screener-v3/history
 // don't ship the socket chunk in their entry bundle.
@@ -169,24 +169,22 @@ function ScreenerForm({ prefillTaskId = null }: ScreenerFormProps) {
     }
     const t = setTimeout(async () => {
       try {
-        const resp = await fetch("/api/screen/v3/estimate", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "same-origin",
-          body: JSON.stringify({
-            market,
-            candidate_n: candidateN,
-            gurus: [...selected],
-            with_roundtable: mode === "agent_rt",
-          }),
+        const data = await apiPost<{
+          llm_calls?: number
+          duration_sec?: number
+          cost_cny?: number
+        }>("/api/screen/v3/estimate", {
+          market,
+          candidate_n: candidateN,
+          gurus: [...selected],
+          with_roundtable: mode === "agent_rt",
         })
-        const data = await resp.json()
         setEstimate({
           calls: data.llm_calls || 0,
           duration: Math.round(data.duration_sec || 0),
           cost: data.cost_cny || 0,
         })
-      } catch { /* ignore */ }
+      } catch { /* estimate is best-effort — silent fall back to zeros */ }
     }, 500)
     return () => clearTimeout(t)
   }, [market, candidateN, selected.size, mode])
@@ -327,19 +325,16 @@ function ScreenerForm({ prefillTaskId = null }: ScreenerFormProps) {
                 setSubmitting(true)
                 setSubmitError(null)
                 try {
-                  const resp = await fetch("/api/screen/v3/trigger", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    credentials: "same-origin",
-                    body: JSON.stringify({
+                  const data = await apiPost<{ task_id?: string }>(
+                    "/api/screen/v3/trigger",
+                    {
                       nl_query: nl, market,
                       candidate_n: candidateN,
                       gurus: [...selected], mode,
                       with_roundtable: mode === "agent_rt",
-                    }),
-                  })
-                  const data = await resp.json()
-                  if (resp.ok && data.task_id) {
+                    },
+                  )
+                  if (data.task_id) {
                     // v1.24: bounce back into the screener so the user
                     // sees pipeline + guru parallel progress in the same
                     // surface, not /tasks/<id> (the original "为什么只能
@@ -347,9 +342,18 @@ function ScreenerForm({ prefillTaskId = null }: ScreenerFormProps) {
                     window.location.href = `/screener-v3?task=${data.task_id}`
                     return
                   }
-                  setSubmitError(data.message || data.error || "提交失败")
-                } catch {
-                  setSubmitError("网络错误，请重试")
+                  setSubmitError("提交失败：响应缺少 task_id")
+                } catch (err: unknown) {
+                  // Server-side rejection (validation / 4xx / 5xx) lands here
+                  // as ApiError with the JSON body — show the backend's own
+                  // error message instead of swallowing it into the generic
+                  // "网络错误" that hid e.g. CSRF / admin-gate failures.
+                  if (err instanceof ApiError) {
+                    const body = (err.body ?? {}) as { message?: string; error?: string }
+                    setSubmitError(body.message || body.error || err.message || "提交失败")
+                  } else {
+                    setSubmitError("网络错误，请重试")
+                  }
                 } finally {
                   setSubmitting(false)
                 }
