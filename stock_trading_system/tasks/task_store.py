@@ -18,6 +18,7 @@ import json
 import sqlite3
 import threading
 from datetime import datetime, timedelta
+from stock_trading_system.utils.timez import now_local, now_utc
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -58,7 +59,7 @@ CREATE INDEX IF NOT EXISTS idx_tasks_params_hash ON tasks(params_hash, status);
 
 def now_iso() -> str:
     """ISO 8601 timestamp in local time (second precision)."""
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return now_utc().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def hash_params(task_type: str, params: dict) -> str:
@@ -348,7 +349,9 @@ class TaskStore:
 
         Returns the most recent match whose status is in *statuses*.
         """
-        cutoff = (datetime.now() - timedelta(seconds=max(0, window_seconds))) \
+        # P2.5 step-2: compare against DB timestamps written via
+        # now_utc() — keep both sides on the same clock.
+        cutoff = (now_utc() - timedelta(seconds=max(0, window_seconds))) \
             .strftime("%Y-%m-%d %H:%M:%S")
         statuses = tuple(statuses)
         if not statuses:
@@ -537,78 +540,22 @@ class TaskStore:
             return f"task_results_generic:{cur.lastrowid}"
 
     def _ensure_analysis_history_table(self):
-        """Mirror of PortfolioDatabase.analysis_history schema — same file.
+        """Single source of truth for the analysis_history schema.
 
-        Safe to call repeatedly thanks to IF NOT EXISTS + idempotent ALTERs.
-        Having the schema here keeps TaskStore self-contained: TaskManager
-        can save analysis results even before PortfolioDatabase has been
-        initialized this process. The ALTER pass is the same shape as
-        PortfolioDatabase._migrate_analysis_history so a worker process
-        booting first doesn't leave a stripped-down table behind.
+        hardening-iteration-v1 P3.5: schema + ALTER list live in
+        ``stock_trading_system.portfolio._schema_analysis_history``;
+        this method and PortfolioDatabase._migrate_analysis_history
+        both route through it so they cannot drift. Pre-P3.5 the two
+        CREATE statements differed (task_store missed the
+        rendering_status / rendering_error / rendering_generated_at
+        columns at the top-level CREATE), with only the lazy ALTER
+        loop saving us.
         """
+        from stock_trading_system.portfolio._schema_analysis_history import (
+            ensure_analysis_history,
+        )
         with self._lock, self._conn() as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS analysis_history (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    ticker TEXT NOT NULL,
-                    date TEXT NOT NULL,
-                    signal TEXT NOT NULL,
-                    market_report TEXT,
-                    sentiment_report TEXT,
-                    news_report TEXT,
-                    fundamentals_report TEXT,
-                    investment_debate TEXT,
-                    risk_assessment TEXT,
-                    trade_decision TEXT,
-                    advice_json TEXT,
-                    created_at TEXT NOT NULL,
-                    action TEXT,
-                    confidence TEXT,
-                    position_pct REAL,
-                    entry_low REAL,
-                    entry_high REAL,
-                    stop_loss REAL,
-                    take_profit REAL,
-                    model TEXT,
-                    steps_json TEXT,
-                    created_by INTEGER,
-                    provider TEXT,
-                    config_hash TEXT,
-                    task_id TEXT,
-                    duration_sec REAL,
-                    bookmarked INTEGER DEFAULT 0,
-                    depth TEXT DEFAULT 'standard',
-                    rendering_json TEXT
-                )
-            """)
-            cols = {r[1] for r in conn.execute(
-                "PRAGMA table_info(analysis_history)"
-            ).fetchall()}
-            additions = [
-                ("action", "TEXT"), ("confidence", "TEXT"),
-                ("position_pct", "REAL"),
-                ("entry_low", "REAL"), ("entry_high", "REAL"),
-                ("stop_loss", "REAL"), ("take_profit", "REAL"),
-                ("model", "TEXT"), ("steps_json", "TEXT"),
-                ("created_by", "INTEGER"), ("provider", "TEXT"),
-                ("config_hash", "TEXT"), ("task_id", "TEXT"),
-                ("duration_sec", "REAL"),
-                ("bookmarked", "INTEGER DEFAULT 0"),
-                ("depth", "TEXT DEFAULT 'standard'"),
-                # v1.19: per-tab structured cards. JSON blob; the DTO
-                # parses it into a dict before exposing to the API.
-                ("rendering_json", "TEXT"),
-                # v1.7 (2026-05-06): structured-summary state machine.
-                # See portfolio.database for the canonical CREATE TABLE.
-                ("rendering_status", "TEXT DEFAULT 'pending'"),
-                ("rendering_error", "TEXT"),
-                ("rendering_generated_at", "TEXT"),
-            ]
-            for name, typ in additions:
-                if name not in cols:
-                    conn.execute(
-                        f"ALTER TABLE analysis_history ADD COLUMN {name} {typ}"
-                    )
+            ensure_analysis_history(conn)
 
     def _ensure_screen_table(self):
         with self._conn() as conn:
@@ -960,7 +907,8 @@ class TaskStore:
 
     def cleanup_expired(self, days: int = 30) -> int:
         """Delete task rows older than *days*. Returns rows deleted."""
-        cutoff = (datetime.now() - timedelta(days=max(0, days))) \
+        # P2.5 step-2: align with the UTC clock that wrote created_at.
+        cutoff = (now_utc() - timedelta(days=max(0, days))) \
             .strftime("%Y-%m-%d %H:%M:%S")
         with self._lock, self._conn() as conn:
             cur = conn.execute(

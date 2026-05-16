@@ -3,6 +3,7 @@
 import json
 import sqlite3
 from datetime import datetime
+from stock_trading_system.utils.timez import now_local, now_utc
 from pathlib import Path
 
 from stock_trading_system.portfolio.models import Position, Transaction, DailySnapshot
@@ -89,7 +90,14 @@ class PortfolioDatabase:
         self._init_tables()
 
     def _get_conn(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._db_path)
+        # hardening-iteration-v1 P3.6 — match the task_store.py pattern:
+        # WAL + a generous busy_timeout so concurrent writers (Schwab/
+        # IB providers + daily-snapshot scheduler + user POSTs) don't
+        # collide with "database is locked" 500s.
+        conn = sqlite3.connect(self._db_path, timeout=10)
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA busy_timeout = 5000")
+        conn.execute("PRAGMA synchronous = NORMAL")
         conn.row_factory = sqlite3.Row
         return conn
 
@@ -329,7 +337,13 @@ class PortfolioDatabase:
         visible to *some* tenant rather than vanishing under the new
         per-user filters.
         """
-        for table in ("positions", "transactions", "daily_snapshots", "alerts"):
+        # hardening-iteration-v1 P0.3: ``alert_history`` joined the
+        # multi-tenant-private set. Pre-fix the p0a_data_partition migration
+        # added the column but ``save_alert_trigger`` never populated it
+        # (C5). The write side now requires user_id; this ALTER makes sure
+        # the column actually exists on fresh DBs too.
+        for table in ("positions", "transactions", "daily_snapshots",
+                      "alerts", "alert_history"):
             cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
             if "user_id" not in cols:
                 try:
@@ -367,53 +381,16 @@ class PortfolioDatabase:
                     logger.warning("backfill %s.user_id failed: %s", table, e)
 
     def _migrate_analysis_history(self, conn: sqlite3.Connection):
-        """Idempotently add structured columns to pre-existing analysis_history."""
-        cols = {r["name"] for r in conn.execute("PRAGMA table_info(analysis_history)").fetchall()}
-        additions = [
-            ("action", "TEXT"),
-            ("confidence", "TEXT"),
-            ("position_pct", "REAL"),
-            ("entry_low", "REAL"),
-            ("entry_high", "REAL"),
-            ("stop_loss", "REAL"),
-            ("take_profit", "REAL"),
-            ("model", "TEXT"),
-            ("steps_json", "TEXT"),
-            # v1.14 provenance columns. ALTER TABLE ADD COLUMN is idempotent
-            # — pre-existing rows get NULL, fine for a shared library that
-            # didn't capture this metadata before.
-            ("created_by", "INTEGER"),
-            ("provider", "TEXT"),
-            ("config_hash", "TEXT"),
-            ("task_id", "TEXT"),
-            ("duration_sec", "REAL"),
-            ("bookmarked", "INTEGER DEFAULT 0"),
-            # v1.16: depth (quick/standard/deep) — UX hint surfaced on
-            # the detail page. Old rows with NULL get treated as
-            # 'standard' by the API DTO via _normalize_depth.
-            ("depth", "TEXT DEFAULT 'standard'"),
-            # v1.19: per-tab structured cards extracted from the analyzer
-            # reports. JSON blob shaped like
-            # ``{"summary": {...} | None, "Market": {...} | None, ...}``.
-            # Empty string when extraction was skipped (e.g. quick depth or
-            # extractor failure); the DTO parses it into a dict and the
-            # frontend falls back to markdown when a key is missing or null.
-            ("rendering_json", "TEXT"),
-            # v1.7 — structured-summary state machine (see CREATE TABLE
-            # above). New columns; older DBs get migrated lazily via
-            # this list. Default ``rendering_status='pending'`` makes
-            # legacy rows readable as "structured summary not yet
-            # generated" so the backfill task can pick them up.
-            ("rendering_status", "TEXT DEFAULT 'pending'"),
-            ("rendering_error", "TEXT"),
-            ("rendering_generated_at", "TEXT"),
-        ]
-        for name, typ in additions:
-            if name not in cols:
-                try:
-                    conn.execute(f"ALTER TABLE analysis_history ADD COLUMN {name} {typ}")
-                except sqlite3.OperationalError as e:
-                    logger.warning("Migration for column %s failed: %s", name, e)
+        """Idempotently add structured columns to pre-existing analysis_history.
+
+        hardening-iteration-v1 P3.5: schema and ALTER list now live in
+        ``_schema_analysis_history.py`` so this method and
+        ``TaskStore._ensure_analysis_history_table`` cannot drift.
+        """
+        from stock_trading_system.portfolio._schema_analysis_history import (
+            ensure_analysis_history,
+        )
+        ensure_analysis_history(conn)
 
         # v1.16 SECURITY MIGRATION: pre-v1.14 rows had per-user advice
         # baked into the shared row's advice_json + structured columns.
@@ -430,7 +407,7 @@ class PortfolioDatabase:
             ).fetchall()
         except sqlite3.OperationalError:
             rows = []
-        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ts = now_utc().strftime("%Y-%m-%d %H:%M:%S")
         for r in rows:
             try:
                 adv = json.loads(r["advice_json"])
@@ -597,7 +574,7 @@ class PortfolioDatabase:
         with self._get_conn() as conn:
             conn.execute(
                 "INSERT INTO alerts (ticker, condition, threshold, created, user_id) VALUES (?, ?, ?, ?, ?)",
-                (ticker, condition, threshold, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), user_id),
+                (ticker, condition, threshold, now_utc().strftime("%Y-%m-%d %H:%M:%S"), user_id),
             )
 
     def get_active_alerts(self, user_id: int | None = None) -> list[dict]:
@@ -617,31 +594,62 @@ class PortfolioDatabase:
         with self._get_conn() as conn:
             conn.execute("UPDATE alerts SET triggered = 1 WHERE id = ?", (alert_id,))
 
-    def remove_alert(self, alert_id: int):
+    def remove_alert(self, alert_id: int, user_id: int) -> int:
+        """Delete an alert owned by ``user_id``. Returns affected row count
+        (0 if the alert exists but belongs to another user — caller maps to
+        404 to avoid leaking existence).
+
+        Closes C4 (IDOR): pre-fix ``DELETE FROM alerts WHERE id = ?`` let any
+        logged-in user delete any other user's alerts by guessing the id.
+        """
         with self._get_conn() as conn:
-            conn.execute("DELETE FROM alerts WHERE id = ?", (alert_id,))
+            cur = conn.execute(
+                "DELETE FROM alerts WHERE id = ? AND user_id = ?",
+                (alert_id, user_id),
+            )
+            return cur.rowcount
 
     def save_alert_trigger(self, alert_id: int, ticker: str, condition: str,
-                           threshold: float, current_price: float | None = None):
+                           threshold: float, current_price: float | None = None,
+                           user_id: int | None = None):
+        """Append an entry to ``alert_history``. ``user_id`` is now required
+        for the multi-tenant contract (the column was added by
+        ``p0a_data_partition`` but writes were never populating it — leaving
+        the column NULL and making ``/api/alerts/history`` leak across users).
+        """
         from datetime import datetime
         with self._get_conn() as conn:
             conn.execute(
-                """INSERT INTO alert_history (alert_id, ticker, condition, threshold, current_price, triggered_at)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
+                """INSERT INTO alert_history
+                   (alert_id, ticker, condition, threshold, current_price,
+                    triggered_at, user_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (alert_id, ticker, condition, threshold, current_price,
-                 datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+                 now_utc().strftime("%Y-%m-%d %H:%M:%S"), user_id),
             )
 
-    def get_alert_history(self, ticker: str | None = None, limit: int = 50) -> list[dict]:
+    def get_alert_history(self, user_id: int, ticker: str | None = None,
+                          limit: int = 50) -> list[dict]:
+        """Return alert-trigger history for ``user_id`` only.
+
+        Closes C5: pre-fix this returned every user's trigger rows (the
+        WHERE clause only filtered by ticker). Web callers always pass
+        ``g.user.id``; admin-style global aggregation is intentionally
+        unsupported here — use the validation tooling for cross-user
+        diagnostics.
+        """
         with self._get_conn() as conn:
             if ticker:
                 rows = conn.execute(
-                    "SELECT * FROM alert_history WHERE ticker = ? ORDER BY id DESC LIMIT ?",
-                    (ticker, limit),
+                    "SELECT * FROM alert_history WHERE user_id = ? AND ticker = ? "
+                    "ORDER BY id DESC LIMIT ?",
+                    (user_id, ticker, limit),
                 ).fetchall()
             else:
                 rows = conn.execute(
-                    "SELECT * FROM alert_history ORDER BY id DESC LIMIT ?", (limit,)
+                    "SELECT * FROM alert_history WHERE user_id = ? "
+                    "ORDER BY id DESC LIMIT ?",
+                    (user_id, limit),
                 ).fetchall()
             return [dict(r) for r in rows]
 
@@ -693,7 +701,7 @@ class PortfolioDatabase:
                     data.get("risk_assessment", ""),
                     data.get("trade_decision", ""),
                     "",                          # advice_json — see docstring
-                    data.get("created_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+                    data.get("created_at", now_utc().strftime("%Y-%m-%d %H:%M:%S")),
                     None,                        # action
                     None,                        # confidence
                     None,                        # position_pct
@@ -730,7 +738,7 @@ class PortfolioDatabase:
         for legacy rows. Doesn't touch any other column so an in-flight
         re-extract can't accidentally clobber signal / advice / etc.
         """
-        ts = generated_at or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ts = generated_at or now_utc().strftime("%Y-%m-%d %H:%M:%S")
         with self._get_conn() as conn:
             cur = conn.execute(
                 """UPDATE analysis_history
@@ -859,7 +867,7 @@ class PortfolioDatabase:
                     _coerce_float(adv.get("take_profit")),
                     adv.get("reasoning") or "",
                     adv.get("risk_warning") or "",
-                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    now_utc().strftime("%Y-%m-%d %H:%M:%S"),
                 ),
             )
             return int(cur.lastrowid)
@@ -909,7 +917,7 @@ class PortfolioDatabase:
                     "INSERT OR IGNORE INTO analysis_bookmarks "
                     "(user_id, analysis_id, created_at) VALUES (?, ?, ?)",
                     (int(user_id), int(analysis_id),
-                     datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+                     now_utc().strftime("%Y-%m-%d %H:%M:%S")),
                 )
                 return True
             conn.execute(
@@ -935,7 +943,7 @@ class PortfolioDatabase:
         analysis_id: int | None = None,
     ) -> int:
         """Idempotent — same (user, ticker) just refreshes the timestamp."""
-        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ts = now_utc().strftime("%Y-%m-%d %H:%M:%S")
         with self._get_conn() as conn:
             cur = conn.execute(
                 """INSERT INTO user_watchlist

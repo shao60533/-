@@ -50,6 +50,34 @@ INVARIANTS = [
 
     ("no_regex_literal_in_plans",
      "SELECT COUNT(*) FROM paper_trade_plans WHERE thesis = 'regex 解析'", 0),
+
+    # hardening-iteration-v1 P0.3 / P1.5: alert_history.user_id was added
+    # by p0a_data_partition but the write side (save_alert_trigger) never
+    # populated it pre-fix (C5). Going forward every new row must carry
+    # the owner so /api/alerts/history can filter and Telegram-bot triggers
+    # are attributable.
+    ("alert_history_have_owner",
+     "SELECT COUNT(*) FROM alert_history WHERE user_id IS NULL", 0),
+
+    # P1.5 also locks down: snapshots that landed via the legacy
+    # post_market_close path used to land with user_id=NULL (C9). The
+    # new per-user scheduler (DailySnapshotScheduler.take_snapshot_all_users)
+    # always supplies a user_id; this invariant guards regressions.
+    ("daily_snapshots_have_owner",
+     "SELECT COUNT(*) FROM daily_snapshots WHERE user_id IS NULL", 0),
+
+    # P1.5: every user_analysis_advice row must reference a live
+    # analysis_history row — otherwise the audit trail "which analysis
+    # produced this advice" is broken and the row is unreachable in UI.
+    ("user_advice_links_analysis",
+     """SELECT COUNT(*) FROM user_analysis_advice
+        WHERE analysis_id NOT IN (SELECT id FROM analysis_history)""", 0),
+
+    # P1.5 / P1.6: with TaskManager.submit now raising on missing
+    # created_by, every new task row carries an owner. This invariant
+    # catches regressions where a non-request caller forgets to pass it.
+    ("tasks_have_owner",
+     "SELECT COUNT(*) FROM tasks WHERE created_by IS NULL", 0),
 ]
 
 
@@ -69,7 +97,8 @@ def run_invariants(db_path: str) -> dict:
 
     conn.close()
     results["go"] = len(results["fail"]) == 0
-    results["checked_at"] = datetime.utcnow().isoformat() + "Z"
+    from stock_trading_system.utils.timez import now_utc
+    results["checked_at"] = now_utc().isoformat()
     return results
 
 

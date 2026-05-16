@@ -54,6 +54,7 @@ docs/
 | 2026-04-18 | 一键持仓分析方案 | [Batch Analyze](design/batch-analyze-holdings.md) | — |
 | 2026-04-18 | 自我迭代 Agent 方案（美股版） | [Self-Iterating Agents](design/self-iterating-agents.md) | — |
 | 2026-05-09 | 移动端 IA/UI v1.3：严格按高保真 demo，不改功能/后端/架构 | [PRD](prd/mobile-ui-v1.3.md) / [Design](design/mobile-ui-v1.3.md) / [Tests](test-cases/mobile-ui-v1.3.md) | — |
+| 2026-05-13 | 硬化迭代 v1 方案与测试用例（方案阶段，待 P0 启动）：9 Critical + 16 High 拆 5 Phase × ~6 周，~70% 是对 multi-tenant.md / product-architecture-optimization-instructions.md 的回归补齐 | [Design](design/hardening-iteration-v1.md) / [Tests](test-cases/hardening-iteration-v1.md) | — |
 
 ---
 
@@ -62,10 +63,10 @@ docs/
 | 分类 | 文档数 | 总行数 |
 |------|--------|--------|
 | PRD | 7 | ~2,058 |
-| 设计方案 | 27 | ~20,855 |
-| 测试用例 | 14（1,596 例） | ~4,996 |
+| 设计方案 | 28 | ~21,335 |
+| 测试用例 | 15（1,747 例） | ~5,316 |
 | 部署文档 | 2 | ~272 |
-| **合计** | **50** | **~28,181** |
+| **合计** | **52** | **~28,981** |
 
 ---
 

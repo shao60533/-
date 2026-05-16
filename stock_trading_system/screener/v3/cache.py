@@ -7,6 +7,7 @@ TTL = end of trading day (auto-expire on new day).
 from __future__ import annotations
 
 from datetime import datetime
+from stock_trading_system.utils.timez import now_local, now_ny
 
 from stock_trading_system.screener.v3.guru_agents.base import GuruSignal
 from stock_trading_system.utils import get_logger
@@ -21,7 +22,10 @@ def _cache_key(ticker: str, guru: str, date: str) -> str:
 
 
 def _seconds_until_end_of_day() -> int:
-    now = datetime.now()
+    # P2.5 step-2: guru signals are valid through the NY trading day;
+    # base the EOD cutoff on Eastern time so a 23:30 UTC tick (which
+    # is still afternoon in NY) doesn't pre-expire the cache.
+    now = now_ny()
     end = now.replace(hour=23, minute=59, second=59)
     return max(60, int((end - now).total_seconds()))
 

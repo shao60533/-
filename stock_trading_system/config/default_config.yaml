@@ -131,6 +131,14 @@ alerts:
     bot_token: ""
     chat_id: ""
     enabled: false
+    # hardening-iteration-v1 P1.1 [C2] — bot is multi-tenant now.
+    # Empty `user_map` = bot runs but every command is denied (locked-down
+    # default). Map Telegram chat ids to registered user emails; only listed
+    # chats get to /buy /sell /alert and they operate on THEIR own data.
+    # `user_map` keys are Telegram chat ids (int as string OR int — both
+    # accepted), values are the registered user's email. Resolution happens
+    # once at bot startup against the users table.
+    user_map: {}
   email:
     smtp_host: ""
     smtp_port: 587
@@ -147,6 +155,35 @@ reports:
 # at a Persistent Volume mount (e.g. /data/portfolio.db) for durability.
 portfolio:
   db_path: "data/portfolio.db"
+
+# Paper-trade simulator. The Decimal flag below is the hardening-iteration-v1
+# P2.6 feature flag (designed §3.3): when enabled, cash / PnL accumulate via
+# decimal.Decimal instead of float so 1000 buy/sell loops don't drift due to
+# binary-float rounding error. Default OFF — step-1 (this PR) ships the flag
+# and the helper module; step-2 (subsequent PR) rewires
+# simulator.py / order_engine.py / session_store.py to consult the flag and
+# do the actual arithmetic conversion. Flip to true only after a dogfood
+# week confirms the new path matches existing reports to the cent.
+paper_trade:
+  decimal: false
+
+# Backtest engine selection. P3.2 step-3 grayscale flag — set to "v2"
+# to opt the /api/backtest/run endpoint into the BacktestEngine code
+# path (uses to_v1_dict() to keep the response schema compatible).
+# Default "v1" preserves the legacy Backtester output exactly. Flip
+# only after the parity test confirms the slippage/年化/RSI defaults
+# match what your dashboards expect.
+backtest:
+  engine: "v1"
+
+# Screener engine selection. P3.1 step-3 grayscale flag — set to "v3"
+# to opt the /api/screen endpoint (and the Telegram /screen command,
+# and the ``stock screen`` CLI) into the V3 guru pipeline via the
+# screen_sync wrapper. Default "v1" preserves the legacy 3-layer
+# (IB Scanner + finviz + AI) results. Flip only after dogfood
+# confirms the guru voting output is acceptable for your strategies.
+screener:
+  engine: "v1"
 
 # Self-iterating agent evolution module (see docs/design/self-iterating-agents.md).
 iteration:

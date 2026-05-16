@@ -1,4 +1,18 @@
-"""Backtesting engine for rule-based strategies.
+"""Backtesting engine for rule-based strategies — DEPRECATED.
+
+hardening-iteration-v1 P3.2 [H13] — this module is on the retirement
+path. ``strategy/backtester.py`` ``BacktestEngine`` is the canonical
+replacement: it accepts an injected ``history_fn`` (cleaner separation
+from DataManager), uses Wilder EWM RSI rather than SMA, supports
+parameterised slippage, and reports both ``total_return`` and
+``total_return_pct`` field names (the legacy alias). Switch web entry
+points to ``BacktestEngine`` before this module is deleted.
+
+Behaviour preserved here exactly so a one-week ``DeprecationWarning``
+window doesn't break callers mid-migration. New code must NOT import
+from this module.
+
+Original notes — kept for diff context:
 
 This is deliberately lightweight — it replays historical OHLCV bars through a
 strategy function, tracks a single-position long-only equity curve, and
@@ -14,6 +28,7 @@ Built-in strategies (no LLM calls — those would make backtesting prohibitive):
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Callable, Optional
@@ -24,6 +39,21 @@ from stock_trading_system.data.data_manager import DataManager
 from stock_trading_system.utils import get_logger
 
 logger = get_logger("strategy.backtest")
+
+# Surface a one-time DeprecationWarning at first import. Tests / pytest
+# already raise these into errors via ``-W error::DeprecationWarning``
+# if the project's pytest config opts in; without that opt-in the
+# warning is visible only with ``python -W default``. The intent here
+# is "noisy enough that a careful reviewer sees it during code review,
+# quiet enough that prod doesn't spam logs once per deploy".
+warnings.warn(
+    "stock_trading_system.strategy.backtest is deprecated — "
+    "use stock_trading_system.strategy.backtester.BacktestEngine "
+    "(hardening-iteration-v1 P3.2 / H13). Scheduled for removal in "
+    "the next iteration after the parity test gates web migration.",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 
 @dataclass

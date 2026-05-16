@@ -160,7 +160,8 @@ def test_batch_two_successes_creates_two_analysis_history_rows(configured_tm):
         # really run analysis — the case-3 test is where we exercise the
         # skip branch.
         task = tm.submit("batch_analysis",
-                         {"skip_recent_hours": 0, "__user_id__": 1})
+                         {"skip_recent_hours": 0, "__user_id__": 1},
+                         created_by=1)
         final = tm.wait_for(task["id"], timeout=30)
         assert final["status"] == "success", final
 
@@ -203,7 +204,8 @@ def test_batch_one_success_one_failure_writes_exactly_one_row(configured_tm):
     register_default_workers(tm, deps)
     try:
         task = tm.submit("batch_analysis",
-                         {"skip_recent_hours": 0, "__user_id__": 1})
+                         {"skip_recent_hours": 0, "__user_id__": 1},
+                         created_by=1)
         final = tm.wait_for(task["id"], timeout=30)
         assert final["status"] == "success", final
 
@@ -243,13 +245,15 @@ def test_batch_skipped_ticker_keeps_last_analysis_id_no_new_row(configured_tm):
     try:
         # 1. Seed: run a batch once so AAPL has a fresh analysis_history row.
         first = tm.submit("batch_analysis",
-                          {"skip_recent_hours": 0, "__user_id__": 1})
+                          {"skip_recent_hours": 0, "__user_id__": 1},
+                          created_by=1)
         tm.wait_for(first["id"], timeout=10)
         assert _count_analysis_history(db_path, "AAPL") == 1
 
         # 2. Re-run with skip_recent_hours=24. AAPL should now be skipped.
         second = tm.submit("batch_analysis",
-                           {"skip_recent_hours": 24, "__user_id__": 1})
+                           {"skip_recent_hours": 24, "__user_id__": 1},
+                           created_by=1)
         final = tm.wait_for(second["id"], timeout=10)
         assert final["status"] == "success", final
 
@@ -289,7 +293,8 @@ def test_single_analysis_path_writes_exactly_one_row_no_regression(configured_tm
     try:
         task = tm.submit("analysis",
                          {"ticker": "AAPL", "date": "2026-05-15",
-                          "__user_id__": 1})
+                          "__user_id__": 1},
+                         created_by=1)
         final = tm.wait_for(task["id"], timeout=30)
         assert final["status"] == "success", final
         assert final["result_ref"].startswith("analysis_history:")

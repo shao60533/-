@@ -4,8 +4,10 @@ Free tier: 5 API calls/minute, delayed data.
 Used when IB TWS is not available.
 """
 
+import threading
 import time
 from datetime import datetime, timedelta
+from stock_trading_system.utils.timez import now_local, now_ny, today_str_ny
 
 import pandas as pd
 
@@ -20,8 +22,15 @@ class PolygonProvider:
     def __init__(self, config: dict):
         self._api_key = config.get("polygon", {}).get("api_key", "")
         self._client = None
-        self._last_call = 0
+        self._last_call = 0.0
         self._min_interval = 12.5  # 5 calls/min = 1 call per 12s
+        # hardening-iteration-v1 P2.7: pre-P2.7 `_last_call` was unguarded;
+        # PortfolioManager.get_holdings spawns 8 ThreadPoolExecutor workers
+        # that all call _rate_limit concurrently — every worker reads the
+        # stale timestamp, every worker decides "elapsed >= 12.5s", and
+        # five requests fire in the same millisecond → 429 from Polygon.
+        # The mutex enforces ONE caller at a time inside the sleep window.
+        self._rl_lock = threading.Lock()
 
     def _get_client(self):
         if self._client is None:
@@ -31,11 +40,12 @@ class PolygonProvider:
         return self._client
 
     def _rate_limit(self):
-        """Enforce rate limiting for free tier."""
-        elapsed = time.time() - self._last_call
-        if elapsed < self._min_interval:
-            time.sleep(self._min_interval - elapsed)
-        self._last_call = time.time()
+        """Enforce rate limiting for free tier (thread-safe)."""
+        with self._rl_lock:
+            elapsed = time.time() - self._last_call
+            if elapsed < self._min_interval:
+                time.sleep(self._min_interval - elapsed)
+            self._last_call = time.time()
 
     def is_available(self) -> bool:
         return bool(self._api_key)
@@ -86,9 +96,11 @@ class PolygonProvider:
             client = self._get_client()
 
             if not to_date:
-                to_date = datetime.now().strftime("%Y-%m-%d")
+                to_date = today_str_ny()
             if not from_date:
-                from_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
+                # P2.5 step-2: Polygon range is a NY-market calendar
+                # span — align with today_str_ny() above.
+                from_date = (now_ny() - timedelta(days=365)).strftime("%Y-%m-%d")
 
             aggs = list(client.list_aggs(
                 ticker=ticker,

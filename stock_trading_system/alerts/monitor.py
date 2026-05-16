@@ -1,6 +1,7 @@
 """Alert monitor - checks price/indicator conditions and triggers notifications."""
 
 from datetime import datetime
+from stock_trading_system.utils.timez import now_local, now_ny
 
 from stock_trading_system.portfolio.database import PortfolioDatabase
 from stock_trading_system.data.data_manager import DataManager
@@ -45,10 +46,19 @@ class AlertMonitor:
         self._db.add_alert(ticker, condition, threshold, user_id=user_id)
         logger.info("Alert added: %s %s %s (user=%s)", ticker, condition, threshold, user_id)
 
-    def remove_alert(self, alert_id: int):
-        """Remove an alert by ID."""
-        self._db.remove_alert(alert_id)
-        logger.info("Alert removed: %d", alert_id)
+    def remove_alert(self, alert_id: int, user_id: int) -> bool:
+        """Remove an alert owned by ``user_id``. Returns True if a row was
+        deleted, False if no such alert exists for this user.
+
+        ``user_id`` is required as of hardening-iteration-v1 P0.3 — the
+        former signature ``remove_alert(alert_id)`` was an IDOR vector
+        (C4): any logged-in user could delete any other user's alerts by
+        guessing the id.
+        """
+        deleted = self._db.remove_alert(alert_id, user_id=user_id)
+        logger.info("Alert remove: id=%d user=%d deleted=%d",
+                    alert_id, user_id, deleted)
+        return deleted > 0
 
     def list_alerts(self, user_id: int | None = None,
                      scope: str = "user") -> list[dict]:
@@ -108,7 +118,8 @@ class AlertMonitor:
                     triggered.append(alert)
                     self._db.trigger_alert(alert["id"])
                     self._db.save_alert_trigger(
-                        alert["id"], ticker, condition, threshold, current_price
+                        alert["id"], ticker, condition, threshold,
+                        current_price, user_id=alert.get("user_id"),
                     )
                     logger.info(
                         "Alert triggered: %s %s %s (current: %s)",
@@ -157,7 +168,7 @@ class AlertMonitor:
                 f"🚨 Alert Triggered: {alert['ticker']}\n"
                 f"Condition: {alert['condition']} {alert['threshold']}\n"
                 f"Current Price: {alert.get('current_price', 'N/A')}\n"
-                f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                f"Time: {now_ny().strftime('%Y-%m-%d %H:%M:%S')}"
             )
 
             for notifier in self._notifiers:

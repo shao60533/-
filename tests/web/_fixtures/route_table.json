@@ -1,0 +1,1010 @@
+[
+  {
+    "rule": "/",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "index"
+  },
+  {
+    "rule": "/alerts",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "alerts_page"
+  },
+  {
+    "rule": "/analysis",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "analysis_page"
+  },
+  {
+    "rule": "/analysis/<analysis_id>",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "analysis_page"
+  },
+  {
+    "rule": "/api/admin/invites",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_admin_invites_list"
+  },
+  {
+    "rule": "/api/admin/invites",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_admin_invites_create"
+  },
+  {
+    "rule": "/api/admin/invites/<code>",
+    "methods": [
+      "DELETE"
+    ],
+    "endpoint": "api_admin_invites_revoke"
+  },
+  {
+    "rule": "/api/admin/users",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_admin_users"
+  },
+  {
+    "rule": "/api/alerts",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_alerts"
+  },
+  {
+    "rule": "/api/alerts/add",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_alert_add"
+  },
+  {
+    "rule": "/api/alerts/check",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_alert_check"
+  },
+  {
+    "rule": "/api/alerts/history",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_alert_history"
+  },
+  {
+    "rule": "/api/alerts/remove",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_alert_remove"
+  },
+  {
+    "rule": "/api/analysis/<int:analysis_id>/quick-info",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_analysis_quick_info"
+  },
+  {
+    "rule": "/api/analyze",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_analyze"
+  },
+  {
+    "rule": "/api/auth/change-password",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_change_password"
+  },
+  {
+    "rule": "/api/auth/invites-available",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_invites_available"
+  },
+  {
+    "rule": "/api/auth/login",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_login"
+  },
+  {
+    "rule": "/api/auth/logout",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_logout"
+  },
+  {
+    "rule": "/api/auth/me",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_auth_me"
+  },
+  {
+    "rule": "/api/auth/oauth/<provider_name>/unlink",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "oauth_unlink"
+  },
+  {
+    "rule": "/api/auth/oauth/linked",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "oauth_linked"
+  },
+  {
+    "rule": "/api/auth/oauth/register",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "oauth_register"
+  },
+  {
+    "rule": "/api/auth/providers",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "oauth_providers_list"
+  },
+  {
+    "rule": "/api/auth/register",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_register"
+  },
+  {
+    "rule": "/api/backtest/run",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_backtest_run"
+  },
+  {
+    "rule": "/api/backtest/strategies",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_backtest_strategies"
+  },
+  {
+    "rule": "/api/batch/analyze",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_batch_analyze"
+  },
+  {
+    "rule": "/api/chart/<ticker>",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_chart"
+  },
+  {
+    "rule": "/api/dashboard",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_dashboard"
+  },
+  {
+    "rule": "/api/diagnostics/providers",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_diag_providers"
+  },
+  {
+    "rule": "/api/fundamentals/<ticker>",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_fundamentals"
+  },
+  {
+    "rule": "/api/health",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_health"
+  },
+  {
+    "rule": "/api/history",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_analysis_history"
+  },
+  {
+    "rule": "/api/history/<int:analysis_id>",
+    "methods": [
+      "DELETE"
+    ],
+    "endpoint": "api_analysis_delete"
+  },
+  {
+    "rule": "/api/history/<int:analysis_id>",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_analysis_detail"
+  },
+  {
+    "rule": "/api/history/<int:analysis_id>/bookmark",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_bookmark_toggle"
+  },
+  {
+    "rule": "/api/history/<int:analysis_id>/export",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_history_export"
+  },
+  {
+    "rule": "/api/history/<int:analysis_id>/rendering/retry",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_rendering_retry"
+  },
+  {
+    "rule": "/api/history/compare",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_analysis_compare"
+  },
+  {
+    "rule": "/api/history/timeline/<ticker>",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_analysis_timeline"
+  },
+  {
+    "rule": "/api/iteration/agents",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_iteration_agents"
+  },
+  {
+    "rule": "/api/iteration/meta/run",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_iteration_meta_run"
+  },
+  {
+    "rule": "/api/iteration/prompts",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_iteration_prompts"
+  },
+  {
+    "rule": "/api/news/<ticker>",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_news"
+  },
+  {
+    "rule": "/api/onboarding/dismiss-checklist",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_onboarding_dismiss_checklist"
+  },
+  {
+    "rule": "/api/onboarding/mark-welcomed",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_onboarding_mark_welcomed"
+  },
+  {
+    "rule": "/api/onboarding/reset",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_onboarding_reset"
+  },
+  {
+    "rule": "/api/onboarding/state",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_onboarding_state"
+  },
+  {
+    "rule": "/api/paper/backfill",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_paper_backfill"
+  },
+  {
+    "rule": "/api/paper/sessions",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_paper_list_sessions"
+  },
+  {
+    "rule": "/api/paper/sessions",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_paper_create_session"
+  },
+  {
+    "rule": "/api/paper/sessions/<int:session_id>",
+    "methods": [
+      "DELETE"
+    ],
+    "endpoint": "api_paper_delete_session"
+  },
+  {
+    "rule": "/api/paper/sessions/<int:session_id>",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_paper_session_detail"
+  },
+  {
+    "rule": "/api/paper/sessions/<int:session_id>/equity",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_paper_equity"
+  },
+  {
+    "rule": "/api/paper/sessions/<int:session_id>/run",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_paper_run"
+  },
+  {
+    "rule": "/api/paper/sessions/<int:session_id>/tracked",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_paper_session_tracked"
+  },
+  {
+    "rule": "/api/paper/sessions/<int:session_id>/trades",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_paper_trades"
+  },
+  {
+    "rule": "/api/paper/tickers",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_paper_tickers"
+  },
+  {
+    "rule": "/api/paper/tickers/<ticker>",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_paper_ticker_detail"
+  },
+  {
+    "rule": "/api/paper/tickers/<ticker>/eod",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_paper_ticker_eod"
+  },
+  {
+    "rule": "/api/paper/track",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_paper_track_create"
+  },
+  {
+    "rule": "/api/paper/track/<int:tracked_id>",
+    "methods": [
+      "DELETE"
+    ],
+    "endpoint": "api_paper_track_delete"
+  },
+  {
+    "rule": "/api/paper/track/by_analysis/<int:analysis_id>",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_paper_track_by_analysis"
+  },
+  {
+    "rule": "/api/paper/track/by_ticker/<ticker>",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_paper_track_by_ticker"
+  },
+  {
+    "rule": "/api/portfolio/<ticker>",
+    "methods": [
+      "DELETE"
+    ],
+    "endpoint": "api_portfolio_delete"
+  },
+  {
+    "rule": "/api/portfolio/add",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_portfolio_add"
+  },
+  {
+    "rule": "/api/portfolio/allocation",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_allocation"
+  },
+  {
+    "rule": "/api/portfolio/history",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_history"
+  },
+  {
+    "rule": "/api/portfolio/holdings",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_holdings"
+  },
+  {
+    "rule": "/api/portfolio/pnl",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_pnl"
+  },
+  {
+    "rule": "/api/portfolio/sell",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_portfolio_sell"
+  },
+  {
+    "rule": "/api/portfolio/snapshot",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_portfolio_snapshot"
+  },
+  {
+    "rule": "/api/portfolio/snapshots/backfill",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_portfolio_snapshots_backfill"
+  },
+  {
+    "rule": "/api/portfolio/summary",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_portfolio_summary"
+  },
+  {
+    "rule": "/api/portfolio/track",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_portfolio_track"
+  },
+  {
+    "rule": "/api/portfolio/transactions",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_transactions"
+  },
+  {
+    "rule": "/api/portfolio/update_cost",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_portfolio_update_cost"
+  },
+  {
+    "rule": "/api/price/<ticker>",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_price"
+  },
+  {
+    "rule": "/api/quote/<ticker>",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_quote"
+  },
+  {
+    "rule": "/api/quote/history",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_quote_history"
+  },
+  {
+    "rule": "/api/report",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_report"
+  },
+  {
+    "rule": "/api/scheduler/run-now",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_scheduler_run_now"
+  },
+  {
+    "rule": "/api/scheduler/start",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_scheduler_start"
+  },
+  {
+    "rule": "/api/scheduler/status",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_scheduler_status"
+  },
+  {
+    "rule": "/api/scheduler/stop",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_scheduler_stop"
+  },
+  {
+    "rule": "/api/schwab/diagnose",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_schwab_diagnose"
+  },
+  {
+    "rule": "/api/screen",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_screen"
+  },
+  {
+    "rule": "/api/screen/v2/gurus",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_screen_v2_gurus"
+  },
+  {
+    "rule": "/api/screen/v2/history",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_screen_v2_history"
+  },
+  {
+    "rule": "/api/screen/v2/result/<int:result_id>",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_screen_v2_result"
+  },
+  {
+    "rule": "/api/screen/v2/result/by_task/<task_id>",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_screen_v2_result_by_task"
+  },
+  {
+    "rule": "/api/screen/v2/submit",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_screen_v2_submit"
+  },
+  {
+    "rule": "/api/screen/v3/estimate",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_screen_v3_estimate"
+  },
+  {
+    "rule": "/api/screen/v3/gurus",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_screen_v3_gurus"
+  },
+  {
+    "rule": "/api/screen/v3/history",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_screen_v3_history"
+  },
+  {
+    "rule": "/api/screen/v3/history/<task_id>",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_screen_v3_history_one"
+  },
+  {
+    "rule": "/api/screen/v3/results/<task_or_result_id>",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_screen_v3_result"
+  },
+  {
+    "rule": "/api/screen/v3/trigger",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_screen_v3_trigger"
+  },
+  {
+    "rule": "/api/search",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_search"
+  },
+  {
+    "rule": "/api/seed",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_seed"
+  },
+  {
+    "rule": "/api/settings",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_settings"
+  },
+  {
+    "rule": "/api/settings",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_settings_update"
+  },
+  {
+    "rule": "/api/settings/llm-provider",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "get_llm_provider"
+  },
+  {
+    "rule": "/api/settings/llm-provider",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "set_llm_provider"
+  },
+  {
+    "rule": "/api/settings/openrouter/active",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "get_openrouter_active"
+  },
+  {
+    "rule": "/api/settings/openrouter/active",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "set_openrouter_active"
+  },
+  {
+    "rule": "/api/tasks",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_tasks_list"
+  },
+  {
+    "rule": "/api/tasks/<task_id>",
+    "methods": [
+      "DELETE"
+    ],
+    "endpoint": "api_task_delete"
+  },
+  {
+    "rule": "/api/tasks/<task_id>",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_task_detail"
+  },
+  {
+    "rule": "/api/tasks/<task_id>/cancel",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_task_cancel"
+  },
+  {
+    "rule": "/api/tasks/<task_id>/result",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_task_result"
+  },
+  {
+    "rule": "/api/tasks/<task_id>/retry",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_task_retry"
+  },
+  {
+    "rule": "/api/tasks/cleanup",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_tasks_cleanup"
+  },
+  {
+    "rule": "/api/tasks/events",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_task_events"
+  },
+  {
+    "rule": "/api/tasks/running",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_tasks_running"
+  },
+  {
+    "rule": "/api/tasks/stats",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "api_task_stats"
+  },
+  {
+    "rule": "/api/tasks/submit",
+    "methods": [
+      "POST"
+    ],
+    "endpoint": "api_task_submit"
+  },
+  {
+    "rule": "/app",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "legacy_spa"
+  },
+  {
+    "rule": "/auth/oauth/<provider_name>/callback",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "oauth_callback"
+  },
+  {
+    "rule": "/auth/oauth/<provider_name>/start",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "oauth_start"
+  },
+  {
+    "rule": "/backtest",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "backtest_page"
+  },
+  {
+    "rule": "/backtest-v2",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "backtest_page"
+  },
+  {
+    "rule": "/backtest-v2/<int:backtest_id>",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "backtest_page"
+  },
+  {
+    "rule": "/backtest/<backtest_id>",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "backtest_page"
+  },
+  {
+    "rule": "/dashboard",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "index"
+  },
+  {
+    "rule": "/dashboard-v2",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "dashboard_v2_redirect"
+  },
+  {
+    "rule": "/history",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "history_page"
+  },
+  {
+    "rule": "/login",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "login_page"
+  },
+  {
+    "rule": "/oauth/schwab/callback",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "schwab_oauth_callback"
+  },
+  {
+    "rule": "/oauth/schwab/start",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "schwab_oauth_start"
+  },
+  {
+    "rule": "/paper-trade",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "paper_trade_list_page"
+  },
+  {
+    "rule": "/paper-trade/<ticker>",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "paper_trade_detail_page"
+  },
+  {
+    "rule": "/portfolio",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "portfolio_page"
+  },
+  {
+    "rule": "/register",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "register_page"
+  },
+  {
+    "rule": "/reports",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "reports_page"
+  },
+  {
+    "rule": "/screener-v3",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "screener_v3_page"
+  },
+  {
+    "rule": "/screener-v3/history",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "screener_v3_history_page"
+  },
+  {
+    "rule": "/settings",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "settings_page"
+  },
+  {
+    "rule": "/settings/<section>",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "settings_page"
+  },
+  {
+    "rule": "/tasks",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "tasks_page_react"
+  },
+  {
+    "rule": "/tasks-v2",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "tasks_v2_redirect"
+  },
+  {
+    "rule": "/tasks-v2/<task_id>",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "tasks_v2_redirect"
+  },
+  {
+    "rule": "/tasks/<task_id>",
+    "methods": [
+      "GET"
+    ],
+    "endpoint": "tasks_page_react"
+  }
+]

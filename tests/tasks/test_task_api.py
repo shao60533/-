@@ -236,8 +236,13 @@ def test_cleanup_endpoint(client):
 # ── /api/diagnostics/providers ────────────────────────────────────────────────
 
 
-def test_diagnostics_providers_shape(client):
-    """Diagnostics endpoint returns provider statuses + routing summary."""
+def test_diagnostics_providers_shape(app_client):
+    """Diagnostics endpoint returns provider statuses + routing summary.
+
+    hardening-iteration-v1 P0: this endpoint now requires admin — its
+    truncated error messages can leak provider names / proxy URLs to
+    plain users. Test uses admin_client (was: alice → 403).
+    """
     from stock_trading_system.config import get_config
     cfg = get_config()
     cfg["providers"] = {
@@ -248,13 +253,19 @@ def test_diagnostics_providers_shape(client):
         "schwab_enabled": False,
     }
     cfg["qwen"] = {"enabled": False, "api_key": ""}
-    rv = client.get("/api/diagnostics/providers")
+    users = app_client["users"]
+    admin = app_client["make_client"](users.admin_email, users.admin_password)
+    rv = admin.get("/api/diagnostics/providers")
     assert rv.status_code in (200, 207)
     body = rv.get_json()
     assert "providers" in body
     assert "routing" in body
     assert "primary" in body["routing"]
-    assert body["providers"] == {}
+    # OpenRouter is always reported (even when disabled, as a "not
+    # configured" entry) — the test's intent is "no data-provider
+    # succeeded when every cfg switch is off". Assert no provider is
+    # ok=True rather than "the dict is empty".
+    assert not any(v.get("ok") for v in body["providers"].values())
 
 
 # ── Cross-user task isolation ────────────────────────────────────────────────

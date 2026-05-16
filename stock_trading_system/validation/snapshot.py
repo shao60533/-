@@ -74,8 +74,9 @@ def generate_snapshot(db_path: str) -> dict:
     conn = sqlite3.connect(db_path)
     tables = _get_tables(conn)
 
+    from stock_trading_system.utils.timez import now_utc
     snapshot = {
-        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "generated_at": now_utc().isoformat(),
         "db_path": db_path,
         "tables": {},
     }

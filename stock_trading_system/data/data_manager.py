@@ -4,6 +4,8 @@
 - A-shares: AkShare -> Qwen (last resort)
 """
 
+from typing import Any
+
 import pandas as pd
 
 from stock_trading_system.data.ib_provider import IBProvider
@@ -21,7 +23,10 @@ logger = get_logger("data.manager")
 class DataManager:
     """Unified data manager with automatic market routing and failover."""
 
-    # Consecutive failure threshold — skip provider after N failures
+    # Consecutive failure threshold — skip provider for the rest of this
+    # process lifetime after N consecutive failures. Hard cap at 1 so the
+    # very first network timeout removes a provider from the rotation
+    # (we can't afford a 30s timeout on every dashboard refresh).
     _SKIP_THRESHOLD = 1
 
     def __init__(self, config: dict, cache=None):
@@ -44,12 +49,44 @@ class DataManager:
         self._yfinance = YFinanceProvider()
         self._qwen = QwenProvider(config)
         self._schwab = SchwabProvider(config)
-        # Track consecutive failures per provider to skip broken ones.
-        # IB starts skipped (event loop issue in thread pools).
-        # Polygon starts skipped (free tier 429 rate limit makes it
-        # unusable for concurrent batch lookups like get_holdings).
-        # Schwab starts at 0 — only auto-skips on real failures.
-        self._fail_count = {"ib": 1, "polygon": 1, "schwab": 0}
+        # hardening-iteration-v1 P3.3: fail-count starts at 0 for every
+        # provider. Pre-fix the dict was ``{"ib": 1, "polygon": 1, ...}``,
+        # which combined with ``_SKIP_THRESHOLD = 1`` meant IB and Polygon
+        # were marked skipped from boot regardless of the master switch
+        # — dead-code state that hid behind the cron-time master-switch
+        # gating. The real "this provider is disabled" signal is the
+        # config-level master switch (``providers.<name>_enabled``) +
+        # the provider-specific ``.enabled`` toggle; the counter just
+        # records runtime failures and lets us back off after a real
+        # incident. Polygon's free-tier 429 race that motivated the
+        # pre-emptive skip is now properly fixed by the threading.Lock
+        # added in P2.7.
+        self._fail_count = {"ib": 0, "polygon": 0, "schwab": 0}
+        # hardening-iteration-v1 P3.3 step-2: optional delegation to
+        # DataRouter. When ``config["data_routing"]["use_router_delegate"]``
+        # is true, get_price routes through DataRouter (Qwen-first with
+        # LocalCache + capability matrix); when false (default), the
+        # legacy Schwab → IB → Polygon → yfinance → Qwen chain in this
+        # file is used unchanged. step-3 will flip the default once a
+        # dogfood week confirms equivalent behaviour.
+        self._use_router_delegate = bool(
+            (config.get("data_routing", {}) or {}).get("use_router_delegate", False)
+        )
+        self._router: Any | None = None  # lazy — only built when flag is on
+
+    def _get_router(self):
+        """Lazy DataRouter — never built unless the feature flag is on."""
+        if self._router is None and self._use_router_delegate:
+            try:
+                from stock_trading_system.data.data_router import DataRouter
+                self._router = DataRouter(self._config, cache=self._cache)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "DataRouter delegate init failed, falling back to "
+                    "legacy chain: %s", e,
+                )
+                self._use_router_delegate = False
+        return self._router
 
     def _is_skipped(self, provider: str) -> bool:
         return self._fail_count.get(provider, 0) >= self._SKIP_THRESHOLD
@@ -72,8 +109,18 @@ class DataManager:
 
         Uses LocalCache (price_quote, 60s TTL) to avoid redundant
         network calls within a short window.
+
+        hardening-iteration-v1 P3.3 step-2: when
+        ``config["data_routing"]["use_router_delegate"]`` is true the
+        call delegates to DataRouter (Qwen-first + capability matrix).
+        Default OFF — legacy chain runs.
         """
         market = market or detect_market(ticker)
+
+        if self._use_router_delegate:
+            router = self._get_router()
+            if router is not None:
+                return router.get_price(ticker, market=market)
 
         # Check cache first (60s TTL via LocalCache.price_quote)
         if self._cache is not None:

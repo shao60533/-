@@ -101,7 +101,14 @@ def test_dataframe_round_trip(cache):
     cache.set_bars("AAPL", "1mo", "1d", df)
     back = cache.get_bars("AAPL", "1mo", "1d")
     assert back is not None
-    pd.testing.assert_frame_equal(back, df)
+    # P2.3: payloads round-trip via JSON (was: pickle). JSON doesn't
+    # carry pandas-specific metadata (DatetimeIndex.freq), and read_json
+    # coerces whole-number floats back to int. We compare logical
+    # equality — values match within numerical tolerance, schema is
+    # preserved — rather than full pickle-level frame identity.
+    pd.testing.assert_frame_equal(
+        back, df, check_freq=False, check_dtype=False,
+    )
 
 
 # ── LC-2.1.11 configurable TTL ───────────────────────────────────────────────

@@ -165,6 +165,23 @@ def app_client(tmp_path, isolated_config_dir, monkeypatch):
     flask_app = app_module.create_app()
     flask_app.config["TESTING"] = True
     flask_app.config["WTF_CSRF_ENABLED"] = False
+    # Disable rate-limiter for the shared suite — individual tests that
+    # need to exercise the limit (e.g. tests/auth/test_rate_limit.py)
+    # flip the flag back on locally.
+    flask_app.config["RATELIMIT_ENABLED"] = False
+    try:
+        from stock_trading_system.web.app import limiter as _lim
+        _lim.enabled = False
+        _lim.reset()
+        # Best-effort storage clear: MemoryStorage keeps counters in a
+        # plain dict, so wiping it between fixtures stops cross-test
+        # leakage when tests/auth/test_rate_limit.py flips enabled back on.
+        try:
+            _lim.storage.storage.clear()
+        except Exception:
+            pass
+    except Exception:
+        pass
 
     # Override the loaded config so all lazy singletons hit our temp DB.
     from stock_trading_system.config import get_config

@@ -211,7 +211,8 @@ class DailySnapshotScheduler:
         except FileExistsError:
             return False
         with os.fdopen(fd, "w") as f:
-            f.write(f"pid={os.getpid()} ts={datetime.utcnow().isoformat()}Z\n")
+            from stock_trading_system.utils.timez import now_utc
+            f.write(f"pid={os.getpid()} ts={now_utc().isoformat()}\n")
         self._lock_file = path
         return True
 
@@ -285,6 +286,7 @@ def take_snapshot_all_users(
             "email": getattr(user, "email", None),
             "ok": True,
         })
-    return {"ran_at": datetime.utcnow().isoformat() + "Z",
+    from stock_trading_system.utils.timez import now_utc
+    return {"ran_at": now_utc().isoformat(),
             "user_count": len(results),
             "results": results}

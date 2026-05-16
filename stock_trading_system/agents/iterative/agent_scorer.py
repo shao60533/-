@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import datetime, timedelta
+from stock_trading_system.utils.timez import now_local, now_utc
 from typing import Any
 
 import numpy as np
@@ -99,7 +100,7 @@ class AgentScorer:
         if not self._config.scorer.extract_signals:
             return []
 
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now = now_utc().strftime("%Y-%m-%d %H:%M:%S")
         records: list[dict] = []
 
         for agent_id, (state_key, method) in AGENT_MAP.items():
@@ -187,7 +188,7 @@ class AgentScorer:
                     continue
 
                 # Check if enough time has passed for 5d backfill
-                days_elapsed = (datetime.now() - call_date).days
+                days_elapsed = (now_local() - call_date).days
                 if days_elapsed < 5:
                     continue
 
@@ -249,7 +250,7 @@ class AgentScorer:
     def get_returns(self, agent_id: str, window_days: int | None = None) -> list[dict]:
         """Fetch scorecard rows with non-null return_5d for a given agent."""
         window = window_days or self._config.scorer.rolling_window_days
-        cutoff = (datetime.now() - timedelta(days=window)).strftime("%Y-%m-%d")
+        cutoff = (now_local() - timedelta(days=window)).strftime("%Y-%m-%d")
         with self._get_conn() as conn:
             rows = conn.execute(
                 """SELECT return_5d, hit_5d FROM agent_scorecards
@@ -292,7 +293,7 @@ class AgentScorer:
                  weight = excluded.weight,
                  updated_at = excluded.updated_at,
                  updated_by_task_id = excluded.updated_by_task_id""",
-            (agent_id, weight, datetime.now().isoformat(), task_id),
+            (agent_id, weight, now_utc().isoformat(), task_id),
         )
         conn.commit()
         conn.close()

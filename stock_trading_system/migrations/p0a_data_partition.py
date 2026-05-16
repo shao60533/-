@@ -16,6 +16,7 @@ import shutil
 import sqlite3
 import sys
 from datetime import datetime
+from stock_trading_system.utils.timez import now_local, now_utc
 from pathlib import Path
 
 
@@ -228,7 +229,9 @@ def main():
     if not args.dry_run:
         src = Path(args.db_path)
         if src.exists():
-            bak = src.with_suffix(f".db.pre-p0a-{datetime.now().strftime('%Y%m%d%H%M%S')}")
+            # P2.5 step-2: backup filenames in UTC so they sort
+            # chronologically regardless of operator timezone.
+            bak = src.with_suffix(f".db.pre-p0a-{now_utc().strftime('%Y%m%d%H%M%S')}")
             shutil.copy2(src, bak)
             print(f"Backup: {bak}")
 

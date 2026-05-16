@@ -72,7 +72,7 @@ def test_register_worker(tm):
 
 def test_submit_creates_task_record(tm, store):
     tm.register("echo", lambda p, cb: {"ok": True})
-    t = tm.submit("echo", {"x": 1})
+    t = tm.submit("echo", {"x": 1}, created_by=1)
     assert t["id"]
     assert t["type"] == "echo"
     assert t["status"] == "pending"
@@ -84,7 +84,7 @@ def test_submit_creates_task_record(tm, store):
 
 def test_auto_title_for_analysis(tm):
     tm.register("analysis", lambda p, cb: {})
-    t = tm.submit("analysis", {"ticker": "AAPL"})
+    t = tm.submit("analysis", {"ticker": "AAPL"}, created_by=1)
     assert "AAPL" in t["title"]
     assert "分析" in t["title"]
 
@@ -93,7 +93,7 @@ def test_auto_title_for_analysis(tm):
 
 
 def test_unknown_task_type_fails_immediately(tm):
-    t = tm.submit("nonexistent", {})
+    t = tm.submit("nonexistent", {}, created_by=1)
     # Failure is synchronous inside submit when worker missing
     rec = tm.get(t["id"])
     assert rec["status"] == "failed"
@@ -109,7 +109,7 @@ def test_worker_success_writes_result(tm, store):
                 "signal": "BUY", "market_report": "bull"}
 
     tm.register("analysis", worker)
-    t = tm.submit("analysis", {"ticker": "AAPL"})
+    t = tm.submit("analysis", {"ticker": "AAPL"}, created_by=1)
     final = _await(tm, t["id"])
     assert final["status"] == "success"
     assert final["progress"] == 100
@@ -129,7 +129,7 @@ def test_worker_exception_marks_failed_with_trace(tm):
         raise ValueError("synthetic failure")
 
     tm.register("analysis", bad_worker)
-    t = tm.submit("analysis", {"ticker": "ZZZZ"})
+    t = tm.submit("analysis", {"ticker": "ZZZZ"}, created_by=1)
     final = _await(tm, t["id"])
     assert final["status"] == "failed"
     assert "synthetic failure" in final["error_message"]
@@ -146,7 +146,7 @@ def test_progress_callback_persists_and_emits(tm, sio, store):
         return {}
 
     tm.register("report", worker)
-    t = tm.submit("report", {"type": "daily"})
+    t = tm.submit("report", {"type": "daily"}, created_by=1)
     _await(tm, t["id"])
     # persisted max progress is 100 after success
     rec = store.get(t["id"])
@@ -164,7 +164,7 @@ def test_progress_callback_persists_and_emits(tm, sio, store):
 
 def test_lifecycle_events_in_order(tm, sio):
     tm.register("report", lambda p, cb: {"content": "# hi"})
-    t = tm.submit("report", {"type": "daily"})
+    t = tm.submit("report", {"type": "daily"}, created_by=1)
     _await(tm, t["id"])
 
     names = sio.names()
@@ -180,7 +180,7 @@ def test_lifecycle_events_in_order(tm, sio):
 
 def test_failed_event_emitted(tm, sio):
     tm.register("report", lambda p, cb: (_ for _ in ()).throw(RuntimeError("boom")))
-    t = tm.submit("report", {})
+    t = tm.submit("report", {}, created_by=1)
     _await(tm, t["id"])
     failed_evts = sio.by_name("task_failed")
     assert any(p["id"] == t["id"] for p in failed_evts)
@@ -193,9 +193,9 @@ def test_failed_event_emitted(tm, sio):
 def test_idempotency_reuses_recent_task(tm):
     calls = []
     tm.register("analysis", lambda p, cb: (calls.append(p), {"signal": "BUY"})[1])
-    first = tm.submit("analysis", {"ticker": "AAPL"})
+    first = tm.submit("analysis", {"ticker": "AAPL"}, created_by=1)
     _await(tm, first["id"])
-    second = tm.submit("analysis", {"ticker": "AAPL"})
+    second = tm.submit("analysis", {"ticker": "AAPL"}, created_by=1)
     assert second["id"] == first["id"], "should reuse existing task"
     assert len(calls) == 1, "worker should not run twice"
 
@@ -205,7 +205,7 @@ def test_idempotency_reuses_recent_task(tm):
 
 def test_out_of_window_creates_new(tm, store):
     tm.register("analysis", lambda p, cb: {})
-    first = tm.submit("analysis", {"ticker": "AAPL"})
+    first = tm.submit("analysis", {"ticker": "AAPL"}, created_by=1)
     _await(tm, first["id"])
     # Age the first record to fall outside any reasonable window.
     store.update(first["id"])  # noop, just to exercise path
@@ -213,7 +213,7 @@ def test_out_of_window_creates_new(tm, store):
     with sqlite3.connect(store._db_path) as c:
         c.execute("UPDATE tasks SET created_at = ? WHERE id = ?",
                   ("2020-01-01 00:00:00", first["id"]))
-    second = tm.submit("analysis", {"ticker": "AAPL"})
+    second = tm.submit("analysis", {"ticker": "AAPL"}, created_by=1)
     assert second["id"] != first["id"]
 
 
@@ -222,9 +222,9 @@ def test_out_of_window_creates_new(tm, store):
 
 def test_force_new_with_window_zero(tm):
     tm.register("analysis", lambda p, cb: {})
-    first = tm.submit("analysis", {"ticker": "AAPL"})
+    first = tm.submit("analysis", {"ticker": "AAPL"}, created_by=1)
     _await(tm, first["id"])
-    second = tm.submit("analysis", {"ticker": "AAPL"}, idempotency_window=0)
+    second = tm.submit("analysis", {"ticker": "AAPL"}, idempotency_window=0, created_by=1)
     assert second["id"] != first["id"]
 
 
@@ -233,7 +233,7 @@ def test_force_new_with_window_zero(tm):
 
 def test_retry_creates_new_task_with_retry_of(tm):
     tm.register("analysis", lambda p, cb: (_ for _ in ()).throw(ValueError("x")))
-    t = tm.submit("analysis", {"ticker": "AAPL"})
+    t = tm.submit("analysis", {"ticker": "AAPL"}, created_by=1)
     _await(tm, t["id"])
     retried = tm.retry(t["id"])
     assert retried["id"] != t["id"]
@@ -264,11 +264,11 @@ def test_cancel_pending_task(tm):
 
     tm.register("slow", slow)
     # Fill pool
-    running_ids = [tm.submit("slow", {"i": i}, idempotency_window=0)["id"]
+    running_ids = [tm.submit("slow", {"i": i}, idempotency_window=0, created_by=1)["id"]
                    for i in range(3)]
     # Wait for at least one to actually start
     block.wait(timeout=2)
-    pending = tm.submit("slow", {"i": 99}, idempotency_window=0)
+    pending = tm.submit("slow", {"i": 99}, idempotency_window=0, created_by=1)
     # pending is queued, not yet started
     ok = tm.cancel(pending["id"])
     assert ok is True
@@ -283,7 +283,7 @@ def test_cancel_pending_task(tm):
 
 def test_cancel_completed_returns_false(tm):
     tm.register("noop", lambda p, cb: {})
-    t = tm.submit("noop", {})
+    t = tm.submit("noop", {}, created_by=1)
     _await(tm, t["id"])
     assert tm.cancel(t["id"]) is False
 
@@ -302,7 +302,7 @@ def test_concurrent_independent_tasks(tm):
 
     tm.register("par", worker)
     ids = [
-        tm.submit("par", {"i": i}, idempotency_window=0)["id"]
+        tm.submit("par", {"i": i}, idempotency_window=0, created_by=1)["id"]
         for i in range(3)
     ]
     for tid in ids:
@@ -330,7 +330,7 @@ def test_pool_capacity_queues_extra_tasks(store, sio):
             return {}
 
         tm.register("slow", slow)
-        ids = [tm.submit("slow", {"i": i}, idempotency_window=0)["id"]
+        ids = [tm.submit("slow", {"i": i}, idempotency_window=0, created_by=1)["id"]
                for i in range(4)]
 
         # Give scheduler a moment
@@ -381,7 +381,7 @@ def test_get_result_returns_none_before_completion(tm, store):
         return {"x": 1}
 
     tm.register("slow", slow)
-    t = tm.submit("slow", {}, idempotency_window=0)
+    t = tm.submit("slow", {}, idempotency_window=0, created_by=1)
     # Worker is blocked → result_ref MUST still be None.
     row = store.get(t["id"])
     assert row["result_ref"] is None
@@ -392,7 +392,7 @@ def test_get_result_returns_none_before_completion(tm, store):
 
 def test_delete_passthrough(tm):
     tm.register("noop", lambda p, cb: {})
-    t = tm.submit("noop", {})
+    t = tm.submit("noop", {}, created_by=1)
     _await(tm, t["id"])
     assert tm.delete(t["id"]) is True
     assert tm.get(t["id"]) is None

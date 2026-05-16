@@ -1,5 +1,34 @@
 /* === Stock Trading System - Frontend === */
 
+// Auto-inject CSRF token on every non-GET same-origin fetch so we don't have
+// to thread it through every hand-rolled call site (llm-switcher.js,
+// screener_v3.js, register.html, progress_stream.js, ...).
+// `api.ts` (React island) already does this — this is the legacy parity.
+(function patchFetchForCsrf() {
+    const _origFetch = window.fetch.bind(window);
+    window.fetch = function (input, init) {
+        init = init || {};
+        const method = (init.method || (typeof input !== 'string' && input.method) || 'GET').toUpperCase();
+        if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
+            const url = typeof input === 'string' ? input : (input && input.url) || '';
+            // Same-origin only — don't leak token to third parties.
+            const isAbsolute = /^https?:\/\//i.test(url);
+            const sameOrigin = !isAbsolute || url.startsWith(window.location.origin);
+            if (sameOrigin) {
+                const meta = document.querySelector('meta[name="csrf-token"]');
+                const token = meta ? meta.getAttribute('content') || '' : '';
+                if (token) {
+                    init.headers = new Headers(init.headers || {});
+                    if (!init.headers.has('X-CSRFToken')) {
+                        init.headers.set('X-CSRFToken', token);
+                    }
+                }
+            }
+        }
+        return _origFetch(input, init);
+    };
+})();
+
 const socket = io();
 
 // ── Auth: load current user info ─────────────────────────────────────────

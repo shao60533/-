@@ -11,12 +11,9 @@ from stock_trading_system.tasks.event_emitter import emit_event, get_events_sinc
 from stock_trading_system.migrations.task_events_v1 import migrate
 
 
-@pytest.fixture(autouse=True)
-def _reset_seq_cache():
-    """Reset the module-level seq cache between tests."""
-    event_emitter._seq_cache.clear()
-    yield
-    event_emitter._seq_cache.clear()
+# P3.5: seq is now DB-derived (SELECT MAX(seq)+1), so the prior
+# ``_seq_cache.clear()`` autouse fixture is obsolete. Each test fixture
+# gives a fresh tmp DB → seq starts at 1 naturally.
 
 
 @pytest.fixture()
@@ -109,3 +106,63 @@ class TestMigrationIdempotent:
     def test_second_run(self, db_path):
         result = migrate(db_path)
         assert result["status"] == "already_migrated"
+
+
+class TestSeqAfterRestart:
+    """hardening-iteration-v1 P3.5 — seq is DB-derived.
+
+    Pre-P3.5 the module kept ``_seq_cache`` in process memory; a worker
+    restart reset it to {}, so the first event written post-restart
+    re-used seq=1 — and ``INSERT OR IGNORE`` silently dropped it
+    because (task_id, 1) already lived in the DB.
+    """
+
+    def test_seq_continues_after_simulated_restart(self, db_path):
+        """Write 3 events, simulate a restart (reload module), write 2
+        more. Final seq must be 5 — no silent drops."""
+        import importlib
+        from stock_trading_system.tasks import event_emitter as ee
+
+        ee.emit_event("task-1", "a", {}, db_path=db_path, user_id=1)
+        ee.emit_event("task-1", "b", {}, db_path=db_path, user_id=1)
+        e3 = ee.emit_event("task-1", "c", {}, db_path=db_path, user_id=1)
+        assert e3["seq"] == 3
+
+        # Simulate restart by reloading the module. Pre-P3.5 this would
+        # have wiped _seq_cache and caused the next two writes to be
+        # silently INSERT-OR-IGNORE'd.
+        importlib.reload(ee)
+
+        e4 = ee.emit_event("task-1", "d", {}, db_path=db_path, user_id=1)
+        e5 = ee.emit_event("task-1", "e", {}, db_path=db_path, user_id=1)
+        assert e4["seq"] == 4
+        assert e5["seq"] == 5
+
+        # The DB has 5 distinct rows.
+        conn = sqlite3.connect(db_path)
+        cnt = conn.execute(
+            "SELECT COUNT(*) FROM task_events WHERE task_id = 'task-1'"
+        ).fetchone()[0]
+        conn.close()
+        assert cnt == 5
+
+    def test_seq_continues_across_fresh_module_state(self, db_path):
+        """Even when the module-level dict (now removed) would have been
+        a fresh empty {}, the seq must still come from MAX(seq)+1."""
+        # Pre-populate via a direct INSERT to simulate "old DB content"
+        # written by a previous process.
+        conn = sqlite3.connect(db_path)
+        from datetime import datetime
+        for s in (1, 2, 3):
+            conn.execute(
+                "INSERT INTO task_events (task_id, user_id, seq, event, "
+                "payload, emitted_at) VALUES (?, ?, ?, ?, ?, ?)",
+                ("task-1", 1, s, "x", "{}", datetime.utcnow().isoformat()),
+            )
+        conn.commit()
+        conn.close()
+
+        # The very first emit after a fresh import must compute seq=4.
+        from stock_trading_system.tasks.event_emitter import emit_event as ev
+        env = ev("task-1", "y", {}, db_path=db_path, user_id=1)
+        assert env["seq"] == 4
