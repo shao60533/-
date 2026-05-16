@@ -78,6 +78,7 @@ function isActive(href: string): boolean {
 
 export function Sidebar() {
   const user = getCurrentUser()
+  const isAdminUser = user?.role === "admin"
 
   return (
     <aside className="hidden md:flex flex-col w-56 min-h-screen bg-card border-r border-border">
@@ -91,16 +92,20 @@ export function Sidebar() {
 
       {/* Nav groups */}
       <nav className="flex-1 p-2 overflow-y-auto">
-        {NAV_GROUPS.map((group) => (
-          <div key={group.title} className="mb-1">
-            <div className="px-2 py-1.5 mt-2 first:mt-0 text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">
-              {group.title}
+        {NAV_GROUPS.map((group) => {
+          const visible = group.items.filter((i) => !i.adminOnly || isAdminUser)
+          if (visible.length === 0) return null
+          return (
+            <div key={group.title} className="mb-1">
+              <div className="px-2 py-1.5 mt-2 first:mt-0 text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">
+                {group.title}
+              </div>
+              {visible.map((item) => (
+                <SidebarLink key={item.href} item={item} active={isActive(item.href)} />
+              ))}
             </div>
-            {group.items.map((item) => (
-              <SidebarLink key={item.href} item={item} active={isActive(item.href)} />
-            ))}
-          </div>
-        ))}
+          )
+        })}
       </nav>
 
       {/* Footer */}
@@ -155,8 +160,8 @@ const MOBILE_MORE: MoreEntry[] = [
   { label: "交易记录", description: "买入 / 卖出流水",       href: "/portfolio?tab=transactions", icon: <Receipt className="w-5 h-5" /> },
   { label: "预警中心", description: "模板 / 新建 / 历史",    href: "/alerts",    icon: <Bell className="w-5 h-5" /> },
   { label: "任务中心", description: "筛选 / 详情 / 重试",    href: "/tasks",     icon: <ListChecks className="w-5 h-5" /> },
-  { label: "系统设置", description: "模型与通知",           href: "/settings",  icon: <Settings className="w-5 h-5" /> },
-  { label: "账号",     description: "当前用户 / 退出登录",    href: "/settings#account", icon: <UserCircle className="w-5 h-5" /> },
+  { label: "系统设置", description: "模型与通知",           href: "/settings",  icon: <Settings className="w-5 h-5" />, adminOnly: true },
+  { label: "账号",     description: "当前用户 / 退出登录",    href: "/account",   icon: <UserCircle className="w-5 h-5" /> },
 ]
 
 function isMoreRouteActive(): boolean {
@@ -171,6 +176,10 @@ function isMoreRouteActive(): boolean {
 export function MobileTabbar() {
   const [moreOpen, setMoreOpen] = useState(false)
   const moreActive = moreOpen || isMoreRouteActive()
+  const isAdminUser = getCurrentUser()?.role === "admin"
+  const visibleMore = MOBILE_MORE.filter(
+    (e) => !e.adminOnly || isAdminUser,
+  )
 
   return (
     <>
@@ -222,7 +231,7 @@ export function MobileTabbar() {
             <LLMSwitcher />
           </div>
           <div className="grid grid-cols-1 gap-2 mt-2">
-            {MOBILE_MORE.map((item) => (
+            {visibleMore.map((item) => (
               <a
                 key={item.href}
                 href={item.href}
