@@ -1715,6 +1715,7 @@ def create_app(config_path=None):
         if g.user is None:
             return jsonify({"error": "unauthorized"}), 401
         import time as _time
+        from stock_trading_system.portfolio.manager import PortfolioManager
         perf_started = _time.perf_counter()
         marks: dict[str, int] = {}
 
@@ -1723,12 +1724,20 @@ def create_app(config_path=None):
 
         uid = g.user.id
         pm = _get_portfolio_mgr()
-        step_started = _time.perf_counter()
-        pnl = pm.get_pnl(user_id=uid)
-        _mark("pnl_ms", step_started)
+        # 2026-05-16 perf collapse: dashboard derives pnl + allocation +
+        # summary from ONE holdings call (instead of three). Previously
+        # /api/dashboard, /api/portfolio/allocation, /api/portfolio/summary
+        # were fetched in parallel from the client and each one triggered
+        # its own pm.get_holdings() → batch quote round-trip; on Railway
+        # cold provider sockets pushed total wall time to 30–70s. The
+        # PortfolioManager user-level cache (45s TTL, invalidated on
+        # mutation) ensures repeat dashboard refreshes inside the window
+        # are also free.
         step_started = _time.perf_counter()
         holdings = pm.get_holdings(user_id=uid)
         _mark("holdings_ms", step_started)
+        pnl = PortfolioManager.compute_pnl_from_holdings(holdings)
+        allocation = PortfolioManager.compute_allocation_from_holdings(holdings)
         step_started = _time.perf_counter()
         alerts = _get_alert_monitor().list_alerts(user_id=uid, scope="user")
         _mark("alerts_ms", step_started)
@@ -1747,6 +1756,21 @@ def create_app(config_path=None):
         step_started = _time.perf_counter()
         history = pm.get_history(days=days, user_id=uid)
         _mark("history_ms", step_started)
+        # today_pnl: same prior-snapshot diff /api/portfolio/summary used
+        # to compute. Cheap COUNT-style query, no holdings touch.
+        step_started = _time.perf_counter()
+        today_real = _compute_today_pnl(uid, pnl.get("total_value", 0))
+        _mark("today_pnl_ms", step_started)
+        # transactions_count: surfaced inline so the dashboard chip
+        # ("12 笔交易") doesn't need a second round-trip. Single SQL
+        # query, no holdings touch — falls back to 0 on error so the
+        # non-critical chip degrades quietly.
+        step_started = _time.perf_counter()
+        try:
+            transactions_count = len(pm.get_transactions(user_id=uid))
+        except Exception:  # noqa: BLE001
+            transactions_count = 0
+        _mark("transactions_count_ms", step_started)
         total_ms = int((_time.perf_counter() - perf_started) * 1000)
         # Provenance for the equity-curve card: the React island shows
         # an "insufficient snapshots — click 重新计算" notice when the
@@ -1770,6 +1794,14 @@ def create_app(config_path=None):
             len(history),
             marks,
         )
+        summary = {
+            "total_value":    pnl.get("total_value", 0),
+            "total_pnl":      pnl.get("total_pnl", 0),
+            "total_pnl_pct":  pnl.get("total_pnl_pct", 0),
+            "today_pnl":      today_real["pnl"] if today_real else None,
+            "today_pnl_pct":  today_real["pct"] if today_real else None,
+            "holdings_count": len(holdings),
+        }
         return jsonify({
             "pnl": pnl,
             "holdings": holdings,
@@ -1779,6 +1811,12 @@ def create_app(config_path=None):
             "history_first_date": first_date,
             "history_last_date": last_date,
             "history_status": history_status,
+            # 2026-05-16 perf collapse — surfaced inline so the dashboard
+            # island doesn't need to fan out to /api/portfolio/allocation
+            # and /api/portfolio/summary on first paint.
+            "allocation": allocation,
+            "summary": summary,
+            "transactions_count": transactions_count,
         })
 
     # ── Portfolio API ───────────────────────────────────────────────────
