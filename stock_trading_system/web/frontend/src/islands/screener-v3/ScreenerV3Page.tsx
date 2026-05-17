@@ -8,7 +8,6 @@ import { Chip, ChipRow } from "@/components/ui/chip"
 import { Textarea } from "@/components/ui/input"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Avatar } from "@/components/ui/avatar"
-import { Stat } from "@/components/ui/stat"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert"
 import { PipelineDAG } from "@/components/shared/PipelineDAG"
@@ -667,25 +666,31 @@ function ResultsView({ resultId }: { resultId: string }) {
 
   return (
     <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-6 min-w-0">
-      <div className="flex items-center gap-3 flex-wrap min-w-0">
-        <Button variant="ghost" size="sm" onClick={() => window.location.href = "/screener-v3"}>
-          <ArrowLeft className="icon-fixed" />
-        </Button>
-        <h1 className="text-xl font-bold truncate min-w-0 flex-1">选股结果</h1>
-        <Badge variant="muted" className="shrink-0">{result.created_at?.slice(0, 16)}</Badge>
-      </div>
-
-      {/* v1.2 — 6 KPI columns. Pre-v1.2 rows without ``consensus`` /
-          ``votes`` still light up bullish/bearish/neutral via signal,
-          but consensus_rate falls back to 0 (acceptable degraded UX). */}
-      <div className="grid grid-cols-2 md:grid-cols-6 gap-3 grid-collapse-mobile">
-        <Stat label="候选数" value={String(candidates.length)} />
-        <Stat label="平均分" value={avgScore.toFixed(1)} />
-        <Stat label="看多" value={String(bullish)} />
-        <Stat label="看空" value={String(bearish)} />
-        <Stat label="中性" value={String(neutral)} />
-        <Stat label="共识率" value={`${consensusRate}%`} />
-      </div>
+      {/* Single combined header card — back / title / date + 6 KPIs.
+          Replaces the prior pattern of an unstyled header row plus 6
+          separate <Stat> cards (each Stat is itself a Card, so the page
+          looked like seven stacked tiles for a single summary). */}
+      <Card>
+        <CardHeader className="pb-3">
+          <div className="flex items-center gap-3 flex-wrap min-w-0">
+            <Button variant="ghost" size="sm" onClick={() => window.location.href = "/screener-v3"}>
+              <ArrowLeft className="icon-fixed" />
+            </Button>
+            <h1 className="text-xl font-bold truncate min-w-0 flex-1">选股结果</h1>
+            <Badge variant="muted" className="shrink-0">{result.created_at?.slice(0, 16)}</Badge>
+          </div>
+        </CardHeader>
+        <CardContent className="pt-0">
+          <div className="grid grid-cols-3 md:grid-cols-6 gap-3 grid-collapse-mobile">
+            <SummaryKpi label="候选数" value={String(candidates.length)} />
+            <SummaryKpi label="平均分" value={avgScore.toFixed(1)} />
+            <SummaryKpi label="看多" value={String(bullish)} tone="bull" />
+            <SummaryKpi label="看空" value={String(bearish)} tone="bear" />
+            <SummaryKpi label="中性" value={String(neutral)} />
+            <SummaryKpi label="共识率" value={`${consensusRate}%`} />
+          </div>
+        </CardContent>
+      </Card>
 
       {/* mobile-ui-v1.3: transparency / audit banner removed. Inputs
           → parsed-theme → universe-source → off-theme exclusions and
@@ -693,52 +698,83 @@ function ResultsView({ resultId }: { resultId: string }) {
           duration) are no longer surfaced on the user-facing results
           page. Coverage page still records them as a debug surface. */}
 
-      {/* v1.2 — Top-5 圆桌辩论 grid (one card per ticker). */}
+      {/* Top-5 圆桌辩论 grid (one card per ticker). Each card surfaces:
+           - ticker + Chinese stock name (looked up from the per-ticker
+             fundamentals cache, so users don't need to recognise codes)
+           - 共识 / 不共识 binary verdict (replaces CONSENSUS/CONTESTED)
+           - explicit name lists of consensus vs dissent gurus
+           - the bull / bear / judge debate snippets, untruncated */}
       {roundtableItems && roundtableItems.length > 0 && (
         <Card>
           <CardHeader className="pb-2"><CardTitle className="text-sm">Top 5 圆桌辩论</CardTitle></CardHeader>
           <CardContent>
             <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
-              {roundtableItems.map(rt => (
-                <Card key={rt.ticker}
-                      className={cn(
-                        "border",
-                        rt.split ? "border-orange-500/40" : "border-emerald-500/40",
-                      )}>
-                  <CardHeader className="pb-2">
-                    <div className="mobile-card-header">
-                      <CardTitle className="mc-title font-mono text-base truncate">{rt.ticker}</CardTitle>
-                      <div className="mc-actions">
-                        <Badge variant={rt.split ? "sell" : "buy"}>
-                          {rt.split ? "CONTESTED" : "CONSENSUS"}
-                        </Badge>
+              {roundtableItems.map(rt => {
+                const name = stockName(funds[rt.ticker])
+                const consensusGurus = rt.consensus ?? []
+                const dissentGurus = rt.dissent ?? []
+                return (
+                  <Card key={rt.ticker}
+                        className={cn(
+                          "border",
+                          rt.split ? "border-orange-500/40" : "border-emerald-500/40",
+                        )}>
+                    <CardHeader className="pb-2">
+                      <div className="mobile-card-header">
+                        <CardTitle className="mc-title text-base truncate">
+                          <span className="font-mono">{rt.ticker}</span>
+                          {name && (
+                            <span className="ml-2 font-normal text-muted-foreground">· {name}</span>
+                          )}
+                        </CardTitle>
+                        <div className="mc-actions">
+                          <Badge variant={rt.split ? "sell" : "buy"}>
+                            {rt.split ? "不共识" : "共识"}
+                          </Badge>
+                        </div>
                       </div>
-                    </div>
-                    <div className="text-xs text-muted-foreground">
-                      共识 {rt.consensus?.length ?? 0} 人
-                      {rt.dissent && rt.dissent.length > 0 && (
-                        <> · 异议 {rt.dissent.length} 人</>
+                      <div className="text-xs text-muted-foreground">
+                        共识 {consensusGurus.length} 人
+                        {dissentGurus.length > 0 && <> · 异议 {dissentGurus.length} 人</>}
+                      </div>
+                    </CardHeader>
+                    <CardContent className="space-y-3">
+                      {(consensusGurus.length > 0 || dissentGurus.length > 0) && (
+                        <div className="space-y-1.5 text-xs">
+                          {consensusGurus.length > 0 && (
+                            <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                              <span className="text-emerald-400 shrink-0">共识方:</span>
+                              <span className="text-foreground/90">{consensusGurus.join("、")}</span>
+                            </div>
+                          )}
+                          {dissentGurus.length > 0 && (
+                            <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                              <span className="text-red-400 shrink-0">异议方:</span>
+                              <span className="text-foreground/90">{dissentGurus.join("、")}</span>
+                            </div>
+                          )}
+                        </div>
                       )}
-                    </div>
-                  </CardHeader>
-                  <CardContent className="space-y-2">
-                    {(rt.debate_snippets || []).map((line, i) => {
-                      const isBull = line.startsWith("🟢")
-                      const isBear = line.startsWith("🔴")
-                      const isJudge = line.startsWith("⚖️")
-                      return (
-                        <div key={i} className={cn(
-                          "text-xs leading-relaxed pl-2 border-l-2",
-                          isBull ? "border-emerald-500/50"
-                          : isBear ? "border-red-500/50"
-                          : isJudge ? "border-primary"
-                          : "border-zinc-500/30",
-                        )}>{line}</div>
-                      )
-                    })}
-                  </CardContent>
-                </Card>
-              ))}
+                      <div className="space-y-2">
+                        {(rt.debate_snippets || []).map((line, i) => {
+                          const isBull = line.startsWith("🟢")
+                          const isBear = line.startsWith("🔴")
+                          const isJudge = line.startsWith("⚖️")
+                          return (
+                            <div key={i} className={cn(
+                              "text-xs leading-relaxed pl-2 border-l-2",
+                              isBull ? "border-emerald-500/50"
+                              : isBear ? "border-red-500/50"
+                              : isJudge ? "border-primary"
+                              : "border-zinc-500/30",
+                            )}>{line}</div>
+                          )
+                        })}
+                      </div>
+                    </CardContent>
+                  </Card>
+                )
+              })}
             </div>
           </CardContent>
         </Card>
@@ -777,10 +813,18 @@ function ResultsView({ resultId }: { resultId: string }) {
                         <React.Fragment key={c.ticker}>
                           <tr className="border-b border-border/50 hover:bg-muted/30">
                             <td className="py-2.5 px-2 text-muted-foreground">{i + 1}</td>
-                            <td className="py-2.5 px-2 font-mono font-semibold">{c.ticker}</td>
+                            <td className="py-2.5 px-2">
+                              <div className="font-mono font-semibold">{c.ticker}</div>
+                              {stockName(f) && (
+                                <div className="text-[11px] text-muted-foreground truncate max-w-[140px]"
+                                     title={stockName(f)}>
+                                  {stockName(f)}
+                                </div>
+                              )}
+                            </td>
                             <td className="text-right py-2.5 px-2 font-mono">{candidateScore(c).toFixed(1)}</td>
                             <td className="text-center py-2.5 px-2">
-                              <Badge variant={signalBadge(sig)}>{sig.toUpperCase()}</Badge>
+                              <Badge variant={signalBadge(sig)}>{signalLabelZh(sig)}</Badge>
                             </td>
                             <td className="py-2.5 px-2"><VotesBar votes={c.votes} /></td>
                             <td className="text-center py-2.5 px-2">
@@ -829,16 +873,20 @@ function ResultsView({ resultId }: { resultId: string }) {
               <div className="md:hidden space-y-2">
                 {candidates.map((c, i) => {
                   const sig = candidateSignal(c)
+                  const name = stockName(funds[c.ticker])
                   return (
                     <div key={c.ticker} className="border rounded-lg p-3 min-w-0 space-y-2">
                       <div className="flex flex-wrap items-center gap-2">
                         <div className="flex items-center gap-2 min-w-0 flex-1">
                           <span className="text-xs text-muted-foreground shrink-0">#{i + 1}</span>
-                          <span className="font-mono font-semibold truncate">{c.ticker}</span>
+                          <span className="font-mono font-semibold shrink-0">{c.ticker}</span>
+                          {name && (
+                            <span className="text-xs text-muted-foreground truncate">· {name}</span>
+                          )}
                         </div>
                         <div className="flex items-center gap-2 shrink-0">
                           <span className="font-mono text-sm">{candidateScore(c).toFixed(1)}</span>
-                          <Badge variant={signalBadge(sig)}>{sig.toUpperCase()}</Badge>
+                          <Badge variant={signalBadge(sig)}>{signalLabelZh(sig)}</Badge>
                         </div>
                       </div>
                       <div className="flex flex-wrap items-center gap-2 min-w-0">
@@ -919,7 +967,13 @@ function CandidateExpanded({ c, f }: {
   const sigs = candidateGuruScoresList(c)
   return (
     <div className="space-y-4">
-      <div className="text-sm font-semibold">{c.ticker} — 大师评分详情</div>
+      <div className="text-sm font-semibold">
+        {c.ticker}
+        {stockName(f) && (
+          <span className="ml-2 font-normal text-muted-foreground">· {stockName(f)}</span>
+        )}
+        <span className="text-muted-foreground"> — 大师评分详情</span>
+      </div>
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {sigs.map((s, i) => (
@@ -933,7 +987,7 @@ function CandidateExpanded({ c, f }: {
                   )}
                 </div>
                 <Badge variant={signalBadge(s.signal)} className="text-[10px] mc-actions">
-                  {(s.signal ?? "—").toUpperCase()}
+                  {signalLabelZh(s.signal)}
                 </Badge>
               </div>
               <div className="flex items-center gap-2 text-xs">
@@ -989,6 +1043,31 @@ function CandidateExpanded({ c, f }: {
   )
 }
 
+/** Inline KPI cell used inside the combined summary card. Three tone
+ *  variants keep "看多" green and "看空" red without forcing the value
+ *  to live inside a separate <Card> (which would defeat the merge). */
+function SummaryKpi({ label, value, tone = "neutral" }: {
+  label: string; value: string; tone?: "neutral" | "bull" | "bear"
+}) {
+  const valueClass =
+    tone === "bull" ? "text-emerald-400"
+    : tone === "bear" ? "text-red-400"
+    : "text-foreground"
+  return (
+    <div className="min-w-0">
+      <div className="text-[11px] font-medium uppercase tracking-wider text-[var(--color-text-muted)] truncate">
+        {label}
+      </div>
+      <div
+        className={cn("mt-1 font-mono font-semibold tabular-nums truncate", valueClass)}
+        style={{ fontSize: "var(--fs-stat)" }}
+      >
+        {value}
+      </div>
+    </div>
+  )
+}
+
 function KV({ k, v }: { k: string; v: string }) {
   // Mobile: long values (e.g. raw FilterSpec criteria, multi-tag
   // sector lists) need to wrap rather than push the label off-screen.
@@ -1016,6 +1095,24 @@ function signalBadge(signal: string): "buy" | "sell" | "hold" | "default" {
   if (s.includes("bear") || s.includes("sell")) return "sell"
   if (s.includes("hold") || s.includes("neutral")) return "hold"
   return "default"
+}
+
+/** Abstract any backend signal token into one of three Chinese labels.
+ *  Mirrors signalBadge() so badge color and label stay in sync. */
+function signalLabelZh(signal: string | null | undefined): string {
+  const s = (signal || "").toLowerCase()
+  if (s.includes("bull") || s.includes("buy")) return "看多"
+  if (s.includes("bear") || s.includes("sell")) return "看空"
+  return "中性"
+}
+
+/** Resolve a human-friendly stock name from the cached fundamentals
+ *  payload. Falls back to empty string so callers can conditionally
+ *  render `ticker · name`. */
+function stockName(f: Record<string, unknown> | null | undefined): string {
+  if (!f) return ""
+  const n = f["short_name"] ?? f["shortName"] ?? f["long_name"] ?? f["longName"] ?? f["name"]
+  return typeof n === "string" ? n : ""
 }
 
 /* ── Shared sub-components ─────────────────────────────────── */
