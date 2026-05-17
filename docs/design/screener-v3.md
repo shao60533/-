@@ -1018,6 +1018,167 @@ KPI: 现价 $145 · 200-SMA $138 (+5.0%) · PE 28 · ROE 21% · D/E 65
 - 不许吞异常；fundamentals 加载失败该格显示 "—" 不影响其它列
 - 现价/PE 懒加载必须用现有 `/api/fundamentals/<ticker>` 30s LocalCache（v1.6 R-perf），不发明新端点
 
+## 15. v1.3 增量：结果页头部合并 + 圆桌/大师中文化 + 股票名称暴露（用户 2026-05-17 提）
+
+### 15.1 现状诊断（v1.2 在生产用一段时间后的反馈）
+
+| 症状 | 根因 |
+|---|---|
+| 结果页顶部"七卡视觉"（标题行 1 + 6 个 `<Stat>` KPI 卡） | [stat.tsx:17](../../stock_trading_system/web/frontend/src/components/ui/stat.tsx#L17) `<Stat>` 内部就是 `<Card>`，v1.2 §14.4.1 用 6 个 `<Stat>` 排列 = 视觉上 6 张独立卡片，加上未包裹的 header row，整页头部占用过高 |
+| 圆桌辩论 verdict `CONSENSUS` / `CONTESTED` 是英文 | v1.2 §14.4.3 落地代码 [`ScreenerV3Page.tsx`](../../stock_trading_system/web/frontend/src/islands/screener-v3/ScreenerV3Page.tsx) 直接用了 spec 草案中的英文 badge 标签，没本地化 |
+| 14 大师 signal 是 `BULLISH` / `BEARISH` / `NEUTRAL`（来自 `(s.signal).toUpperCase()`） | v1.0 GuruSignal `signal` 字段是英文枚举（bullish/bearish/neutral），前端直接 `.toUpperCase()` 透传，没在表示层抽象成中文 |
+| 候选/圆桌/展开卡都只显示 ticker code（如 `AMD` / `601318`） | v1.2 设计聚焦数据透明化，假设用户认得代码；A 股六位数字与美股缩写混合，新用户/移动端用户识别成本高。`/api/fundamentals/<ticker>` 已返 `short_name` 但 v1.2 仅在 KPI 底栏展示 |
+
+### 15.2 设计约束
+
+**复用优先**：
+- 股票名称走已有的 `/api/fundamentals/<ticker>` `short_name` 字段（v1.2 已经在每个候选 ticker 上调用并缓存到 `funds` state）。**不发明新端点、不引入新缓存**
+- 三档 signal 仍由后端 `_derive_candidate_signal` / `GuruSignal.signal` 提供（bullish / bearish / neutral / buy / sell / hold 兼容），**前端仅在表示层映射成中文**
+- "共识 / 不共识"二值仍由 `RoundtableResult.split: bool` 决定，**不改后端契约**
+
+**不动清单**：
+- 后端 `_aggregate` / `RoundtableResult` / API DTO（v1.2 §14.6 已声明的强约束继续生效）
+- v1.2 已有的 `signalBadge()` 颜色映射 / `consensusBadge()` / `VotesBar` / `CandidateExpanded` 整体结构
+- 桌面表格的 8 列布局（投票分布 / 共识度 / 现价 / PE 列保留）
+
+### 15.3 前端 4 项变更
+
+#### 15.3.1 顶部 7 卡 → 1 卡合并
+
+把原本独立的"返回 + 标题 + 日期"flex 行 + 6 个 `<Stat>` KPI tile 合并到**一个** `<Card>`：
+
+```tsx
+<Card>
+  <CardHeader>
+    <div className="flex items-center gap-3 flex-wrap min-w-0">
+      <Button variant="ghost" size="sm" onClick={...}><ArrowLeft /></Button>
+      <h1 className="text-xl font-bold truncate min-w-0 flex-1">选股结果</h1>
+      <Badge variant="muted" className="shrink-0">{created_at}</Badge>
+    </div>
+  </CardHeader>
+  <CardContent>
+    <div className="grid grid-cols-3 md:grid-cols-6 gap-3 grid-collapse-mobile">
+      <SummaryKpi label="候选数" value={...} />
+      <SummaryKpi label="平均分" value={...} />
+      <SummaryKpi label="看多"   value={...} tone="bull" />
+      <SummaryKpi label="看空"   value={...} tone="bear" />
+      <SummaryKpi label="中性"   value={...} />
+      <SummaryKpi label="共识率" value={...} />
+    </div>
+  </CardContent>
+</Card>
+```
+
+新建 `SummaryKpi` 替代 `<Stat>`：纯 div（label + value），不嵌套 Card；`tone="bull" | "bear" | "neutral"` 决定数值颜色（绿/红/默认），label 沿用 `<Stat>` 的 `uppercase tracking-wider text-muted` 风格。
+
+栅格 `grid-cols-3 md:grid-cols-6 grid-collapse-mobile`：
+- ≥768px（md）：一行 6 列
+- 576–767px（小平板）：两行各 3 列（v1.2 是 2 行 + 2 行 + 2 行各 2 列，现在更扁平）
+- ≤575.98px（手机）：[`styles/index.css:151`](../../stock_trading_system/web/frontend/src/styles/index.css#L151) `grid-collapse-mobile` 的 `1fr !important` 强制折叠为单列 6 行——和 v1.2 行为一致
+
+**真正的空间收益不在栅格列数，而在外层包裹**：v1.2 = 6 个 `<Stat>`(每个=Card 带 border+CardContent padding) → v1.3 = 1 个外 Card + 6 个无包裹 div，手机端从"6 张独立卡纵向堆叠"变成"1 张卡内 6 行 KPI"，省掉 5 圈 border + 5 份 Card padding。
+
+#### 15.3.2 圆桌辩论 verdict 中文化 + 大师名单
+
+verdict badge：
+- `rt.split === true` → `不共识`（红 / sell variant）
+- `rt.split === false` → `共识`（绿 / buy variant）
+
+把现有"共识 N 人 · 异议 N 人"摘要保留，新增**两行明确的大师名单**：
+
+```tsx
+{consensusGurus.length > 0 && (
+  <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+    <span className="text-emerald-400 shrink-0">共识方:</span>
+    <span className="text-foreground/90">{consensusGurus.join("、")}</span>
+  </div>
+)}
+{dissentGurus.length > 0 && (
+  <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+    <span className="text-red-400 shrink-0">异议方:</span>
+    <span className="text-foreground/90">{dissentGurus.join("、")}</span>
+  </div>
+)}
+```
+
+辩论 snippets（🟢/🔴/⚖️ 分色边框）**完全保留**——这部分本来就是中文的（来自 `GuruSignal.reasoning[:300]` + 中文裁判 prompt）。
+
+#### 15.3.3 14 大师 signal 三档中文化
+
+新增表示层 helper（**不动**底层枚举）：
+
+```tsx
+function signalLabelZh(signal: string | null | undefined): string {
+  const s = (signal || "").toLowerCase()
+  if (s.includes("bull") || s.includes("buy")) return "看多"
+  if (s.includes("bear") || s.includes("sell")) return "看空"
+  return "中性"  // 包含 hold / neutral / 空值
+}
+```
+
+替换 3 处英文展示（全部 badge variant 仍走 `signalBadge()`，颜色不变）：
+- 桌面表格"信号"列 `<Badge>{sig.toUpperCase()}</Badge>` → `<Badge>{signalLabelZh(sig)}</Badge>`
+- 移动端候选卡片同上
+- `CandidateExpanded` 每位大师 `<Badge>{(s.signal ?? "—").toUpperCase()}</Badge>` → `<Badge>{signalLabelZh(s.signal)}</Badge>`
+
+**注意**：v1.0 GuruSignal 设计上有 buy/sell/hold 同义词（兼容某些大师 prompt 输出），helper 用 `includes("bull") || includes("buy")` 等保兼容性。
+
+#### 15.3.4 股票中文名称暴露
+
+新增 helper（防御性 fallback）：
+
+```tsx
+function stockName(f: Record<string, unknown> | null | undefined): string {
+  if (!f) return ""
+  const n = f["short_name"] ?? f["shortName"] ?? f["long_name"] ?? f["longName"] ?? f["name"]
+  return typeof n === "string" ? n : ""
+}
+```
+
+接入点（**全部复用 v1.2 已有的 `funds` state**，无新 fetch）：
+
+| 位置 | 渲染 | 缺失时降级 |
+|---|---|---|
+| 圆桌辩论卡片标题 | `<span className="font-mono">{ticker}</span> · {name}` | 不显示 `·` 之后的部分 |
+| 桌面候选表 ticker 列 | ticker 加粗 + 下一行小字显示 name（`max-w-[140px] truncate`） | 不显示第二行 |
+| 移动端候选卡 ticker 行 | `{ticker} · {name}`（同一行 truncate） | 只显示 ticker |
+| 候选展开卡标题 | `{ticker} · {name} — 大师评分详情` | 不显示 `·` |
+
+**为什么不在 KPI 顶部显示主体公司名**：那是聚合结果，不绑某只 ticker。
+
+### 15.4 实施清单
+
+| 步 | 范围 | 工时 |
+|---|---|---|
+| 1 | 新 helper：`signalLabelZh()` + `stockName()` | 5min |
+| 2 | 新 `SummaryKpi` 内联 KPI 组件（不嵌 Card） | 10min |
+| 3 | `ResultsView` 顶部 7 卡 → 1 卡（替换 header + 6 `<Stat>`） | 15min |
+| 4 | 圆桌辩论卡片：badge 中文化 + 共识/异议大师名单 + 标题加 name | 20min |
+| 5 | 14 大师 signal 三处替换为 `signalLabelZh()` | 5min |
+| 6 | 候选列表 4 处（桌面表 / 移动卡 / 展开标题 / 圆桌标题）加 name | 15min |
+| 7 | 删未用 `Stat` import | 1min |
+| 8 | tsc -b / vite build / vitest run + 提交 | 15min |
+| **合计** | | **~1.5h** |
+
+### 15.5 强约束
+
+- **不动**后端 schema / DTO / `_aggregate` / `RoundtableResult` —— 全部仅前端 UI 层
+- **不发明**新 API 端点；`stockName()` 100% 复用 `/api/fundamentals/<ticker>` 30s LocalCache
+- **不删** v1.2 已有的 `signalBadge()` / `consensusBadge()` / `VotesBar` / `CandidateExpanded` 结构
+- **不引入**新依赖（连 `lucide-react` icon 都没新增）
+- `stockName()` / `signalLabelZh()` 必须对 null / undefined / 空字符串 / 未知 signal 全部安全降级（不能让一只缺基本面的 ticker 把整行渲染崩掉）
+- 桌面表 ticker 列加 name 后**不许**让其它 8 列被挤出（`max-w-[140px] truncate` 钉死宽度）
+- "共识"中文标签**只用** `rt.split` 字段，**不重新推**（避免与后端 `consensus_gurus` 计算逻辑不一致）
+
+### 15.6 与 v1.2 spec 的显式覆盖
+
+| v1.2 落点 | v1.2 写的是 | v1.3 改为 | 原因 |
+|---|---|---|---|
+| §14.4.1 KPI 6 列 | 6 个 `<Stat>` 独立卡 | 1 卡内 6 个 `SummaryKpi` | 视觉密度（用户 2026-05-17） |
+| §14.4.3 圆桌 verdict badge | `CONSENSUS` / `CONTESTED`（英文） | `共识` / `不共识` | 全站中文一致性 |
+| §14.4.4 大师 signal badge | `BULLISH` / `BEARISH` / `NEUTRAL`（英文） | `看多` / `看空` / `中性` | 同上 |
+| 全局 | 仅 `ticker` 显示 | `ticker · short_name` 多处暴露 | 用户识别成本（A 股六位数字尤甚） |
+
 ## 13. 版本历史
 
 | 版本 | 日期 | 变更 |
@@ -1025,3 +1186,4 @@ KPI: 现价 $145 · 200-SMA $138 (+5.0%) · PE 28 · ROE 21% · D/E 65
 | v1.0 | 2026-04-19 | 初版：新建 `screener/v3/` + 14 大师 agent（12 清洁重写 + 2 自建）+ 并发缓存流式 + 预选面板 + 成本预估 + 圆桌辩论 + 经典模式兼容保留 |
 | v1.1 | 2026-04-19 | 复用审计修订（依据 [engineering-principles.md](../engineering-principles.md) §5.1）：§4.1 改用 `ChatOpenAI.with_structured_output()`；§4.3 改用 `tenacity` 重试；§4.9 复用 TradingAgents 辩论图节点；新增 §12 复用清单（自写 LOC 减 ~31%）|
 | v1.2 | 2026-05-01 | 选股结果决策透明化（用户 2026-05-01 提，~5h）：现状信号列 `-` / 看多看空 KPI 全 0 / 大师数都是 4 / 圆桌辩论看不到。后端 `_aggregate` 加 verdict 计算（bullish/bearish/neutral/split）+ votes 计数 + consensus chip + confidence_range + top_bull/bear_argument；payload 加 `run_metadata` (mode/llm_calls/cache_hit_pct/duration/gurus_used)。前端 4 块视觉：(1) KPI 扩 6 列（候选/均分/看多/看空/中性/共识率）；(2) 运行模式 banner（mode chip + LLM call + cache 命中 + 耗时 + 大师 Avatar）；(3) Top 5 圆桌独立 grid 按 ticker 卡片化（debate_snippets 按 🟢🔴⚖️ 分色边框）；(4) 候选表扩列（投票分布条 + 共识 Badge + 现价/PE 懒加载）+ 展开行 4 大师卡（完整 reasoning + tier + philosophy）+ KPI 底栏 + 跳 AI 分析 / 观察列表按钮。复用 `/api/fundamentals/<ticker>` 30s LocalCache（v1.6 R-perf）；不动 `RoundtableResult` dataclass / `_aggregate` 已有字段。|
+| v1.3 | 2026-05-17 | 结果页头部紧凑化 + 圆桌/大师中文化 + 股票名称暴露（用户 2026-05-17 提，~1.5h）：**纯前端**，零后端契约改动。(1) 顶部"标题行 + 6 个 `<Stat>` 独立卡"合并为单 `<Card>`，新建 `SummaryKpi` 内联组件替代 `<Stat>`（`<Stat>` 内嵌 Card 是七卡视觉的根因）；移动端栅格 `grid-cols-3` 改两行 3 列。(2) 圆桌辩论 verdict badge `CONSENSUS`/`CONTESTED` → `共识`/`不共识`（仅本地化标签，`rt.split` 真值不动）；新增"共识方:"/"异议方:" 两行中文展示 `consensus[]` / `dissent[]` 大师名单（v1.0 已存的字段，v1.2 只显示了人数没列名字）。(3) 14 大师 signal `BULLISH`/`BEARISH`/`NEUTRAL`（`(s.signal).toUpperCase()`）→ `看多`/`看空`/`中性`，新加 `signalLabelZh()` helper（buy/bull→看多 / sell/bear→看空 / else→中性，对空值降级），替换桌面表 + 移动卡 + 展开卡 3 处。(4) 股票中文名 4 处暴露（圆桌标题 / 桌面表 ticker 下小字 / 移动卡 ticker 同行 / 展开卡标题），全部复用 v1.2 已有的 `funds` 缓存（`/api/fundamentals/<ticker>`），新加 `stockName()` 多 key fallback helper（`short_name`/`shortName`/`long_name`/`longName`/`name`）。显式覆盖 v1.2 §14.4.1（6 卡→1 卡）/§14.4.3（英文 verdict→中文）/§14.4.4（英文 signal→中文）。验证：`tsc -b` 0 err / `vite build` 成功（screener-v3 chunk 46.19KB）/ `vitest run` 37/37 pass。|
