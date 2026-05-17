@@ -1,10 +1,12 @@
 import { useState } from "react"
 import {
-  LayoutDashboard, Brain, Crosshair,
-  Wallet, FlaskConical, TestTube, Bell,
-  FileText, Settings, ListChecks, MoreHorizontal,
+  Wallet, FlaskConical, Bell,
+  FileText, Settings, ListChecks,
   Receipt, UserCircle,
 } from "lucide-react"
+import {
+  TabIconDashboard, TabIconAnalysis, TabIconDiscover, TabIconPaper, TabIconMore,
+} from "@/components/icons/TabIcons"
 import { cn } from "@/lib/utils"
 import { getCurrentUser } from "@/lib/auth"
 import {
@@ -16,6 +18,10 @@ interface NavItem {
   label: string
   href: string
   icon: React.ReactNode
+  /** When true, the entry is hidden for non-admin users (and for anon
+   *  users on pages that render the sidebar). Drives both desktop
+   *  Sidebar and mobile More-sheet visibility. */
+  adminOnly?: boolean
 }
 
 interface NavGroup {
@@ -27,7 +33,7 @@ const NAV_GROUPS: NavGroup[] = [
   {
     title: "概览",
     items: [
-      { label: "仪表盘", href: "/", icon: <LayoutDashboard className="w-4 h-4" /> },
+      { label: "仪表盘", href: "/", icon: <TabIconDashboard className="w-4 h-4" /> },
     ],
   },
   {
@@ -37,14 +43,14 @@ const NAV_GROUPS: NavGroup[] = [
       // completed analyses live in one list, so the standalone
       // ``/history`` link was retired (route still 301-redirects to
       // ``/analysis`` so old bookmarks keep resolving).
-      { label: "AI 分析",  href: "/analysis", icon: <Brain className="w-4 h-4" /> },
+      { label: "AI 分析",  href: "/analysis", icon: <TabIconAnalysis className="w-4 h-4" /> },
       { label: "报告中心", href: "/reports",   icon: <FileText className="w-4 h-4" /> },
     ],
   },
   {
     title: "选股",
     items: [
-      { label: "智能选股 V3", href: "/screener-v3", icon: <Crosshair className="w-4 h-4" /> },
+      { label: "智能选股 V3", href: "/screener-v3", icon: <TabIconDiscover className="w-4 h-4" /> },
       { label: "策略回测",   href: "/backtest", icon: <FlaskConical className="w-4 h-4" /> },
     ],
   },
@@ -58,14 +64,14 @@ const NAV_GROUPS: NavGroup[] = [
   {
     title: "纸面交易",
     items: [
-      { label: "全部会话", href: "/paper-trade", icon: <TestTube className="w-4 h-4" /> },
+      { label: "全部会话", href: "/paper-trade", icon: <TabIconPaper className="w-4 h-4" /> },
     ],
   },
   {
     title: "系统",
     items: [
       { label: "任务中心", href: "/tasks",    icon: <ListChecks className="w-4 h-4" /> },
-      { label: "设置",     href: "/settings", icon: <Settings className="w-4 h-4" /> },
+      { label: "设置",     href: "/settings", icon: <Settings className="w-4 h-4" />, adminOnly: true },
     ],
   },
 ]
@@ -78,6 +84,7 @@ function isActive(href: string): boolean {
 
 export function Sidebar() {
   const user = getCurrentUser()
+  const isAdminUser = user?.role === "admin"
 
   return (
     <aside className="hidden md:flex flex-col w-56 min-h-screen bg-card border-r border-border">
@@ -91,16 +98,20 @@ export function Sidebar() {
 
       {/* Nav groups */}
       <nav className="flex-1 p-2 overflow-y-auto">
-        {NAV_GROUPS.map((group) => (
-          <div key={group.title} className="mb-1">
-            <div className="px-2 py-1.5 mt-2 first:mt-0 text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">
-              {group.title}
+        {NAV_GROUPS.map((group) => {
+          const visible = group.items.filter((i) => !i.adminOnly || isAdminUser)
+          if (visible.length === 0) return null
+          return (
+            <div key={group.title} className="mb-1">
+              <div className="px-2 py-1.5 mt-2 first:mt-0 text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">
+                {group.title}
+              </div>
+              {visible.map((item) => (
+                <SidebarLink key={item.href} item={item} active={isActive(item.href)} />
+              ))}
             </div>
-            {group.items.map((item) => (
-              <SidebarLink key={item.href} item={item} active={isActive(item.href)} />
-            ))}
-          </div>
-        ))}
+          )
+        })}
       </nav>
 
       {/* Footer */}
@@ -138,10 +149,10 @@ function SidebarLink({ item, active }: { item: NavItem; active: boolean }) {
 // stays one tap away.
 
 const MOBILE_PRIMARY: NavItem[] = [
-  { label: "首页", href: "/",             icon: <LayoutDashboard className="w-5 h-5" /> },
-  { label: "分析", href: "/analysis",     icon: <Brain className="w-5 h-5" /> },
-  { label: "发现", href: "/screener-v3",  icon: <Crosshair className="w-5 h-5" /> },
-  { label: "纸面", href: "/paper-trade",  icon: <TestTube className="w-5 h-5" /> },
+  { label: "首页", href: "/",             icon: <TabIconDashboard className="w-5 h-5" /> },
+  { label: "分析", href: "/analysis",     icon: <TabIconAnalysis className="w-5 h-5" /> },
+  { label: "发现", href: "/screener-v3",  icon: <TabIconDiscover className="w-5 h-5" /> },
+  { label: "纸面", href: "/paper-trade",  icon: <TabIconPaper className="w-5 h-5" /> },
 ]
 
 interface MoreEntry extends NavItem { description?: string }
@@ -155,8 +166,8 @@ const MOBILE_MORE: MoreEntry[] = [
   { label: "交易记录", description: "买入 / 卖出流水",       href: "/portfolio?tab=transactions", icon: <Receipt className="w-5 h-5" /> },
   { label: "预警中心", description: "模板 / 新建 / 历史",    href: "/alerts",    icon: <Bell className="w-5 h-5" /> },
   { label: "任务中心", description: "筛选 / 详情 / 重试",    href: "/tasks",     icon: <ListChecks className="w-5 h-5" /> },
-  { label: "系统设置", description: "模型与通知",           href: "/settings",  icon: <Settings className="w-5 h-5" /> },
-  { label: "账号",     description: "当前用户 / 退出登录",    href: "/settings#account", icon: <UserCircle className="w-5 h-5" /> },
+  { label: "系统设置", description: "模型与通知",           href: "/settings",  icon: <Settings className="w-5 h-5" />, adminOnly: true },
+  { label: "账号",     description: "当前用户 / 退出登录",    href: "/account",   icon: <UserCircle className="w-5 h-5" /> },
 ]
 
 function isMoreRouteActive(): boolean {
@@ -171,6 +182,10 @@ function isMoreRouteActive(): boolean {
 export function MobileTabbar() {
   const [moreOpen, setMoreOpen] = useState(false)
   const moreActive = moreOpen || isMoreRouteActive()
+  const isAdminUser = getCurrentUser()?.role === "admin"
+  const visibleMore = MOBILE_MORE.filter(
+    (e) => !e.adminOnly || isAdminUser,
+  )
 
   return (
     <>
@@ -206,7 +221,7 @@ export function MobileTabbar() {
               moreActive ? "bg-[var(--color-accent-blue)]" : "bg-transparent",
             )}
           />
-          <MoreHorizontal className="w-5 h-5" />
+          <TabIconMore className="w-5 h-5" />
           <span className="mt-0.5 whitespace-nowrap">更多</span>
         </button>
       </nav>
@@ -222,7 +237,7 @@ export function MobileTabbar() {
             <LLMSwitcher />
           </div>
           <div className="grid grid-cols-1 gap-2 mt-2">
-            {MOBILE_MORE.map((item) => (
+            {visibleMore.map((item) => (
               <a
                 key={item.href}
                 href={item.href}

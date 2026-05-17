@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useCallback } from "react"
+import { useEffect, useState, useMemo, useCallback, useRef } from "react"
 import {
   TrendingUp, Target, Bell,
   Sparkles, Activity, FileText, BarChart3, RefreshCw,
@@ -11,6 +11,7 @@ import { ChartPanel } from "@/components/shared/ChartPanel"
 import { Sparkline } from "@/components/shared/Sparkline"
 import type { EChartsOption } from "@/lib/echarts"
 import { apiGet, apiPost } from "@/lib/api"
+import { perfNow, recordPerfEvent, flushPerfEvents } from "@/lib/perf"
 import { subscribeTaskStream } from "@/lib/socket"
 import { cn } from "@/lib/utils"
 import { HoldingsSection } from "./HoldingsSection"
@@ -22,6 +23,10 @@ interface DashData {
     ticker: string; shares: number
     pnl: number; pnl_pct: number
     market_value: number; avg_cost: number; current_price: number; market: string
+    // 2026-05-16 perf collapse — present on every holding so the UI can
+    // surface a "价格降级（使用成本价）" hint when the provider stalled.
+    price_source?: "realtime" | "cache" | "cost" | "fallback"
+    price_stale?: boolean
   }[]
   history: { date: string; total_value: number; pnl: number }[]
   // v1.16: explicit history-status fields so the equity-curve card can
@@ -31,6 +36,14 @@ interface DashData {
   history_first_date?: string | null
   history_last_date?: string | null
   history_status?: "ok" | "insufficient_snapshots"
+  // 2026-05-16 perf collapse — /api/dashboard now returns allocation +
+  // summary + transactions_count inline so the dashboard island doesn't
+  // have to fan out to /api/portfolio/{allocation,summary} on first
+  // paint. Both fields are optional on the type for backwards-compat
+  // with older clients pointed at a stale build.
+  allocation?: AllocItem[]
+  summary?: PortfolioSummary
+  transactions_count?: number
 }
 
 // Result envelope returned by the backfill task. We only inspect a
@@ -144,6 +157,7 @@ interface PortfolioSummary {
 }
 
 export function DashboardPage() {
+  const bootStartedAt = useRef(perfNow())
   const [data, setData] = useState<DashData | null>(null)
   const [tasks, setTasks] = useState<TaskRow[]>([])
   const [alloc, setAlloc] = useState<AllocItem[]>([])
@@ -163,51 +177,90 @@ export function DashboardPage() {
   // sizing so the same option dict adapts cleanly at 390px.
   const isMobile = useIsMobileChart()
 
+  // Apply a dashboard payload to all derived state slices in one shot.
+  // 2026-05-16 perf collapse: allocation + summary + transactions_count
+  // now come back inline on /api/dashboard so this is the single update
+  // path the dashboard uses for buy/sell/cost-edit refreshes too.
+  const applyDashboard = useCallback((d: DashData | null) => {
+    setData(d)
+    setAlloc(Array.isArray(d?.allocation) ? d.allocation : [])
+    setSummary(d?.summary ?? null)
+    if (typeof d?.transactions_count === "number") {
+      setTransactionsCount(d.transactions_count)
+    }
+  }, [])
+
   // Pull /api/dashboard separately so the ↻ button can refresh it without
   // re-fetching the whole bundle.
   const reloadDashboard = useCallback(async (window: string = loadedHistoryWindow) => {
     const d = await apiGet<DashData>(`/api/dashboard?history_days=${window}`)
       .catch(() => null)
-    setData(d)
+    applyDashboard(d)
     setLoadedHistoryWindow(window)
-  }, [loadedHistoryWindow])
+  }, [applyDashboard, loadedHistoryWindow])
 
   // Mobile-ui-v1.3: dashboard now hosts holdings management. After
-  // a buy/sell/cost edit we re-pull dashboard (holdings + pnl), the
-  // allocation pie, and transactions count so the chips stay accurate.
+  // a buy/sell/cost edit we re-pull /api/dashboard — it carries pnl,
+  // holdings, allocation, summary, and transactions_count in one shot.
   const reloadHoldings = useCallback(async () => {
-    const [d, a, tx, s] = await Promise.all([
-      apiGet<DashData>(`/api/dashboard?history_days=${loadedHistoryWindow}`).catch(() => null),
-      apiGet<AllocItem[]>("/api/portfolio/allocation").catch(() => []),
-      apiGet<unknown[]>("/api/portfolio/transactions").catch(() => []),
-      apiGet<PortfolioSummary>("/api/portfolio/summary").catch(() => null),
-    ])
-    if (d) setData(d)
-    setAlloc(Array.isArray(a) ? a : [])
-    setTransactionsCount(Array.isArray(tx) ? tx.length : 0)
-    if (s) setSummary(s)
-  }, [loadedHistoryWindow])
+    const d = await apiGet<DashData>(
+      `/api/dashboard?history_days=${loadedHistoryWindow}`,
+    ).catch(() => null)
+    applyDashboard(d)
+  }, [applyDashboard, loadedHistoryWindow])
 
   useEffect(() => {
     // First-paint default: 90 days (covers the default 3M chip plus the
     // tighter 1M/7D chips with no extra round-trip). The user clicking
     // ALL / 1Y / 6M will trigger a separate fetch for the full series
     // — see the range-effect below.
-    Promise.all([
-      apiGet<DashData>(`/api/dashboard?history_days=${DEFAULT_HISTORY_DAYS}`).catch(() => null),
-      apiGet<TaskRow[]>("/api/tasks?limit=10&offset=0").catch(() => []),
-      apiGet<AllocItem[]>("/api/portfolio/allocation").catch(() => []),
-      apiGet<unknown[]>("/api/portfolio/transactions").catch(() => []),
-      apiGet<PortfolioSummary>("/api/portfolio/summary").catch(() => null),
-    ]).then(([d, t, a, tx, s]) => {
-      setData(d)
-      setTasks(Array.isArray(t) ? t : (t as any)?.tasks || [])
-      setAlloc(Array.isArray(a) ? a : [])
-      setTransactionsCount(Array.isArray(tx) ? tx.length : 0)
-      setSummary(s)
-      setLoading(false)
+    //
+    // 2026-05-16 perf collapse: only the dashboard request gates
+    // setLoading(false) so the page paints as soon as it lands. /api/tasks
+    // and /api/portfolio/transactions are non-blocking aux fetches —
+    // they update their own state slices later without holding back the
+    // initial render. Previously the four-way Promise.all meant a single
+    // slow upstream (e.g. Schwab 30s) stalled the entire page.
+    const loadStartedAt = perfNow()
+    recordPerfEvent("dashboard.initial_load.start", {
+      history_days: DEFAULT_HISTORY_DAYS,
     })
-  }, [])
+
+    let dashOk = false
+    apiGet<DashData>(`/api/dashboard?history_days=${DEFAULT_HISTORY_DAYS}`)
+      .then((d) => {
+        dashOk = Boolean(d)
+        applyDashboard(d)
+      })
+      .catch(() => { applyDashboard(null) })
+      .finally(() => {
+        setLoading(false)
+        recordPerfEvent("dashboard.initial_load.done", {
+          elapsed_ms: Math.round(perfNow() - loadStartedAt),
+          mount_elapsed_ms: Math.round(perfNow() - bootStartedAt.current),
+          dashboard_ok: dashOk,
+        })
+        flushPerfEvents()
+      })
+
+    // Auxiliary requests fire in parallel but never block the first
+    // paint. Each one updates its own state slice on arrival and
+    // degrades silently on error.
+    apiGet<TaskRow[]>("/api/tasks?limit=10&offset=0")
+      .then((t) => {
+        setTasks(Array.isArray(t) ? t : (t as any)?.tasks || [])
+      })
+      .catch(() => { /* tasks chip degrades to empty */ })
+
+    apiGet<unknown[]>("/api/portfolio/transactions")
+      .then((tx) => {
+        // /api/dashboard already gave us transactions_count; this is
+        // just a refinement if the server-side count and the actual
+        // list disagree (e.g. stale cache). Safe to overwrite.
+        if (Array.isArray(tx)) setTransactionsCount(tx.length)
+      })
+      .catch(() => { /* count chip falls back to the dashboard value */ })
+  }, [applyDashboard])
 
   // Range chip → server window upgrade. We only re-fetch when the chip
   // demands a window we don't already have cached client-side.

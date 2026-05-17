@@ -806,7 +806,51 @@ def create_app(config_path=None):
         with the server-side stack trace.
         """
         import uuid
+        import time as _time
         g.trace_id = uuid.uuid4().hex
+        g.request_started_at = _time.perf_counter()
+
+    @app.after_request
+    def _log_request_perf(response):
+        """Lightweight request timing for the mobile dashboard slow-path.
+
+        We keep this globally cheap and only log noisy detail for the
+        dashboard bootstrap endpoints, or for any API request that crosses
+        a slow threshold. The response header makes browser-side inspection
+        line up with server logs under the same trace_id.
+        """
+        import time as _time
+        started = getattr(g, "request_started_at", None)
+        if started is None:
+            return response
+        elapsed_ms = int((_time.perf_counter() - started) * 1000)
+        response.headers["X-Response-Time-ms"] = str(elapsed_ms)
+        response.headers["X-Trace-Id"] = getattr(g, "trace_id", "unknown")
+
+        path = request.path
+        dashboard_boot_paths = {
+            "/api/dashboard",
+            "/api/tasks",
+            "/api/portfolio/allocation",
+            "/api/portfolio/transactions",
+            "/api/portfolio/summary",
+        }
+        should_log = path in dashboard_boot_paths or (
+            path.startswith("/api/") and elapsed_ms >= 800
+        )
+        if should_log:
+            logger.info(
+                "[perf.request] trace_id=%s method=%s path=%s status=%s "
+                "elapsed_ms=%s user_id=%s query=%s",
+                getattr(g, "trace_id", "unknown"),
+                request.method,
+                path,
+                response.status_code,
+                elapsed_ms,
+                getattr(getattr(g, "user", None), "id", None),
+                request.query_string.decode("utf-8", errors="ignore"),
+            )
+        return response
 
     def _safe_internal(exc, http_status=500, error_code="internal",
                        extra=None):
@@ -1172,7 +1216,19 @@ def create_app(config_path=None):
     @app.route("/settings")
     @app.route("/settings/<section>")
     def settings_page(section=None):
+        # mobile-ui-v1.3.1 addendum #3: admin-only. Non-admin users
+        # land on /account (their own user info + logout) instead of
+        # seeing a 403. Anon users are caught earlier by enforce_auth().
+        if g.user is None or g.user.role != "admin":
+            return redirect("/account")
         return render_template("islands/settings.html", vite_assets=vite_assets)
+
+    @app.route("/account")
+    def account_page():
+        # Auth gating is owned by enforce_auth() — anon users are
+        # bounced to /login before this handler runs. Both 'user' and
+        # 'admin' roles can reach this page.
+        return render_template("islands/account.html", vite_assets=vite_assets)
 
     # ── Health Check ────────────────────────────────────────────────────
     # Lightweight probe used by Railway / Render / k8s liveness checks.
@@ -1617,17 +1673,74 @@ def create_app(config_path=None):
             ],
         })
 
+    @app.route("/api/perf/client", methods=["POST"])
+    def api_client_perf():
+        """Ingest lightweight browser timings for production diagnosis.
+
+        This is intentionally log-only: no persistence, no PII payloads, and
+        a small cap so a broken client cannot flood stdout. The dashboard
+        island uses it to correlate mobile "加载中..." stalls with API and
+        render timings under the same authenticated user.
+        """
+        if g.user is None:
+            return jsonify({"error": "unauthorized"}), 401
+        body = request.get_json(silent=True) or {}
+        events = body.get("events") if isinstance(body, dict) else None
+        if not isinstance(events, list):
+            events = [body] if isinstance(body, dict) else []
+        accepted = 0
+        for event in events[:20]:
+            if not isinstance(event, dict):
+                continue
+            name = str(event.get("name") or event.get("event") or "unknown")[:80]
+            fields = event.get("fields") if isinstance(event.get("fields"), dict) else {}
+            safe_fields = {
+                str(k)[:60]: v for k, v in fields.items()
+                if isinstance(v, (str, int, float, bool)) or v is None
+            }
+            logger.info(
+                "[perf.client] trace_id=%s user_id=%s name=%s fields=%s",
+                getattr(g, "trace_id", "unknown"),
+                g.user.id,
+                name,
+                safe_fields,
+            )
+            accepted += 1
+        return jsonify({"ok": True, "accepted": accepted})
+
     # ── Dashboard API ───────────────────────────────────────────────────
 
     @app.route("/api/dashboard")
     def api_dashboard():
         if g.user is None:
             return jsonify({"error": "unauthorized"}), 401
+        import time as _time
+        from stock_trading_system.portfolio.manager import PortfolioManager
+        perf_started = _time.perf_counter()
+        marks: dict[str, int] = {}
+
+        def _mark(name: str, step_started: float) -> None:
+            marks[name] = int((_time.perf_counter() - step_started) * 1000)
+
         uid = g.user.id
         pm = _get_portfolio_mgr()
-        pnl = pm.get_pnl(user_id=uid)
+        # 2026-05-16 perf collapse: dashboard derives pnl + allocation +
+        # summary from ONE holdings call (instead of three). Previously
+        # /api/dashboard, /api/portfolio/allocation, /api/portfolio/summary
+        # were fetched in parallel from the client and each one triggered
+        # its own pm.get_holdings() → batch quote round-trip; on Railway
+        # cold provider sockets pushed total wall time to 30–70s. The
+        # PortfolioManager user-level cache (45s TTL, invalidated on
+        # mutation) ensures repeat dashboard refreshes inside the window
+        # are also free.
+        step_started = _time.perf_counter()
         holdings = pm.get_holdings(user_id=uid)
+        _mark("holdings_ms", step_started)
+        pnl = PortfolioManager.compute_pnl_from_holdings(holdings)
+        allocation = PortfolioManager.compute_allocation_from_holdings(holdings)
+        step_started = _time.perf_counter()
         alerts = _get_alert_monitor().list_alerts(user_id=uid, scope="user")
+        _mark("alerts_ms", step_started)
         # `history_days=all` returns the full series since the user's first
         # snapshot; the chart's range chips do client-side filtering on top.
         # Anything else is parsed as a positive int rolling window.
@@ -1640,7 +1753,25 @@ def create_app(config_path=None):
                 days = parsed if parsed > 0 else None
             except ValueError:
                 days = 30
+        step_started = _time.perf_counter()
         history = pm.get_history(days=days, user_id=uid)
+        _mark("history_ms", step_started)
+        # today_pnl: same prior-snapshot diff /api/portfolio/summary used
+        # to compute. Cheap COUNT-style query, no holdings touch.
+        step_started = _time.perf_counter()
+        today_real = _compute_today_pnl(uid, pnl.get("total_value", 0))
+        _mark("today_pnl_ms", step_started)
+        # transactions_count: surfaced inline so the dashboard chip
+        # ("12 笔交易") doesn't need a second round-trip. Single SQL
+        # query, no holdings touch — falls back to 0 on error so the
+        # non-critical chip degrades quietly.
+        step_started = _time.perf_counter()
+        try:
+            transactions_count = len(pm.get_transactions(user_id=uid))
+        except Exception:  # noqa: BLE001
+            transactions_count = 0
+        _mark("transactions_count_ms", step_started)
+        total_ms = int((_time.perf_counter() - perf_started) * 1000)
         # Provenance for the equity-curve card: the React island shows
         # an "insufficient snapshots — click 重新计算" notice when the
         # user has holdings but the daily_snapshots table can't draw a
@@ -1652,6 +1783,25 @@ def create_app(config_path=None):
             history_status = "insufficient_snapshots"
         else:
             history_status = "ok"
+        logger.info(
+            "[perf.dashboard] trace_id=%s user_id=%s total_ms=%s "
+            "history_days=%s holdings_count=%s history_count=%s marks=%s",
+            getattr(g, "trace_id", "unknown"),
+            uid,
+            total_ms,
+            raw_days or "all",
+            len(holdings),
+            len(history),
+            marks,
+        )
+        summary = {
+            "total_value":    pnl.get("total_value", 0),
+            "total_pnl":      pnl.get("total_pnl", 0),
+            "total_pnl_pct":  pnl.get("total_pnl_pct", 0),
+            "today_pnl":      today_real["pnl"] if today_real else None,
+            "today_pnl_pct":  today_real["pct"] if today_real else None,
+            "holdings_count": len(holdings),
+        }
         return jsonify({
             "pnl": pnl,
             "holdings": holdings,
@@ -1661,6 +1811,12 @@ def create_app(config_path=None):
             "history_first_date": first_date,
             "history_last_date": last_date,
             "history_status": history_status,
+            # 2026-05-16 perf collapse — surfaced inline so the dashboard
+            # island doesn't need to fan out to /api/portfolio/allocation
+            # and /api/portfolio/summary on first paint.
+            "allocation": allocation,
+            "summary": summary,
+            "transactions_count": transactions_count,
         })
 
     # ── Portfolio API ───────────────────────────────────────────────────
@@ -3428,6 +3584,7 @@ def create_app(config_path=None):
     _PROVIDER_LABEL = {"qwen": "Qwen", "gemini": "Gemini", "openrouter": "OpenRouter"}
 
     @app.route("/api/settings/llm-provider", methods=["GET"])
+    @admin_required
     def get_llm_provider():
         from stock_trading_system.llm.router import (
             get_active_provider, has_provider_key, is_provider_locked_by_env,
@@ -3442,6 +3599,7 @@ def create_app(config_path=None):
         })
 
     @app.route("/api/settings/llm-provider", methods=["POST"])
+    @admin_required
     def set_llm_provider():
         from stock_trading_system.llm.router import is_provider_locked_by_env, has_provider_key
         from stock_trading_system.llm.constants import VALID_PROVIDERS
@@ -3473,9 +3631,8 @@ def create_app(config_path=None):
     # singletons).
 
     @app.route("/api/settings/openrouter/active", methods=["GET"])
+    @admin_required
     def get_openrouter_active():
-        if g.user is None:
-            return jsonify({"error": "unauthorized"}), 401
         from stock_trading_system.llm.router import (
             get_active_provider, resolve_openrouter_model,
         )
@@ -3500,9 +3657,8 @@ def create_app(config_path=None):
         })
 
     @app.route("/api/settings/openrouter/active", methods=["POST"])
+    @admin_required
     def set_openrouter_active():
-        if g.user is None:
-            return jsonify({"error": "unauthorized"}), 401
         from stock_trading_system.llm.router import is_provider_locked_by_env
         if is_provider_locked_by_env():
             return jsonify({
@@ -3709,6 +3865,21 @@ def create_app(config_path=None):
         ana = pdb.get_analysis_by_id(aid)
         if not ana:
             return jsonify({"ok": False, "error": "Analysis not found"}), 404
+
+        # Defense in depth — even if some legacy analysis row carried a
+        # typo'd ticker, refuse to start tracking it. process_analysis
+        # would also reject internally; failing here gives the user a
+        # clearer 400 instead of a silent "skipped" task result.
+        from stock_trading_system.utils.ticker_validator import (
+            InvalidTickerError, normalize_and_validate_ticker,
+        )
+        try:
+            normalize_and_validate_ticker(
+                ana["ticker"], allow_quote_failure=True,
+            )
+        except InvalidTickerError as e:
+            return jsonify({"ok": False, "error": "invalid_ticker",
+                            "ticker": ana["ticker"], "reason": e.reason}), 400
 
         user_advice = pdb.get_user_advice(g.user.id, aid) or {}
         store = _get_paper_store()

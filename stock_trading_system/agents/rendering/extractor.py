@@ -184,6 +184,28 @@ class RenderingExtractor:
         return obj.model_dump(exclude_none=False, mode="json")
 
     def _extract_overview(self, result):
+        """Overview tab extraction with deterministic fallback.
+
+        Pipeline:
+          1. Try the LLM ``with_structured_output(OverviewCard)`` path
+             (legacy v1.19 behaviour).
+          2. If the LLM raises, returns ``None``, or its output fails
+             Pydantic validation, do NOT return ``None`` — build a
+             deterministic ``OverviewCard``-shaped dict from analyzer
+             fields (``signal`` / ``trade_decision`` / source reports).
+             The 概览 tab always gets *something* as long as ANY source
+             report survived the analysis pipeline.
+
+        Marker keys stamped on the returned dict:
+          * ``_fallback_used`` — ``True`` when the deterministic path
+            ran. ``_rendering_outputs`` promotes this to
+            ``_meta.summary_source = 'fallback'``.
+          * ``_fallback_error`` — short LLM error string for operator
+            triage; never shown to the end user verbatim.
+
+        Returns ``None`` only when EVERY source field is empty — i.e.
+        a genuine ``empty`` row, not a structured-extraction failure.
+        """
         debate_text = normalize_state_to_text(
             getattr(result, "investment_debate", None),
             kind="investment_debate",
@@ -205,7 +227,33 @@ class RenderingExtractor:
             f"## Risk\n{risk_text}",
             f"## Decision\n{decision_text}",
         ])
-        return self._extract_generic("summary", OverviewCard, merged)
+
+        # Phase 1 — LLM path.
+        llm_dict: dict | None = None
+        llm_error: str | None = None
+        try:
+            llm_dict = self._extract_generic("summary", OverviewCard, merged)
+        except Exception as e:  # noqa: BLE001 — surface to fallback meta
+            llm_error = f"{type(e).__name__}: {e}"[:200]
+            logger.warning("Overview LLM extract failed: %s", llm_error)
+
+        if isinstance(llm_dict, dict) and llm_dict:
+            llm_dict.setdefault("_fallback_used", False)
+            return llm_dict
+
+        # Phase 2 — deterministic fallback.
+        fallback = _build_overview_fallback(
+            result,
+            debate_text=debate_text,
+            risk_text=risk_text,
+            decision_text=decision_text,
+        )
+        if fallback is None:
+            return None
+        fallback["_fallback_used"] = True
+        if llm_error:
+            fallback["_fallback_error"] = llm_error
+        return fallback
 
     # ── News (hybrid + hard guard) ───────────────────────────────────
 
@@ -333,3 +381,189 @@ class RenderingExtractor:
             "quality_score": quality_score,
             "summary":       summary,
         }
+
+
+# ── Deterministic Overview fallback ──────────────────────────────────────
+#
+# Pure helpers (no LLM, no I/O) used by ``_extract_overview`` when the
+# structured-output call returns None or raises. The goal is to never
+# leave the 概览 tab empty whenever any source report exists.
+
+import re as _re  # local alias so module-level top stays tidy
+
+
+def _signal_to_rating(signal: str, decision_text: str) -> str:
+    """Map a free-form signal / decision blurb to an ``OverviewCard.rating``
+    enum value. Returns ``Hold`` when nothing matches so the schema
+    contract always holds (RatingLiteral has no permissive default)."""
+    haystack = f"{signal or ''} {decision_text or ''}".lower()
+    if "strong buy" in haystack or "strongly buy" in haystack:
+        return "Strong Buy"
+    if "strong sell" in haystack or "strongly sell" in haystack:
+        return "Strong Sell"
+    if "overweight" in haystack or "加仓" in haystack:
+        return "Overweight"
+    if "underweight" in haystack or "减仓" in haystack:
+        return "Underweight"
+    if "sell" in haystack or "bearish" in haystack:
+        return "Sell"
+    if "buy" in haystack or "bullish" in haystack:
+        return "Buy"
+    return "Hold"
+
+
+def _first_sentences(text: str, n: int = 2, max_chars: int = 160) -> str:
+    """Pull the first ``n`` sentences out of ``text``. Pragmatic split on
+    Chinese / English terminators; truncates at ``max_chars``."""
+    if not text:
+        return ""
+    cleaned = " ".join(text.strip().split())
+    pieces: list[str] = []
+    buf = ""
+    for ch in cleaned:
+        buf += ch
+        if ch in "。!?！？":
+            pieces.append(buf.strip())
+            buf = ""
+            if len(pieces) >= n:
+                break
+        elif ch == "." and len(buf) > 4:
+            # English period — only treat as terminator if followed by
+            # space (handled by the next iteration's whitespace).
+            pieces.append(buf.strip())
+            buf = ""
+            if len(pieces) >= n:
+                break
+    if buf.strip() and len(pieces) < n:
+        pieces.append(buf.strip())
+    if not pieces:
+        out = cleaned
+    else:
+        has_cjk = any("一" <= c <= "鿿" for c in cleaned)
+        out = "".join(pieces) if has_cjk else " ".join(pieces)
+    return out[:max_chars].rstrip()
+
+
+def _detect_confidence(decision_text: str, debate_text: str) -> str:
+    """Sniff a confidence hint out of decision / debate prose. Defaults
+    to ``medium`` so the OverviewCard never lands without a value."""
+    blob = f"{decision_text or ''}\n{debate_text or ''}".lower()
+    if any(kw in blob for kw in ("high confidence", "very confident",
+                                  "高信心", "强烈", "高度确信")):
+        return "high"
+    if any(kw in blob for kw in ("low confidence", "uncertain",
+                                  "不确定", "信心不足")):
+        return "low"
+    return "medium"
+
+
+_METRIC_LINE_RE = _re.compile(
+    r"^\s*[-*•]?\s*([A-Za-z一-鿿][\w一-鿿 \-/()%.]*?)\s*[:：]\s*(\S.{0,80})\s*$"
+)
+
+
+def _key_metric_lines(reports: dict[str, str], limit: int = 4) -> list[dict]:
+    """Pull a handful of ``Label: Value`` style bullets out of the market /
+    fundamentals reports. Returns ``[]`` when no recognisable line is
+    present (the card simply hides the section in that case)."""
+    metrics: list[dict] = []
+    seen: set[str] = set()
+    for source in reports.values():
+        if not source:
+            continue
+        for line in source.splitlines():
+            m = _METRIC_LINE_RE.match(line)
+            if not m:
+                continue
+            label = m.group(1).strip()[:40]
+            value = m.group(2).strip()[:60]
+            if not label or not value:
+                continue
+            key = label.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            metrics.append({
+                "label": label,
+                "value": value,
+                "tone": "neutral",
+                "hint": None,
+            })
+            if len(metrics) >= limit:
+                return metrics
+    return metrics
+
+
+def _decision_drivers(reports: dict[str, str], limit: int = 3) -> list[dict]:
+    """Build up to ``limit`` decision-driver bullets — one per non-empty
+    source report — by taking each report's first sentence as the
+    ``detail`` and the report's localized name as the headline."""
+    drivers: list[dict] = []
+    for label, text in reports.items():
+        if not text or not text.strip():
+            continue
+        head = _first_sentences(text, n=1, max_chars=80)
+        if not head:
+            continue
+        drivers.append({"headline": label, "detail": head})
+        if len(drivers) >= limit:
+            break
+    return drivers
+
+
+def _build_overview_fallback(
+    result,
+    *,
+    debate_text: str,
+    risk_text: str,
+    decision_text: str,
+) -> dict | None:
+    """Build a minimal-viable ``OverviewCard`` dict deterministically.
+
+    Returns ``None`` when every source field is empty (genuine empty
+    row — the classifier should flag the whole rendering as ``empty``).
+    """
+    market_report = getattr(result, "market_report", "") or ""
+    sentiment_report = getattr(result, "sentiment_report", "") or ""
+    news_report = getattr(result, "news_report", "") or ""
+    fundamentals_report = getattr(result, "fundamentals_report", "") or ""
+
+    source_blobs = {
+        "市场": market_report,
+        "情绪": sentiment_report,
+        "新闻": news_report,
+        "基本面": fundamentals_report,
+        "辩论": debate_text,
+        "风险": risk_text,
+        "决策": decision_text,
+    }
+    if not any(v.strip() for v in source_blobs.values()):
+        return None
+
+    signal = getattr(result, "signal", "") or ""
+    rating = _signal_to_rating(signal, decision_text)
+
+    action_direction = _first_sentences(decision_text, n=1, max_chars=120)
+    if not action_direction:
+        for blob in (market_report, fundamentals_report, sentiment_report):
+            action_direction = _first_sentences(blob, n=1, max_chars=120)
+            if action_direction:
+                break
+    if not action_direction:
+        action_direction = f"维持当前评级 ({rating})"
+
+    one_line = _first_sentences(decision_text, n=1, max_chars=140) \
+        or action_direction
+
+    return {
+        "rating": rating,
+        "action_direction": action_direction,
+        "confidence": _detect_confidence(decision_text, debate_text),
+        "key_metrics": _key_metric_lines({
+            "market": market_report,
+            "fundamentals": fundamentals_report,
+        }),
+        "debate_synthesis": None,
+        "decision_drivers": _decision_drivers(source_blobs),
+        "one_line_takeaway": one_line,
+    }

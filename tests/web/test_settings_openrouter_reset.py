@@ -50,7 +50,8 @@ def test_settings_post_openrouter_api_key_resets_analyzer(app_client, monkeypatc
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
 
     users = app_client["users"]
-    # /api/settings is admin-only (P0.2 / C3). The user-level alternative
+    # /api/settings is admin-only (hardening-iteration-v1 P0.2 / C3 +
+    # mobile-ui-v1.3.1 addendum #3). The user-level alternative
     # /api/settings/openrouter/active is covered by the next test.
     client = app_client["make_client"](users.admin_email, users.admin_password)
 
@@ -73,7 +74,9 @@ def test_openrouter_active_post_resets_analyzer(app_client, monkeypatch):
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
 
     users = app_client["users"]
-    client = app_client["make_client"](users.alice_email, users.alice_password)
+    # mobile-ui-v1.3.1 addendum #3 — /api/settings* admin-only; use the
+    # admin user to preserve original analyzer-reset test intent.
+    client = app_client["make_client"](users.admin_email, users.admin_password)
 
     app_mod._analyzer = object()
     resp = client.post(

@@ -54,6 +54,7 @@ export default defineConfig({
         "backtest":    "src/islands/backtest/main.tsx",
         "reports":     "src/islands/reports/main.tsx",
         "settings":    "src/islands/settings/main.tsx",
+        "account":     "src/islands/account/main.tsx",
       },
       output: {
         manualChunks: {

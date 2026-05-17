@@ -18,6 +18,11 @@ import {
 import { PipelineDAG } from "@/components/shared/PipelineDAG"
 import { ErrorBoundary } from "@/components/shared/ErrorBoundary"
 import { EmptyStateCTA } from "@/components/shared/EmptyStateCTA"
+import { TickerGroupCard } from "./TickerGroupCard"
+import {
+  groupAnalysisRowsByTicker,
+  type CompletedAnalysisRow,
+} from "./groupAnalysisRowsByTicker"
 import type { TVChartState } from "@/components/shared/TVChart"
 import { apiGet, apiPost, apiDel } from "@/lib/api"
 // react-markdown + remark-gfm + rehype-sanitize together are ~70kB
@@ -176,7 +181,7 @@ interface OHLCVRow {
 
 interface TaskSubmitResult { task_id: string; status: string }
 
-function signalVariant(signal: string): "buy" | "sell" | "hold" | "default" {
+export function signalVariant(signal: string): "buy" | "sell" | "hold" | "default" {
   const s = signal?.toLowerCase() ?? ""
   if (s.includes("buy") || s.includes("bullish")) return "buy"
   if (s.includes("sell") || s.includes("bearish")) return "sell"
@@ -289,6 +294,11 @@ export function AnalysisPage() {
   const [inboxTickerQ, setInboxTickerQ] = useState(
     () => new URLSearchParams(window.location.search).get("ticker") ?? "",
   )
+  // analysis-inbox-group-by-ticker v1.0 — segmented control swaps
+  // between the original flat "按记录" view and the new "按个股"
+  // ticker-aggregated cards. Default stays on records so existing
+  // muscle memory and deep-links aren't disturbed.
+  const [inboxView, setInboxView] = useState<"records" | "tickers">("records")
 
   // Completed analysis ID (numeric) — strip "analysis_history:" prefix if present
   const detailId = urlId && !isTaskId(urlId)
@@ -553,6 +563,8 @@ export function AnalysisPage() {
             ticker={inboxTickerQ}
             onTicker={setInboxTickerQ}
             total={inbox.length}
+            view={inboxView}
+            onView={setInboxView}
           />
           {inbox.length === 0 ? (
             <EmptyStateCTA
@@ -564,33 +576,15 @@ export function AnalysisPage() {
                 if (target) target.scrollIntoView({ behavior: "smooth", block: "start" })
               }}
             />
-          ) : (() => {
-              const filterUpper = inboxTickerQ.trim().toUpperCase()
-              const visible = filterUpper
-                ? inbox.filter(it => it.ticker.includes(filterUpper))
-                : inbox
-              if (visible.length === 0) {
-                return (
-                  <p className="text-sm text-muted-foreground py-6 text-center">
-                    无匹配记录
-                  </p>
-                )
-              }
-              return visible.map(it => it.kind === "task" ? (
-                <RunningRow
-                  key={it.task_id}
-                  row={it}
-                  highlight={taskAnchor === it.task_id}
-                  onSettled={refreshInbox}
-                />
-              ) : (
-                <CompletedRow
-                  key={it.id}
-                  row={it}
-                  onChanged={refreshInbox}
-                />
-              ))
-            })()}
+          ) : (
+            <InboxBody
+              inbox={inbox}
+              tickerQ={inboxTickerQ}
+              view={inboxView}
+              taskAnchor={taskAnchor}
+              refreshInbox={refreshInbox}
+            />
+          )}
         </CardContent>
       </Card>
     </div>
@@ -1220,6 +1214,50 @@ function CardFallback({ error }: { error: Error }) {
  * render are real value, the missing tabs already fall back to
  * markdown directly, and an extra banner adds noise without action.
  */
+/** analysis-overview-fallback v1.0 — ``_meta`` block written by the
+ *  rendering worker. ``getRenderingMeta`` tolerates legacy rows that
+ *  pre-date the meta block. */
+export interface RenderingMeta {
+  summary_source?: "llm" | "fallback"
+  failed_tabs?: string[]
+  errors?: Record<string, string>
+}
+
+export function getRenderingMeta(
+  detail: Pick<AnalysisDetail, "rendering">,
+): RenderingMeta {
+  const meta =
+    (detail.rendering as { _meta?: RenderingMeta } | null | undefined)?._meta
+  return meta && typeof meta === "object" ? meta : {}
+}
+
+/** Banner reason key. Pure function so the vitest suite can pin the
+ *  decision tree without rendering the heavy <AnalysisPage>. */
+export type BannerReason =
+  | "summary_fallback"
+  | "summary_missing"
+  | "failed"
+  | "pending"
+  | "empty"
+  | null
+
+export function decideBannerReason(
+  detail: Pick<AnalysisDetail, "rendering_status" | "rendering">,
+): BannerReason {
+  const status = detail.rendering_status
+  const meta = getRenderingMeta(detail)
+  const summaryFallback = meta.summary_source === "fallback"
+  const summaryMissing =
+    Array.isArray(meta.failed_tabs) && meta.failed_tabs.includes("summary")
+
+  if (status === "partial" && summaryFallback) return "summary_fallback"
+  if (status === "partial" && summaryMissing) return "summary_missing"
+  if (!status || status === "success" || status === "partial") return null
+  if (status === "failed") return "failed"
+  if (status === "pending") return "pending"
+  return "empty"
+}
+
 function RenderingStatusBanner({
   detail, onRetried,
 }: {
@@ -1227,6 +1265,7 @@ function RenderingStatusBanner({
   onRetried: () => void
 }) {
   const status = detail.rendering_status
+  const meta = getRenderingMeta(detail)
   const [retrying, setRetrying] = useState(false)
   const [msg, setMsg] = useState<string | null>(null)
 
@@ -1244,28 +1283,43 @@ function RenderingStatusBanner({
     }
   }
 
-  // Skip rendering for healthy + partial states.
-  if (!status || status === "success" || status === "partial") return null
+  const reason = decideBannerReason(detail)
+  if (reason === null) return null
 
-  const headline =
-    status === "failed"  ? "结构化摘要生成失败" :
-    status === "pending" ? "结构化摘要待生成" :
-    /* empty */          "未生成结构化摘要"
-  const tone = status === "failed"
-    ? "border-amber-500/50 bg-amber-500/10 text-amber-200"
-    : "border-zinc-500/40 bg-zinc-500/5 text-zinc-300"
+  let headline: string
+  let tone: string
+  let body: string
+  if (reason === "summary_fallback") {
+    headline = "概览由 fallback 生成"
+    tone = "border-sky-500/40 bg-sky-500/10 text-sky-200"
+    body = "概览结构化生成失败，已使用兜底摘要。可点击重试重新生成。"
+  } else if (reason === "summary_missing") {
+    headline = "概览结构化缺失"
+    tone = "border-amber-500/50 bg-amber-500/10 text-amber-200"
+    body = "结构化概览未生成，可点击重试基于现有报告补一份。"
+  } else if (reason === "failed") {
+    headline = "结构化摘要生成失败"
+    tone = "border-amber-500/50 bg-amber-500/10 text-amber-200"
+    body = "完整论述已显示在下方各 tab，可点击重试重新生成结构化卡片。"
+  } else if (reason === "pending") {
+    headline = "结构化摘要待生成"
+    tone = "border-zinc-500/40 bg-zinc-500/5 text-zinc-300"
+    body = "结构化摘要任务正在排队，稍候自动出现；也可手动触发重试。"
+  } else {
+    headline = "未生成结构化摘要"
+    tone = "border-zinc-500/40 bg-zinc-500/5 text-zinc-300"
+    body = "本次分析没有结构化卡片（历史记录尚未生成）。可点击重试按当前数据补一份。"
+  }
 
   return (
-    <div className={`rounded border px-3 py-2 text-xs flex flex-wrap items-start gap-2 ${tone}`}>
+    <div
+      data-rendering-banner
+      data-banner-reason={reason}
+      className={`rounded border px-3 py-2 text-xs flex flex-wrap items-start gap-2 ${tone}`}
+    >
       <div className="flex-1 min-w-0">
         <div className="font-semibold">{headline}</div>
-        <div className="opacity-80 mt-0.5 break-words">
-          {status === "failed"
-            ? "完整论述已显示在下方各 tab，可点击重试重新生成结构化卡片。"
-            : status === "empty"
-            ? "本次分析没有结构化卡片（历史记录尚未生成）。可点击重试按当前数据补一份。"
-            : "结构化摘要任务正在排队，稍候自动出现；也可手动触发重试。"}
-        </div>
+        <div className="opacity-80 mt-0.5 break-words">{body}</div>
         {detail.rendering_error && (
           <details className="mt-1">
             <summary className="cursor-pointer text-[10px] opacity-70">
@@ -1273,6 +1327,16 @@ function RenderingStatusBanner({
             </summary>
             <code className="block mt-1 text-[10px] font-mono whitespace-pre-wrap opacity-70 break-words">
               {detail.rendering_error}
+            </code>
+          </details>
+        )}
+        {meta.errors?.summary && (
+          <details className="mt-1">
+            <summary className="cursor-pointer text-[10px] opacity-70">
+              概览生成错误（开发者）
+            </summary>
+            <code className="block mt-1 text-[10px] font-mono whitespace-pre-wrap opacity-70 break-words">
+              {meta.errors.summary}
             </code>
           </details>
         )}
@@ -1286,6 +1350,7 @@ function RenderingStatusBanner({
         onClick={handleRetry}
         disabled={retrying}
         className="shrink-0"
+        data-rendering-retry
       >
         {retrying ? "提交中…" : "重新生成结构化摘要"}
       </Button>
@@ -1300,10 +1365,128 @@ function RenderingStatusBanner({
  *  the path open without committing to backend additions that don't
  *  yet exist on /api/history (scope/bookmark filters need new query
  *  params + tests). */
-function InboxToolbar({ ticker, onTicker, total }: {
+/** analysis-inbox-group-by-ticker v1.0 — render branch driven by the
+ *  segmented control. ``records`` keeps the legacy flat layout
+ *  exactly as-is so existing behaviour does not regress. ``tickers``
+ *  splits running tasks off into a "运行中" strip at the top, then
+ *  groups completed analyses into one card per ticker. */
+function InboxBody({
+  inbox, tickerQ, view, taskAnchor, refreshInbox,
+}: {
+  inbox: InboxRow[]
+  tickerQ: string
+  view: "records" | "tickers"
+  taskAnchor: string | null
+  refreshInbox: () => void
+}) {
+  const filterUpper = tickerQ.trim().toUpperCase()
+
+  if (view === "records") {
+    const visible = filterUpper
+      ? inbox.filter(it => it.ticker.includes(filterUpper))
+      : inbox
+    if (visible.length === 0) {
+      return (
+        <p className="text-sm text-muted-foreground py-6 text-center">
+          无匹配记录
+        </p>
+      )
+    }
+    return (
+      <>
+        {visible.map(it => it.kind === "task" ? (
+          <RunningRow
+            key={it.task_id}
+            row={it}
+            highlight={taskAnchor === it.task_id}
+            onSettled={refreshInbox}
+          />
+        ) : (
+          <CompletedRow
+            key={it.id}
+            row={it}
+            onChanged={refreshInbox}
+          />
+        ))}
+      </>
+    )
+  }
+
+  // tickers mode — split tasks from completed analyses; tasks render
+  // as the normal RunningRow strip on top, completed analyses become
+  // TickerGroupCards below.
+  const runningRows = inbox.filter(
+    (it): it is Extract<InboxRow, { kind: "task" }> => it.kind === "task",
+  )
+  const completedRows = inbox.filter(
+    (it): it is Extract<InboxRow, { kind: "analysis" }> => it.kind === "analysis",
+  )
+
+  // Map InboxRow.analysis → CompletedAnalysisRow shape for the helper.
+  // Fields are 1:1; the explicit shaping keeps the helper tightly
+  // typed and avoids leaking the wider InboxRow type into pure code.
+  const completedShaped: CompletedAnalysisRow[] = completedRows.map(r => ({
+    id: r.id,
+    ticker: r.ticker,
+    signal: r.signal,
+    date: r.date,
+    created_at: r.created_at,
+    provider: r.provider,
+    model: r.model,
+    depth: r.depth,
+  }))
+
+  let groups = groupAnalysisRowsByTicker(completedShaped)
+  if (filterUpper) {
+    groups = groups.filter(g => g.ticker.includes(filterUpper))
+  }
+
+  const visibleRunning = filterUpper
+    ? runningRows.filter(t => t.ticker.toUpperCase().includes(filterUpper))
+    : runningRows
+
+  return (
+    <div className="space-y-3">
+      {visibleRunning.length > 0 && (
+        <div className="space-y-2" data-inbox-tickers-running>
+          <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">
+            运行中
+          </p>
+          {visibleRunning.map(t => (
+            <RunningRow
+              key={t.task_id}
+              row={t}
+              highlight={taskAnchor === t.task_id}
+              onSettled={refreshInbox}
+            />
+          ))}
+        </div>
+      )}
+      <div className="space-y-2" data-inbox-tickers-groups>
+        {groups.length === 0 && visibleRunning.length === 0 ? (
+          <p className="text-sm text-muted-foreground py-6 text-center">
+            无匹配个股
+          </p>
+        ) : groups.length === 0 ? (
+          <p className="text-xs text-muted-foreground py-2 text-center">
+            暂无已完成分析
+          </p>
+        ) : (
+          groups.map(g => <TickerGroupCard key={g.ticker} group={g} />)
+        )}
+      </div>
+    </div>
+  )
+}
+
+function InboxToolbar({
+  ticker, onTicker, total, view, onView,
+}: {
   ticker: string
   onTicker: (v: string) => void
   total: number
+  view: "records" | "tickers"
+  onView: (v: "records" | "tickers") => void
 }) {
   return (
     <div className="flex flex-wrap items-center gap-2 pb-2 border-b border-border/40 min-w-0">
@@ -1314,6 +1497,46 @@ function InboxToolbar({ ticker, onTicker, total }: {
           placeholder="按股票代码筛选"
           className="h-8 text-sm"
         />
+      </div>
+      {/* analysis-inbox-group-by-ticker v1.0: segmented "按记录 / 按个股".
+          Native button group keeps the visual contract tight — no
+          extra dependency, two states, full-keyboard reachable. */}
+      <div
+        role="tablist"
+        aria-label="Inbox 视图"
+        data-inbox-view-toggle
+        className="inline-flex items-center rounded-md border border-border/60 bg-background overflow-hidden h-8 shrink-0"
+      >
+        <button
+          type="button"
+          role="tab"
+          aria-selected={view === "records"}
+          data-active={view === "records" ? "true" : undefined}
+          onClick={() => onView("records")}
+          className={
+            "px-2.5 text-xs h-full transition-colors " +
+            (view === "records"
+              ? "bg-primary/15 text-primary font-medium"
+              : "text-muted-foreground hover:text-foreground")
+          }
+        >
+          按记录
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={view === "tickers"}
+          data-active={view === "tickers" ? "true" : undefined}
+          onClick={() => onView("tickers")}
+          className={
+            "px-2.5 text-xs h-full border-l border-border/60 transition-colors " +
+            (view === "tickers"
+              ? "bg-primary/15 text-primary font-medium"
+              : "text-muted-foreground hover:text-foreground")
+          }
+        >
+          按个股
+        </button>
       </div>
       <span className="text-xs text-muted-foreground sm:ml-auto shrink-0">
         共 {total} 条

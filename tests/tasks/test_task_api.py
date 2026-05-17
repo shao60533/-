@@ -239,9 +239,15 @@ def test_cleanup_endpoint(client):
 def test_diagnostics_providers_shape(app_client):
     """Diagnostics endpoint returns provider statuses + routing summary.
 
-    hardening-iteration-v1 P0: this endpoint now requires admin — its
-    truncated error messages can leak provider names / proxy URLs to
-    plain users. Test uses admin_client (was: alice → 403).
+    hardening-iteration-v1 P0 + mobile-ui-v1.3.1 addendum #3: this
+    endpoint requires admin — its truncated error messages can leak
+    provider names / proxy URLs to plain users, AND it's part of the
+    addendum #3 admin-only surface. Non-admin denial is verified by
+    tests/web/test_settings_admin_gate.py.
+
+    _probe_providers always emits an 'openrouter' marker (added later
+    than this test) — assert no provider succeeded rather than the
+    overall dict being empty.
     """
     from stock_trading_system.config import get_config
     cfg = get_config()
@@ -261,10 +267,6 @@ def test_diagnostics_providers_shape(app_client):
     assert "providers" in body
     assert "routing" in body
     assert "primary" in body["routing"]
-    # OpenRouter is always reported (even when disabled, as a "not
-    # configured" entry) — the test's intent is "no data-provider
-    # succeeded when every cfg switch is off". Assert no provider is
-    # ok=True rather than "the dict is empty".
     assert not any(v.get("ok") for v in body["providers"].values())
 
 
